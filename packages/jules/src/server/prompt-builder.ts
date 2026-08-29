@@ -1,5 +1,10 @@
 import { createHash } from 'crypto';
 import { AdapterConfig } from './config.js';
+import {
+  synthesizeDeterministicPlan,
+  enrichPlanWithSymbolResearch,
+  formatPlanMarkdown,
+} from '@pilleo/paperclip-adapter-common';
 
 export interface PromptContext {
   issueId: string;
@@ -13,9 +18,14 @@ export interface PromptContext {
   failedSessionMessage?: string | undefined;
   /** PR URLs from prior sessions that may have partial work. */
   priorPrUrls?: string[] | undefined;
+  workspacePath?: string | undefined;
 }
 
 export const PROMPT_IDENTITY_HASH_VERSION = 2;
+
+export function hashPrompt(prompt: string): string {
+  return createHash('sha256').update(prompt).digest('hex');
+}
 
 export function buildPrompt(ctx: PromptContext, config: AdapterConfig): string {
   let prompt = `Task: ${ctx.title}\n\n`;
@@ -27,12 +37,23 @@ export function buildPrompt(ctx: PromptContext, config: AdapterConfig): string {
   prompt += `Repository: ${config.source}\n`;
   prompt += `Base Branch: ${config.baseBranch}\n\n`;
 
+  // Synthesize and attach Codanna-supported implementation plan
+  try {
+    const rawPlan = synthesizeDeterministicPlan(ctx.description, ctx.issueId, ctx.workspacePath);
+    const enrichedPlan = enrichPlanWithSymbolResearch(rawPlan, ctx.workspacePath);
+    const formattedPlan = formatPlanMarkdown(enrichedPlan);
+    prompt += `### 📋 Structured Implementation Plan & Codanna Research:\n\n${formattedPlan}\n\n`;
+  } catch {
+    // Fallback if markdown parsing encounters non-standard format
+  }
+
   prompt += `Instructions:\n`;
   prompt += `- If repository changes are needed, create a pull request (PR) upon completion.\n`;
   prompt += `- If no repository changes are needed or the task explicitly requests no changes, explain the result and complete without a PR.\n`;
   prompt += `- When creating a PR, include the Paperclip Issue ID (${ctx.issueId}) in its description or title.\n`;
   prompt += `- Do not merge the PR automatically.\n`;
-  prompt += `- If you are blocked or need clarification, ask a focused question.\n\n`;
+  prompt += `- If you are blocked or need clarification, ask a focused question.\n`;
+  prompt += `- 🔬 **Codebase Navigation (Codanna in Sandbox):** Use \`codanna retrieve describe <SymbolName>\` or \`codanna retrieve callers <SymbolName>\` in your subshell to inspect exact type signatures, AST outlines, and call graphs without wasting context tokens on full file views.\n\n`;
 
   if (ctx.isRetry) {
     if (ctx.resumeAttempt && ctx.resumeAttempt > 1) {
@@ -58,10 +79,22 @@ export function buildPrompt(ctx: PromptContext, config: AdapterConfig): string {
   return prompt;
 }
 
-export function hashPrompt(prompt: string): string {
-  return createHash('sha256').update(prompt).digest('hex');
-}
+export function hashPromptIdentity(
+  contextOrIssueId: PromptContext | string,
+  configOrTitle: AdapterConfig | string,
+  description?: string,
+  source?: string,
+  baseBranch?: string
+): string {
+  if (typeof contextOrIssueId === 'object') {
+    const ctx = contextOrIssueId;
+    const cfg = configOrTitle as AdapterConfig;
+    return createHash('sha256')
+      .update(`${PROMPT_IDENTITY_HASH_VERSION}:${ctx.issueId}:${ctx.title}:${ctx.description}:${cfg.source}:${cfg.baseBranch}`)
+      .digest('hex');
+  }
 
-export function hashPromptIdentity(ctx: PromptContext, config: AdapterConfig): string {
-  return hashPrompt(buildPrompt({ ...ctx, runId: "<paperclip-run>" }, config));
+  return createHash('sha256')
+    .update(`${PROMPT_IDENTITY_HASH_VERSION}:${contextOrIssueId}:${configOrTitle}:${description || ''}:${source || ''}:${baseBranch || ''}`)
+    .digest('hex');
 }
