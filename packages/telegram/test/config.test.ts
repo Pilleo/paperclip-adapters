@@ -2,16 +2,16 @@ import { describe, it, expect } from "vitest";
 import { isUserAuthorized, loadTelegramConfig, formatMissingSecretError, parseAllowedUserIds } from "../src/config.js";
 
 describe("Telegram Config & Security Whitelist", () => {
-  it("authorizes only users in whitelist", () => {
-    const whitelist = [12345, 67890];
-    expect(isUserAuthorized(12345, whitelist)).toBe(true);
-    expect(isUserAuthorized(67890, whitelist)).toBe(true);
-    expect(isUserAuthorized(99999, whitelist)).toBe(false);
-    expect(isUserAuthorized(undefined, whitelist)).toBe(false);
+  it("authorizes user by user ID or chat/conversation ID", () => {
+    const whitelist = [12345, "chat-999"];
+    expect(isUserAuthorized(12345, 12345, whitelist)).toBe(true);
+    expect(isUserAuthorized(undefined, "chat-999", whitelist)).toBe(true);
+    expect(isUserAuthorized(99999, "unknown-chat", whitelist)).toBe(false);
+    expect(isUserAuthorized(undefined, undefined, whitelist)).toBe(false);
   });
 
   it("fails closed when whitelist is empty", () => {
-    expect(isUserAuthorized(12345, [])).toBe(false);
+    expect(isUserAuthorized(12345, 12345, [])).toBe(false);
   });
 
   it("parses comma-separated allowed user IDs from env or string", () => {

@@ -4,7 +4,7 @@ dotenv.config();
 
 export interface TelegramPluginConfig {
   readonly botToken?: string | undefined;
-  readonly allowedUserIds: readonly number[];
+  readonly allowedUserIds: readonly (number | string)[];
   readonly defaultChatId?: string | number | undefined;
   readonly paperclipApiUrl: string;
   readonly paperclipApiKey?: string | undefined;
@@ -12,22 +12,41 @@ export interface TelegramPluginConfig {
   readonly pollIntervalMs: number;
 }
 
-export function isUserAuthorized(userId: number | undefined, allowedUserIds: readonly number[]): boolean {
-  if (!userId || !Array.isArray(allowedUserIds) || allowedUserIds.length === 0) {
+export function isUserAuthorized(
+  userId: number | string | undefined,
+  chatId: number | string | undefined,
+  allowedUserIds: readonly (number | string)[]
+): boolean {
+  if (!Array.isArray(allowedUserIds) || allowedUserIds.length === 0) {
     return false;
   }
-  return allowedUserIds.includes(userId);
+
+  const normalizedWhitelist = allowedUserIds.map((id) => String(id).trim());
+
+  if (userId !== undefined && normalizedWhitelist.includes(String(userId).trim())) {
+    return true;
+  }
+
+  if (chatId !== undefined && normalizedWhitelist.includes(String(chatId).trim())) {
+    return true;
+  }
+
+  return false;
 }
 
-export function parseAllowedUserIds(raw: string | number[] | undefined): number[] {
+export function parseAllowedUserIds(raw: string | (number | string)[] | undefined): (number | string)[] {
   if (Array.isArray(raw)) {
-    return raw.filter((id) => typeof id === "number" && !isNaN(id));
+    return raw.map((id) => (typeof id === "string" ? id.trim() : id)).filter(Boolean);
   }
   if (typeof raw === "string" && raw.trim().length > 0) {
     return raw
       .split(",")
-      .map((s) => parseInt(s.trim(), 10))
-      .filter((n) => !isNaN(n));
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+      .map((s) => {
+        const num = Number(s);
+        return isNaN(num) ? s : num;
+      });
   }
   return [];
 }

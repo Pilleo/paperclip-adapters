@@ -4,18 +4,19 @@ import { TelegramBotClient } from "../src/telegram-api.js";
 import { PaperclipApiClient } from "../src/paperclip-client.js";
 
 describe("Telegram Message & Callback Handlers", () => {
-  it("rejects unauthorized callback queries", async () => {
+  it("replies with helpful ID instructions when unauthorized user messages bot", async () => {
     const mockBot = {
-      answerCallbackQuery: vi.fn().mockResolvedValue(true),
+      sendMessage: vi.fn().mockResolvedValue({ message_id: 10 }),
     } as unknown as TelegramBotClient;
 
     const mockPc = {} as unknown as PaperclipApiClient;
 
-    await handleTelegramCallback(
+    await handleTelegramMessage(
       {
-        id: "cb-1",
+        message_id: 1,
+        chat: { id: 88888 },
         from: { id: 999 }, // Unauthorized
-        data: "approve:app-1",
+        text: "/status",
       },
       {
         botClient: mockBot,
@@ -24,7 +25,12 @@ describe("Telegram Message & Callback Handlers", () => {
       }
     );
 
-    expect(mockBot.answerCallbackQuery).toHaveBeenCalledWith("cb-1", "Unauthorized user", true);
+    expect(mockBot.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chat_id: 88888,
+        text: expect.stringContaining("Unauthorized Telegram Access"),
+      })
+    );
   });
 
   it("approves pending requests when operator clicks approve button", async () => {

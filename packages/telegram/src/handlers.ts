@@ -6,7 +6,7 @@ import { PaperclipApiClient } from "./paperclip-client.js";
 export interface HandlerDependencies {
   readonly botClient: TelegramBotClient;
   readonly paperclipClient: PaperclipApiClient;
-  readonly allowedUserIds: readonly number[];
+  readonly allowedUserIds: readonly (number | string)[];
   readonly companyId?: string | undefined;
 }
 
@@ -15,8 +15,14 @@ export async function handleTelegramCallback(
   deps: HandlerDependencies
 ): Promise<void> {
   const userId = callback.from.id;
-  if (!isUserAuthorized(userId, deps.allowedUserIds)) {
-    await deps.botClient.answerCallbackQuery(callback.id, "Unauthorized user", true);
+  const chatId = callback.message?.chat?.id;
+
+  if (!isUserAuthorized(userId, chatId, deps.allowedUserIds)) {
+    await deps.botClient.answerCallbackQuery(
+      callback.id,
+      `Unauthorized (User ID: ${userId}, Chat: ${chatId || "unknown"})`,
+      true
+    );
     return;
   }
 
@@ -73,14 +79,26 @@ export async function handleTelegramMessage(
   deps: HandlerDependencies
 ): Promise<void> {
   const userId = msg.from?.id;
-  if (!isUserAuthorized(userId, deps.allowedUserIds)) {
+  const chatId = msg.chat.id;
+
+  // 1. Authorization check with helpful onboarding hint if unauthorized
+  if (!isUserAuthorized(userId, chatId, deps.allowedUserIds)) {
+    await deps.botClient.sendMessage({
+      chat_id: chatId,
+      text: `🔒 *Unauthorized Telegram Access*
+
+• *Your User ID:* \`${userId || "unknown"}\`
+• *Chat / Conversation ID:* \`${chatId}\`
+
+👉 *To authorize yourself:* Add \`${userId || chatId}\` to \`allowedUserIds\` in your Paperclip Telegram Plugin configuration or \`.env\`.`,
+      parse_mode: "Markdown",
+    });
     return;
   }
 
   const text = (msg.text || "").trim();
-  const chatId = msg.chat.id;
 
-  // 1. Threaded Clarification Reply Handling
+  // 2. Threaded Clarification Reply Handling
   const replyToText = msg.reply_to_message?.text;
   if (replyToText && replyToText.includes("Clarification Question")) {
     const match = replyToText.match(/\[([A-Z0-9_-]+)\]/);
@@ -109,7 +127,7 @@ export async function handleTelegramMessage(
     }
   }
 
-  // 2. Slash Commands
+  // 3. Slash Commands
   if (text === "/status") {
     try {
       let issues: any[] = [];
