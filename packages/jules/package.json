@@ -44,7 +44,8 @@
   },
   "dependencies": {
     "zod": "^3.24.0",
-    "picocolors": "^1.1.1"
+    "picocolors": "^1.1.1",
+    "@pilleo/paperclip-adapter-common": "workspace:*"
   },
   "engines": {
     "node": ">=22"
