@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { AdapterConfigSchema } from "@paperclipai/adapter-utils";
 import { THINKING_LEVELS, DEFAULT_VIBE_MODEL } from "./models.js";
 
-export const DEFAULT_VIBE_COMMAND = "vibe-acp";
+export const DEFAULT_VIBE_COMMAND = "vibe --acp";
 
 export const VibeConfigSchema = z.object({
   serverCommand: z.string().optional().default(DEFAULT_VIBE_COMMAND),
