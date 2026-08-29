@@ -1,146 +1,137 @@
-# 📎 Paperclip Multi-Lane Adapters Monorepo
+# 📎 Paperclip Adapters Suite
 
-[![CI](https://github.com/Pilleo/paperclip-adapters/actions/workflows/ci.yml/badge.svg)](https://github.com/Pilleo/paperclip-adapters/actions)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-340%20passed-brightgreen.svg)]()
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.x%20Strict-blue.svg)]()
+Production-grade, deterministic, multi-agent adapters for **[Paperclip AI](https://github.com/paperclipai/paperclip)**. 
 
-Production-grade, high-performance adapters and deterministic multi-lane orchestration engine for **[Paperclip AI](https://github.com/paperclipai/paperclip)**.
+This repository contains the complete adapter monorepo that connects Paperclip's control-plane with **Google Jules (Cloud Async Developer)**, **Mistral Vibe (Local ACP Developer)**, **Google Antigravity (Local ACP Developer)**, and a **Deterministic Multi-Lane Task Orchestrator**.
 
 ---
 
-## 🏛️ Monorepo Architecture
+## 🏛️ System Architecture
 
 ```mermaid
 flowchart TD
-    subgraph Git Workspace
-        MD[("docs/internals/backlog/*.md")]
-        SKILLS[".agents/skills/ & rules/"]
-        SRC["Codebase & Symbols\n(Codanna / AST-Grep)"]
+    subgraph Control Plane (Paperclip Core)
+        P[Paperclip API / Kanban Board]
+        AP[Operator Approval Gate]
+        IA[Interactive Reply Cards]
     end
 
-    subgraph Paperclip Server
-        BOARD["Paperclip Kanban Board\n(todo, in_progress, in_review, done)"]
-        APPROVALS{"Operator Approval Gate\n(1-Click Start Modal)"}
+    subgraph Orchestration Layer (@pilleo/paperclip-orchestrator-adapter)
+        O[Deterministic Orchestration Tick]
+        DAG[Method-Level DAG Conflict Matrix]
+        PL[Deterministic Planning & Codanna Blast Radius Engine]
+        INV[Pluggable Invariant Engine]
+        RPR[Stalled-Session Auto-Reaper]
+        CLR[Autonomous Clarifier Q&A Loop]
     end
 
-    subgraph Packages
-        COMMON["@pilleo/paperclip-adapter-common\n- Ultra-Strict Linter & CLI\n- Method Symbol Parser\n- Runtime Skills Materializer"]
-        ORCH["@pilleo/paperclip-orchestrator-adapter\n- Method-Level DAG Conflicts\n- 2-Way Sync Engine\n- CI Health Monitor\n- Live Telemetry Dashboard"]
-        JULES["@pilleo/paperclip-jules-adapter\n- Google Jules Cloud Worker\n- Interactive gh Remote Creator\n- Rich Plan Visualizer Cards\n- Clean Continuation Checkpoints"]
-        VIBE["@pilleo/paperclip-vibe-adapter\n- Mistral Vibe ACP Local Worker\n- Materialized Instructions Bundle"]
-        AG["@pilleo/paperclip-antigravity-adapter\n- Google Antigravity ACP Worker"]
+    subgraph Worker Lanes
+        J[Google Jules Cloud Adapter]
+        V[Mistral Vibe Local ACP Adapter]
+        AGY[Google Antigravity Local ACP Adapter]
+        REV[Code Reviewer Agent]
     end
 
-    MD <-->|"Two-Way Sync"| ORCH
-    ORCH <-->|"Issue State & Locks"| BOARD
-    ORCH -->|"Evaluate Conflicts"| APPROVALS
-    APPROVALS -->|"Approved"| JULES
-    APPROVALS -->|"Approved"| VIBE
-    APPROVALS -->|"Approved"| AG
+    P <-->|2-Way Markdown & State Sync| O
+    O --> DAG
+    DAG --> PL
+    PL --> INV
+    O --> RPR
+    O --> CLR
+    
+    O -->|Cloud Async Lane (Max 15)| J
+    O -->|Local ACP Lane (Max 2)| V
+    O -->|Local ACP Lane (Max 2)| AGY
+    O -->|Review Routing| REV
 
-    SKILLS -->|"Bundle Invariants"| COMMON
-    COMMON -->|"Inject Prompt Context"| VIBE
-    COMMON -->|"Inject Prompt Context"| AG
-    SRC -->|"Symbol Research"| JULES
+    J -->|PR Created| P
+    V -->|PR Created| P
+    AGY -->|PR Created| P
 ```
 
 ---
 
-## 📦 Packages
+## 📦 Monorepo Packages
 
-| Package | Name | Description |
+| Package | Role | Description |
 |---|---|---|
-| [`packages/common`](packages/common) | `@pilleo/paperclip-adapter-common` | Shared frontmatter parsing, ultra-strict backlog validation CLI (`paperclip-backlog-lint`), method symbol parsing, label sanitization, and runtime skills materializer. |
-| [`packages/orchestrator`](packages/orchestrator) | `@pilleo/paperclip-orchestrator-adapter` | Deterministic multi-lane scheduler with method-level DAG conflict matrix, two-way Git Markdown $\leftrightarrow$ Board sync, operator approval gates, and CI monitor. |
-| [`packages/jules`](packages/jules) | `@pilleo/paperclip-jules-adapter` | Autonomous cloud software engineer with automatic repository discovery, interactive `gh` remote repo creation, clean continuation checkpoints, and plan cards. |
-| [`packages/vibe`](packages/vibe) | `@pilleo/paperclip-vibe-adapter` | Mistral Vibe ACP adapter supporting local execution, tools execution, and materialized workspace skills bundles. |
-| [`packages/antigravity`](packages/antigravity) | `@pilleo/paperclip-antigravity-adapter` | Google Antigravity ACP adapter with dynamic model discovery and native subagent support. |
+| [`@pilleo/paperclip-orchestrator-adapter`](./packages/orchestrator) | **Control Plane** | Deterministic scheduling, method-level DAG locks, stalled session reaping, remote PR reconciliation, and operator approval gating. |
+| [`@pilleo/paperclip-jules-adapter`](./packages/jules) | **Cloud Worker** | Google Jules integration with checkpoint restart recovery, interactive Q&A reply cards, and rich UI step accordions. |
+| [`@pilleo/paperclip-vibe-adapter`](./packages/vibe) | **Local Worker** | Mistral Vibe ACP execution engine running locally via stdio with materialized skills. |
+| [`@pilleo/paperclip-antigravity-adapter`](./packages/antigravity) | **Local Worker** | Google Antigravity ACP execution engine running locally via stdio with materialized skills. |
+| [`@pilleo/paperclip-adapter-common`](./packages/common) | **Core Utilities** | Language-agnostic planning engine, Codanna symbol research, blast-radius test discovery, and skills materializer. |
 
 ---
 
-## 🚀 Key Innovations & Features
+## 🔑 Core Capabilities & Invariants
 
-### 1. 🎯 Method & Symbol-Level Granularity DAG Scheduling
-Unlike traditional whole-file lock schedulers, the Orchestrator evaluates target symbols (`target_symbols: ["ClassName#methodName"]`). Multiple tasks touching the same large source file can safely run concurrently if their target methods are completely disjoint, preventing artificial scheduling bottlenecks while strictly avoiding merge conflicts.
+### 1. ⚡ Method-Level DAG Concurrency Matrix
+Instead of locking entire directories or modules, the orchestrator constructs a **fine-grained AST dependency DAG**:
+- Tasks modifying disjoint methods in the same file run **concurrently in parallel**.
+- Tasks modifying overlapping methods or constructors are queued in `todo` until active PRs merge.
+- Active GitHub PRs dynamically lock their modified files and symbols in the conflict matrix.
 
-### 2. 🔄 True Two-Way Git Markdown $\leftrightarrow$ Paperclip Board Sync
-- Edits made directly in Git Markdown files (`docs/internals/backlog/`) instantly update issues on the Paperclip Kanban board.
-- Status changes, assignments, and completions made in Paperclip UI automatically update the Markdown files and move completed issues to `resolved/`.
+### 2. 🔬 Caller-Impact Blast Radius Calculation (Codanna)
+- Parses target symbol AST definitions and caller graphs (`codanna retrieve describe <Symbol>`).
+- Automatically extracts all downstream test suites (`*Test.kt`, `*.test.ts`, `*_test.go`, `*_test.rs`, `test_*.py`) that call the modified code.
+- Directly embeds the exact blast-radius test suites into worker prompts to ensure thorough regression verification.
 
-### 3. ☁️ Self-Healing Google Jules Cloud Workflow
-- Automatically discovers local repository `origin` URLs and default branches (`master`/`main`).
-- Interactively creates private GitHub repositories via `gh` CLI when starting fresh workspaces.
-- Seamlessly checkpoints pending reviews, feedback, and approvals with `exitCode: 0`.
-- Renders collapsible implementation plan cards and live CI check statuses with deduplicated commit SHA alerts.
+### 3. 🛡️ Pluggable Invariant Engine (`.paperclip/invariants.json`)
+- **Universal Default Hygiene:** Scans for unresolved Git merge conflict markers (`<<<<<<< HEAD`) and raw private keys.
+- **Custom Project Scopes:** Loads declarative regex rules from workspace `.paperclip/invariants.json` with file-extension filtering (`.kt`, `.rs`, `.go`, `.tsx`, `.ts`).
 
-### 4. 🧠 Materialized Runtime Skills & Rules Injection
-Automatically extracts root invariants (`AGENTS.md`, `.agents/CODE_QUALITY.md`) and `.agents/skills/*/SKILL.md` (e.g. `add_syscall`, `ffm_safety`, `ast_grep`, `file_structure`) into structured instruction bundles for local ACP workers (Vibe and Antigravity).
+### 4. ♻️ Self-Healing Stalled-Session Reaper
+- Automatically runs during each orchestrator tick.
+- If a task is left in `in_progress` without an active runner or heartbeat for $> 15\text{ minutes}$, it resets the task to `todo`, unlocks all held files, and logs an audit comment.
 
-### 5. 🛠️ Fast Backlog Linter CLI (`paperclip-backlog-lint`)
-Scans and validates hundreds of backlog issue files in under **15 milliseconds**, enforcing date-based filenames (`issue-YYYYMMDD-HHMMSS-slug.md`), canonical severities, valid components, Gradle modules, and open question consistency.
+### 5. ❓ Two-Way Autonomous Clarifier Q&A Loop
+- When tasks have ambiguous requirements or open questions, the clarifier first queries Codanna and workspace files to resolve them autonomously.
+- Only if the codebase cannot answer does it escalate a 1-click interactive reply card to the human operator.
+
+### 6. 🔒 Operator Start-Approval Gate
+- High-impact tasks are trapped in `todo`/`backlog` until approved via a 1-click Paperclip Board Approval card (`POST /api/companies/:id/approvals`).
 
 ---
 
-## ⚡ Quickstart
+## 🛠️ Paperclip Protocol Invariants & Discovered Gotchas
 
-### 1. Register with Paperclip Server
+When developing Paperclip adapters, adhere strictly to these core API contracts:
 
-Add the built adapter packages to your `~/.paperclip/adapter-plugins.json`:
+1. **Mandatory Assignee on `in_progress`:**
+   - `PATCH /api/issues/:id` with `{ status: "in_progress" }` **strictly requires** an `assigneeAgentId` or `assigneeUserId` (Paperclip returns HTTP 422 otherwise).
+2. **Approval Request Enum:**
+   - `POST /api/companies/:id/approvals` requires `type: "request_board_approval"` with payload `{ action: "task_start", issueId: ... }`.
+3. **Approval Resolution:**
+   - Approvals are resolved via `POST /api/approvals/:id/approve` with `{ decisionNote: "..." }`.
+4. **Strict PR Word-Boundary Matching:**
+   - Low-numbered issues (e.g. `MAZ-2`) must use regex word boundaries (`\bMAZ-2\b`) to prevent false-positive collisions with timestamped issues (e.g. `issue-2026...`).
 
-```json
-{
-  "adapters": [
-    {
-      "type": "orchestrator",
-      "modulePath": "/path/to/paperclip-adapters/packages/orchestrator/dist/server/index.js"
-    },
-    {
-      "type": "jules",
-      "modulePath": "/path/to/paperclip-adapters/packages/jules/dist/server/index.js"
-    },
-    {
-      "type": "vibe",
-      "modulePath": "/path/to/paperclip-adapters/packages/vibe/dist/server/index.js"
-    },
-    {
-      "type": "antigravity",
-      "modulePath": "/path/to/paperclip-adapters/packages/antigravity/dist/server/index.js"
-    }
-  ]
-}
-```
+---
 
-### 2. Build & Test
+## 🧪 Testing & Verification
 
+### 1. Monorepo Unit & Integration Suite
+Runs all 399+ unit tests across all 5 workspace packages:
 ```bash
-# Install dependencies
-pnpm install
-
-# Build all packages
-pnpm -r build
-
-# Run all 340+ unit and integration tests
-pnpm -r test
+pnpm -r build && pnpm -r test
 ```
 
-### 3. Run Backlog Linter CLI
-
+### 2. Deep Ephemeral E2E Lifecycle Suite
+Executes a 6-phase live lifecycle test against local Paperclip (`http://127.0.0.1:3100`) using an ephemeral isolated company and temporary directory (`os.tmpdir()`), leaving production boards and codebases completely untouched:
 ```bash
-# Validate any backlog directory
-pnpm dlx @pilleo/paperclip-adapter-common lint ./docs/internals/backlog
+pnpm test:e2e
 ```
 
+**E2E Phases Verified:**
+- **Phase 1:** Ephemeral test company creation & agent registration (`orchestrator`, `jules`, `vibe`).
+- **Phase 2:** Live 2-way Markdown backlog ingestion and frontmatter synchronization.
+- **Phase 3:** Operator start-approval gate trapping and simulated resolution.
+- **Phase 4:** Method-level DAG concurrency (disjoint method tasks run in parallel while overlapping method tasks are held in `todo`).
+- **Phase 5:** Codanna AST symbol research and Jules cloud prompt synthesis.
+- **Phase 6:** Autonomous clarification protocol resolving open questions from code.
+- **Teardown:** Clean deletion of test company and temporary directory.
+
 ---
 
-## 🔒 Code Quality & Invariants
-
-- **Ultra-Strict TypeScript:** `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, and strict null checks enforced across all packages.
-- **Pure Functions & State Machines:** Core DAG scheduling, quota evaluation, linter rules, and PR matching are pure, immutable, and 100% unit tested.
-- **Local Pre-Commit Hook:** Automatically builds and tests all workspace packages before any local commit is created.
-
----
-
-## 📄 License
-
-Apache-2.0 © [Pilleo Team](https://github.com/Pilleo)
+## 📜 License
+MIT © Pilleo Engineering
