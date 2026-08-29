@@ -2,7 +2,8 @@ export interface ManagedWorkerDefinition {
   readonly key: "jules" | "vibe" | "antigravity" | "reviewer";
   readonly name: string;
   readonly adapterType: string;
-  readonly role: string;
+  readonly role: "engineer" | "qa" | "security" | "general";
+  readonly description: string;
   readonly adapterConfig: Record<string, unknown>;
 }
 
@@ -27,7 +28,8 @@ export const MANAGED_FLEET_DEFINITIONS: readonly ManagedWorkerDefinition[] = Obj
     key: "jules",
     name: "[Orchestrated] Jules Async Worker",
     adapterType: "jules",
-    role: "Cloud asynchronous developer executing approved tasks in isolation",
+    role: "engineer",
+    description: "Cloud asynchronous developer executing approved tasks in isolation",
     adapterConfig: {
       pollCadenceSeconds: 0, // Strictly 0: No autonomous unprompted scheduling
       prPolicy: "auto",
@@ -42,7 +44,8 @@ export const MANAGED_FLEET_DEFINITIONS: readonly ManagedWorkerDefinition[] = Obj
     key: "vibe",
     name: "[Orchestrated] Vibe Local Worker",
     adapterType: "vibe",
-    role: "Local ACP developer executing autonomous clarifications and small refactors",
+    role: "engineer",
+    description: "Local ACP developer executing autonomous clarifications and small refactors",
     adapterConfig: {
       pollCadenceSeconds: 0, // Strictly 0
       permissionMode: "approve-all",
@@ -53,7 +56,8 @@ export const MANAGED_FLEET_DEFINITIONS: readonly ManagedWorkerDefinition[] = Obj
     key: "antigravity",
     name: "[Orchestrated] Antigravity Local Worker",
     adapterType: "antigravity",
-    role: "Local pair-programming ACP worker executing tasks via Google Antigravity",
+    role: "engineer",
+    description: "Local pair-programming ACP worker executing tasks via Google Antigravity",
     adapterConfig: {
       pollCadenceSeconds: 0, // Strictly 0
       permissionMode: "approve-all",
@@ -63,7 +67,8 @@ export const MANAGED_FLEET_DEFINITIONS: readonly ManagedWorkerDefinition[] = Obj
     key: "reviewer",
     name: "[Orchestrated] Code Reviewer",
     adapterType: "vibe",
-    role: "Token-efficient code review specialist inspecting PRs, symbols, and invariants",
+    role: "qa",
+    description: "Token-efficient code review specialist inspecting PRs, symbols, and invariants",
     adapterConfig: {
       pollCadenceSeconds: 0, // Strictly 0
       permissionMode: "read-only",
@@ -98,12 +103,11 @@ export async function reconcileManagedFleet(
   let updatedCount = 0;
 
   for (const def of MANAGED_FLEET_DEFINITIONS) {
-    // Look for existing managed agent by name or metadata tag
+    // Look for existing managed agent by exact name or metadata tag
     const matching = existingAgents.find(
       (a) =>
         a.name === def.name ||
-        (a.metadata?.["managedBy"] === "paperclip-orchestrator" && a.metadata?.["workerKey"] === def.key) ||
-        (a.name === def.name)
+        (a.metadata?.["managedBy"] === "paperclip-orchestrator" && a.metadata?.["workerKey"] === def.key)
     );
 
     const mergedConfig: Record<string, unknown> = {
@@ -126,31 +130,31 @@ export async function reconcileManagedFleet(
 
     if (!matching) {
       // Provision fresh managed worker
-      try {
-        const createRes = await fetch(`${apiUrl}/api/companies/${companyId}/agents`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            name: def.name,
-            adapterType: def.adapterType,
-            role: def.role,
-            status: "idle", // Idle by default: Only wakes on Orchestrator wakeup calls
-            adapterConfig: mergedConfig,
-            metadata: {
-              managedBy: "paperclip-orchestrator",
-              workerKey: def.key,
-              immutableConfig: true,
-            },
-          }),
-        });
+      const createRes = await fetch(`${apiUrl}/api/companies/${companyId}/agents`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: def.name,
+          adapterType: def.adapterType,
+          role: def.role,
+          status: "idle", // Idle by default: Only wakes on Orchestrator wakeup calls
+          adapterConfig: mergedConfig,
+          metadata: {
+            managedBy: "paperclip-orchestrator",
+            workerKey: def.key,
+            immutableConfig: true,
+            description: def.description,
+          },
+        }),
+      });
 
-        if (createRes.ok) {
-          const created = (await createRes.json()) as { id: string };
-          resolvedIds[def.key] = created.id;
-          provisionedCount++;
-        }
-      } catch {
-        // failed to provision
+      if (createRes.ok) {
+        const created = (await createRes.json()) as { id: string };
+        resolvedIds[def.key] = created.id;
+        provisionedCount++;
+      } else {
+        const errText = await createRes.text();
+        console.warn(`[FLEET] Failed to provision agent ${def.name}: ${errText}`);
       }
     } else {
       resolvedIds[def.key] = matching.id;
