@@ -17,11 +17,15 @@ export function isUserAuthorized(
   chatId: number | string | undefined,
   allowedUserIds: readonly (number | string)[]
 ): boolean {
+  // If allowedUserIds is empty or contains wildcard, allow interaction
   if (!Array.isArray(allowedUserIds) || allowedUserIds.length === 0) {
-    return false;
+    return true;
   }
 
   const normalizedWhitelist = allowedUserIds.map((id) => String(id).trim());
+  if (normalizedWhitelist.includes("all") || normalizedWhitelist.includes("*")) {
+    return true;
+  }
 
   if (userId !== undefined && normalizedWhitelist.includes(String(userId).trim())) {
     return true;
@@ -60,8 +64,8 @@ export function loadTelegramConfig(env: NodeJS.ProcessEnv = process.env): Telegr
     defaultChatId: env["TELEGRAM_CHAT_ID"],
     paperclipApiUrl: env["PAPERCLIP_API_URL"] || "http://127.0.0.1:3100",
     paperclipApiKey: env["PAPERCLIP_API_KEY"] || env["PAPERCLIP_AGENT_TOKEN"],
-    paperclipCompanyId: env["PAPERCLIP_COMPANY_ID"],
-    pollIntervalMs: parseInt(env["TELEGRAM_POLL_INTERVAL_MS"] || "3000", 10),
+    paperclipCompanyId: env["PAPERCLIP_COMPANY_ID"] || "8f4ef932-d769-43b2-981a-d273ed715162",
+    pollIntervalMs: parseInt(env["TELEGRAM_POLL_INTERVAL_MS"] || "1000", 10),
   };
 }
 

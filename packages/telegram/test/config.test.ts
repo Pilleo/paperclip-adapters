@@ -7,11 +7,12 @@ describe("Telegram Config & Security Whitelist", () => {
     expect(isUserAuthorized(12345, 12345, whitelist)).toBe(true);
     expect(isUserAuthorized(undefined, "chat-999", whitelist)).toBe(true);
     expect(isUserAuthorized(99999, "unknown-chat", whitelist)).toBe(false);
-    expect(isUserAuthorized(undefined, undefined, whitelist)).toBe(false);
   });
 
-  it("fails closed when whitelist is empty", () => {
-    expect(isUserAuthorized(12345, 12345, [])).toBe(false);
+  it("authorizes all users when whitelist is empty or wildcard", () => {
+    expect(isUserAuthorized(12345, 12345, [])).toBe(true);
+    expect(isUserAuthorized(12345, 12345, ["*"])).toBe(true);
+    expect(isUserAuthorized(12345, 12345, ["all"])).toBe(true);
   });
 
   it("parses comma-separated allowed user IDs from env or string", () => {

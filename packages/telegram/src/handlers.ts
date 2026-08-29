@@ -20,14 +20,27 @@ export async function handleTelegramCallback(
   if (!isUserAuthorized(userId, chatId, deps.allowedUserIds)) {
     await deps.botClient.answerCallbackQuery(
       callback.id,
-      `Unauthorized (User ID: ${userId}, Chat: ${chatId || "unknown"})`,
+      `Unauthorized (User ID: ${userId})`,
       true
     );
     return;
   }
 
   const data = callback.data || "";
-  const [action, targetId] = data.split(":");
+  let action = "";
+  let targetId = "";
+
+  if (data.startsWith("pcapprove:")) {
+    action = "approve";
+    targetId = data.slice("pcapprove:".length);
+  } else if (data.startsWith("pcreject:")) {
+    action = "reject";
+    targetId = data.slice("pcreject:".length);
+  } else {
+    const parts = data.split(":");
+    action = parts[0] || "";
+    targetId = parts[1] || "";
+  }
 
   if (action === "approve" && targetId) {
     try {
@@ -81,16 +94,10 @@ export async function handleTelegramMessage(
   const userId = msg.from?.id;
   const chatId = msg.chat.id;
 
-  // 1. Authorization check with helpful onboarding hint if unauthorized
   if (!isUserAuthorized(userId, chatId, deps.allowedUserIds)) {
     await deps.botClient.sendMessage({
       chat_id: chatId,
-      text: `🔒 *Unauthorized Telegram Access*
-
-• *Your User ID:* \`${userId || "unknown"}\`
-• *Chat / Conversation ID:* \`${chatId}\`
-
-👉 *To authorize yourself:* Add \`${userId || chatId}\` to \`allowedUserIds\` in your Paperclip Telegram Plugin configuration or \`.env\`.`,
+      text: `🔒 *Unauthorized Telegram Access*\n• User ID: \`${userId}\`\n• Chat ID: \`${chatId}\``,
       parse_mode: "Markdown",
     });
     return;
@@ -98,7 +105,7 @@ export async function handleTelegramMessage(
 
   const text = (msg.text || "").trim();
 
-  // 2. Threaded Clarification Reply Handling
+  // 1. Threaded Clarification Reply Handling
   const replyToText = msg.reply_to_message?.text;
   if (replyToText && replyToText.includes("Clarification Question")) {
     const match = replyToText.match(/\[([A-Z0-9_-]+)\]/);
@@ -127,8 +134,8 @@ export async function handleTelegramMessage(
     }
   }
 
-  // 3. Slash Commands
-  if (text === "/status") {
+  // 2. Slash Commands
+  if (text === "/status" || text.startsWith("/status")) {
     try {
       let issues: any[] = [];
       let approvals: any[] = [];
@@ -168,7 +175,7 @@ export async function handleTelegramMessage(
     return;
   }
 
-  if (text === "/queue") {
+  if (text === "/queue" || text.startsWith("/queue")) {
     try {
       let issues: any[] = [];
       if (deps.companyId) {
@@ -194,7 +201,7 @@ export async function handleTelegramMessage(
     return;
   }
 
-  if (text === "/help" || text === "/start") {
+  if (text === "/help" || text === "/start" || text.startsWith("/start") || text.startsWith("/help")) {
     await deps.botClient.sendMessage({
       chat_id: chatId,
       text: `🤖 *Paperclip Operator Companion*

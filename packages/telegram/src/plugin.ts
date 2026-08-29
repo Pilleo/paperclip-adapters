@@ -17,10 +17,11 @@ export interface PaperclipPluginContext {
     readonly error: (msg: string, ...args: any[]) => void;
   } | undefined;
   readonly options?: {
-    readonly allowedUserIds?: string | number[] | undefined;
+    readonly allowedUserIds?: string | (number | string)[] | undefined;
     readonly defaultChatId?: string | number | undefined;
     readonly pollIntervalMs?: number | undefined;
     readonly paperclipCompanyId?: string | undefined;
+    readonly botToken?: string | undefined;
   } | undefined;
 }
 
@@ -46,10 +47,10 @@ export class PaperclipTelegramPlugin {
     const defaultChatId = ctx.options?.defaultChatId || baseConfig.defaultChatId;
     const pollIntervalMs = ctx.options?.pollIntervalMs || baseConfig.pollIntervalMs;
 
-    let token = baseConfig.botToken;
+    let token = ctx.options?.botToken || baseConfig.botToken;
 
     // 1. Resolve token from Paperclip Secrets Vault if secrets client is provided
-    if (ctx.secrets && companyId) {
+    if (!token && ctx.secrets && companyId) {
       try {
         const resolved = await ctx.secrets.resolve("TELEGRAM_BOT_TOKEN", { companyId });
         if (resolved && resolved.trim().length > 0) {
@@ -65,8 +66,6 @@ export class PaperclipTelegramPlugin {
       const errorMsg = formatMissingSecretError(companyId);
       if (ctx.logger?.warn) {
         ctx.logger.warn(errorMsg);
-      } else {
-        console.warn(errorMsg);
       }
       this.configured = false;
       return;
@@ -110,9 +109,21 @@ export class PaperclipTelegramPlugin {
   }
 
   private async startUpdateLoop(config: TelegramPluginConfig, paperclipClient: PaperclipApiClient): Promise<void> {
+    // Initialize offset on startup
+    if (this.botClient) {
+      try {
+        const initial = await this.botClient.getUpdates(undefined, 0);
+        if (initial.length > 0) {
+          this.updateOffset = Math.max(...initial.map((u) => u.update_id)) + 1;
+        }
+      } catch {
+        // offset init failure non-fatal
+      }
+    }
+
     while (this.isRunning && this.botClient) {
       try {
-        const updates = await this.botClient.getUpdates(this.updateOffset, 15);
+        const updates = await this.botClient.getUpdates(this.updateOffset, 1);
         for (const update of updates) {
           this.updateOffset = update.update_id + 1;
 
@@ -135,7 +146,7 @@ export class PaperclipTelegramPlugin {
           }
         }
       } catch {
-        await new Promise((r) => setTimeout(r, 3000));
+        await new Promise((r) => setTimeout(r, 1000));
       }
     }
   }
