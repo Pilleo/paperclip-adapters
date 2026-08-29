@@ -22,13 +22,13 @@ describe("Telegram Message Formatters", () => {
       issueIdentifier: "MAZ-101",
       issueTitle: "Implement BPF linear scan",
       description: "Perform strict instruction validation without kernel traps.",
-      reason: "Routed to primary Jules lane",
       priority: "high",
     });
 
-    expect(card.text).toContain("Task Dispatch Approval");
+    expect(card.text).toContain("Task Execution Approval");
     expect(card.text).toContain("[MAZ-101] Implement BPF linear scan");
     expect(card.text).toContain("HIGH");
+    expect(card.text).not.toContain("Routing:");
     expect(card.text).toContain("> 📝 _Perform strict instruction validation without kernel traps._");
     expect(card.replyMarkup.inline_keyboard[0]![0]!.text).toBe("▶️ Start Task");
     expect(card.replyMarkup.inline_keyboard[0]![1]!.text).toBe("⏸️ Skip / Defer");

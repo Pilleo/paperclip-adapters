@@ -14,7 +14,7 @@ export interface PendingApprovalData {
   readonly requestedBy?: string | undefined;
 }
 
-export function compactDescription(desc: string | undefined, maxLen = 220): string {
+export function compactDescription(desc: string | undefined, maxLen = 280): string {
   if (!desc || typeof desc !== "string") return "";
 
   const cleaned = desc
@@ -22,12 +22,12 @@ export function compactDescription(desc: string | undefined, maxLen = 220): stri
     .replace(/Component:\s*[^\n]*\n?/gi, "")
     .replace(/Priority:\s*[^\n]*\n?/gi, "")
     .replace(/Planned Agent:\s*[^\n]*\n?/gi, "")
+    .replace(/Routed to:\s*[^\n]*\n?/gi, "")
     .trim();
 
   if (!cleaned) return "";
 
   const truncated = cleaned.length > maxLen ? `${cleaned.slice(0, maxLen).trim()}...` : cleaned;
-  // Render as a Telegram quote block
   const quoteLines = truncated
     .split("\n")
     .map((line) => line.trim())
@@ -49,11 +49,10 @@ export function formatApprovalCard(data: PendingApprovalData): {
   const buttons: InlineKeyboardButton[][] = [];
 
   if (isTaskStart) {
-    header = `🚀 *Task Dispatch Approval*`;
+    header = `🚀 *Task Execution Approval*`;
     const prioStr = data.priority ? ` (\`${data.priority.toUpperCase()}\`)` : "";
-    const reasonStr = data.reason ? `\n• *Routing:* ${data.reason}` : "";
     const descStr = compactDescription(data.description);
-    actionDetails = `• *Task:* [${data.issueIdentifier}] ${data.issueTitle}${prioStr}${reasonStr}${descStr}`;
+    actionDetails = `• *Task:* [${data.issueIdentifier}] ${data.issueTitle}${prioStr}${descStr}`;
 
     buttons.push([
       { text: "▶️ Start Task", callback_data: `approve:${data.approvalId}` },
