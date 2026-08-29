@@ -1,0 +1,26 @@
+{
+  "name": "@pilleo/paperclip-telegram-plugin",
+  "version": "0.1.0",
+  "description": "Native Telegram companion daemon and operator plugin for Paperclip AI",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "paperclip-telegram": "bin/paperclip-telegram.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "start": "node bin/paperclip-telegram.js"
+  },
+  "dependencies": {
+    "@pilleo/paperclip-adapter-common": "workspace:*",
+    "@pilleo/paperclip-orchestrator-adapter": "workspace:*",
+    "dotenv": "^16.4.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.2"
+  }
+}

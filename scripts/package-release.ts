@@ -14,6 +14,7 @@ const PACKAGES = [
   { name: "@pilleo/paperclip-jules-adapter", dir: "packages/jules" },
   { name: "@pilleo/paperclip-vibe-adapter", dir: "packages/vibe" },
   { name: "@pilleo/paperclip-antigravity-adapter", dir: "packages/antigravity" },
+  { name: "@pilleo/paperclip-telegram-plugin", dir: "packages/telegram" },
 ];
 
 console.log("================================================================================");
