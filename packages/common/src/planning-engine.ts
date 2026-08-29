@@ -12,11 +12,37 @@ export interface DeterministicPlan {
   readonly targetFiles: readonly string[];
   readonly targetSymbols: readonly SymbolTarget[];
   readonly testFiles: readonly string[];
+  readonly impactedTestSuites?: readonly string[] | undefined;
   readonly contextSummary: string;
   readonly neededSummary: string;
   readonly steps: readonly string[];
   readonly semanticSymbolContext?: string | undefined;
   readonly invariantReview?: string | undefined;
+}
+
+/**
+ * Extracts test file paths from Codanna "Called by" output.
+ */
+export function extractTestSuitesFromCodannaOutput(output: string): string[] {
+  const testFiles = new Set<string>();
+  const lines = output.split("\n");
+  let inCalledBySection = false;
+
+  for (const line of lines) {
+    if (line.includes("Called by") || line.includes("Calls")) {
+      inCalledBySection = true;
+    }
+    if (inCalledBySection) {
+      // Match patterns like: at ./enforcer/src/test/kotlin/.../SomeTest.kt:35
+      const match = line.match(/at\s+\.?\/?([^\s:]+(?:Test|Spec)\.(?:kt|java|ts|scala)):/i);
+      if (match && match[1]) {
+        const normalized = match[1].replace(/^\.\//, "");
+        testFiles.add(normalized);
+      }
+    }
+  }
+
+  return Array.from(testFiles);
 }
 
 /**
@@ -100,6 +126,8 @@ export function enrichPlanWithSymbolResearch(
   }
 
   const symbolNotes: string[] = [];
+  const discoveredTestSuites = new Set<string>(plan.testFiles);
+  const impactedTestSuites: string[] = [];
 
   for (const target of plan.targetSymbols) {
     const sym = target.methodName || target.className || target.symbol;
@@ -128,6 +156,15 @@ export function enrichPlanWithSymbolResearch(
 
       if (output && !output.includes("No matching")) {
         symbolNotes.push(`#### Symbol: \`${target.symbol}\`\n\`\`\`\n${output.slice(0, 1500)}\n\`\`\``);
+
+        // Extract blast-radius callers
+        const callers = extractTestSuitesFromCodannaOutput(output);
+        for (const c of callers) {
+          discoveredTestSuites.add(c);
+          if (!impactedTestSuites.includes(c)) {
+            impactedTestSuites.push(c);
+          }
+        }
       }
     } catch {
       // codanna not installed or symbol not indexed
@@ -138,6 +175,8 @@ export function enrichPlanWithSymbolResearch(
 
   return {
     ...plan,
+    testFiles: Object.freeze(Array.from(discoveredTestSuites)),
+    impactedTestSuites: impactedTestSuites.length > 0 ? Object.freeze(impactedTestSuites) : undefined,
     semanticSymbolContext,
   };
 }
@@ -153,7 +192,12 @@ export function formatPlanMarkdown(plan: DeterministicPlan): string {
 
   const testSection =
     plan.testFiles.length > 0
-      ? `\n\n**Candidate Test Files:**\n${plan.testFiles.map((t) => `- \`${t}\``).join("\n")}`
+      ? `\n\n**Candidate Test Files & Blast Radius:**\n${plan.testFiles.map((t) => `- \`${t}\``).join("\n")}`
+      : "";
+
+  const impactSection =
+    plan.impactedTestSuites && plan.impactedTestSuites.length > 0
+      ? `\n\n**⚡ Impacted Caller Test Suites (Codanna Blast Radius):**\n${plan.impactedTestSuites.map((s) => `- \`${s}\``).join("\n")}`
       : "";
 
   const codannaSection = plan.semanticSymbolContext
@@ -165,7 +209,7 @@ export function formatPlanMarkdown(plan: DeterministicPlan): string {
 **Component:** \`${plan.component}\` | **Priority:** \`${plan.priority}\`
 
 **Target Files:**
-${plan.targetFiles.map((f) => `- \`${f}\``).join("\n")}${symbolSection}${testSection}
+${plan.targetFiles.map((f) => `- \`${f}\``).join("\n")}${symbolSection}${testSection}${impactSection}
 
 ### 💡 Context
 ${plan.contextSummary}
