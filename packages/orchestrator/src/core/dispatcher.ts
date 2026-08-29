@@ -5,10 +5,11 @@ import {
   CandidateSelection,
   MultiLaneOptions,
 } from "./types.js";
+import { parseSymbolTarget } from "@pilleo/paperclip-adapter-common";
 
 /**
  * Pure functions for dependency DAG calculation, conflict edge evaluation,
- * and deterministic multi-lane candidate scheduling.
+ * and deterministic multi-lane candidate scheduling with method-level granularity.
  */
 
 export function calculateConflictMatrix(issues: readonly ParsedIssueMetadata[]): ConflictMatrixResult {
@@ -71,14 +72,29 @@ export function calculateConflictMatrix(issues: readonly ParsedIssueMetadata[]):
       if (a.isNonInterfering || b.isNonInterfering) continue;
 
       const sharedFiles = a.targetFiles.filter((f) => b.targetFiles.includes(f));
+      
+      // Method/Symbol-level granularity matching
+      const aSymbols = a.targetSymbols.map(parseSymbolTarget);
+      const bSymbols = b.targetSymbols.map(parseSymbolTarget);
       const sharedSymbols = a.targetSymbols.filter((s) => b.targetSymbols.includes(s));
 
-      if (sharedFiles.length > 0 || sharedSymbols.length > 0) {
-        const conflictReason =
-          sharedFiles.length > 0
-            ? `Shared files: ${sharedFiles.join(", ")}`
-            : `Shared symbols: ${sharedSymbols.join(", ")}`;
+      let hasConflict = false;
+      let conflictReason = "";
 
+      if (sharedSymbols.length > 0) {
+        hasConflict = true;
+        conflictReason = `Shared method/symbol targets: ${sharedSymbols.join(", ")}`;
+      } else if (sharedFiles.length > 0) {
+        // If both tasks define explicit, disjoint method targets within the shared file,
+        // they can proceed without a hard conflict if both declare fine-grained symbols.
+        const bothHaveMethodTargets = a.targetSymbols.length > 0 && b.targetSymbols.length > 0;
+        if (!bothHaveMethodTargets) {
+          hasConflict = true;
+          conflictReason = `Shared files: ${sharedFiles.join(", ")}`;
+        }
+      }
+
+      if (hasConflict) {
         let blocker: ParsedIssueMetadata;
         let blocked: ParsedIssueMetadata;
 
@@ -141,47 +157,52 @@ export function selectNextTasksMultiLane(
   const vibeCapacity = options.vibeCapacity ?? 1;
   const julesRunning = options.julesRunningCount ?? 0;
   const vibeRunning = options.vibeRunningCount ?? 0;
-  const maxToSelect = options.maxToSelect ?? 15;
 
   let julesAvailable = Math.max(0, julesCapacity - julesRunning);
   let vibeAvailable = Math.max(0, vibeCapacity - vibeRunning);
 
-  if (julesAvailable <= 0 && vibeAvailable <= 0) {
-    return Object.freeze([]);
-  }
+  const maxToSelect = options.maxToSelect ?? (julesAvailable + vibeAvailable);
 
-  const issueById = new Map<string, ParsedIssueMetadata>(allIssues.map((i) => [i.id, i]));
-  const inProgressIssues = allIssues.filter((i) => i.status === "in_progress");
+  const blockedMap = conflictResult.blockedByMap;
 
-  // Candidate pool: unassigned backlog / todo tasks
-  const candidatePool = allIssues.filter(
-    (i) => (i.status === "backlog" || i.status === "todo") && !i.assigneeAgentId
-  );
-
+  // Active in-progress files/symbols/remote PR files that cannot be touched
   const activeLockedFiles = new Set<string>(options.extraLockedFiles || []);
   const activeLockedSymbols = new Set<string>();
-  for (const running of inProgressIssues) {
-    if (running.isNonInterfering) continue;
-    running.targetFiles.forEach((f) => activeLockedFiles.add(f));
-    running.targetSymbols.forEach((s) => activeLockedSymbols.add(s));
+
+  for (const issue of allIssues) {
+    if (issue.status === "in_progress" || issue.status === "in_review") {
+      issue.targetFiles.forEach((f) => activeLockedFiles.add(f));
+      issue.targetSymbols.forEach((s) => activeLockedSymbols.add(s));
+    }
   }
 
-  // Filter candidates whose DAG blockers are not yet terminal (done or cancelled)
-  const unblockedCandidates = candidatePool.filter((candidate) => {
-    const blockers = conflictResult.blockedByMap.get(candidate.id) || [];
+  const unblockedCandidates = allIssues.filter((candidate) => {
+    if (candidate.status !== "todo" && candidate.status !== "backlog") {
+      return false;
+    }
+
+    if (candidate.openQuestions) {
+      return false;
+    }
+
+    const blockers = blockedMap.get(candidate.id) || [];
     for (const blockerId of blockers) {
-      const blocker = issueById.get(blockerId);
+      const blocker = allIssues.find((i) => i.id === blockerId);
       if (blocker && blocker.status !== "done" && blocker.status !== "cancelled") {
         return false;
       }
     }
 
     if (!candidate.isNonInterfering) {
-      for (const file of candidate.targetFiles) {
-        if (activeLockedFiles.has(file)) return false;
-      }
+      // Check method/symbol locks first
       for (const sym of candidate.targetSymbols) {
         if (activeLockedSymbols.has(sym)) return false;
+      }
+      // Check file locks if not fine-grained method targets
+      if (candidate.targetSymbols.length === 0) {
+        for (const file of candidate.targetFiles) {
+          if (activeLockedFiles.has(file)) return false;
+        }
       }
     }
 
@@ -205,11 +226,17 @@ export function selectNextTasksMultiLane(
     let collidesWithSelected = false;
     if (!candidate.isNonInterfering) {
       for (const sel of selections) {
-        const sharedFiles = candidate.targetFiles.filter((f) => sel.issue.targetFiles.includes(f));
         const sharedSymbols = candidate.targetSymbols.filter((s) => sel.issue.targetSymbols.includes(s));
-        if (sharedFiles.length > 0 || sharedSymbols.length > 0) {
+        if (sharedSymbols.length > 0) {
           collidesWithSelected = true;
           break;
+        }
+        if (candidate.targetSymbols.length === 0 || sel.issue.targetSymbols.length === 0) {
+          const sharedFiles = candidate.targetFiles.filter((f) => sel.issue.targetFiles.includes(f));
+          if (sharedFiles.length > 0) {
+            collidesWithSelected = true;
+            break;
+          }
         }
       }
     }
@@ -248,7 +275,7 @@ export function selectNextTasksMultiLane(
         Object.freeze({
           issue: candidate,
           targetAgentId: options.vibeAgentId,
-          reason: "Routed to Vibe fallback lane",
+          reason: "Routed to secondary Vibe lane (Jules full)",
         })
       );
       vibeAvailable--;
@@ -260,21 +287,4 @@ export function selectNextTasksMultiLane(
   return Object.freeze(selections);
 }
 
-export function selectNextTasks(
-  allIssues: readonly ParsedIssueMetadata[],
-  conflictResult: ConflictMatrixResult,
-  options: {
-    readonly maxToSelect?: number | undefined;
-    readonly preferredWorkerAgentId?: string | undefined;
-    readonly allowedWorkerAgentIds?: readonly string[] | undefined;
-    readonly runningCount?: number | undefined;
-    readonly maxConcurrent?: number | undefined;
-  } = {}
-): readonly CandidateSelection[] {
-  return selectNextTasksMultiLane(allIssues, conflictResult, {
-    julesAgentId: options.preferredWorkerAgentId,
-    julesCapacity: options.maxConcurrent ?? 1,
-    julesRunningCount: options.runningCount ?? 0,
-    maxToSelect: options.maxToSelect ?? 1,
-  });
-}
+export const selectNextTasks = selectNextTasksMultiLane;

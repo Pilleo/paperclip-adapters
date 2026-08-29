@@ -10,6 +10,7 @@ import { archiveResolvedBacklogFiles } from "../core/backlog-archiver.js";
 import { selectClarificationCandidates } from "../core/clarifier.js";
 import { ParsedIssueMetadata } from "../core/types.js";
 import { evaluateTaskStartApproval, PaperclipApprovalSummary } from "../core/approvals.js";
+import { formatOrchestratorDashboardCard } from "../core/telemetry-card.js";
 
 export interface OrchestratorAdapterConfig {
   readonly maxConcurrentJules?: number | undefined;
@@ -430,7 +431,27 @@ export async function execute(context: AdapterExecutionContext): Promise<Adapter
   }
 
   const elapsed = Date.now() - t0;
-  const summary = `Reconciled with remote (${mergedAutoCompleted} merged PRs completed, ${archiveResult.archivedCount} files archived), dispatched ${dispatchedCount} tasks in ${elapsed}ms.`;
+  const summary = `Reconciled with remote (${mergedAutoCompleted} merged PRs completed, ${archiveResult.archivedCount} files archived), requested ${approvalsRequestedCount} approvals (${awaitingApprovalCount} pending), dispatched ${dispatchedCount} tasks in ${elapsed}ms.`;
+  
+  const dashboardCard = formatOrchestratorDashboardCard({
+    companyId,
+    totalIssues: parsedIssues.length,
+    inProgressCount: inProgressIssues.length,
+    inReviewCount: inReviewIssues.length,
+    resolvedCount: parsedIssues.filter((i) => i.status === "done" || i.status === "resolved").length,
+    todoCount: parsedIssues.filter((i) => i.status === "todo" || i.status === "backlog").length,
+    julesQuota,
+    julesRunning,
+    julesCapacity,
+    vibeRunning,
+    vibeCapacity,
+    ghStatus,
+    conflictResult,
+    approvalsPendingCount: awaitingApprovalCount + approvalsRequestedCount,
+    elapsedMs: elapsed,
+  });
+
+  await log(`\n${dashboardCard}\n`);
   await log(`[ORCHESTRATOR] ✅ ${summary}`);
 
   return {

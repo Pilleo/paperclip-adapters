@@ -134,3 +134,79 @@ describe("Multi-Lane Concurrency & Jules Quota Selection", () => {
     expect(selections.every((s) => s.targetAgentId === "agent-jules")).toBe(true);
   });
 });
+
+describe("Method-level granularity conflict evaluation", () => {
+  it("allows concurrent scheduling for disjoint method targets in the same file", () => {
+    const taskA: ParsedIssueMetadata = {
+      id: "task-a",
+      title: "Add ARM64 downcall",
+      status: "todo",
+      priority: "high",
+      priorityRank: 3,
+      dependencies: [],
+      targetFiles: ["enforcer/src/BpfFilter.kt"],
+      targetModules: [":enforcer"],
+      targetSymbols: ["BpfFilter#compileArm64"],
+      hasSideEffects: false,
+      isNonInterfering: false,
+      rawIssue: {},
+    };
+
+    const taskB: ParsedIssueMetadata = {
+      id: "task-b",
+      title: "Add X86 downcall",
+      status: "todo",
+      priority: "high",
+      priorityRank: 3,
+      dependencies: [],
+      targetFiles: ["enforcer/src/BpfFilter.kt"],
+      targetModules: [":enforcer"],
+      targetSymbols: ["BpfFilter#compileX86_64"],
+      hasSideEffects: false,
+      isNonInterfering: false,
+      rawIssue: {},
+    };
+
+    const matrix = calculateConflictMatrix([taskA, taskB]);
+    expect(matrix.conflictEdges).toHaveLength(0);
+
+    const selected = selectNextTasks([taskA, taskB], matrix, { julesCapacity: 2 });
+    expect(selected).toHaveLength(2);
+  });
+
+  it("blocks concurrent scheduling if method targets overlap", () => {
+    const taskA: ParsedIssueMetadata = {
+      id: "task-a",
+      title: "Refactor compile",
+      status: "in_progress",
+      priority: "high",
+      priorityRank: 3,
+      dependencies: [],
+      targetFiles: ["enforcer/src/BpfFilter.kt"],
+      targetModules: [":enforcer"],
+      targetSymbols: ["BpfFilter#compile"],
+      hasSideEffects: false,
+      isNonInterfering: false,
+      rawIssue: {},
+    };
+
+    const taskB: ParsedIssueMetadata = {
+      id: "task-b",
+      title: "Optimize compile",
+      status: "todo",
+      priority: "high",
+      priorityRank: 3,
+      dependencies: [],
+      targetFiles: ["enforcer/src/BpfFilter.kt"],
+      targetModules: [":enforcer"],
+      targetSymbols: ["BpfFilter#compile"],
+      hasSideEffects: false,
+      isNonInterfering: false,
+      rawIssue: {},
+    };
+
+    const matrix = calculateConflictMatrix([taskA, taskB]);
+    expect(matrix.conflictEdges).toHaveLength(1);
+    expect(matrix.conflictEdges[0]?.reason).toContain("Shared method/symbol targets");
+  });
+});

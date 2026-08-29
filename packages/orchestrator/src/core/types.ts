@@ -29,6 +29,7 @@ export interface ParsedIssueMetadata {
   readonly hasSideEffects: boolean;
   readonly component?: string | null | undefined;
   readonly isNonInterfering: boolean;
+  readonly openQuestions?: boolean | undefined;
   readonly assigneeAgentId?: string | null | undefined;
   readonly rawIssue: Readonly<Record<string, unknown>>;
 }
