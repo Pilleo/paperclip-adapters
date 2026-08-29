@@ -1,0 +1,72 @@
+{
+  "name": "@pilleo/paperclip-jules-adapter",
+  "version": "0.1.0",
+  "description": "Google Jules adapter for Paperclip",
+  "license": "MIT",
+  "type": "module",
+  "private": false,
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js"
+    },
+    "./ui": {
+      "types": "./dist/ui/index.d.ts",
+      "import": "./dist/ui/index.js"
+    },
+    "./cli": {
+      "types": "./dist/cli/index.d.ts",
+      "import": "./dist/cli/index.js"
+    },
+    "./ui-parser": "./ui-parser.cjs"
+  },
+  "peerDependencies": {
+    "@paperclipai/adapter-utils": "2026.722.0"
+  },
+  "devDependencies": {
+    "@paperclipai/adapter-utils": "2026.722.0",
+    "@types/node": "22.0.0",
+    "@vitest/coverage-v8": "^3.0.0",
+    "typescript": "5.7.3",
+    "vitest": "^3.0.0",
+    "zod": "^3.24.0"
+  },
+  "dependencies": {
+    "zod": "^3.24.0",
+    "picocolors": "^1.1.1"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc",
+    "test": "vitest run --coverage",
+    "prepack": "npm run clean && npm run build"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Pilleo/paperclip-jules-adapter.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Pilleo/paperclip-jules-adapter/issues"
+  },
+  "paperclip": {
+    "adapterUiParser": "1.0.0"
+  }
+}

@@ -1,0 +1,355 @@
+import { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { extractIssueMetadata } from "../core/parser.js";
+import { calculateConflictMatrix, selectNextTasksMultiLane } from "../core/dispatcher.js";
+import { fetchJulesQuota } from "../core/jules-quota.js";
+import { checkWorkspaceConsistency } from "../core/consistency.js";
+import { fetchGitHubPullRequests, matchPrToIssue } from "../core/github-sync.js";
+import { evaluateIssueTransition } from "../core/state-machine.js";
+import { syncBacklogMarkdownToPaperclip } from "../core/backlog-sync.js";
+import { archiveResolvedBacklogFiles } from "../core/backlog-archiver.js";
+import { selectClarificationCandidates } from "../core/clarifier.js";
+import { ParsedIssueMetadata } from "../core/types.js";
+
+export interface OrchestratorAdapterConfig {
+  readonly maxConcurrentJules?: number | undefined;
+  readonly maxConcurrentVibe?: number | undefined;
+  readonly julesAgentId?: string | undefined;
+  readonly vibeAgentId?: string | undefined;
+  readonly reviewerAgentId?: string | undefined;
+  readonly workspacePath?: string | undefined;
+  readonly apiUrl?: string | undefined;
+}
+
+export async function execute(context: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const t0 = Date.now();
+  const rawContext = context.context as Record<string, unknown> | undefined;
+  const companyId = (context.agent?.companyId || (rawContext ? (rawContext["companyId"] as string) : "") || "") as string;
+  const config = (context.config || {}) as OrchestratorAdapterConfig;
+  const envMap = process.env;
+  const apiUrl = config.apiUrl || envMap["PAPERCLIP_API_URL"] || "http://127.0.0.1:3100";
+  const workspacePath = config.workspacePath || "/home/leanid/Documents/code/java/jseccomp";
+
+  const log = async (msg: string) => {
+    console.log(msg);
+    if (context.onLog) {
+      await context.onLog("stdout", msg + "\n").catch(() => {});
+    }
+  };
+
+  await log(`[ORCHESTRATOR] Starting deterministic scheduling tick for company ${companyId}...`);
+
+  // 1. Resolve Worker (Jules & Vibe) and Reviewer agents
+  let julesAgentId = config.julesAgentId;
+  let vibeAgentId = config.vibeAgentId;
+  let reviewerAgentId = config.reviewerAgentId;
+
+  try {
+    const agentsRes = await fetch(`${apiUrl}/api/companies/${companyId}/agents`);
+    if (agentsRes.ok) {
+      const agents = (await agentsRes.json()) as Array<{ id: string; name: string; adapterType: string }>;
+
+      if (!julesAgentId) {
+        const jules = agents.find(
+          (a) =>
+            a.adapterType === "jules" ||
+            a.name.toLowerCase().includes("jules") ||
+            a.name.toLowerCase().includes("async")
+        );
+        if (jules) {
+          julesAgentId = jules.id;
+          await log(`[ORCHESTRATOR] Primary Jules agent: ${jules.name} (${jules.id})`);
+        }
+      }
+
+      if (!vibeAgentId) {
+        const vibe = agents.find((a) => a.adapterType === "vibe" || a.name.toLowerCase().includes("vibe"));
+        if (vibe) {
+          vibeAgentId = vibe.id;
+          await log(`[ORCHESTRATOR] Specialized Vibe agent: ${vibe.name} (${vibe.id})`);
+        }
+      }
+
+      if (!reviewerAgentId) {
+        const securityEngineer = agents.find((a) => a.name.includes("Founding Systems") || a.name.includes("Security"));
+        const claudeSummarizer = agents.find(
+          (a) => a.adapterType === "claude_local" || a.adapterType === "codex_local"
+        );
+        const selectedReviewer = securityEngineer || claudeSummarizer;
+        if (selectedReviewer) {
+          reviewerAgentId = selectedReviewer.id;
+          await log(`[ORCHESTRATOR] Reviewer agent: ${selectedReviewer.name} (${selectedReviewer.id})`);
+        }
+      }
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await log(`[ORCHESTRATOR] Warning: Failed to fetch agents list: ${msg}`);
+  }
+
+  // 2. Read-only Workspace consistency verification
+  const wsConsistency = await checkWorkspaceConsistency(workspacePath);
+  if (wsConsistency.warning) {
+    await log(`[ORCHESTRATOR] ℹ️ Workspace note: ${wsConsistency.warning}`);
+  }
+
+  // 3. Two-Way Markdown Ingestion
+  const syncSummary = await syncBacklogMarkdownToPaperclip({
+    workspacePath,
+    companyId,
+    apiUrl,
+  });
+  if (syncSummary.createdCount > 0 || syncSummary.syncedHeadersCount > 0) {
+    await log(
+      `[ORCHESTRATOR] 📥 Backlog Sync: created=${syncSummary.createdCount}, headers_synced=${syncSummary.syncedHeadersCount}`
+    );
+  }
+
+  // 4. Verify remote GitHub state
+  const ghStatus = await fetchGitHubPullRequests(workspacePath, 50);
+  if (ghStatus.openPrs.length > 0 || ghStatus.mergedPrs.length > 0) {
+    await log(
+      `[ORCHESTRATOR] 🌐 Remote Verification: open_prs=${ghStatus.openPrs.length}, merged_prs=${ghStatus.mergedPrs.length}, active_pr_files_locked=${ghStatus.openPrFiles.size}`
+    );
+  }
+
+  // 5. Fetch live Jules quota
+  const configEnv = context.config ? (context.config["env"] as Record<string, unknown> | undefined) : undefined;
+  const julesApiKey =
+    (configEnv ? (configEnv["JULES_API_KEY"] as string | undefined) : undefined) ||
+    (context.config ? (context.config["julesApiKey"] as string | undefined) : undefined) ||
+    envMap["JULES_API_KEY"];
+
+  const julesQuota = await fetchJulesQuota(julesApiKey);
+  if (julesQuota.fetchedLive) {
+    await log(
+      `[ORCHESTRATOR] Live Jules Quota: active_sessions=${julesQuota.activeSessionsCount}/${julesQuota.maxConcurrent}, last_24h=${julesQuota.sessionsLast24hCount}/${julesQuota.maxDaily}, available_slots=${julesQuota.effectiveAvailableCapacity}`
+    );
+  }
+
+  // 6. Fetch all company issues
+  let issuesList: any[] = [];
+  try {
+    const issuesRes = await fetch(`${apiUrl}/api/companies/${companyId}/issues?limit=1000`);
+    if (!issuesRes.ok) {
+      throw new Error(`Failed to fetch issues: HTTP ${issuesRes.status}`);
+    }
+    issuesList = (await issuesRes.json()) as any[];
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const errMsg = `Failed to fetch issues: ${msg}`;
+    await log(`[ORCHESTRATOR] Error: ${errMsg}`);
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: errMsg,
+      summary: errMsg,
+    };
+  }
+
+  const parsedIssues: ParsedIssueMetadata[] = issuesList.map(extractIssueMetadata);
+
+  // 7. PHASE 1: Reconcile board status with merged GitHub PRs & Archive files
+  let mergedAutoCompleted = 0;
+  for (const issue of parsedIssues) {
+    if (issue.status !== "done" && issue.status !== "cancelled") {
+      const mergedPr = ghStatus.mergedPrs.find((pr) => matchPrToIssue(pr, issue));
+      if (mergedPr) {
+        const transition = evaluateIssueTransition(issue.status, issue.assigneeAgentId, {
+          type: "APPROVE_AND_MERGE",
+          prNumber: mergedPr.number,
+        });
+
+        if (transition.isAllowed) {
+          await log(
+            `[ORCHESTRATOR] 🎯 Reconciling [${issue.identifier || issue.id}] "${issue.title}" (${transition.reason})`
+          );
+          try {
+            await fetch(`${apiUrl}/api/issues/${issue.id}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ status: transition.toStatus }),
+            });
+            (issue as any).status = transition.toStatus;
+            mergedAutoCompleted++;
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            await log(`[ORCHESTRATOR] Warning: Failed to transition merged issue: ${msg}`);
+          }
+        }
+      }
+    }
+  }
+
+  const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
+  if (archiveResult.archivedCount > 0) {
+    await log(`[ORCHESTRATOR] 📦 Archived ${archiveResult.archivedCount} completed tasks to docs/internals/backlog/resolved/`);
+  }
+
+  const inProgressIssues = parsedIssues.filter((i) => i.status === "in_progress");
+  const inReviewIssues = parsedIssues.filter((i) => i.status === "in_review");
+  const conflictResult = calculateConflictMatrix(parsedIssues);
+
+  const julesRunning = inProgressIssues.filter((i) => i.assigneeAgentId === julesAgentId).length;
+  const vibeRunning = inProgressIssues.filter((i) => i.assigneeAgentId === vibeAgentId).length;
+
+  const julesCapacity =
+    config.maxConcurrentJules ??
+    (julesQuota.fetchedLive ? julesQuota.effectiveAvailableCapacity + julesRunning : 15);
+  const vibeCapacity = config.maxConcurrentVibe ?? 1;
+
+  await log(
+    `[ORCHESTRATOR] Backlog: total=${parsedIssues.length}, in_review=${inReviewIssues.length} | Jules running=${julesRunning}/${julesCapacity}, Vibe running=${vibeRunning}/${vibeCapacity}, conflict_edges=${conflictResult.conflictEdges.length}`
+  );
+
+  // 8. PHASE 2: Route in_review tasks to Reviewer Agent
+  let reviewDispatchedCount = 0;
+  for (const reviewTask of inReviewIssues) {
+    if (reviewerAgentId && reviewTask.assigneeAgentId !== reviewerAgentId) {
+      await log(
+        `[ORCHESTRATOR] 📋 Routing in_review task [${reviewTask.identifier || reviewTask.id}] "${reviewTask.title}" to Reviewer Agent (${reviewerAgentId})`
+      );
+
+      try {
+        await fetch(`${apiUrl}/api/issues/${reviewTask.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ assigneeAgentId: reviewerAgentId }),
+        });
+
+        await fetch(`${apiUrl}/api/agents/${reviewerAgentId}/wakeup`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            reason: `Review requested for [${reviewTask.identifier || reviewTask.id}]`,
+            issueId: reviewTask.id,
+          }),
+        }).catch(() => {});
+
+        reviewDispatchedCount++;
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await log(`[ORCHESTRATOR] Warning: Failed to route review task: ${msg}`);
+      }
+    }
+  }
+
+  // 9. PHASE 3: Route ambiguous / open_questions tasks to Vibe Clarifier Lane
+  let clarifierDispatchedCount = 0;
+  if (vibeAgentId && vibeRunning < vibeCapacity) {
+    const clarificationCandidates = selectClarificationCandidates(parsedIssues, vibeAgentId, vibeCapacity - vibeRunning);
+    for (const cand of clarificationCandidates) {
+      await log(
+        `[ORCHESTRATOR] 💡 Routing ambiguous task [${cand.issue.identifier || cand.issue.id}] "${cand.issue.title}" to Vibe Clarification Lane`
+      );
+      try {
+        await fetch(`${apiUrl}/api/issues/${cand.issue.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            status: "in_progress",
+            assigneeAgentId: vibeAgentId,
+          }),
+        });
+        await fetch(`${apiUrl}/api/agents/${vibeAgentId}/wakeup`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            reason: `Conduct task interview, clarify open questions, and formulate implementation specification for [${cand.issue.identifier || cand.issue.id}]`,
+            issueId: cand.issue.id,
+          }),
+        }).catch(() => {});
+        clarifierDispatchedCount++;
+      } catch {}
+    }
+  }
+
+  // 10. PHASE 4: Multi-Lane Implementation Dispatching
+  const candidateSelections = selectNextTasksMultiLane(parsedIssues, conflictResult, {
+    julesAgentId,
+    vibeAgentId,
+    julesCapacity,
+    vibeCapacity,
+    julesRunningCount: julesRunning,
+    vibeRunningCount: vibeRunning,
+    maxToSelect: Math.max(1, julesCapacity - julesRunning + (vibeCapacity - vibeRunning)),
+    extraLockedFiles: ghStatus.openPrFiles,
+  });
+
+  if (candidateSelections.length === 0) {
+    const reason =
+      julesRunning >= julesCapacity && vibeRunning >= vibeCapacity
+        ? `Worker lanes at full capacity (Jules: ${julesRunning}/${julesCapacity}, Vibe: ${vibeRunning}/${vibeCapacity})`
+        : "No unblocked implementation tasks ready in backlog/todo";
+
+    await log(`[ORCHESTRATOR] Implementation dispatch: ${reason}.`);
+    const summary = `Orchestrator tick: ${mergedAutoCompleted} merged tasks reconciled, ${archiveResult.archivedCount} archived, ${reviewDispatchedCount} reviews routed, ${clarifierDispatchedCount} clarified, 0 new dev tasks dispatched (${reason}).`;
+    return {
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      summary,
+    };
+  }
+
+  let dispatchedCount = 0;
+  for (const selection of candidateSelections) {
+    const targetIssueId = selection.issue.id;
+    const targetAgentId = selection.targetAgentId;
+
+    const transition = evaluateIssueTransition(selection.issue.status, selection.issue.assigneeAgentId, {
+      type: "DISPATCH",
+      targetAgentId: targetAgentId || "",
+      reason: selection.reason,
+    });
+
+    if (!transition.isAllowed) continue;
+
+    await log(
+      `[ORCHESTRATOR] 🚀 Dispatching [${selection.issue.identifier || selection.issue.id}] "${selection.issue.title}" (Priority: ${selection.issue.priority}) -> Agent ${targetAgentId || "unassigned"} (${selection.reason})`
+    );
+
+    try {
+      const updateRes = await fetch(`${apiUrl}/api/issues/${targetIssueId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          status: transition.toStatus,
+          ...(targetAgentId ? { assigneeAgentId: targetAgentId } : {}),
+        }),
+      });
+
+      if (!updateRes.ok) {
+        const errText = await updateRes.text();
+        throw new Error(`Failed to update issue status: HTTP ${updateRes.status} ${errText}`);
+      }
+
+      if (targetAgentId) {
+        await fetch(`${apiUrl}/api/agents/${targetAgentId}/wakeup`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            reason: `Task [${selection.issue.identifier || selection.issue.id}] dispatched by Task Orchestrator`,
+            issueId: targetIssueId,
+          }),
+        }).catch(() => {});
+      }
+
+      dispatchedCount++;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await log(`[ORCHESTRATOR] ❌ Dispatch error for issue ${targetIssueId}: ${msg}`);
+    }
+  }
+
+  const elapsed = Date.now() - t0;
+  const summary = `Reconciled with remote (${mergedAutoCompleted} merged PRs completed, ${archiveResult.archivedCount} files archived), dispatched ${dispatchedCount} tasks in ${elapsed}ms.`;
+  await log(`[ORCHESTRATOR] ✅ ${summary}`);
+
+  return {
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    summary,
+  };
+}
