@@ -24,6 +24,28 @@ describe("UI Parse Stdout", () => {
     expect((res[0] as any).input).toEqual({ command: "./gradlew test" });
   });
 
+  it("maps Codanna symbol research logs to codanna_symbol_research tool call", () => {
+    const res = parseJulesStdoutLine("[jules] 🔬 Codanna Symbol Research: PureJavaBpfEngine#clearCache", "2026-08-27T10:00:00Z");
+    expect(res).toHaveLength(1);
+    expect(res[0].kind).toBe("tool_call");
+    expect((res[0] as any).name).toBe("codanna_symbol_research");
+    expect((res[0] as any).input.details).toContain("Codanna Symbol Research");
+  });
+
+  it("maps TDD reproducer logs to tdd_reproducer tool call", () => {
+    const res = parseJulesStdoutLine("[jules] 🧪 Reproducer Test written in HighConcurrencyInstallationTest.kt", "2026-08-27T10:00:00Z");
+    expect(res).toHaveLength(1);
+    expect(res[0].kind).toBe("tool_call");
+    expect((res[0] as any).name).toBe("tdd_reproducer");
+  });
+
+  it("maps invariant check notices to system entries", () => {
+    const res = parseJulesStdoutLine("[jules] 🛡️ Invariant Check: All 4 project invariants passed", "2026-08-27T10:00:00Z");
+    expect(res).toHaveLength(1);
+    expect(res[0].kind).toBe("system");
+    expect(res[0].text).toContain("Invariant Check");
+  });
+
   it("maps plain lines to assistant entries", () => {
     const res = parseJulesStdoutLine("Hello from Jules", "2026-08-27T10:00:00Z");
     expect(res).toEqual([

@@ -1,5 +1,9 @@
 import type { TranscriptEntry } from "@paperclipai/adapter-utils";
 
+/**
+ * Parses stdout from Jules cloud sessions into structured Paperclip UI transcript entries,
+ * including collapsible tool executions, thinking blocks, and TDD step accordions.
+ */
 export function parseJulesStdoutLine(line: string, ts: string): TranscriptEntry[] {
   const trimmed = line.trim();
   if (!trimmed) return [];
@@ -25,6 +29,15 @@ export function parseJulesStdoutLine(line: string, ts: string): TranscriptEntry[
           },
         ];
       }
+      if (obj.type === "step_progress") {
+        return [
+          {
+            kind: "system",
+            ts,
+            text: `[Step ${obj.stepNumber || 1}] ${obj.stepName}: ${obj.status || "RUNNING"}`,
+          },
+        ];
+      }
       if (obj.event === "api_request") {
         return [{ kind: "system", ts, text: `API ${obj.method} ${obj.route} (${obj.status})` }];
       }
@@ -33,7 +46,42 @@ export function parseJulesStdoutLine(line: string, ts: string): TranscriptEntry[
     }
   }
 
-  // 2. Command executions: [jules] $ ... or [jules] Running command: ...
+  // 2. Structured TDD Lifecycle Accordions
+  if (trimmed.startsWith("[jules] 🔬") || trimmed.includes("Codanna Symbol Research")) {
+    return [
+      {
+        kind: "tool_call",
+        ts,
+        name: "codanna_symbol_research",
+        input: { details: trimmed.replace(/^\[jules\]\s*/, "") },
+        toolUseId: `codanna-${Date.now()}`,
+      },
+    ];
+  }
+
+  if (trimmed.startsWith("[jules] 🧪") || trimmed.includes("Reproducer Test")) {
+    return [
+      {
+        kind: "tool_call",
+        ts,
+        name: "tdd_reproducer",
+        input: { details: trimmed.replace(/^\[jules\]\s*/, "") },
+        toolUseId: `tdd-${Date.now()}`,
+      },
+    ];
+  }
+
+  if (trimmed.startsWith("[jules] 🛡️") || trimmed.includes("Invariant Check")) {
+    return [
+      {
+        kind: "system",
+        ts,
+        text: trimmed,
+      },
+    ];
+  }
+
+  // 3. Command executions: [jules] $ ... or [jules] Running command: ...
   if (trimmed.startsWith("[jules]") && (trimmed.includes("$ ") || trimmed.includes("Running command:"))) {
     const cmd = trimmed.includes("$ ")
       ? trimmed.slice(trimmed.indexOf("$ ") + 2)
@@ -49,7 +97,7 @@ export function parseJulesStdoutLine(line: string, ts: string): TranscriptEntry[
     ];
   }
 
-  // 3. Test execution results / Test summary banners
+  // 4. Test execution results / Test summary banners
   if (
     trimmed.startsWith("[jules]") &&
     (trimmed.includes("Tests passed:") ||
@@ -57,10 +105,19 @@ export function parseJulesStdoutLine(line: string, ts: string): TranscriptEntry[
       trimmed.includes("Test summary:") ||
       trimmed.includes("test results:"))
   ) {
-    return [{ kind: "tool_result", ts, toolUseId: `test-${Date.now()}`, toolName: "bash", content: trimmed, isError: trimmed.includes("failed") }];
+    return [
+      {
+        kind: "tool_result",
+        ts,
+        toolUseId: `test-${Date.now()}`,
+        toolName: "bash",
+        content: trimmed,
+        isError: trimmed.includes("failed"),
+      },
+    ];
   }
 
-  // 4. Generated Plan / Progress / Agent messages / Changesets / Status updates
+  // 5. Generated Plan / Progress / Agent messages / Changesets / Status updates
   if (
     trimmed.startsWith("[jules]") &&
     (trimmed.includes("Generated Plan:") ||
@@ -73,11 +130,11 @@ export function parseJulesStdoutLine(line: string, ts: string): TranscriptEntry[
     return [{ kind: "assistant", ts, text: trimmed }];
   }
 
-  // 4. System ticks
+  // 6. System ticks
   if (trimmed.startsWith("[jules]") || trimmed.startsWith("[paperclip]")) {
     return [{ kind: "system", ts, text: trimmed }];
   }
 
-  // 5. Default text output -> assistant message
+  // 7. Default text output -> assistant message
   return [{ kind: "assistant", ts, text: line }];
 }
