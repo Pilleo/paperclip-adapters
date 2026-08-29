@@ -121,3 +121,5 @@ export function createServerAdapter(): ServerAdapterModule {
 }
 
 export default createServerAdapter;
+
+export * from "../core/qa-firewall.js";
