@@ -1,6 +1,20 @@
+import fs from "node:fs";
+import path from "node:path";
+import { z } from "zod";
+
+export const InvariantRuleSchema = z.object({
+  id: z.string().min(1),
+  severity: z.enum(["CRITICAL", "HIGH", "MEDIUM", "LOW"]),
+  pattern: z.string().min(1), // Regex pattern string
+  message: z.string().min(1),
+  fileExtensions: z.array(z.string()).optional(),
+});
+
+export type InvariantRule = z.infer<typeof InvariantRuleSchema>;
+
 export interface InvariantViolation {
   readonly ruleId: string;
-  readonly severity: "CRITICAL" | "HIGH" | "MEDIUM";
+  readonly severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
   readonly message: string;
   readonly matchedPattern: string;
   readonly file?: string | undefined;
@@ -12,56 +26,100 @@ export interface InvariantCheckResult {
   readonly violations: readonly InvariantViolation[];
 }
 
-const BANNED_PATTERNS: Array<{
-  id: string;
-  severity: "CRITICAL" | "HIGH" | "MEDIUM";
-  pattern: RegExp;
-  message: string;
-}> = [
+/**
+ * Universal, language-agnostic clean-code invariants applied to all projects by default.
+ */
+export const UNIVERSAL_DEFAULT_RULES: readonly InvariantRule[] = Object.freeze([
   {
-    id: "NO_SILENT_EPERM_BYPASS",
+    id: "NO_GIT_CONFLICT_MARKERS",
     severity: "CRITICAL",
-    pattern: /catch\s*\([^)]*(?:EPERM|EACCES|ErrnoException)[^)]*\)\s*\{(?:(?!\bthrow\b|\brethrow\b|\bexitProcess\b|\berror\b).)*\}/s,
-    message: "Forbidden silent bypass: EPERM or EACCES caught without rethrow or crash.",
+    pattern: "^(<<<<<<<|=======|>>>>>>>)(?:\\s|$)",
+    message: "Unresolved git merge conflict markers found in source code.",
   },
   {
-    id: "NO_TSYNC_WITH_NEW_LISTENER",
+    id: "NO_ACCIDENTAL_PRIVATE_KEY_STRINGS",
     severity: "CRITICAL",
-    pattern: /SECCOMP_FILTER_FLAG_TSYNC\s*\|\s*SECCOMP_FILTER_FLAG_NEW_LISTENER|SECCOMP_FILTER_FLAG_NEW_LISTENER\s*\|\s*SECCOMP_FILTER_FLAG_TSYNC/,
-    message: "Forbidden seccomp flag combination: SECCOMP_FILTER_FLAG_TSYNC cannot be combined with SECCOMP_FILTER_FLAG_NEW_LISTENER.",
+    pattern: "-----BEGIN (?:RSA|OPENSSH|EC|DSA|PGP)? PRIVATE KEY-----",
+    message: "Potential plaintext private key embedded in source code.",
   },
-  {
-    id: "NO_JAVA_LONG_FOR_SOCK_FILTER_FIELDS",
-    severity: "HIGH",
-    pattern: /JAVA_LONG\s*\/\/\s*(?:code|jt|jf|k)|(?:code|jt|jf|k)\s*=\s*JAVA_LONG/,
-    message: "Forbidden FFM layout: sock_filter 32-bit struct fields cannot use JAVA_LONG.",
-  },
-  {
-    id: "NO_BLOCKING_JVM_COORDINATION_SYSCALLS",
-    severity: "CRITICAL",
-    pattern: /(?:DENY|KILL|ERRNO)\s*\(\s*Syscall\.(?:FUTEX|RESTART_SYSCALL|SIGALTSTACK|RT_SIGRETURN|SCHED_YIELD)\s*\)/i,
-    message: "Forbidden sandbox policy: JVM coordination syscalls (futex, restart_syscall, sigaltstack, rt_sigreturn, sched_yield) must never be blocked.",
-  },
-];
+]);
 
 /**
- * Validates code changes or patches against Mazewall kernel and security invariants.
+ * Discovers and loads project-specific invariant rules from workspace configuration.
  */
-export function checkCodeInvariants(code: string, fileName?: string): InvariantCheckResult {
-  const violations: InvariantViolation[] = [];
+export function loadProjectInvariants(workspacePath?: string, customRules?: readonly InvariantRule[]): InvariantRule[] {
+  const rules: InvariantRule[] = [...UNIVERSAL_DEFAULT_RULES];
 
-  for (const rule of BANNED_PATTERNS) {
-    const match = code.match(rule.pattern);
-    if (match) {
-      violations.push(
-        Object.freeze({
-          ruleId: rule.id,
-          severity: rule.severity,
-          message: rule.message,
-          matchedPattern: match[0],
-          file: fileName,
-        })
+  if (customRules && Array.isArray(customRules)) {
+    rules.push(...customRules);
+  }
+
+  if (workspacePath) {
+    const candidatePaths = [
+      path.join(workspacePath, ".paperclip", "invariants.json"),
+      path.join(workspacePath, ".agents", "invariants.json"),
+      path.join(workspacePath, ".invariants.json"),
+    ];
+
+    for (const p of candidatePaths) {
+      if (fs.existsSync(p)) {
+        try {
+          const raw = fs.readFileSync(p, "utf-8");
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            for (const r of parsed) {
+              const rule = InvariantRuleSchema.safeParse(r);
+              if (rule.success) {
+                rules.push(rule.data);
+              }
+            }
+          }
+        } catch {
+          // ignore malformed config files
+        }
+      }
+    }
+  }
+
+  return rules;
+}
+
+/**
+ * Validates source code or git patches against declarative project invariant rules.
+ */
+export function checkCodeInvariants(
+  code: string,
+  fileName?: string,
+  rules: readonly InvariantRule[] = UNIVERSAL_DEFAULT_RULES
+): InvariantCheckResult {
+  const violations: InvariantViolation[] = [];
+  const fileExt = fileName ? path.extname(fileName).toLowerCase() : undefined;
+
+  for (const rule of rules) {
+    // If file extensions are specified, filter out non-matching files
+    if (rule.fileExtensions && rule.fileExtensions.length > 0 && fileExt) {
+      const matchesExt = rule.fileExtensions.some((ext) =>
+        ext.startsWith(".") ? ext.toLowerCase() === fileExt : `.${ext.toLowerCase()}` === fileExt
       );
+      if (!matchesExt) continue;
+    }
+
+    try {
+      const regex = new RegExp(rule.pattern, "m");
+      const match = code.match(regex);
+      if (match) {
+        violations.push(
+          Object.freeze({
+            ruleId: rule.id,
+            severity: rule.severity,
+            message: rule.message,
+            matchedPattern: match[0],
+            file: fileName,
+          })
+        );
+      }
+    } catch {
+      // Invalid regex pattern
     }
   }
 

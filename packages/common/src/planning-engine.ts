@@ -34,7 +34,7 @@ export function extractTestSuitesFromCodannaOutput(output: string): string[] {
     }
     if (inCalledBySection) {
       // Match patterns like: at ./enforcer/src/test/kotlin/.../SomeTest.kt:35
-      const match = line.match(/at\s+\.?\/?([^\s:]+(?:Test|Spec)\.(?:kt|java|ts|scala)):/i);
+      const match = line.match(/(?:at|in)\s+\.?\/?([^\s:]*(?:test|spec|tests)[^\s:]*\.(?:kt|java|ts|tsx|js|jsx|rs|go|py|scala|rb|cs)):/i);
       if (match && match[1]) {
         const normalized = match[1].replace(/^\.\//, "");
         testFiles.add(normalized);

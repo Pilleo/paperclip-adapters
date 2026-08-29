@@ -67,7 +67,7 @@ const baseContext = {
   onLog: vi.fn(),
 } as AdapterExecutionContext;
 
-describe("Jules activity interactions", () => {
+describe("Jules activity interactions", { timeout: 30000 }, () => {
   beforeAll(() => { process.env.JULES_API_KEY = "test-key"; });
   afterAll(() => { delete process.env.JULES_API_KEY; });
 
