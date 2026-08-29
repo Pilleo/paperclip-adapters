@@ -12,6 +12,8 @@ import { ParsedIssueMetadata } from "../core/types.js";
 import { evaluateTaskStartApproval, PaperclipApprovalSummary } from "../core/approvals.js";
 import { formatOrchestratorDashboardCard } from "../core/telemetry-card.js";
 import { identifyStalledIssues } from "../core/stalled-session-reaper.js";
+import { synthesizeTokenFriendlyReviewPrompt } from "../core/review-synthesizer.js";
+import { identifyMergedBranches } from "../core/branch-pruner.js";
 
 export interface OrchestratorAdapterConfig {
   readonly maxConcurrentJules?: number | undefined;
@@ -258,17 +260,31 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
       );
 
       try {
+        const matchingPr = ghStatus.openPrs.find((pr) => matchPrToIssue(pr, reviewTask));
+        const reviewPrompt = synthesizeTokenFriendlyReviewPrompt({
+          issue: reviewTask,
+          prUrl: matchingPr?.url,
+          prNumber: matchingPr?.number,
+          branchName: matchingPr?.headRefName,
+        });
+
         await fetch(`${apiUrl}/api/issues/${reviewTask.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ assigneeAgentId: reviewerAgentId }),
         });
 
+        await fetch(`${apiUrl}/api/issues/${reviewTask.id}/comments`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ body: reviewPrompt }),
+        }).catch(() => {});
+
         await fetch(`${apiUrl}/api/agents/${reviewerAgentId}/wakeup`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            reason: `Review requested for [${reviewTask.identifier || reviewTask.id}]`,
+            reason: `Token-efficient review requested for [${reviewTask.identifier || reviewTask.id}]`,
             issueId: reviewTask.id,
           }),
         }).catch(() => {});
