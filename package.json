@@ -11,7 +11,8 @@
     "test": "npm run test --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
     "typecheck": "tsc -b --dry",
-    "test:e2e": "tsx packages/orchestrator/scripts/e2e-paperclip-lifecycle.ts"
+    "test:e2e": "tsx packages/orchestrator/scripts/e2e-paperclip-lifecycle.ts",
+    "release:pack": "tsx scripts/package-release.ts"
   },
   "devDependencies": {
     "@types/node": "22.0.0",
