@@ -19,12 +19,11 @@ describe("Paperclip Plugin Manifest", () => {
     expect(manifest.capabilities).toContain("secrets.read-ref");
   });
 
-  it("omits sensitive botToken from instanceConfigSchema in favor of Secret Vault", () => {
+  it("exposes clean non-secret config focusing on defaultChatId", () => {
     const props = manifest.instanceConfigSchema.properties as Record<string, any>;
     expect(props["botToken"]).toBeUndefined();
-    expect(props["allowedUserIds"]).toBeDefined();
+    expect(props["allowedUserIds"]).toBeUndefined();
     expect(props["defaultChatId"]).toBeDefined();
-    expect(manifest.instanceConfigSchema.required).toContain("allowedUserIds");
-    expect(manifest.instanceConfigSchema.required).not.toContain("botToken");
+    expect(manifest.instanceConfigSchema.required).toContain("defaultChatId");
   });
 });

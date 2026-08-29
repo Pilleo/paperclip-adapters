@@ -24,15 +24,10 @@ export const manifest = {
   instanceConfigSchema: {
     type: "object",
     properties: {
-      allowedUserIds: {
-        type: "string",
-        title: "Allowed Operator User IDs",
-        description: "Comma-separated list of authorized Telegram user IDs (e.g. 123456789)",
-      },
       defaultChatId: {
         type: "string",
-        title: "Default Chat / Channel ID",
-        description: "Telegram chat or channel ID where notifications will be posted",
+        title: "Telegram Chat / Channel ID",
+        description: "Target chat or channel ID where notifications & approval cards are posted",
       },
       pollIntervalMs: {
         type: "number",
@@ -41,7 +36,7 @@ export const manifest = {
         default: 3000,
       },
     },
-    required: ["allowedUserIds"],
+    required: ["defaultChatId"],
   },
 };
 
