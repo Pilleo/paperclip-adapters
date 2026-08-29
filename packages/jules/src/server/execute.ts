@@ -25,6 +25,7 @@ import { formatCardPrompt, formatCardSummary } from "./card-prompt.js";
 import { getPullRequestCiStatus, getPullRequestDetails } from "./ci-status.js";
 import { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { AdapterConfig, validateConfig, requireJulesApiKey, discoverLocalGitRepository, discoverLocalGitDefaultBranch } from "./config.js";
+import { isGhCliAuthenticated, createRemoteGitHubRepo } from "./git-remote-creator.js";
 import { JulesAdapterSessionV1, sessionCodec, serializeSession } from "./session.js";
 import { JulesActivity, JulesClient, JulesClientError, extractPullRequestUrl } from "./jules-client.js";
 import { buildPrompt, hashPromptIdentity, PROMPT_IDENTITY_HASH_VERSION } from "./prompt-builder.js";
@@ -381,7 +382,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           if (!workspaceCwd) workspaceCwd = pCwd;
           if (!workspaceRepositoryUrl) {
             const discoveredRepo = discoverLocalGitRepository(pCwd);
-            if (discoveredRepo) workspaceRepositoryUrl = discoveredRepo;
+            if (discoveredRepo) {
+              workspaceRepositoryUrl = discoveredRepo;
+            } else if (isGhCliAuthenticated(pCwd) && ((ctx.agent.adapterConfig as Record<string, unknown> | undefined)?.["autoCreateRemote"] === true || (rawContext && (rawContext as any)["approvedRemoteCreation"] === true))) {
+              if (ctx.onLog) await ctx.onLog("stdout", `[jules] Creating GitHub remote repository for local workspace via gh CLI...\n`);
+              const creationResult = createRemoteGitHubRepo({ cwd: pCwd });
+              if (creationResult.success && creationResult.repository) {
+                workspaceRepositoryUrl = creationResult.repoUrl || `https://github.com/${creationResult.repository}`;
+                if (ctx.onLog) await ctx.onLog("stdout", `[jules] Created and pushed to GitHub repository: ${creationResult.repository}\n`);
+              }
+            }
           }
           if (!workspaceDefaultBranch) {
             const discoveredBranch = discoverLocalGitDefaultBranch(pCwd);
