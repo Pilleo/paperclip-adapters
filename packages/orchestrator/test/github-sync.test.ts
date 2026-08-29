@@ -48,6 +48,60 @@ describe("GitHub PR Sync Module", () => {
     expect(matchPrToIssue(pr, issue)).toBe(true);
   });
 
+  describe.each([
+    {
+      name: "prevents false positive substring collision on issueNumber (issue-2 vs issue-2026...)",
+      prTitle: "fix(core): resolve issue-20260826-102701 branch sync",
+      issueNumber: 2,
+      identifier: "MAZ-2",
+      expectedMatch: false,
+    },
+    {
+      name: "prevents false positive substring collision on identifier (MAZ-2 vs MAZ-20)",
+      prTitle: "feat(enforcer): MAZ-20 adds BPF linear scan",
+      issueNumber: 2,
+      identifier: "MAZ-2",
+      expectedMatch: false,
+    },
+    {
+      name: "accurately matches exact word boundary identifier (MAZ-2 in title)",
+      prTitle: "feat(enforcer): [MAZ-2] adds BPF linear scan",
+      issueNumber: 2,
+      identifier: "MAZ-2",
+      expectedMatch: true,
+    },
+    {
+      name: "accurately matches exact word boundary issueNumber (issue-2 in title)",
+      prTitle: "feat(enforcer): resolve issue-2 regression",
+      issueNumber: 2,
+      identifier: "MAZ-2",
+      expectedMatch: true,
+    },
+  ])("PR Collision Matrix: $name", ({ prTitle, issueNumber, identifier, expectedMatch }) => {
+    it(`evaluates matchPrToIssue accurately (${expectedMatch})`, () => {
+      const pr: GitHubPullRequest = {
+        number: 99,
+        title: prTitle,
+        state: "OPEN",
+        headRefName: "feature-branch",
+        baseRefName: "master",
+        mergedAt: null,
+        url: "https://github.com/org/repo/pull/99",
+        files: [],
+      };
+
+      const issue = extractIssueMetadata({
+        id: "target-issue-uuid",
+        issueNumber,
+        identifier,
+        title: "Test Task",
+        status: "todo",
+      });
+
+      expect(matchPrToIssue(pr, issue)).toBe(expectedMatch);
+    });
+  });
+
   it("partitions raw PRs and extracts open PR modified files", () => {
     const rawList = [
       {
@@ -58,7 +112,7 @@ describe("GitHub PR Sync Module", () => {
         baseRefName: "master",
         mergedAt: null,
         url: "https://github.com/org/repo/pull/1",
-        files: ["src/A.kt", "src/B.kt"],
+        files: [{ path: "file1.ts" }, "file2.ts"],
       },
       {
         number: 2,
@@ -66,17 +120,17 @@ describe("GitHub PR Sync Module", () => {
         state: "MERGED",
         headRefName: "feat-2",
         baseRefName: "master",
-        mergedAt: "2026-08-28T00:00:00Z",
+        mergedAt: "2026-08-25T10:00:00Z",
         url: "https://github.com/org/repo/pull/2",
-        files: ["src/C.kt"],
+        files: ["file3.ts"],
       },
     ];
 
     const result = processRawPullRequests(rawList);
     expect(result.openPrs.length).toBe(1);
     expect(result.mergedPrs.length).toBe(1);
-    expect(result.openPrFiles.has("src/A.kt")).toBe(true);
-    expect(result.openPrFiles.has("src/B.kt")).toBe(true);
-    expect(result.openPrFiles.has("src/C.kt")).toBe(false);
+    expect(result.openPrFiles.has("file1.ts")).toBe(true);
+    expect(result.openPrFiles.has("file2.ts")).toBe(true);
+    expect(result.openPrFiles.has("file3.ts")).toBe(false);
   });
 });
