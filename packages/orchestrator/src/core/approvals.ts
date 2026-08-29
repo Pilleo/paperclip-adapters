@@ -12,7 +12,14 @@ export interface PaperclipApprovalSummary {
 
 export type ApprovalDecision =
   | { action: "DISPATCH"; reason: string }
-  | { action: "CREATE_APPROVAL_REQUEST"; title: string; description: string; issueId: string; targetAgentId: string }
+  | {
+      action: "CREATE_APPROVAL_REQUEST";
+      title: string;
+      description: string;
+      issueId: string;
+      targetAgentId: string;
+      issueUrl?: string | undefined;
+    }
   | { action: "AWAIT_APPROVAL"; approvalId: string; reason: string }
   | { action: "SKIP_REJECTED"; approvalId: string; reason: string };
 
@@ -20,7 +27,8 @@ export function evaluateTaskStartApproval(
   issue: ParsedIssueMetadata,
   targetAgentId: string,
   existingApprovals: readonly PaperclipApprovalSummary[],
-  requireApproval: boolean = true
+  requireApproval: boolean = true,
+  options: { companyUrlKey?: string; apiUrl?: string } = {}
 ): ApprovalDecision {
   if (!requireApproval) {
     return { action: "DISPATCH", reason: "Approval gate disabled" };
@@ -29,20 +37,47 @@ export function evaluateTaskStartApproval(
   // Find existing start approval for this issue
   const matchingApproval = existingApprovals.find(
     (app) =>
-      (app.type === "task_start_approval" || (app.type === "request_board_approval" && app.payload?.["action"] === "task_start")) &&
+      (app.type === "task_start_approval" ||
+        (app.type === "request_board_approval" && app.payload?.["action"] === "task_start")) &&
       (app.issueIds.includes(issue.id) || app.payload?.["issueId"] === issue.id)
   );
 
   if (!matchingApproval) {
+    const urlKey = options.companyUrlKey || "MAZ";
+    const issueLink = `http://localhost:3100/${urlKey}/issues/${issue.identifier || issue.id}`;
     const title = `Start task [${issue.identifier || issue.id}]: "${issue.title}"`;
-    const filesDesc = issue.targetFiles.length > 0 ? `\nTarget Files: ${issue.targetFiles.join(", ")}` : "";
-    const description = `The task is prioritized and ready for dispatch.\n\nComponent: ${issue.component || "core"}\nPriority: ${issue.priority}${filesDesc}\nPlanned Agent: ${targetAgentId}`;
+
+    const symbolsDesc =
+      issue.targetSymbols && issue.targetSymbols.length > 0
+        ? `\n**Target Symbols:** ${issue.targetSymbols.map((s) => `\`${s}\``).join(", ")}`
+        : "";
+
+    const filesDesc =
+      issue.targetFiles && issue.targetFiles.length > 0
+        ? `\n**Target Files:**\n${issue.targetFiles.map((f) => `- \`${f}\``).join("\n")}`
+        : "";
+
+    const description = `### 📋 Task Start Authorization Request
+
+🔗 **Paperclip Issue:** [${issue.identifier || issue.id}: ${issue.title}](${issueLink})
+
+| Attribute | Value |
+|---|---|
+| **Issue Identifier** | \`${issue.identifier || issue.id}\` |
+| **Priority** | **${issue.priority.toUpperCase()}** |
+| **Component** | \`${issue.component || "core"}\` |
+| **Target Worker** | \`${targetAgentId}\` |
+${symbolsDesc}${filesDesc}
+
+*Approving this authorization will dispatch the worker to begin implementation.*`;
+
     return {
       action: "CREATE_APPROVAL_REQUEST",
       title,
       description,
       issueId: issue.id,
       targetAgentId,
+      issueUrl: issueLink,
     };
   }
 
