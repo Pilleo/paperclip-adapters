@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isUserAuthorized, loadTelegramConfig, formatMissingSecretError, parseAllowedUserIds } from "../src/config.js";
+import { isUserAuthorized, loadTelegramConfig, formatMissingSecretError, formatMissingChatIdWarning, parseAllowedUserIds } from "../src/config.js";
 
 describe("Telegram Config & Security Whitelist", () => {
   it("authorizes user by user ID or chat/conversation ID", () => {
@@ -30,5 +30,11 @@ describe("Telegram Config & Security Whitelist", () => {
 
     const msgWithoutCompany = formatMissingSecretError();
     expect(msgWithoutCompany).toContain("paperclipai secrets create --name \"TELEGRAM_BOT_TOKEN\"");
+  });
+
+  it("formats a clear, actionable warning when TELEGRAM_CHAT_ID is missing", () => {
+    const warning = formatMissingChatIdWarning("comp-123");
+    expect(warning).toContain("TELEGRAM_CHAT_ID");
+    expect(warning).toContain("chatId");
   });
 });

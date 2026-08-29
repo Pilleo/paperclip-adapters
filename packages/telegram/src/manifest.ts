@@ -24,10 +24,10 @@ export const manifest = {
   instanceConfigSchema: {
     type: "object",
     properties: {
-      conversationId: {
+      chatId: {
         type: "string",
-        title: "Telegram Conversation / Chat ID",
-        description: "Target conversation or chat ID where notifications & approval cards are posted (matches TELEGRAM_CHAT_ID)",
+        title: "Telegram Chat ID (TELEGRAM_CHAT_ID)",
+        description: "Target chat or channel ID where notifications & approval cards are posted",
       },
       pollIntervalMs: {
         type: "number",
@@ -36,7 +36,7 @@ export const manifest = {
         default: 3000,
       },
     },
-    required: ["conversationId"],
+    required: ["chatId"],
   },
 };
 

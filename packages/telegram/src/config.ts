@@ -77,3 +77,14 @@ export function formatMissingSecretError(companyId?: string): string {
     `   npx paperclipai secrets create${companyFlag} --name "TELEGRAM_BOT_TOKEN" --value "<YOUR_BOTFATHER_TOKEN>"`,
   ].join("\n");
 }
+
+export function formatMissingChatIdWarning(companyId?: string): string {
+  const companyFlag = companyId ? ` --company-id ${companyId}` : "";
+  return [
+    `⚠️ [TELEGRAM COMPANION] "TELEGRAM_CHAT_ID" is not configured.`,
+    `👉 Proactive approval cards cannot be pushed to Telegram until TELEGRAM_CHAT_ID is provided.`,
+    `To configure:`,
+    `   npx paperclipai plugin config:set telegram${companyFlag} --payload-json '{"configJson": {"chatId": "<YOUR_CHAT_ID>"}}'`,
+    `   OR set TELEGRAM_CHAT_ID in .env`,
+  ].join("\n");
+}

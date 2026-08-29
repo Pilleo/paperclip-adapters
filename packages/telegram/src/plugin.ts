@@ -1,4 +1,4 @@
-import { TelegramPluginConfig, loadTelegramConfig, formatMissingSecretError, parseAllowedUserIds } from "./config.js";
+import { TelegramPluginConfig, loadTelegramConfig, formatMissingSecretError, formatMissingChatIdWarning, parseAllowedUserIds } from "./config.js";
 import { TelegramBotClient } from "./telegram-api.js";
 import { PaperclipTelegramPoller } from "./poller.js";
 import { handleTelegramCallback, handleTelegramMessage } from "./handlers.js";
@@ -35,6 +35,10 @@ export class PaperclipTelegramPlugin {
 
   isConfigured(): boolean {
     return this.configured;
+  }
+
+  hasChatId(): boolean {
+    return !!this.poller;
   }
 
   async register(ctx: PaperclipPluginContext = {}): Promise<void> {
@@ -94,6 +98,11 @@ export class PaperclipTelegramPlugin {
         pollIntervalMs: config.pollIntervalMs,
       });
       this.poller.start();
+    } else {
+      const warning = formatMissingChatIdWarning(companyId);
+      if (ctx.logger?.warn) {
+        ctx.logger.warn(warning);
+      }
     }
 
     this.isRunning = true;
