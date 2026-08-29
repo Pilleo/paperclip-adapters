@@ -1,4 +1,5 @@
 import { ConflictMatrixResult, JulesQuotaStatus, GitHubSyncStatus } from "./types.js";
+import { DailyBudgetState, formatBudgetTelemetrySummary } from "./cost-tracker.js";
 
 export interface OrchestratorDashboardParams {
   companyId: string;
@@ -18,6 +19,7 @@ export interface OrchestratorDashboardParams {
   elapsedMs: number;
   rateLimitPausedUntilMs?: number | undefined;
   nowMs?: number | undefined;
+  dailyBudget?: DailyBudgetState | undefined;
 }
 
 export function formatOrchestratorDashboardCard(params: OrchestratorDashboardParams): string {
@@ -39,6 +41,10 @@ export function formatOrchestratorDashboardCard(params: OrchestratorDashboardPar
     julesStatusStr = `⚡ \`${params.julesRunning}/${params.julesCapacity}\` configured`;
   }
 
+  const budgetRow = params.dailyBudget
+    ? `\n| **Daily Cloud Spend** | ${formatBudgetTelemetrySummary(params.dailyBudget)} |`
+    : "";
+
   const lockRows = Array.from(params.ghStatus.openPrFiles)
     .slice(0, 10)
     .map((file) => `| \`${file}\` | Active PR lock |`)
@@ -58,5 +64,5 @@ export function formatOrchestratorDashboardCard(params: OrchestratorDashboardPar
 | **Vibe Local Lane** | 💻 \`${params.vibeRunning}/${params.vibeCapacity}\` active slots |
 | **Conflict Matrix** | 🔗 **${params.conflictResult.conflictEdges.length}** DAG conflict edges evaluated |
 | **Operator Approvals** | ⏳ **${params.approvalsPendingCount}** pending start approvals |
-| **Execution Latency** | ⏱️ ${params.elapsedMs}ms |${locksTable}`;
+| **Execution Latency** | ⏱️ ${params.elapsedMs}ms |${budgetRow}${locksTable}`;
 }

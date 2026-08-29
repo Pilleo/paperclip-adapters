@@ -125,3 +125,5 @@ export default createServerAdapter;
 export * from "../core/qa-firewall.js";
 
 export * from "../core/strong-model-reviewer.js";
+
+export * from "../core/cost-tracker.js";
