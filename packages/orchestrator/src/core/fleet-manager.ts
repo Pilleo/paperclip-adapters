@@ -1,8 +1,10 @@
 export interface ManagedWorkerDefinition {
   readonly key: "jules" | "vibe" | "antigravity" | "reviewer";
   readonly name: string;
+  readonly title: string;
   readonly adapterType: string;
   readonly role: "engineer" | "qa" | "security" | "general";
+  readonly capabilities: string;
   readonly description: string;
   readonly adapterConfig: Record<string, unknown>;
 }
@@ -28,8 +30,11 @@ export const MANAGED_FLEET_DEFINITIONS: readonly ManagedWorkerDefinition[] = Obj
   {
     key: "jules",
     name: "[Orchestrated] Jules Async Worker",
+    title: "Cloud Asynchronous Developer",
     adapterType: "jules",
     role: "engineer",
+    capabilities:
+      "Executes approved tasks in isolated cloud environments using Google Jules. Performs surgical AST symbol modifications, executes reproducer test suites, and opens comprehensive pull requests with audit logs.",
     description: "Cloud asynchronous developer executing approved tasks in isolation",
     adapterConfig: {
       pollCadenceSeconds: 0, // Strictly 0: No autonomous unprompted scheduling
@@ -44,8 +49,11 @@ export const MANAGED_FLEET_DEFINITIONS: readonly ManagedWorkerDefinition[] = Obj
   {
     key: "vibe",
     name: "[Orchestrated] Vibe Local Worker",
+    title: "Local ACP Implementation Specialist",
     adapterType: "vibe",
     role: "engineer",
+    capabilities:
+      "Local fast-path development lane. Executes targeted refactorings, autonomous Q&A clarification loops, and fast test verification via the local Agent Client Protocol (ACP).",
     description: "Local ACP developer executing autonomous clarifications and small refactors",
     adapterConfig: {
       pollCadenceSeconds: 0, // Strictly 0
@@ -56,8 +64,11 @@ export const MANAGED_FLEET_DEFINITIONS: readonly ManagedWorkerDefinition[] = Obj
   {
     key: "antigravity",
     name: "[Orchestrated] Antigravity Local Worker",
+    title: "Deep Agentic Systems Engineer",
     adapterType: "antigravity",
     role: "engineer",
+    capabilities:
+      "Advanced local pair-programming and systems engineering via Google Antigravity ACP. Executes multi-step workflows, tool calls, and complex architectural investigations.",
     description: "Local pair-programming ACP worker executing tasks via Google Antigravity",
     adapterConfig: {
       pollCadenceSeconds: 0, // Strictly 0
@@ -67,8 +78,11 @@ export const MANAGED_FLEET_DEFINITIONS: readonly ManagedWorkerDefinition[] = Obj
   {
     key: "reviewer",
     name: "[Orchestrated] Code Reviewer",
-    adapterType: "vibe",
+    title: "Principal Systems & Security Code Reviewer",
+    adapterType: "codex_local",
     role: "qa",
+    capabilities:
+      "Token-efficient code review specialist. Inspects PR diffs, validates declared AST target symbols using Codanna, audits project invariants, and provides structured approval recommendations without excessive context consumption.",
     description: "Token-efficient code review specialist inspecting PRs, symbols, and invariants",
     adapterConfig: {
       pollCadenceSeconds: 0, // Strictly 0
@@ -80,7 +94,7 @@ export const MANAGED_FLEET_DEFINITIONS: readonly ManagedWorkerDefinition[] = Obj
 
 /**
  * Reconciles and provisions the dedicated orchestrator-managed worker fleet in Paperclip.
- * All managed workers are locked with pollCadence: 0 and configured to report directly to the Orchestrator.
+ * Configures rich titles, capabilities, zero-cadence scheduling, and direct reportsTo hierarchy.
  */
 export async function reconcileManagedFleet(
   apiUrl: string,
@@ -94,6 +108,8 @@ export async function reconcileManagedFleet(
   const existingAgents = (await agentsRes.json()) as Array<{
     id: string;
     name: string;
+    title?: string | null;
+    capabilities?: string | null;
     adapterType: string;
     status?: string;
     reportsTo?: string | null;
@@ -149,8 +165,10 @@ export async function reconcileManagedFleet(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: def.name,
-          adapterType: def.adapterType,
+          title: def.title,
           role: def.role,
+          capabilities: def.capabilities,
+          adapterType: def.adapterType,
           reportsTo: managerId || null,
           status: "idle", // Idle by default: Only wakes on Orchestrator wakeup calls
           adapterConfig: mergedConfig,
@@ -174,8 +192,11 @@ export async function reconcileManagedFleet(
     } else {
       resolvedIds[def.key] = matching.id;
 
-      // Ensure pollCadenceSeconds is 0, reportsTo is orchestrator, and status is idle
+      // Ensure title, capabilities, pollCadenceSeconds: 0, reportsTo, and status are in sync
       const needsUpdate =
+        matching.title !== def.title ||
+        matching.capabilities !== def.capabilities ||
+        matching.adapterType !== def.adapterType ||
         matching.adapterConfig?.["pollCadenceSeconds"] !== 0 ||
         matching.status === "running" ||
         (managerId && matching.reportsTo !== managerId) ||
@@ -187,7 +208,11 @@ export async function reconcileManagedFleet(
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
+              title: def.title,
+              capabilities: def.capabilities,
+              adapterType: def.adapterType,
               status: "idle",
+              errorReason: null,
               reportsTo: managerId || matching.reportsTo || null,
               adapterConfig: {
                 ...matching.adapterConfig,
@@ -198,6 +223,7 @@ export async function reconcileManagedFleet(
                 ...matching.metadata,
                 managedBy: "paperclip-orchestrator",
                 workerKey: def.key,
+                description: def.description,
               },
             }),
           });
