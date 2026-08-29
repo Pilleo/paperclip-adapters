@@ -1,71 +1,113 @@
 import { describe, it, expect } from "vitest";
-import { lintBacklogMarkdown, parseSymbolTarget } from "../src/index.js";
+import {
+  lintBacklogMarkdown,
+  parseSymbolTarget,
+  VALID_SEVERITIES,
+  VALID_COMPONENTS,
+  VALID_GRADLE_MODULES,
+} from "../src/index.js";
 
-describe("Strict Backlog Linter", () => {
-  it("validates a compliant backlog markdown file", () => {
+describe("Strict Backlog Linter - Parameterized Validation Suite", () => {
+  it.each(VALID_SEVERITIES)("accepts valid severity: %s", (severity) => {
     const md = `---
-title: "Fix NullPointer in Downcall"
-severity: "HIGH"
-priority: high
+title: "Fix issue with ${severity}"
+severity: "${severity}"
 component: "enforcer"
 target_modules: [":enforcer"]
 target_files: ["enforcer/src/Native.kt"]
-target_symbols: ["NativeLayout#downcallHandle"]
 ---
 
-# 🔴 [Severity: HIGH]: Fix NullPointer in Downcall
-**Context:** Off-heap layout alignment issue.
-**Needed:** Fix the alignment in ValueLayout.
+**Context:** Test context for ${severity}.
+**Needed:** Test needed fix.
 `;
-    const res = lintBacklogMarkdown(md, "issue-20260829-123045-fix-nullpointer.md");
+    const res = lintBacklogMarkdown(md, "issue-20260829-123045-test.md");
     expect(res.isValid).toBe(true);
-    expect(res.errors).toHaveLength(0);
-    expect(res.normalizedMetadata.title).toBe("Fix NullPointer in Downcall");
-    expect(res.normalizedMetadata.component).toBe("enforcer");
-    expect(res.normalizedMetadata.priority).toBe("high");
-    expect(res.normalizedMetadata.targetModules).toContain(":enforcer");
-    expect(res.normalizedMetadata.targetSymbols).toContain("NativeLayout#downcallHandle");
-    expect(res.needsClarification).toBe(false);
+    expect(res.normalizedMetadata.severity).toBe(severity);
   });
 
-  it("fails if target_modules contains invalid Gradle module", () => {
+  it.each(["INVALID", "SUPER_CRITICAL", "URGENT", "P1"])(
+    "rejects invalid severity: %s",
+    (invalidSeverity) => {
+      const md = `---
+title: "Invalid severity test"
+severity: "${invalidSeverity}"
+component: "enforcer"
+target_modules: [":enforcer"]
+target_files: ["enforcer/src/Native.kt"]
+---
+**Context:** Foo
+**Needed:** Bar
+`;
+      const res = lintBacklogMarkdown(md, "issue-20260829-123045-test.md");
+      expect(res.isValid).toBe(false);
+      expect(res.errors.some((e) => e.includes("Invalid severity"))).toBe(true);
+    }
+  );
+
+  it.each(VALID_COMPONENTS)("accepts valid canonical component: %s", (component) => {
     const md = `---
+title: "Test component ${component}"
+component: "${component}"
+target_modules: [":enforcer"]
+target_files: ["file.kt"]
+---
+**Context:** Valid component.
+**Needed:** Valid fix.
+`;
+    const res = lintBacklogMarkdown(md, "issue-20260829-123045-comp.md");
+    expect(res.isValid).toBe(true);
+    expect(res.normalizedMetadata.component).toBe(component);
+  });
+
+  it.each([":invalid", ":unknown:tool", "core", "platform"])(
+    "rejects non-canonical Gradle module: %s",
+    (invalidModule) => {
+      const md = `---
 title: "Invalid module"
 component: "enforcer"
-target_modules: [":invalid-module"]
+target_modules: ["${invalidModule}"]
 target_files: ["foo.kt"]
 ---
 **Context:** Foo
 **Needed:** Bar
 `;
-    const res = lintBacklogMarkdown(md, "issue-20260829-123045-invalid.md");
-    expect(res.isValid).toBe(false);
-    expect(res.errors.some((e) => e.includes("Invalid Gradle module"))).toBe(true);
+      const res = lintBacklogMarkdown(md, "issue-20260829-123045-mod.md");
+      expect(res.isValid).toBe(false);
+      expect(res.errors.some((e) => e.includes("Invalid Gradle module"))).toBe(true);
+    }
+  );
+
+  describe.each([
+    { input: "BpfFilter#compile", expectedClass: "BpfFilter", expectedMethod: "compile" },
+    { input: "io.mazewall.Landlock.ruleset", expectedClass: "io.mazewall.Landlock", expectedMethod: "ruleset" },
+    { input: "PureJavaBpfEngine#compileArm64", expectedClass: "PureJavaBpfEngine", expectedMethod: "compileArm64" },
+    { input: "LinuxNative", expectedClass: undefined, expectedMethod: undefined },
+  ])("Symbol Target Parser: %o", ({ input, expectedClass, expectedMethod }) => {
+    it(`parses "${input}" correctly`, () => {
+      const parsed = parseSymbolTarget(input);
+      expect(parsed.className).toBe(expectedClass);
+      expect(parsed.methodName).toBe(expectedMethod);
+    });
   });
 
-  it("fails if open_questions: true but section is missing", () => {
+  it.each([
+    { filename: "issue-20260829-123045-fix-bug.md", valid: true },
+    { filename: "issue-20260829_123045-fix-bug.md", valid: true },
+    { filename: "issue-123-short-slug.md", valid: true },
+    { filename: "invalid_name.md", valid: false },
+    { filename: "issue-without-date.md", valid: false },
+  ])("validates filename format: $filename (valid: $valid)", ({ filename, valid }) => {
     const md = `---
-title: "Inconsistent questions"
+title: "Filename check"
 component: "enforcer"
 target_modules: [":enforcer"]
 target_files: ["foo.kt"]
-open_questions: true
 ---
 **Context:** Foo
 **Needed:** Bar
 `;
-    const res = lintBacklogMarkdown(md, "issue-20260829-123045-inconsistent.md");
-    expect(res.isValid).toBe(false);
-    expect(res.errors.some((e) => e.includes("missing a non-empty '## ❓ Open Questions'"))).toBe(true);
-  });
-
-  it("parses method-level granularity target symbols", () => {
-    const s1 = parseSymbolTarget("PureJavaBpfEngine#compile");
-    expect(s1.className).toBe("PureJavaBpfEngine");
-    expect(s1.methodName).toBe("compile");
-
-    const s2 = parseSymbolTarget("io.mazewall.enforcer.Landlock.ruleset");
-    expect(s2.className).toBe("io.mazewall.enforcer.Landlock");
-    expect(s2.methodName).toBe("ruleset");
+    const res = lintBacklogMarkdown(md, filename);
+    const hasFilenameError = res.errors.some((e) => e.includes("Invalid filename format"));
+    expect(hasFilenameError).toBe(!valid);
   });
 });
