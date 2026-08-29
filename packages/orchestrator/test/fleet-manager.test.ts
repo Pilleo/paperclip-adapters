@@ -6,8 +6,14 @@ describe("Orchestrator Managed Fleet Manager", () => {
     vi.restoreAllMocks();
   });
 
-  it("provisions missing managed workers with pollCadenceSeconds: 0 and idle status", async () => {
-    const mockAgents: any[] = [];
+  it("provisions missing managed workers with pollCadenceSeconds: 0, idle status, and reportsTo orchestrator", async () => {
+    const mockAgents: any[] = [
+      {
+        id: "orch-1",
+        name: "Task Orchestrator",
+        adapterType: "orchestrator",
+      },
+    ];
     const createdCalls: any[] = [];
 
     global.fetch = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
@@ -31,6 +37,7 @@ describe("Orchestrator Managed Fleet Manager", () => {
     });
 
     const result = await reconcileManagedFleet("http://127.0.0.1:3100", "company-1", {
+      orchestratorAgentId: "orch-1",
       repository: "Pilleo/mazewall",
       baseBranch: "master",
     });
@@ -40,6 +47,7 @@ describe("Orchestrator Managed Fleet Manager", () => {
     for (const call of createdCalls) {
       expect(call.adapterConfig.pollCadenceSeconds).toBe(0);
       expect(call.status).toBe("idle");
+      expect(call.reportsTo).toBe("orch-1");
       expect(call.metadata.managedBy).toBe("paperclip-orchestrator");
     }
     expect(result.julesAgentId).toBeDefined();
@@ -47,13 +55,19 @@ describe("Orchestrator Managed Fleet Manager", () => {
     expect(result.reviewerAgentId).toBeDefined();
   });
 
-  it("patches existing misconfigured agents to enforce pollCadenceSeconds: 0", async () => {
+  it("patches existing misconfigured agents to enforce pollCadenceSeconds: 0 and reportsTo", async () => {
     const mockAgents = [
+      {
+        id: "orch-1",
+        name: "Task Orchestrator",
+        adapterType: "orchestrator",
+      },
       {
         id: "existing-jules",
         name: "[Orchestrated] Jules Async Worker",
         adapterType: "jules",
         status: "running", // Misconfigured
+        reportsTo: null, // Misconfigured
         adapterConfig: { pollCadenceSeconds: 300 }, // Misconfigured
       },
     ];
@@ -79,10 +93,13 @@ describe("Orchestrator Managed Fleet Manager", () => {
       return { ok: true, json: async () => ({}) };
     });
 
-    const result = await reconcileManagedFleet("http://127.0.0.1:3100", "company-1");
+    const result = await reconcileManagedFleet("http://127.0.0.1:3100", "company-1", {
+      orchestratorAgentId: "orch-1",
+    });
     expect(result.julesAgentId).toBe("existing-jules");
     expect(patchCalls.length).toBeGreaterThanOrEqual(1);
     expect(patchCalls[0]?.body.status).toBe("idle");
+    expect(patchCalls[0]?.body.reportsTo).toBe("orch-1");
     expect(patchCalls[0]?.body.adapterConfig.pollCadenceSeconds).toBe(0);
   });
 });

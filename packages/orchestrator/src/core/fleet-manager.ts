@@ -8,6 +8,7 @@ export interface ManagedWorkerDefinition {
 }
 
 export interface ManagedFleetConfig {
+  readonly orchestratorAgentId?: string | undefined;
   readonly repository?: string | undefined;
   readonly baseBranch?: string | undefined;
   readonly julesApiKeySecretId?: string | undefined;
@@ -79,6 +80,7 @@ export const MANAGED_FLEET_DEFINITIONS: readonly ManagedWorkerDefinition[] = Obj
 
 /**
  * Reconciles and provisions the dedicated orchestrator-managed worker fleet in Paperclip.
+ * All managed workers are locked with pollCadence: 0 and configured to report directly to the Orchestrator.
  */
 export async function reconcileManagedFleet(
   apiUrl: string,
@@ -94,9 +96,21 @@ export async function reconcileManagedFleet(
     name: string;
     adapterType: string;
     status?: string;
+    reportsTo?: string | null;
     adapterConfig?: Record<string, unknown>;
     metadata?: Record<string, unknown>;
   }>;
+
+  // Resolve Orchestrator ID if not explicitly provided
+  let managerId = config.orchestratorAgentId;
+  if (!managerId) {
+    const orchestratorAgent = existingAgents.find(
+      (a) => a.adapterType === "orchestrator" || a.name.toLowerCase().includes("orchestrator")
+    );
+    if (orchestratorAgent) {
+      managerId = orchestratorAgent.id;
+    }
+  }
 
   const resolvedIds: Record<string, string> = {};
   let provisionedCount = 0;
@@ -129,7 +143,7 @@ export async function reconcileManagedFleet(
     };
 
     if (!matching) {
-      // Provision fresh managed worker
+      // Provision fresh managed worker reporting to orchestrator
       const createRes = await fetch(`${apiUrl}/api/companies/${companyId}/agents`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -137,6 +151,7 @@ export async function reconcileManagedFleet(
           name: def.name,
           adapterType: def.adapterType,
           role: def.role,
+          reportsTo: managerId || null,
           status: "idle", // Idle by default: Only wakes on Orchestrator wakeup calls
           adapterConfig: mergedConfig,
           metadata: {
@@ -159,10 +174,11 @@ export async function reconcileManagedFleet(
     } else {
       resolvedIds[def.key] = matching.id;
 
-      // Ensure pollCadenceSeconds is 0 and status is idle to prevent scheduler takeover
+      // Ensure pollCadenceSeconds is 0, reportsTo is orchestrator, and status is idle
       const needsUpdate =
         matching.adapterConfig?.["pollCadenceSeconds"] !== 0 ||
         matching.status === "running" ||
+        (managerId && matching.reportsTo !== managerId) ||
         matching.metadata?.["managedBy"] !== "paperclip-orchestrator";
 
       if (needsUpdate) {
@@ -172,6 +188,7 @@ export async function reconcileManagedFleet(
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               status: "idle",
+              reportsTo: managerId || matching.reportsTo || null,
               adapterConfig: {
                 ...matching.adapterConfig,
                 ...mergedConfig,
