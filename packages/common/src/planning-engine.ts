@@ -104,12 +104,27 @@ export function enrichPlanWithSymbolResearch(
   for (const target of plan.targetSymbols) {
     const sym = target.methodName || target.className || target.symbol;
     try {
-      const output = execSync(`codanna retrieve describe ${JSON.stringify(sym)}`, {
-        cwd: workspacePath,
-        encoding: "utf-8",
-        stdio: ["ignore", "pipe", "ignore"],
-        timeout: 4000,
-      }).trim();
+      let output = "";
+      try {
+        output = execSync(`codanna retrieve describe ${JSON.stringify(sym)}`, {
+          cwd: workspacePath,
+          encoding: "utf-8",
+          stdio: ["ignore", "pipe", "pipe"],
+          timeout: 4000,
+        }).trim();
+      } catch (err: any) {
+        // If ambiguous, parse candidate symbol_id
+        const stdout = String(err.stdout || err.output || "");
+        const idMatch = stdout.match(/symbol_id:(\d+)/);
+        if (idMatch && idMatch[1]) {
+          output = execSync(`codanna retrieve describe symbol_id:${idMatch[1]}`, {
+            cwd: workspacePath,
+            encoding: "utf-8",
+            stdio: ["ignore", "pipe", "ignore"],
+            timeout: 4000,
+          }).trim();
+        }
+      }
 
       if (output && !output.includes("No matching")) {
         symbolNotes.push(`#### Symbol: \`${target.symbol}\`\n\`\`\`\n${output.slice(0, 1500)}\n\`\`\``);
