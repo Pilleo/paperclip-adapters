@@ -54,7 +54,7 @@
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "build": "tsc",
-    "test": "vitest run",
+    "test": "vitest run --pool=forks",
     "prepack": "npm run clean && npm run build"
   },
   "paperclip": {

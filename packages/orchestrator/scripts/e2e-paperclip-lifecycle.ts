@@ -43,8 +43,8 @@ async function createAdapterContext(
       company: { id: companyId },
     },
     config: {
-      backlogDirectory: path.relative(WORKSPACE_PATH, backlogDir),
-      resolvedDirectory: path.relative(WORKSPACE_PATH, resolvedDir),
+      backlogDirectory: backlogDir,
+      resolvedDirectory: resolvedDir,
       requireApproval: true,
       maxConcurrentJules: 15,
       maxConcurrentVibe: 2,
@@ -111,8 +111,8 @@ async function main() {
 
     await log("PHASE 1", "PASS", `Registered isolated agents: Orch, Jules, and Vibe`);
 
-    // Create isolated temporary backlog directory inside workspace
-    tempBacklogDir = path.join(WORKSPACE_PATH, "docs", "internals", "backlog", `e2e-temp-${Date.now()}`);
+    // Create ephemeral isolated backlog directory outside repo in tmpdir
+    tempBacklogDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-e2e-backlog-"));
     tempResolvedDir = path.join(tempBacklogDir, "resolved");
     fs.mkdirSync(tempResolvedDir, { recursive: true });
 
