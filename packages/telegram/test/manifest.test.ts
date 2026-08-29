@@ -16,6 +16,7 @@ describe("Paperclip Plugin Manifest", () => {
     expect(manifest.capabilities).toContain("issues.read");
     expect(manifest.capabilities).toContain("approvals.read");
     expect(manifest.capabilities).toContain("approvals.respond");
+    expect(manifest.capabilities).toContain("secrets.read-ref");
   });
 
   it("exposes JSON schema for instance configuration", () => {

@@ -8,6 +8,9 @@ export interface PaperclipPluginContext {
   readonly events?: {
     readonly on: (event: any, handler: (...args: any[]) => any) => any;
   } | undefined;
+  readonly secrets?: {
+    readonly resolve: (secretRef: any, options?: { companyId?: string }) => Promise<string>;
+  } | undefined;
   readonly options?: Partial<TelegramPluginConfig> | undefined;
 }
 
@@ -20,11 +23,30 @@ export class PaperclipTelegramPlugin {
 
   async register(ctx: PaperclipPluginContext = {}): Promise<void> {
     const config = { ...loadTelegramConfig(), ...(ctx.options || {}) };
-    if (!config.botToken) {
+
+    let token = config.botToken;
+    // Attempt secret resolution via Paperclip Secrets Vault if configured as secret_ref or if empty
+    if (ctx.secrets && config.paperclipCompanyId) {
+      if (typeof token === "object" || !token) {
+        try {
+          const resolved = await ctx.secrets.resolve(
+            typeof token === "object" ? token : "TELEGRAM_BOT_TOKEN",
+            { companyId: config.paperclipCompanyId }
+          );
+          if (resolved) {
+            token = resolved;
+          }
+        } catch {
+          // Fall back to env token
+        }
+      }
+    }
+
+    if (!token) {
       return;
     }
 
-    this.botClient = new TelegramBotClient(config.botToken);
+    this.botClient = new TelegramBotClient(token);
     const paperclipClient = new PaperclipApiClient(config.paperclipApiUrl, config.paperclipApiKey);
 
     if (config.defaultChatId && config.paperclipCompanyId) {

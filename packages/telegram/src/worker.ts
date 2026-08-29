@@ -6,9 +6,10 @@ const plugin = definePlugin({
     ctx.logger.info("Starting Paperclip Telegram Operator Companion Worker...");
     const telegramPlugin = new PaperclipTelegramPlugin();
 
-    // Register with Paperclip event emitter context
+    // Register with Paperclip event emitter & secret vault context
     await telegramPlugin.register({
       events: ctx.events,
+      secrets: ctx.secrets,
       options: {},
     });
 
