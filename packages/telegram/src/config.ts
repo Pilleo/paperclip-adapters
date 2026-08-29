@@ -17,7 +17,6 @@ export function isUserAuthorized(
   chatId: number | string | undefined,
   allowedUserIds: readonly (number | string)[]
 ): boolean {
-  // If allowedUserIds is empty or contains wildcard, allow interaction
   if (!Array.isArray(allowedUserIds) || allowedUserIds.length === 0) {
     return true;
   }
@@ -57,11 +56,12 @@ export function parseAllowedUserIds(raw: string | (number | string)[] | undefine
 
 export function loadTelegramConfig(env: NodeJS.ProcessEnv = process.env): TelegramPluginConfig {
   const allowedUserIds = parseAllowedUserIds(env["TELEGRAM_ALLOWED_USER_IDS"]);
+  const chatId = env["TELEGRAM_CHAT_ID"] || env["CONVERSATION_ID"] || env["TELEGRAM_CONVERSATION_ID"];
 
   return {
     botToken: env["TELEGRAM_BOT_TOKEN"],
     allowedUserIds,
-    defaultChatId: env["TELEGRAM_CHAT_ID"],
+    defaultChatId: chatId,
     paperclipApiUrl: env["PAPERCLIP_API_URL"] || "http://127.0.0.1:3100",
     paperclipApiKey: env["PAPERCLIP_API_KEY"] || env["PAPERCLIP_AGENT_TOKEN"],
     paperclipCompanyId: env["PAPERCLIP_COMPANY_ID"] || "8f4ef932-d769-43b2-981a-d273ed715162",

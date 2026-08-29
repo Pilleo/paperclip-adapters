@@ -19,11 +19,11 @@ describe("Paperclip Plugin Manifest", () => {
     expect(manifest.capabilities).toContain("secrets.read-ref");
   });
 
-  it("exposes clean non-secret config focusing on defaultChatId", () => {
+  it("exposes clean non-secret config focusing on conversationId", () => {
     const props = manifest.instanceConfigSchema.properties as Record<string, any>;
     expect(props["botToken"]).toBeUndefined();
     expect(props["allowedUserIds"]).toBeUndefined();
-    expect(props["defaultChatId"]).toBeDefined();
-    expect(manifest.instanceConfigSchema.required).toContain("defaultChatId");
+    expect(props["conversationId"]).toBeDefined();
+    expect(manifest.instanceConfigSchema.required).toContain("conversationId");
   });
 });

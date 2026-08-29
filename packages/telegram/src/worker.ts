@@ -14,8 +14,12 @@ const plugin = definePlugin({
 
     // 2. Load company-scoped plugin configuration from Paperclip
     const companyConfig = (await ctx.config.get(companyId).catch(() => ({}))) as Record<string, any>;
-    const allowedUserIds = companyConfig?.["allowedUserIds"] || process.env["TELEGRAM_ALLOWED_USER_IDS"];
-    const defaultChatId = companyConfig?.["defaultChatId"] || process.env["TELEGRAM_CHAT_ID"];
+    const conversationId = companyConfig?.["conversationId"] 
+      || companyConfig?.["chatId"] 
+      || companyConfig?.["defaultChatId"]
+      || process.env["CONVERSATION_ID"]
+      || process.env["TELEGRAM_CHAT_ID"];
+
     const pollIntervalMs = companyConfig?.["pollIntervalMs"] || process.env["TELEGRAM_POLL_INTERVAL_MS"];
 
     let resolvedToken: string | undefined = process.env["TELEGRAM_BOT_TOKEN"];
@@ -54,8 +58,7 @@ const plugin = definePlugin({
       options: {
         paperclipCompanyId: companyId,
         ...(resolvedToken ? { botToken: resolvedToken } : {}),
-        ...(allowedUserIds ? { allowedUserIds } : {}),
-        ...(defaultChatId ? { defaultChatId } : {}),
+        ...(conversationId ? { defaultChatId: conversationId } : {}),
         ...(pollIntervalMs ? { pollIntervalMs: Number(pollIntervalMs) } : {}),
       },
     });
