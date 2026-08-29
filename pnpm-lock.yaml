@@ -11,6 +11,9 @@ importers:
       '@types/node':
         specifier: 22.0.0
         version: 22.0.0
+      '@vitest/coverage-v8':
+        specifier: ^3.0.0
+        version: 3.2.7(vitest@3.2.7(@types/node@22.0.0)(tsx@4.23.12)(yaml@2.9.0))
       tsx:
         specifier: ^4.19.2
         version: 4.23.12
