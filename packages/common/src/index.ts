@@ -7,3 +7,6 @@ export * from "./skills-materializer.js";
 export * from "./planning-engine.js";
 
 export * from "./code-investigation.js";
+
+export * from "./fp.js";
+export * from "./domain-brands.js";
