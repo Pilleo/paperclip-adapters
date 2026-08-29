@@ -13,6 +13,9 @@
   ],
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js"
+  },
   "bin": {
     "paperclip-telegram": "./bin/paperclip-telegram.js"
   },
@@ -21,26 +24,26 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./server": {
-      "types": "./dist/server/index.d.ts",
-      "import": "./dist/server/index.js"
+    "./manifest": {
+      "types": "./dist/manifest.d.ts",
+      "import": "./dist/manifest.js"
+    },
+    "./worker": {
+      "types": "./dist/worker.d.ts",
+      "import": "./dist/worker.js"
     }
   },
-  "peerDependencies": {
-    "@paperclipai/adapter-utils": "2026.722.0"
-  },
   "devDependencies": {
-    "@paperclipai/adapter-utils": "2026.722.0",
     "@types/node": "^22.0.0",
     "typescript": "^5.7.3",
     "vitest": "^3.0.2",
     "zod": "^3.24.0"
   },
   "dependencies": {
+    "@paperclipai/plugin-sdk": "2026.824.1",
     "zod": "^3.24.0",
     "dotenv": "^16.4.7",
-    "@pilleo/paperclip-adapter-common": "workspace:*",
-    "@pilleo/paperclip-orchestrator-adapter": "workspace:*"
+    "@pilleo/paperclip-adapter-common": "workspace:*"
   },
   "engines": {
     "node": ">=22"

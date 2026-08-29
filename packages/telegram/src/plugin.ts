@@ -6,7 +6,7 @@ import { PaperclipApiClient } from "./paperclip-client.js";
 
 export interface PaperclipPluginContext {
   readonly events?: {
-    readonly on: (event: string, handler: (...args: any[]) => void) => void;
+    readonly on: (event: any, handler: (...args: any[]) => any) => any;
   } | undefined;
   readonly options?: Partial<TelegramPluginConfig> | undefined;
 }

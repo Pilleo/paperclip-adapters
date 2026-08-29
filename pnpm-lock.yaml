@@ -123,12 +123,12 @@ importers:
 
   packages/telegram:
     dependencies:
+      '@paperclipai/plugin-sdk':
+        specifier: 2026.824.1
+        version: 2026.824.1
       '@pilleo/paperclip-adapter-common':
         specifier: workspace:*
         version: link:../common
-      '@pilleo/paperclip-orchestrator-adapter':
-        specifier: workspace:*
-        version: link:../orchestrator
       dotenv:
         specifier: ^16.4.7
         version: 16.6.1
@@ -136,9 +136,6 @@ importers:
         specifier: ^3.24.0
         version: 3.25.76
     devDependencies:
-      '@paperclipai/adapter-utils':
-        specifier: 2026.722.0
-        version: 2026.722.0
       '@types/node':
         specifier: ^22.0.0
         version: 22.0.0
@@ -391,6 +388,18 @@ packages:
     resolution: {integrity: sha512-ovgcau6R1zR+qLDPX5pc19R0YMPDl5fsvOCuwvQvKFy804R4iSKEcJcVMZL7DUEm8kEB9q427mVr4uBosCx0iw==}
     bundledDependencies:
       - acpx
+
+  '@paperclipai/plugin-sdk@2026.824.1':
+    resolution: {integrity: sha512-Zynbb60ocqPGWexSTSSJLBfJ9LAXJ/J8h65C56CZxCRnXFyYb0HaYbwq4JcqwkC0MmhgK0HFU6qrnCVGT5ghuw==}
+    hasBin: true
+    peerDependencies:
+      react: '>=18'
+    peerDependenciesMeta:
+      react:
+        optional: true
+
+  '@paperclipai/shared@2026.824.1':
+    resolution: {integrity: sha512-PKgePWGXWhQYRoILtKG7S2QppFkBKmCpzVEySoo6BXO4aO1vmgYDi5f9x3wC7zzukugWkEqMOjBspTMCuYtvTQ==}
 
   '@pkgjs/parseargs@0.11.0':
     resolution: {integrity: sha512-+1VkjdD0QBLPodGrJUeqarH8VAIvQODIbwh9XpP5Syisf7YoQgsJKPNFoqqLQlu+VQ/tVSshMR6loPMn8U+dPg==}
@@ -1126,6 +1135,15 @@ snapshots:
   '@paperclipai/adapter-utils@2026.722.0':
     dependencies:
       picocolors: 1.1.1
+
+  '@paperclipai/plugin-sdk@2026.824.1':
+    dependencies:
+      '@paperclipai/shared': 2026.824.1
+      zod: 3.25.76
+
+  '@paperclipai/shared@2026.824.1':
+    dependencies:
+      zod: 3.25.76
 
   '@pkgjs/parseargs@0.11.0':
     optional: true

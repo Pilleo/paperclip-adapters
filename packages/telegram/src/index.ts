@@ -4,3 +4,5 @@ export * from "./formatters.js";
 export * from "./handlers.js";
 export * from "./poller.js";
 export * from "./plugin.js";
+export * from "./paperclip-client.js";
+export * from "./manifest.js";
