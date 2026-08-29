@@ -11,6 +11,7 @@ import { selectClarificationCandidates } from "../core/clarifier.js";
 import { ParsedIssueMetadata } from "../core/types.js";
 import { evaluateTaskStartApproval, PaperclipApprovalSummary } from "../core/approvals.js";
 import { formatOrchestratorDashboardCard } from "../core/telemetry-card.js";
+import { identifyStalledIssues } from "../core/stalled-session-reaper.js";
 
 export interface OrchestratorAdapterConfig {
   readonly maxConcurrentJules?: number | undefined;
@@ -23,6 +24,7 @@ export interface OrchestratorAdapterConfig {
   readonly resolvedDirectory?: string | undefined;
   readonly apiUrl?: string | undefined;
   readonly requireTaskApproval?: boolean | undefined;
+  readonly stalledThresholdMinutes?: number | undefined;
 }
 
 export async function execute(context: AdapterExecutionContext): Promise<AdapterExecutionResult> {
@@ -189,9 +191,46 @@ export async function execute(context: AdapterExecutionContext): Promise<Adapter
     }
   }
 
-  const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
+const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
   if (archiveResult.archivedCount > 0) {
     await log(`[ORCHESTRATOR] 📦 Archived ${archiveResult.archivedCount} completed tasks to docs/internals/backlog/resolved/`);
+  }
+
+  // 7.5. PHASE 1.5: Reclaim stalled in_progress sessions with no live runner or heartbeat
+  const activeExecutionIds = new Set<string>();
+  const stalled = identifyStalledIssues(parsedIssues, activeExecutionIds, {
+    stalledThresholdMs: config.stalledThresholdMinutes ? config.stalledThresholdMinutes * 60 * 1000 : 15 * 60 * 1000,
+  });
+
+  let stalledReclaimedCount = 0;
+  for (const { issue, idleDurationMs } of stalled) {
+    const mins = Math.round(idleDurationMs / 60000);
+    await log(
+      `[ORCHESTRATOR] ♻️ Reclaiming stalled task [${issue.identifier || issue.id}] "${issue.title}" (idle ${mins}m with no active heartbeat) -> todo`
+    );
+    try {
+      await fetch(`${apiUrl}/api/issues/${issue.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          status: "todo",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        }),
+      });
+      await fetch(`${apiUrl}/api/issues/${issue.id}/comments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          body: `[Orchestrator] Stalled session detected with no active heartbeat (idle ${mins}m). Safely reclaimed and returned to \`todo\`.`,
+        }),
+      }).catch(() => {});
+      statusOverrides.set(issue.id, "todo");
+      stalledReclaimedCount++;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await log(`[ORCHESTRATOR] Warning: Failed to reclaim stalled issue: ${msg}`);
+    }
   }
 
   const inProgressIssues = parsedIssues.filter((i) => i.status === "in_progress");

@@ -31,6 +31,7 @@ export interface ParsedIssueMetadata {
   readonly isNonInterfering: boolean;
   readonly openQuestions?: boolean | undefined;
   readonly assigneeAgentId?: string | null | undefined;
+  readonly updatedAt?: string | null | undefined;
   readonly rawIssue: Readonly<Record<string, unknown>>;
 }
 

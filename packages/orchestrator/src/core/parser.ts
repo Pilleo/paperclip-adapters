@@ -158,6 +158,7 @@ export function extractIssueMetadata(issue: {
     component: component ?? null,
     isNonInterfering,
     assigneeAgentId: issue.assigneeAgentId ?? null,
+    updatedAt: typeof (issue as Record<string, unknown>)["updatedAt"] === "string" ? ((issue as Record<string, unknown>)["updatedAt"] as string) : null,
     rawIssue: Object.freeze({ ...issue }),
   });
 }
