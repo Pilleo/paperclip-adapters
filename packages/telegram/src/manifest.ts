@@ -26,8 +26,13 @@ export const manifest = {
     properties: {
       chatId: {
         type: "string",
-        title: "Telegram Chat ID (TELEGRAM_CHAT_ID)",
+        title: "Telegram Chat ID",
         description: "Target chat or channel ID where notifications & approval cards are posted",
+      },
+      conversationId: {
+        type: "string",
+        title: "Conversation ID",
+        description: "Conversation thread or topic ID for conversational scoping",
       },
       pollIntervalMs: {
         type: "number",
@@ -36,7 +41,7 @@ export const manifest = {
         default: 3000,
       },
     },
-    required: ["chatId"],
+    required: ["chatId", "conversationId"],
   },
 };
 

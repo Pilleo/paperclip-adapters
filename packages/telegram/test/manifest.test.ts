@@ -19,11 +19,13 @@ describe("Paperclip Plugin Manifest", () => {
     expect(manifest.capabilities).toContain("secrets.read-ref");
   });
 
-  it("exposes clean non-secret config focusing on chatId (TELEGRAM_CHAT_ID)", () => {
+  it("exposes both chatId and conversationId in config schema", () => {
     const props = manifest.instanceConfigSchema.properties as Record<string, any>;
     expect(props["botToken"]).toBeUndefined();
     expect(props["allowedUserIds"]).toBeUndefined();
     expect(props["chatId"]).toBeDefined();
+    expect(props["conversationId"]).toBeDefined();
     expect(manifest.instanceConfigSchema.required).toContain("chatId");
+    expect(manifest.instanceConfigSchema.required).toContain("conversationId");
   });
 });

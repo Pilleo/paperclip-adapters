@@ -16,9 +16,12 @@ const plugin = definePlugin({
     const companyConfig = (await ctx.config.get(companyId).catch(() => ({}))) as Record<string, any>;
     const chatId = companyConfig?.["chatId"] 
       || companyConfig?.["defaultChatId"]
-      || companyConfig?.["conversationId"]
       || process.env["TELEGRAM_CHAT_ID"]
-      || process.env["CONVERSATION_ID"];
+      || process.env["CHAT_ID"];
+
+    const conversationId = companyConfig?.["conversationId"]
+      || process.env["CONVERSATION_ID"]
+      || process.env["TELEGRAM_CONVERSATION_ID"];
 
     const pollIntervalMs = companyConfig?.["pollIntervalMs"] || process.env["TELEGRAM_POLL_INTERVAL_MS"];
 
@@ -58,16 +61,17 @@ const plugin = definePlugin({
       options: {
         paperclipCompanyId: companyId,
         ...(resolvedToken ? { botToken: resolvedToken } : {}),
-        ...(chatId ? { defaultChatId: chatId } : {}),
+        ...(chatId ? { chatId } : {}),
+        ...(conversationId ? { conversationId } : {}),
         ...(pollIntervalMs ? { pollIntervalMs: Number(pollIntervalMs) } : {}),
       },
     });
 
     if (telegramPlugin.isConfigured()) {
       if (telegramPlugin.hasChatId()) {
-        ctx.logger.info(`Paperclip Telegram Operator Companion Worker active & connected (Chat ID: ${chatId}).`);
+        ctx.logger.info(`Paperclip Telegram Operator Companion Worker active & connected (Chat ID: ${chatId || conversationId}).`);
       } else {
-        ctx.logger.warn(`Telegram Companion Worker active for direct commands, but TELEGRAM_CHAT_ID is not configured.`);
+        ctx.logger.warn(`Telegram Companion Worker active for direct commands, but chatId/conversationId is not configured.`);
       }
     } else {
       ctx.logger.warn("Telegram Companion Worker in standby mode: TELEGRAM_BOT_TOKEN secret not yet available.");
@@ -83,7 +87,7 @@ const plugin = definePlugin({
         message: telegramPlugin.isConfigured()
           ? telegramPlugin.hasChatId()
             ? "Connected to Telegram Bot & Polling approvals"
-            : "Connected to Telegram Bot (Standby for TELEGRAM_CHAT_ID to push approval cards)"
+            : "Connected to Telegram Bot (Standby for chatId / conversationId to push approval cards)"
           : "Standby: TELEGRAM_BOT_TOKEN secret not yet configured in Secret Vault",
       },
     };

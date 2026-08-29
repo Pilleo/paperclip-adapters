@@ -6,6 +6,7 @@ export interface TelegramPluginConfig {
   readonly botToken?: string | undefined;
   readonly allowedUserIds: readonly (number | string)[];
   readonly defaultChatId?: string | number | undefined;
+  readonly conversationId?: string | number | undefined;
   readonly paperclipApiUrl: string;
   readonly paperclipApiKey?: string | undefined;
   readonly paperclipCompanyId?: string | undefined;
@@ -56,12 +57,14 @@ export function parseAllowedUserIds(raw: string | (number | string)[] | undefine
 
 export function loadTelegramConfig(env: NodeJS.ProcessEnv = process.env): TelegramPluginConfig {
   const allowedUserIds = parseAllowedUserIds(env["TELEGRAM_ALLOWED_USER_IDS"]);
-  const chatId = env["TELEGRAM_CHAT_ID"] || env["CONVERSATION_ID"] || env["TELEGRAM_CONVERSATION_ID"];
+  const chatId = env["TELEGRAM_CHAT_ID"] || env["CHAT_ID"];
+  const conversationId = env["CONVERSATION_ID"] || env["TELEGRAM_CONVERSATION_ID"];
 
   return {
     botToken: env["TELEGRAM_BOT_TOKEN"],
     allowedUserIds,
     defaultChatId: chatId,
+    conversationId,
     paperclipApiUrl: env["PAPERCLIP_API_URL"] || "http://127.0.0.1:3100",
     paperclipApiKey: env["PAPERCLIP_API_KEY"] || env["PAPERCLIP_AGENT_TOKEN"],
     paperclipCompanyId: env["PAPERCLIP_COMPANY_ID"] || "8f4ef932-d769-43b2-981a-d273ed715162",
@@ -81,10 +84,10 @@ export function formatMissingSecretError(companyId?: string): string {
 export function formatMissingChatIdWarning(companyId?: string): string {
   const companyFlag = companyId ? ` --company-id ${companyId}` : "";
   return [
-    `⚠️ [TELEGRAM COMPANION] "TELEGRAM_CHAT_ID" is not configured.`,
-    `👉 Proactive approval cards cannot be pushed to Telegram until TELEGRAM_CHAT_ID is provided.`,
+    `⚠️ [TELEGRAM COMPANION] "TELEGRAM_CHAT_ID" or "CONVERSATION_ID" is not configured.`,
+    `👉 Proactive approval cards cannot be pushed to Telegram until chatId and conversationId are provided.`,
     `To configure:`,
-    `   npx paperclipai plugin config:set telegram${companyFlag} --payload-json '{"configJson": {"chatId": "<YOUR_CHAT_ID>"}}'`,
-    `   OR set TELEGRAM_CHAT_ID in .env`,
+    `   npx paperclipai plugin config:set telegram${companyFlag} --payload-json '{"configJson": {"chatId": "<CHAT_ID>", "conversationId": "<CONVERSATION_ID>"}}'`,
+    `   OR set TELEGRAM_CHAT_ID and CONVERSATION_ID in .env`,
   ].join("\n");
 }

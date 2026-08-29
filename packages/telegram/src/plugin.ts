@@ -18,6 +18,8 @@ export interface PaperclipPluginContext {
   } | undefined;
   readonly options?: {
     readonly allowedUserIds?: string | (number | string)[] | undefined;
+    readonly chatId?: string | number | undefined;
+    readonly conversationId?: string | number | undefined;
     readonly defaultChatId?: string | number | undefined;
     readonly pollIntervalMs?: number | undefined;
     readonly paperclipCompanyId?: string | undefined;
@@ -48,7 +50,8 @@ export class PaperclipTelegramPlugin {
       : baseConfig.allowedUserIds;
 
     const companyId = ctx.options?.paperclipCompanyId || baseConfig.paperclipCompanyId;
-    const defaultChatId = ctx.options?.defaultChatId || baseConfig.defaultChatId;
+    const targetChatId = ctx.options?.chatId || ctx.options?.defaultChatId || ctx.options?.conversationId || baseConfig.defaultChatId || baseConfig.conversationId;
+    const conversationId = ctx.options?.conversationId || baseConfig.conversationId;
     const pollIntervalMs = ctx.options?.pollIntervalMs || baseConfig.pollIntervalMs;
 
     let token = ctx.options?.botToken || baseConfig.botToken;
@@ -79,7 +82,8 @@ export class PaperclipTelegramPlugin {
     const config: TelegramPluginConfig = {
       botToken: token,
       allowedUserIds,
-      defaultChatId,
+      defaultChatId: targetChatId,
+      conversationId,
       paperclipApiUrl: baseConfig.paperclipApiUrl,
       paperclipApiKey: baseConfig.paperclipApiKey,
       paperclipCompanyId: companyId,
@@ -118,7 +122,6 @@ export class PaperclipTelegramPlugin {
   }
 
   private async startUpdateLoop(config: TelegramPluginConfig, paperclipClient: PaperclipApiClient): Promise<void> {
-    // Initialize offset on startup
     if (this.botClient) {
       try {
         const initial = await this.botClient.getUpdates(undefined, 0);
