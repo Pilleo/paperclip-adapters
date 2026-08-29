@@ -1,3 +1,7 @@
+
+function ghStatusRepo(wsPath?: string): string | undefined {
+  return "Pilleo/mazewall";
+}
 import { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { extractIssueMetadata } from "../core/parser.js";
 import { calculateConflictMatrix, selectNextTasksMultiLane } from "../core/dispatcher.js";
@@ -14,6 +18,7 @@ import { formatOrchestratorDashboardCard } from "../core/telemetry-card.js";
 import { identifyStalledIssues } from "../core/stalled-session-reaper.js";
 import { synthesizeTokenFriendlyReviewPrompt } from "../core/review-synthesizer.js";
 import { identifyMergedBranches } from "../core/branch-pruner.js";
+import { reconcileManagedFleet } from "../core/fleet-manager.js";
 
 export interface OrchestratorAdapterConfig {
   readonly maxConcurrentJules?: number | undefined;
