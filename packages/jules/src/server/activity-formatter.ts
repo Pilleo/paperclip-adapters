@@ -169,3 +169,18 @@ export function formatActivityForLog(activity: JulesActivity): string {
 
   return "[jules][" + ts + "] Activity: " + activity.id + "\n";
 }
+
+export function formatPlanCardMarkdown(activity: JulesActivity | null): string {
+  if (!activity?.planGenerated?.plan?.steps) {
+    return "Jules is waiting for plan approval.";
+  }
+  const steps = [...activity.planGenerated.plan.steps]
+    .sort((left, right) => (left.index ?? 0) - (right.index ?? 0))
+    .map(
+      (step, position) =>
+        `- [ ] **Step ${(step.index ?? position) + 1}: ${step.title}**\n  ${step.description ? `> ${step.description}` : ""}`
+    )
+    .join("\n\n");
+
+  return `<details open>\n<summary><b>📋 Jules Implementation Plan (${activity.planGenerated.plan.steps.length} Steps)</b></summary>\n\n${steps}\n\n</details>`;
+}
