@@ -5,3 +5,5 @@ export * from "./backlog.js";
 export * from "./linter.js";
 export * from "./skills-materializer.js";
 export * from "./planning-engine.js";
+
+export * from "./code-investigation.js";
