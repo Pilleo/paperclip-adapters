@@ -1,26 +1,53 @@
 {
   "name": "@pilleo/paperclip-telegram-plugin",
   "version": "0.1.0",
-  "description": "Native Telegram companion daemon and operator plugin for Paperclip AI",
+  "description": "Paperclip-idiomatic Telegram companion plugin & operator notification gateway",
+  "license": "MIT",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "private": false,
+  "files": [
+    "dist",
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "bin": {
-    "paperclip-telegram": "bin/paperclip-telegram.js"
+    "paperclip-telegram": "./bin/paperclip-telegram.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js"
+    }
+  },
+  "peerDependencies": {
+    "@paperclipai/adapter-utils": "2026.722.0"
+  },
+  "devDependencies": {
+    "@paperclipai/adapter-utils": "2026.722.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.2",
+    "zod": "^3.24.0"
+  },
+  "dependencies": {
+    "zod": "^3.24.0",
+    "dotenv": "^16.4.7",
+    "@pilleo/paperclip-adapter-common": "workspace:*",
+    "@pilleo/paperclip-orchestrator-adapter": "workspace:*"
+  },
+  "engines": {
+    "node": ">=22"
   },
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
     "start": "node bin/paperclip-telegram.js"
-  },
-  "dependencies": {
-    "@pilleo/paperclip-adapter-common": "workspace:*",
-    "@pilleo/paperclip-orchestrator-adapter": "workspace:*",
-    "dotenv": "^16.4.7"
-  },
-  "devDependencies": {
-    "@types/node": "^22.10.5",
-    "typescript": "^5.7.3",
-    "vitest": "^3.0.2"
   }
 }
