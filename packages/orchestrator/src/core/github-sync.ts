@@ -10,8 +10,8 @@ const execFileAsync = promisify(execFile);
 export function matchPrToIssue(pr: GitHubPullRequest, issue: ParsedIssueMetadata): boolean {
   const prText = `${pr.title} ${pr.headRefName} ${pr.url}`.toLowerCase();
   if (issue.id && prText.includes(issue.id.toLowerCase())) return true;
-  if (issue.identifier && prText.includes(issue.identifier.toLowerCase())) return true;
-  if (issue.issueNumber && prText.includes(`issue-${issue.issueNumber}`)) return true;
+  if (issue.identifier && new RegExp(`\\b${issue.identifier.toLowerCase()}\\b`).test(prText)) return true;
+  if (issue.issueNumber && new RegExp(`\\bissue-${issue.issueNumber}\\b`, "i").test(prText)) return true;
 
   const rawDesc = typeof issue.rawIssue["description"] === "string" ? (issue.rawIssue["description"] as string).toLowerCase() : "";
   if (rawDesc.includes(pr.url.toLowerCase()) || rawDesc.includes(`/pull/${pr.number}`)) return true;

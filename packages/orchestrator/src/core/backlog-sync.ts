@@ -5,6 +5,8 @@ export interface BacklogSyncOptions {
   readonly workspacePath: string;
   readonly companyId: string;
   readonly apiUrl: string;
+  readonly backlogDirectory?: string | undefined;
+  readonly resolvedDirectory?: string | undefined;
   readonly projectId?: string | undefined;
 }
 
@@ -138,7 +140,9 @@ export function scanBacklogDirectory(backlogDir: string): string[] {
 }
 
 export async function syncBacklogMarkdownToPaperclip(options: BacklogSyncOptions): Promise<BacklogSyncSummary> {
-  const backlogDir = path.join(options.workspacePath, "docs/internals/backlog");
+  const backlogDir = path.isAbsolute(options.backlogDirectory || "")
+    ? (options.backlogDirectory as string)
+    : path.join(options.workspacePath, options.backlogDirectory || "docs/internals/backlog");
   const files = scanBacklogDirectory(backlogDir);
 
   if (files.length === 0) {

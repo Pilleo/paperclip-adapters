@@ -28,7 +28,9 @@ export function evaluateTaskStartApproval(
 
   // Find existing start approval for this issue
   const matchingApproval = existingApprovals.find(
-    (app) => app.type === "task_start_approval" && app.issueIds.includes(issue.id)
+    (app) =>
+      (app.type === "task_start_approval" || (app.type === "request_board_approval" && app.payload?.["action"] === "task_start")) &&
+      (app.issueIds.includes(issue.id) || app.payload?.["issueId"] === issue.id)
   );
 
   if (!matchingApproval) {

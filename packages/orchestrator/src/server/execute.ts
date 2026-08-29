@@ -19,6 +19,8 @@ export interface OrchestratorAdapterConfig {
   readonly vibeAgentId?: string | undefined;
   readonly reviewerAgentId?: string | undefined;
   readonly workspacePath?: string | undefined;
+  readonly backlogDirectory?: string | undefined;
+  readonly resolvedDirectory?: string | undefined;
   readonly apiUrl?: string | undefined;
   readonly requireTaskApproval?: boolean | undefined;
 }
@@ -100,6 +102,8 @@ export async function execute(context: AdapterExecutionContext): Promise<Adapter
     workspacePath,
     companyId,
     apiUrl,
+    backlogDirectory: config.backlogDirectory,
+    resolvedDirectory: config.resolvedDirectory,
   });
   if (syncSummary.createdCount > 0 || syncSummary.syncedHeadersCount > 0) {
     await log(
@@ -153,6 +157,7 @@ export async function execute(context: AdapterExecutionContext): Promise<Adapter
   const parsedIssues: ParsedIssueMetadata[] = issuesList.map(extractIssueMetadata);
 
   // 7. PHASE 1: Reconcile board status with merged GitHub PRs & Archive files
+  const statusOverrides = new Map<string, string>();
   let mergedAutoCompleted = 0;
   for (const issue of parsedIssues) {
     if (issue.status !== "done" && issue.status !== "cancelled") {
@@ -173,7 +178,7 @@ export async function execute(context: AdapterExecutionContext): Promise<Adapter
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ status: transition.toStatus }),
             });
-            (issue as any).status = transition.toStatus;
+            statusOverrides.set(issue.id, transition.toStatus);
             mergedAutoCompleted++;
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -308,18 +313,20 @@ export async function execute(context: AdapterExecutionContext): Promise<Adapter
         issueIds?: string[];
       }>;
       existingApprovals = rawApprovals.map((a) => {
-        const payloadIssueId = typeof a.payload?.["issueId"] === "string" ? [a.payload["issueId"] as string] : [];
+        const payload = (a.payload || {}) as Record<string, unknown>;
+        const payloadIssueId = typeof payload["issueId"] === "string" ? [payload["issueId"] as string] : [];
         return {
           id: a.id,
           type: a.type,
           status: a.status,
-          issueIds: a.issueIds || payloadIssueId,
+          issueIds: Array.isArray(a.issueIds) && a.issueIds.length > 0 ? a.issueIds : payloadIssueId,
+          payload,
         };
       });
     }
   } catch {}
 
-  const requireApproval = config.requireTaskApproval !== false;
+  const requireApproval = config.requireTaskApproval !== false && (config as any).requireApproval !== false;
   let dispatchedCount = 0;
   let approvalsRequestedCount = 0;
   let awaitingApprovalCount = 0;
@@ -398,12 +405,13 @@ export async function execute(context: AdapterExecutionContext): Promise<Adapter
     );
 
     try {
+      const effectiveAssigneeId = targetAgentId || julesAgentId || vibeAgentId;
       const updateRes = await fetch(`${apiUrl}/api/issues/${targetIssueId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           status: transition.toStatus,
-          ...(targetAgentId ? { assigneeAgentId: targetAgentId } : {}),
+          assigneeAgentId: effectiveAssigneeId,
         }),
       });
 
