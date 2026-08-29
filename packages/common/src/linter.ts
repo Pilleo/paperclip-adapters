@@ -86,7 +86,8 @@ export interface BacklogIssueLintResult {
 export function lintBacklogMarkdown(
   rawMarkdown: string,
   filename?: string,
-  knownIssueIds?: ReadonlySet<string>
+  knownIssueIds?: ReadonlySet<string>,
+  isInsideResolvedDir = false
 ): BacklogIssueLintResult {
   const errors: string[] = [];
   const warnings: string[] = [];
@@ -148,6 +149,12 @@ export function lintBacklogMarkdown(
     } else {
       errors.push(`Invalid status '${frontmatter["status"]}'. Allowed: ${VALID_STATUSES.join(", ")}`);
     }
+  }
+
+  if (isInsideResolvedDir && status !== "resolved") {
+    errors.push(`Issue is located in 'resolved/' directory but has status '${status}' (expected 'resolved')`);
+  } else if (!isInsideResolvedDir && status === "resolved") {
+    errors.push(`Issue has status 'resolved' but is located outside the 'resolved/' directory`);
   }
 
   // 6. Priority validation
@@ -260,6 +267,27 @@ export function lintBacklogMarkdown(
   };
 }
 
+function findIssueFilesRecursively(dir: string): Array<{ filePath: string; fileName: string; isResolved: boolean }> {
+  const results: Array<{ filePath: string; fileName: string; isResolved: boolean }> = [];
+  if (!fs.existsSync(dir)) return results;
+
+  function traverse(current: string) {
+    const entries = fs.readdirSync(current, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        traverse(fullPath);
+      } else if (entry.isFile() && entry.name.startsWith("issue-") && entry.name.endsWith(".md")) {
+        const isResolved = fullPath.includes(`${path.sep}resolved${path.sep}`) || fullPath.endsWith(`${path.sep}resolved`);
+        results.push({ filePath: fullPath, fileName: entry.name, isResolved });
+      }
+    }
+  }
+
+  traverse(dir);
+  return results;
+}
+
 export function validateBacklogDirectory(backlogDir: string): {
   readonly totalIssues: number;
   readonly validCount: number;
@@ -273,29 +301,29 @@ export function validateBacklogDirectory(backlogDir: string): {
     };
   }
 
-  const files = fs.readdirSync(backlogDir).filter((f) => f.startsWith("issue-") && f.endsWith(".md"));
+  const allFiles = findIssueFilesRecursively(backlogDir);
   const allErrors: Array<{ file: string; message: string }> = [];
   let validCount = 0;
 
-  for (const file of files) {
-    const fullPath = path.join(backlogDir, file);
+  for (const { filePath, fileName, isResolved } of allFiles) {
     try {
-      const content = fs.readFileSync(fullPath, "utf8");
-      const res = lintBacklogMarkdown(content, file);
+      const content = fs.readFileSync(filePath, "utf8");
+      const res = lintBacklogMarkdown(content, fileName, undefined, isResolved);
       if (res.isValid) {
         validCount++;
       } else {
+        const rel = path.relative(backlogDir, filePath);
         for (const err of res.errors) {
-          allErrors.push({ file, message: err });
+          allErrors.push({ file: rel, message: err });
         }
       }
     } catch (e: unknown) {
-      allErrors.push({ file, message: e instanceof Error ? e.message : String(e) });
+      allErrors.push({ file: fileName, message: e instanceof Error ? e.message : String(e) });
     }
   }
 
   return {
-    totalIssues: files.length,
+    totalIssues: allFiles.length,
     validCount,
     errors: Object.freeze(allErrors),
   };

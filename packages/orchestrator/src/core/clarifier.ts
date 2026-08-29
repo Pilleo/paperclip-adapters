@@ -46,10 +46,32 @@ export function selectClarificationCandidates(
       Object.freeze({
         issue: candidate,
         targetAgentId: vibeAgentId,
-        reason: "Routed to Vibe for pre-implementation specification & clarification (open_questions)",
+        reason: "Routed to Vibe for pre-implementation clarification (code-first research)",
       })
     );
   }
 
   return Object.freeze(selections);
+}
+
+export function buildClarifierAutonomousPrompt(issue: ParsedIssueMetadata): string {
+  return `### 🔍 Clarification Task: [${issue.identifier || issue.id}] "${issue.title}"
+
+You are acting as the **Autonomous Clarifier Agent** for this issue.
+
+#### 📋 Protocol & Invariants:
+1. **Codebase-First Autonomous Research:**
+   - Search the active codebase (using codanna, file_structure, ast-grep, or symbol outline).
+   - Consult relevant design docs in \`docs/internals/designs/\` and existing tests.
+   - Clarify the open questions listed in \`## ❓ Open Questions\` based on current architectural invariants and kernel constraints.
+2. **Autonomous Resolution (Preferred):**
+   - If the codebase and design docs provide the necessary answers:
+     - Update the issue markdown file in \`docs/internals/backlog/\`.
+     - Remove or update \`open_questions: false\` in the YAML frontmatter.
+     - Document the technical answers in the \`**Context:**\` or \`**Needed:**\` section.
+     - Remove the \`## ❓ Open Questions\` section.
+     - Transition issue status to \`todo\`.
+3. **Escalate to Operator (Only when impossible to resolve from code):**
+   - If and only if the questions involve a business trade-off or missing external operator preference that cannot be deduced from code:
+     - Request confirmation / interactive clarification from the operator in Paperclip.`;
 }
