@@ -102,29 +102,41 @@ export function buildClarifierAutonomousPrompt(issue: ParsedIssueMetadata): stri
     ? `\n⚠️ **SCOPE ALERT**: This task is flagged as potentially too broad (${broadCheck.reason}). Prioritize decomposing this task into smaller atomic sub-tasks.\n`
     : "";
 
-  return `### 🔍 Task Review & Clarification: [${issue.identifier || issue.id}] "${issue.title}"
+  return `### 🔍 Task Review, Granularity & Pre-Refactoring Gate: [${issue.identifier || issue.id}] "${issue.title}"
 ${broadWarning}
-You are acting as the **Autonomous Task Reviewer & Systems Architect** for this raw upcoming issue.
+You are acting as the **Autonomous Task Reviewer & Principal Systems Architect** for this raw upcoming issue.
 
-#### 📋 Mandatory Review & Granularity Invariants:
-1. **Task Granularity & Atomicity Verification (MANDATORY FIRST STEP):**
-   - **Is this task truly granular and atomic?** (Can a developer agent implement and verify it in a single surgical pass without touching unrelated subsystems?)
-   - **Scope Check:** If the task attempts multiple decoupled goals (e.g. refactoring multiple modules, combining new kernel downcalls with high-level API changes, or >4 target files):
+#### 📋 Mandatory Review Protocol & Architectural Gates:
+
+1. **Task Granularity & Autonomous Splitting Gate (MANDATORY FIRST STEP):**
+   - **Is this task truly granular and atomic?** Can a developer agent implement and verify it in a single surgical pass without touching unrelated subsystems?
+   - **Autonomous Decomposition:** If the task is too broad (e.g. touches multiple decoupled modules, requires both new FFM downcalls AND full CLI rewrites, or spans >4 target files):
      - **DO NOT** attempt a monolithic implementation.
-     - **Decompose into Sub-Tasks:** Outline a clean split into separate, bite-sized tasks (e.g. \`Phase 1: Interfaces/Layouts\`, \`Phase 2: Core Engine\`, \`Phase 3: Integration Tests\`).
-     - Create or document the split sub-tasks in \`docs/internals/backlog/\` and report the split to the operator.
-2. **Codebase-First Autonomous Research:**
+     - **Split into Sub-Tasks:** Create new standalone issue markdown files in \`docs/internals/backlog/\` (e.g. \`issue-YYYYMMDD-HHMMSS-part-1-types.md\`, \`issue-YYYYMMDD-HHMMSS-part-2-engine.md\`).
+     - Link the sub-tasks in sequence with explicit dependencies in frontmatter (\`dependencies: ["MAZ-XXX"]\`).
+     - Update the parent issue with a summary of the split and mark it resolved/decomposed.
+
+2. **Pre-Implementation Refactoring & Simplification Gate ("Make the Change Easy First"):**
+   - **Is the existing codebase around the target files too complex, tangled, or lacking test seams?**
+   - *“Make the change easy (warning: this may be hard), then make the easy change.”*
+   - If adding the new feature onto messy legacy code would be risky, brittle, or error-prone:
+     - **Spin off a Preparatory Refactoring Sub-Task:** Create a dedicated refactoring issue in \`docs/internals/backlog/\` (e.g. \`issue-*-refactor-*.md\`) to simplify the abstraction, extract clean interfaces, or decouple state FIRST.
+     - Make the main feature task depend on the completion of the preparatory refactoring task.
+
+3. **Codebase-First Autonomous Research:**
    - Search the active codebase (using codanna, file_structure, ast-grep, or symbol outline).
    - Consult relevant design docs in \`docs/internals/designs/\` and existing tests.
    - Clarify the open questions listed in \`## ❓ Open Questions\` based on current architectural invariants and kernel constraints.
-3. **Autonomous Resolution (Preferred):**
+
+4. **Autonomous Resolution (Preferred):**
    - If the codebase and design docs provide the necessary answers:
      - Update the issue markdown file in \`docs/internals/backlog/\`.
      - Remove or update \`open_questions: false\` in the YAML frontmatter.
      - Document the technical answers in the \`**Context:**\` or \`**Needed:**\` section.
      - Remove the \`## ❓ Open Questions\` section.
      - Transition issue status to \`todo\`.
-4. **Escalate to Operator (Only when impossible to resolve from code):**
+
+5. **Escalate to Operator (Only when impossible to resolve from code):**
    - If and only if the questions involve a business trade-off or missing external operator preference that cannot be deduced from code:
      - Request confirmation / interactive clarification from the operator in Paperclip.`;
 }

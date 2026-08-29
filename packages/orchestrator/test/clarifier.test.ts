@@ -64,7 +64,8 @@ Part 3: Rewrite CLI`,
 
     const prompt = buildClarifierAutonomousPrompt(broadIssue);
     expect(prompt).toContain("SCOPE ALERT");
-    expect(prompt).toContain("Task Granularity & Atomicity Verification");
+    expect(prompt).toContain("Task Granularity & Autonomous Splitting Gate");
+    expect(prompt).toContain("Pre-Implementation Refactoring & Simplification Gate");
   });
 
   it("selects candidates for Vibe clarifier lane", () => {
