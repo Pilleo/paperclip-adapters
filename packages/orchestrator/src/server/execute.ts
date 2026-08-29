@@ -19,6 +19,7 @@ import { identifyStalledIssues } from "../core/stalled-session-reaper.js";
 import { synthesizeTokenFriendlyReviewPrompt } from "../core/review-synthesizer.js";
 import { identifyMergedBranches } from "../core/branch-pruner.js";
 import { reconcileManagedFleet } from "../core/fleet-manager.js";
+import { synthesizeAuditDigest } from "../core/audit-digest.js";
 
 export interface OrchestratorAdapterConfig {
   readonly maxConcurrentJules?: number | undefined;
@@ -187,6 +188,19 @@ export async function execute(context: AdapterExecutionContext): Promise<Adapter
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ status: transition.toStatus }),
             });
+
+            if (transition.toStatus === "done") {
+              const digest = synthesizeAuditDigest({
+                issue,
+                pr: mergedPr,
+              });
+              await fetch(`${apiUrl}/api/issues/${issue.id}/comments`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ body: digest }),
+              }).catch(() => {});
+            }
+
             statusOverrides.set(issue.id, transition.toStatus);
             mergedAutoCompleted++;
           } catch (err: unknown) {
