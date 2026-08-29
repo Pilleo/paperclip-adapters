@@ -9,6 +9,7 @@ import { syncBacklogMarkdownToPaperclip } from "../core/backlog-sync.js";
 import { archiveResolvedBacklogFiles } from "../core/backlog-archiver.js";
 import { selectClarificationCandidates } from "../core/clarifier.js";
 import { ParsedIssueMetadata } from "../core/types.js";
+import { evaluateTaskStartApproval, PaperclipApprovalSummary } from "../core/approvals.js";
 
 export interface OrchestratorAdapterConfig {
   readonly maxConcurrentJules?: number | undefined;
@@ -18,6 +19,7 @@ export interface OrchestratorAdapterConfig {
   readonly reviewerAgentId?: string | undefined;
   readonly workspacePath?: string | undefined;
   readonly apiUrl?: string | undefined;
+  readonly requireTaskApproval?: boolean | undefined;
 }
 
 export async function execute(context: AdapterExecutionContext): Promise<AdapterExecutionResult> {
@@ -292,10 +294,95 @@ export async function execute(context: AdapterExecutionContext): Promise<Adapter
     };
   }
 
+  // Fetch existing approvals to enforce operator approval gate
+  let existingApprovals: PaperclipApprovalSummary[] = [];
+  try {
+    const approvalsRes = await fetch(`${apiUrl}/api/companies/${companyId}/approvals`);
+    if (approvalsRes.ok) {
+      const rawApprovals = (await approvalsRes.json()) as Array<{
+        id: string;
+        type: string;
+        status: "pending" | "approved" | "rejected";
+        payload?: Record<string, unknown>;
+        issueIds?: string[];
+      }>;
+      existingApprovals = rawApprovals.map((a) => {
+        const payloadIssueId = typeof a.payload?.["issueId"] === "string" ? [a.payload["issueId"] as string] : [];
+        return {
+          id: a.id,
+          type: a.type,
+          status: a.status,
+          issueIds: a.issueIds || payloadIssueId,
+        };
+      });
+    }
+  } catch {}
+
+  const requireApproval = config.requireTaskApproval !== false;
   let dispatchedCount = 0;
+  let approvalsRequestedCount = 0;
+  let awaitingApprovalCount = 0;
+
   for (const selection of candidateSelections) {
     const targetIssueId = selection.issue.id;
     const targetAgentId = selection.targetAgentId;
+
+    const approvalDecision = evaluateTaskStartApproval(
+      selection.issue,
+      targetAgentId || "",
+      existingApprovals,
+      requireApproval
+    );
+
+    if (approvalDecision.action === "CREATE_APPROVAL_REQUEST") {
+      await log(
+        `[ORCHESTRATOR] ⏳ Requesting operator start approval for [${selection.issue.identifier || selection.issue.id}] "${selection.issue.title}" -> ${targetAgentId || "worker"}`
+      );
+      try {
+        const createRes = await fetch(`${apiUrl}/api/companies/${companyId}/approvals`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            type: "task_start_approval",
+            title: approvalDecision.title,
+            description: approvalDecision.description,
+            issueIds: [targetIssueId],
+            payload: {
+              issueId: targetIssueId,
+              identifier: selection.issue.identifier,
+              title: selection.issue.title,
+              targetAgentId,
+              priority: selection.issue.priority,
+              component: selection.issue.component,
+              targetFiles: selection.issue.targetFiles,
+              reason: selection.reason,
+            },
+          }),
+        });
+        if (createRes.ok) {
+          approvalsRequestedCount++;
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await log(`[ORCHESTRATOR] Warning: Failed to create approval request: ${msg}`);
+      }
+      continue;
+    }
+
+    if (approvalDecision.action === "AWAIT_APPROVAL") {
+      await log(
+        `[ORCHESTRATOR] ⏳ [${selection.issue.identifier || selection.issue.id}] "${selection.issue.title}" is awaiting operator approval (${approvalDecision.reason})`
+      );
+      awaitingApprovalCount++;
+      continue;
+    }
+
+    if (approvalDecision.action === "SKIP_REJECTED") {
+      await log(
+        `[ORCHESTRATOR] 🛑 [${selection.issue.identifier || selection.issue.id}] "${selection.issue.title}" start was rejected by operator (${approvalDecision.reason}). Skipping.`
+      );
+      continue;
+    }
 
     const transition = evaluateIssueTransition(selection.issue.status, selection.issue.assigneeAgentId, {
       type: "DISPATCH",
