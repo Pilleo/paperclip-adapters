@@ -62,6 +62,7 @@ export class PaperclipTelegramPoller {
           action: payload.action || app.action,
           issueIdentifier: payload.identifier || app.issueIdentifier || app.issueId || "TASK",
           issueTitle: payload.issueTitle || payload.title || app.issueTitle || app.title || "Pending Operation",
+          description: payload.description || app.description,
           reason: payload.reason,
           priority: payload.priority,
           prNumber: payload.prNumber || app.prNumber,

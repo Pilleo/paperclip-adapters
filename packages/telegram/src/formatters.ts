@@ -5,12 +5,36 @@ export interface PendingApprovalData {
   readonly action?: string | undefined;
   readonly issueIdentifier: string;
   readonly issueTitle: string;
+  readonly description?: string | undefined;
   readonly reason?: string | undefined;
   readonly priority?: string | undefined;
   readonly prNumber?: number | undefined;
   readonly prUrl?: string | undefined;
   readonly reviewVerdict?: string | undefined;
   readonly requestedBy?: string | undefined;
+}
+
+export function compactDescription(desc: string | undefined, maxLen = 220): string {
+  if (!desc || typeof desc !== "string") return "";
+
+  const cleaned = desc
+    .replace(/^(\s*#+\s*.*$)+/gm, "")
+    .replace(/Component:\s*[^\n]*\n?/gi, "")
+    .replace(/Priority:\s*[^\n]*\n?/gi, "")
+    .replace(/Planned Agent:\s*[^\n]*\n?/gi, "")
+    .trim();
+
+  if (!cleaned) return "";
+
+  const truncated = cleaned.length > maxLen ? `${cleaned.slice(0, maxLen).trim()}...` : cleaned;
+  // Render as a Telegram quote block
+  const quoteLines = truncated
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n> ");
+
+  return `\n\n> 📝 _${quoteLines}_`;
 }
 
 export function formatApprovalCard(data: PendingApprovalData): {
@@ -28,7 +52,8 @@ export function formatApprovalCard(data: PendingApprovalData): {
     header = `🚀 *Task Dispatch Approval*`;
     const prioStr = data.priority ? ` (\`${data.priority.toUpperCase()}\`)` : "";
     const reasonStr = data.reason ? `\n• *Routing:* ${data.reason}` : "";
-    actionDetails = `• *Task:* [${data.issueIdentifier}] ${data.issueTitle}${prioStr}${reasonStr}`;
+    const descStr = compactDescription(data.description);
+    actionDetails = `• *Task:* [${data.issueIdentifier}] ${data.issueTitle}${prioStr}${reasonStr}${descStr}`;
 
     buttons.push([
       { text: "▶️ Start Task", callback_data: `approve:${data.approvalId}` },
@@ -37,12 +62,13 @@ export function formatApprovalCard(data: PendingApprovalData): {
   } else if (isPrMerge) {
     header = `📋 *Pull Request Merge Approval*`;
     const prLine = data.prUrl
-      ? `• *PR:* [#${data.prNumber || "Link"}](${data.prUrl})`
+      ? `\n• *PR:* [#${data.prNumber || "Link"}](${data.prUrl})`
       : "";
     const verdictLine = data.reviewVerdict
       ? `\n\n*Review Verdict:*\n${data.reviewVerdict}`
       : "";
-    actionDetails = `• *Task:* [${data.issueIdentifier}] ${data.issueTitle}\n${prLine}${verdictLine}`;
+    const descStr = compactDescription(data.description);
+    actionDetails = `• *Task:* [${data.issueIdentifier}] ${data.issueTitle}${prLine}${descStr}${verdictLine}`;
 
     buttons.push([
       { text: "🚢 Approve & Merge", callback_data: `approve:${data.approvalId}` },
@@ -53,7 +79,8 @@ export function formatApprovalCard(data: PendingApprovalData): {
       buttons.push([{ text: "🔍 View PR on GitHub", url: data.prUrl }]);
     }
   } else {
-    actionDetails = `• *Task:* [${data.issueIdentifier}] ${data.issueTitle}`;
+    const descStr = compactDescription(data.description);
+    actionDetails = `• *Task:* [${data.issueIdentifier}] ${data.issueTitle}${descStr}`;
     buttons.push([
       { text: "✅ Approve", callback_data: `approve:${data.approvalId}` },
       { text: "❌ Reject", callback_data: `reject:${data.approvalId}` },

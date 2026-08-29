@@ -4,15 +4,24 @@ import {
   formatClarificationQuestionCard,
   formatFleetStatusCard,
   formatTaskQueueCard,
+  compactDescription,
 } from "../src/formatters.js";
 
 describe("Telegram Message Formatters", () => {
-  it("formats task start approval card with Start / Defer buttons", () => {
+  it("formats compact description as Telegram blockquote", () => {
+    const raw = "The task is prioritized and ready for dispatch.\n\nComponent: core\nPriority: high\nPlanned Agent: 8ec6f7dd";
+    const formatted = compactDescription(raw);
+    expect(formatted).toContain("> 📝 _The task is prioritized and ready for dispatch._");
+    expect(formatted).not.toContain("Component: core");
+  });
+
+  it("formats task start approval card with Start / Defer buttons and description block", () => {
     const card = formatApprovalCard({
       approvalId: "app-1",
       action: "task_start",
       issueIdentifier: "MAZ-101",
       issueTitle: "Implement BPF linear scan",
+      description: "Perform strict instruction validation without kernel traps.",
       reason: "Routed to primary Jules lane",
       priority: "high",
     });
@@ -20,6 +29,7 @@ describe("Telegram Message Formatters", () => {
     expect(card.text).toContain("Task Dispatch Approval");
     expect(card.text).toContain("[MAZ-101] Implement BPF linear scan");
     expect(card.text).toContain("HIGH");
+    expect(card.text).toContain("> 📝 _Perform strict instruction validation without kernel traps._");
     expect(card.replyMarkup.inline_keyboard[0]![0]!.text).toBe("▶️ Start Task");
     expect(card.replyMarkup.inline_keyboard[0]![1]!.text).toBe("⏸️ Skip / Defer");
   });
