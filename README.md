@@ -20,12 +20,15 @@ flowchart TD
     subgraph Orchestrator Control Plane (@pilleo/paperclip-orchestrator-adapter)
         O[Deterministic Orchestrator Tick]
         FL[Auto-Provisioned Managed Worker Fleet]
-        DAG[Fine-Grained Method DAG & Lock Matrix]
+        DAG[AST-Aware Method DAG & Lock Matrix]
         PL[Deterministic Planning & Blast Radius Engine]
         INV[Pluggable Invariant Engine]
         RPR[Stalled-Session Auto-Reaper]
-        CLR[Autonomous Clarifier Q&A Loop]
-        RS[Token-Friendly Review Synthesizer]
+        QA[Autonomous Q&A Clarification Firewall]
+        SPLIT[Task Granularity & Splitting Gate]
+        REF[Pre-Implementation Refactoring Gate]
+        REV[Strong Model PR Reviewer - Grok/Terra]
+        COST[Daily Budget & Cost Tracker]
         BP[Merged Branch Pruner]
     end
 
@@ -33,7 +36,7 @@ flowchart TD
         J["[Orchestrated] Jules Async Worker (Cloud)"]
         V["[Orchestrated] Vibe Local Worker (ACP)"]
         AGY["[Orchestrated] Antigravity Local Worker (ACP)"]
-        REV["[Orchestrated] Code Reviewer (Token-Friendly)"]
+        CR["[Orchestrated] Code Reviewer (Token-Friendly)"]
     end
 
     P <-->|2-Way Markdown & State Sync| O
@@ -41,21 +44,24 @@ flowchart TD
     FL -->|Provisions & Locks (pollCadence: 0)| J
     FL -->|Provisions & Locks (pollCadence: 0)| V
     FL -->|Provisions & Locks (pollCadence: 0)| AGY
-    FL -->|Provisions & Locks (pollCadence: 0)| REV
+    FL -->|Provisions & Locks (pollCadence: 0)| CR
 
     O --> DAG
     DAG --> PL
     PL --> INV
+    O --> SPLIT
+    SPLIT --> REF
+    O --> QA
+    O --> COST
     O --> RPR
-    O --> CLR
     O --> BP
     
     O -->|1-Click Approval Granted| J
     O -->|1-Click Approval Granted| V
     O -->|1-Click Approval Granted| AGY
     
-    J -->|PR Created -> in_review| RS
-    RS -->|Token-Efficient Review Prompt| REV
+    J -->|PR Green CI -> in_review| REV
+    REV -->|Direct GitHub PR Comment| GH["GitHub PR Thread (gh pr comment)"]
 ```
 
 ---
@@ -64,8 +70,8 @@ flowchart TD
 
 | Package | Directory | Description |
 |---|---|---|
-| **`@pilleo/paperclip-adapter-common`** | [`packages/common`](./packages/common) | Shared protocol types, linter, planning engine, blast radius extractor, and skills materializer. |
-| **`@pilleo/paperclip-orchestrator-adapter`** | [`packages/orchestrator`](./packages/orchestrator) | Multi-lane scheduler, auto-provisioned managed fleet, method-level DAG, invariant engine, and telemetry card. |
+| **`@pilleo/paperclip-adapter-common`** | [`packages/common`](./packages/common) | Shared protocol types, linter, planning engine, blast radius extractor, zero-dependency TS code investigation, and skills materializer. |
+| **`@pilleo/paperclip-orchestrator-adapter`** | [`packages/orchestrator`](./packages/orchestrator) | Multi-lane scheduler, auto-provisioned managed fleet, AST method-level DAG, QA clarification firewall, strong model reviewer, daily cost tracker, and live telemetry. |
 | **`@pilleo/paperclip-jules-adapter`** | [`packages/jules`](./packages/jules) | Google Jules cloud runner with activity replay, UI accordions, token recovery, and checkpoint sync. |
 | **`@pilleo/paperclip-vibe-adapter`** | [`packages/vibe`](./packages/vibe) | Mistral Vibe local runner executing via Agent Client Protocol (ACP) over stdio with subshell isolation. |
 | **`@pilleo/paperclip-antigravity-adapter`** | [`packages/antigravity`](./packages/antigravity) | Google Antigravity local runner executing via ACP stdio subshell with shared skills mounting. |
@@ -83,16 +89,22 @@ flowchart TD
 - **Locked Zero-Cadence (`pollCadenceSeconds: 0`):** All managed workers are locked with `pollCadenceSeconds: 0` and `status: "idle"`. Paperclip's internal background scheduler will **never** autonomously pull unapproved tasks or flood the board. Workers execute **strictly on-demand** when the Orchestrator dispatches a targeted execution wakeup (`POST /api/agents/:workerId/wakeup`).
 
 ### 2. 🚦 1-Click Operator Start-Approval Gate
-- The operator retains 100% authority over code execution. Tasks remain safely staged in `backlog` / `todo` until an operator approves execution via Paperclip Board Approval cards.
+- The operator retains 100% authority over code execution. Tasks remain safely staged in `backlog` / `todo` until an operator approves execution via Paperclip Board Approval cards enriched with direct issue links and target symbol tables.
 
-### 3. 🔍 Token-Friendly Code Review Dispatcher
-- When tasks enter `in_review`, the Orchestrator synthesizes a compact review prompt with direct PR links, target symbols, Codanna blast radius test suites, and project invariants, instructing the reviewer to inspect only specific target symbols using AST tools without dumping full file contents.
+### 3. ✂️ Task Granularity, Autonomous Splitting & Pre-Refactoring Gate
+- During initial task review, broad tasks spanning multiple modules or epics are autonomously split into sequential sub-tasks with explicit dependency links.
+- Before functional code is built, the review inspects existing code complexity: if legacy code is tangled, a **preparatory refactoring sub-task** is spun off first (*"Make the change easy, then make the easy change"*).
 
-### 4. ⏳ Visual Rate-Limit Cooldown & Automatic Quota Recovery
-- When Jules cloud returns a `429 Rate Limit`, the orchestrator tracks `rateLimitPausedUntilMs` and displays a live countdown timer in the Paperclip dashboard card (`⏸️ Paused (Rate limit cooldown: 3m 12s remaining)`). It automatically resumes dispatches once capacity clears.
+### 4. 🛡️ Autonomous Q&A Clarification Firewall
+- Intercepts worker questions and uses strong models (Grok, Gemini, GPT-4o, Claude) to autonomously resolve trivial/spec-covered questions. If confidence is low or genuine ambiguity exists, it gracefully escalates to the operator via Paperclip feedback cards.
 
-### 5. 🧹 Merged Feature Branch Pruning
-- Scans GitHub for merged feature branches associated with completed PRs and marks them for cleanup while strictly protecting `master` and `main`.
+### 5. 🔍 Token-Efficient Strong Model PR Reviews with Direct GitHub Comments
+- Evaluates green-CI PRs using compact surgical diffs against security/kernel invariants.
+- Formats structured review cards and posts them directly onto the **GitHub PR thread** (`gh pr comment <prNumber>`), as well as recording verdicts in Paperclip.
+
+### 6. 💰 Daily Budget & Cost Optimization Tracker
+- Aggregates estimated cloud token spend across Jules and strong model reviews.
+- Displays live budget usage in the Paperclip Telemetry Dashboard and prevents quota overruns.
 
 ---
 
@@ -105,7 +117,7 @@ pnpm install
 # Typecheck and build all 5 packages
 pnpm -r build
 
-# Run all 405+ unit and integration tests
+# Run all unit and integration tests across monorepo
 pnpm -r test
 
 # Run the deep ephemeral live E2E lifecycle test against Paperclip
