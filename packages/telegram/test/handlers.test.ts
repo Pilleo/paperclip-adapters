@@ -33,7 +33,7 @@ describe("Telegram Message & Callback Handlers", () => {
     );
   });
 
-  it("approves pending requests when operator clicks approve button", async () => {
+  it("approves pending requests and wakes up orchestrator when operator clicks approve button", async () => {
     const mockBot = {
       answerCallbackQuery: vi.fn().mockResolvedValue(true),
       editMessageText: vi.fn().mockResolvedValue(true),
@@ -41,6 +41,9 @@ describe("Telegram Message & Callback Handlers", () => {
 
     const mockPc = {
       postJson: vi.fn().mockResolvedValue({ success: true }),
+      getJson: vi.fn().mockResolvedValue([
+        { id: "orch-1", adapterType: "orchestrator", name: "Task Orchestrator" }
+      ]),
     } as unknown as PaperclipApiClient;
 
     await handleTelegramCallback(
@@ -63,6 +66,9 @@ describe("Telegram Message & Callback Handlers", () => {
 
     expect(mockPc.postJson).toHaveBeenCalledWith("/api/approvals/app-123/approve", {
       actor: "telegram:100",
+    });
+    expect(mockPc.postJson).toHaveBeenCalledWith("/api/agents/orch-1/wakeup", {
+      reason: "approval_approved",
     });
     expect(mockBot.answerCallbackQuery).toHaveBeenCalledWith("cb-2", "Approved!");
     expect(mockBot.editMessageText).toHaveBeenCalledWith(

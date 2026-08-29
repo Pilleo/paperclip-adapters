@@ -48,6 +48,22 @@ export async function handleTelegramCallback(
         await deps.paperclipClient.postJson(`/api/approvals/${targetId}/approve`, {
           actor: `telegram:${userId}`,
         });
+
+        // Trigger orchestrator wakeup immediately to dispatch approved tasks without waiting
+        try {
+          const agentsRes = await deps.paperclipClient.getJson<any>(`/api/companies/${deps.companyId}/agents`);
+          const agentsList: any[] = Array.isArray(agentsRes) ? agentsRes : agentsRes?.agents || [];
+          const orchestrator = agentsList.find(
+            (a) => a.adapterType === "orchestrator" || a.name?.toLowerCase().includes("orchestrator")
+          );
+          if (orchestrator?.id) {
+            await deps.paperclipClient.postJson(`/api/agents/${orchestrator.id}/wakeup`, {
+              reason: "approval_approved",
+            });
+          }
+        } catch {
+          // Best effort orchestrator notification
+        }
       }
       await deps.botClient.answerCallbackQuery(callback.id, "Approved!");
       if (callback.message) {
