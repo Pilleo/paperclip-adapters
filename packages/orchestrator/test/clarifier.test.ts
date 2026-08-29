@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { needsClarification, selectClarificationCandidates } from "../src/core/clarifier.js";
+import {
+  needsClarification,
+  selectClarificationCandidates,
+  isTaskTooBroad,
+  buildClarifierAutonomousPrompt,
+} from "../src/core/clarifier.js";
 import { extractIssueMetadata } from "../src/core/parser.js";
 
 describe("Clarifier Module", () => {
@@ -31,6 +36,35 @@ describe("Clarifier Module", () => {
       description: "---\ntarget_files: [src/Bpf.kt]\n---\nFix typo.",
     });
     expect(needsClarification(issue)).toBe(false);
+  });
+
+  it("detects when a task is too broad (cross-module sprawl or multi-phase epic)", () => {
+    const broadIssue = extractIssueMetadata({
+      id: "issue-broad",
+      title: "Massive Monolithic Epic",
+      status: "backlog",
+      description: `---
+target_files:
+  - enforcer/src/A.kt
+  - profiler/src/B.kt
+  - tools/orchestrator/src/C.kt
+  - platform/src/D.kt
+  - cli/src/E.kt
+  - core/src/F.kt
+---
+Part 1: Refactor all types
+Part 2: Rewrite FFM engine
+Part 3: Rewrite CLI`,
+    });
+
+    const check = isTaskTooBroad(broadIssue);
+    expect(check.isTooBroad).toBe(true);
+    expect(check.reason).toBeDefined();
+    expect(needsClarification(broadIssue)).toBe(true);
+
+    const prompt = buildClarifierAutonomousPrompt(broadIssue);
+    expect(prompt).toContain("SCOPE ALERT");
+    expect(prompt).toContain("Task Granularity & Atomicity Verification");
   });
 
   it("selects candidates for Vibe clarifier lane", () => {
