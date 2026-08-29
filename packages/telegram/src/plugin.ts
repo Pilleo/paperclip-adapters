@@ -1,4 +1,4 @@
-import { TelegramPluginConfig, loadTelegramConfig } from "./config.js";
+import { TelegramPluginConfig, loadTelegramConfig, formatMissingSecretError, parseAllowedUserIds } from "./config.js";
 import { TelegramBotClient } from "./telegram-api.js";
 import { PaperclipTelegramPoller } from "./poller.js";
 import { handleTelegramCallback, handleTelegramMessage } from "./handlers.js";
@@ -11,7 +11,17 @@ export interface PaperclipPluginContext {
   readonly secrets?: {
     readonly resolve: (secretRef: any, options?: { companyId?: string }) => Promise<string>;
   } | undefined;
-  readonly options?: Partial<TelegramPluginConfig> | undefined;
+  readonly logger?: {
+    readonly info: (msg: string, ...args: any[]) => void;
+    readonly warn: (msg: string, ...args: any[]) => void;
+    readonly error: (msg: string, ...args: any[]) => void;
+  } | undefined;
+  readonly options?: {
+    readonly allowedUserIds?: string | number[] | undefined;
+    readonly defaultChatId?: string | number | undefined;
+    readonly pollIntervalMs?: number | undefined;
+    readonly paperclipCompanyId?: string | undefined;
+  } | undefined;
 }
 
 export class PaperclipTelegramPlugin {
@@ -20,31 +30,58 @@ export class PaperclipTelegramPlugin {
   private botClient: TelegramBotClient | null = null;
   private poller: PaperclipTelegramPoller | null = null;
   private updateOffset: number | undefined = undefined;
+  private configured = false;
+
+  isConfigured(): boolean {
+    return this.configured;
+  }
 
   async register(ctx: PaperclipPluginContext = {}): Promise<void> {
-    const config = { ...loadTelegramConfig(), ...(ctx.options || {}) };
+    const baseConfig = loadTelegramConfig();
+    const allowedUserIds = ctx.options?.allowedUserIds 
+      ? parseAllowedUserIds(ctx.options.allowedUserIds) 
+      : baseConfig.allowedUserIds;
 
-    let token = config.botToken;
-    // Attempt secret resolution via Paperclip Secrets Vault if configured as secret_ref or if empty
-    if (ctx.secrets && config.paperclipCompanyId) {
-      if (typeof token === "object" || !token) {
-        try {
-          const resolved = await ctx.secrets.resolve(
-            typeof token === "object" ? token : "TELEGRAM_BOT_TOKEN",
-            { companyId: config.paperclipCompanyId }
-          );
-          if (resolved) {
-            token = resolved;
-          }
-        } catch {
-          // Fall back to env token
+    const companyId = ctx.options?.paperclipCompanyId || baseConfig.paperclipCompanyId;
+    const defaultChatId = ctx.options?.defaultChatId || baseConfig.defaultChatId;
+    const pollIntervalMs = ctx.options?.pollIntervalMs || baseConfig.pollIntervalMs;
+
+    let token = baseConfig.botToken;
+
+    // 1. Resolve token from Paperclip Secrets Vault if secrets client is provided
+    if (ctx.secrets && companyId) {
+      try {
+        const resolved = await ctx.secrets.resolve("TELEGRAM_BOT_TOKEN", { companyId });
+        if (resolved && resolved.trim().length > 0) {
+          token = resolved.trim();
         }
+      } catch {
+        // Vault lookup failed or secret not present
       }
     }
 
+    // 2. If token is missing, log actionable error and enter idle awaiting_secret state
     if (!token) {
+      const errorMsg = formatMissingSecretError(companyId);
+      if (ctx.logger?.warn) {
+        ctx.logger.warn(errorMsg);
+      } else {
+        console.warn(errorMsg);
+      }
+      this.configured = false;
       return;
     }
+
+    this.configured = true;
+    const config: TelegramPluginConfig = {
+      botToken: token,
+      allowedUserIds,
+      defaultChatId,
+      paperclipApiUrl: baseConfig.paperclipApiUrl,
+      paperclipApiKey: baseConfig.paperclipApiKey,
+      paperclipCompanyId: companyId,
+      pollIntervalMs,
+    };
 
     this.botClient = new TelegramBotClient(token);
     const paperclipClient = new PaperclipApiClient(config.paperclipApiUrl, config.paperclipApiKey);

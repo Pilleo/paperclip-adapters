@@ -24,20 +24,15 @@ export const manifest = {
   instanceConfigSchema: {
     type: "object",
     properties: {
-      botToken: {
-        type: "string",
-        title: "Telegram Bot Token",
-        description: "Bot token or Paperclip secret reference (e.g. secret_ref)",
-      },
       allowedUserIds: {
         type: "string",
         title: "Allowed Operator User IDs",
-        description: "Comma-separated list of authorized Telegram user IDs",
+        description: "Comma-separated list of authorized Telegram user IDs (e.g. 123456789)",
       },
       defaultChatId: {
         type: "string",
         title: "Default Chat / Channel ID",
-        description: "Telegram chat or channel ID for notifications",
+        description: "Telegram chat or channel ID where notifications will be posted",
       },
       pollIntervalMs: {
         type: "number",
@@ -46,7 +41,7 @@ export const manifest = {
         default: 3000,
       },
     },
-    required: ["botToken", "allowedUserIds"],
+    required: ["allowedUserIds"],
   },
 };
 

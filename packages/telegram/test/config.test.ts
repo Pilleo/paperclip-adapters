@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isUserAuthorized, loadTelegramConfig } from "../src/config.js";
+import { isUserAuthorized, loadTelegramConfig, formatMissingSecretError, parseAllowedUserIds } from "../src/config.js";
 
 describe("Telegram Config & Security Whitelist", () => {
   it("authorizes only users in whitelist", () => {
@@ -14,15 +14,20 @@ describe("Telegram Config & Security Whitelist", () => {
     expect(isUserAuthorized(12345, [])).toBe(false);
   });
 
-  it("parses comma-separated allowed user IDs from env", () => {
-    const cfg = loadTelegramConfig({
-      TELEGRAM_BOT_TOKEN: "mock-token",
-      TELEGRAM_ALLOWED_USER_IDS: " 111, 222 , 333 ",
-      TELEGRAM_CHAT_ID: "-1001234",
-    });
+  it("parses comma-separated allowed user IDs from env or string", () => {
+    expect(parseAllowedUserIds(" 111, 222 , 333 ")).toEqual([111, 222, 333]);
+    expect(parseAllowedUserIds([444, 555])).toEqual([444, 555]);
+    expect(parseAllowedUserIds("")).toEqual([]);
+    expect(parseAllowedUserIds(undefined)).toEqual([]);
+  });
 
-    expect(cfg.botToken).toBe("mock-token");
-    expect(cfg.allowedUserIds).toEqual([111, 222, 333]);
-    expect(cfg.defaultChatId).toBe("-1001234");
+  it("formats a clear, actionable error message when secret is missing", () => {
+    const msgWithCompany = formatMissingSecretError("comp-123");
+    expect(msgWithCompany).toContain("TELEGRAM_BOT_TOKEN");
+    expect(msgWithCompany).toContain("Settings -> Secrets & Keys");
+    expect(msgWithCompany).toContain("paperclipai secrets create --company-id comp-123");
+
+    const msgWithoutCompany = formatMissingSecretError();
+    expect(msgWithoutCompany).toContain("paperclipai secrets create --name \"TELEGRAM_BOT_TOKEN\"");
   });
 });

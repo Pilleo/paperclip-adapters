@@ -11,7 +11,7 @@ describe("Paperclip Plugin Manifest", () => {
     expect(manifest.entrypoints.worker).toBe("./dist/worker.js");
   });
 
-  it("declares necessary host capabilities", () => {
+  it("declares necessary host capabilities including secrets.read-ref", () => {
     expect(manifest.capabilities).toContain("companies.read");
     expect(manifest.capabilities).toContain("issues.read");
     expect(manifest.capabilities).toContain("approvals.read");
@@ -19,11 +19,12 @@ describe("Paperclip Plugin Manifest", () => {
     expect(manifest.capabilities).toContain("secrets.read-ref");
   });
 
-  it("exposes JSON schema for instance configuration", () => {
-    const props = manifest.instanceConfigSchema.properties;
-    expect(props.botToken).toBeDefined();
-    expect(props.allowedUserIds).toBeDefined();
-    expect(manifest.instanceConfigSchema.required).toContain("botToken");
+  it("omits sensitive botToken from instanceConfigSchema in favor of Secret Vault", () => {
+    const props = manifest.instanceConfigSchema.properties as Record<string, any>;
+    expect(props["botToken"]).toBeUndefined();
+    expect(props["allowedUserIds"]).toBeDefined();
+    expect(props["defaultChatId"]).toBeDefined();
     expect(manifest.instanceConfigSchema.required).toContain("allowedUserIds");
+    expect(manifest.instanceConfigSchema.required).not.toContain("botToken");
   });
 });
