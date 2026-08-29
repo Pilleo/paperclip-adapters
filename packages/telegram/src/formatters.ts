@@ -49,14 +49,14 @@ export function formatApprovalCard(data: PendingApprovalData): {
   const buttons: InlineKeyboardButton[][] = [];
 
   if (isTaskStart) {
-    header = `🚀 *Task Execution Approval*`;
+    header = `📋 *Task Execution Approval*`;
     const prioStr = data.priority ? ` (\`${data.priority.toUpperCase()}\`)` : "";
     const descStr = compactDescription(data.description);
     actionDetails = `• *Task:* [${data.issueIdentifier}] ${data.issueTitle}${prioStr}${descStr}`;
 
     buttons.push([
-      { text: "▶️ Start Task", callback_data: `approve:${data.approvalId}` },
-      { text: "⏸️ Skip / Defer", callback_data: `reject:${data.approvalId}` },
+      { text: "✅ Approve Execution", callback_data: `approve:${data.approvalId}` },
+      { text: "⏸️ Defer / Skip", callback_data: `reject:${data.approvalId}` },
     ]);
   } else if (isPrMerge) {
     header = `📋 *Pull Request Merge Approval*`;

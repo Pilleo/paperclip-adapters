@@ -15,7 +15,7 @@ describe("Telegram Message Formatters", () => {
     expect(formatted).not.toContain("Component: core");
   });
 
-  it("formats task start approval card with Start / Defer buttons and description block", () => {
+  it("formats task start approval card with Approve Execution / Defer buttons", () => {
     const card = formatApprovalCard({
       approvalId: "app-1",
       action: "task_start",
@@ -30,8 +30,8 @@ describe("Telegram Message Formatters", () => {
     expect(card.text).toContain("HIGH");
     expect(card.text).not.toContain("Routing:");
     expect(card.text).toContain("> 📝 _Perform strict instruction validation without kernel traps._");
-    expect(card.replyMarkup.inline_keyboard[0]![0]!.text).toBe("▶️ Start Task");
-    expect(card.replyMarkup.inline_keyboard[0]![1]!.text).toBe("⏸️ Skip / Defer");
+    expect(card.replyMarkup.inline_keyboard[0]![0]!.text).toBe("✅ Approve Execution");
+    expect(card.replyMarkup.inline_keyboard[0]![1]!.text).toBe("⏸️ Defer / Skip");
   });
 
   it("formats PR merge approval card with Approve & Merge button and link", () => {

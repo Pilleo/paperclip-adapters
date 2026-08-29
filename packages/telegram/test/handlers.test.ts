@@ -15,7 +15,7 @@ describe("Telegram Message & Callback Handlers", () => {
       {
         message_id: 1,
         chat: { id: 88888 },
-        from: { id: 999 }, // Unauthorized
+        from: { id: 999 },
         text: "/status",
       },
       {
@@ -68,7 +68,7 @@ describe("Telegram Message & Callback Handlers", () => {
     expect(mockBot.editMessageText).toHaveBeenCalledWith(
       12345,
       55,
-      expect.stringContaining("Approved & Merged")
+      expect.stringContaining("Approved")
     );
   });
 

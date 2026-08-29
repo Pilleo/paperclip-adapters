@@ -54,7 +54,7 @@ export async function handleTelegramCallback(
         await deps.botClient.editMessageText(
           callback.message.chat.id,
           callback.message.message_id,
-          `✅ *Approved & Merged* by @${callback.from.username || userId}`
+          `✅ *Approved* by @${callback.from.username || userId}`
         );
       }
     } catch (err: any) {
@@ -75,7 +75,7 @@ export async function handleTelegramCallback(
         await deps.botClient.editMessageText(
           callback.message.chat.id,
           callback.message.message_id,
-          `❌ *Changes Requested* by @${callback.from.username || userId}`
+          `⏸️ *Deferred / Rejected* by @${callback.from.username || userId}`
         );
       }
     } catch (err: any) {
