@@ -2,8 +2,11 @@ import { InlineKeyboardButton, InlineKeyboardMarkup } from "./telegram-api.js";
 
 export interface PendingApprovalData {
   readonly approvalId: string;
+  readonly action?: string | undefined;
   readonly issueIdentifier: string;
   readonly issueTitle: string;
+  readonly reason?: string | undefined;
+  readonly priority?: string | undefined;
   readonly prNumber?: number | undefined;
   readonly prUrl?: string | undefined;
   readonly reviewVerdict?: string | undefined;
@@ -14,30 +17,51 @@ export function formatApprovalCard(data: PendingApprovalData): {
   readonly text: string;
   readonly replyMarkup: InlineKeyboardMarkup;
 } {
-  const prLine = data.prUrl
-    ? `• *PR:* [#${data.prNumber || "Link"}](${data.prUrl})`
-    : `• *Action:* Direct Issue Execution Approval`;
+  const isTaskStart = data.action === "task_start" || (!data.prUrl && !data.reviewVerdict);
+  const isPrMerge = !!data.prUrl || data.action === "pr_merge";
 
-  const verdictLine = data.reviewVerdict
-    ? `\n\n*Review Verdict:*\n${data.reviewVerdict}`
-    : "";
+  let header = "⚖️ *Operator Decision Required*";
+  let actionDetails = "";
+  const buttons: InlineKeyboardButton[][] = [];
 
-  const text = `🚨 *Operator Decision Required*
+  if (isTaskStart) {
+    header = `🚀 *Task Dispatch Approval*`;
+    const prioStr = data.priority ? ` (\`${data.priority.toUpperCase()}\`)` : "";
+    const reasonStr = data.reason ? `\n• *Routing:* ${data.reason}` : "";
+    actionDetails = `• *Task:* [${data.issueIdentifier}] ${data.issueTitle}${prioStr}${reasonStr}`;
 
-• *Task:* [${data.issueIdentifier}] ${data.issueTitle}
-${prLine}
-• *Requested by:* ${data.requestedBy || "Autonomous Agent"}${verdictLine}`;
+    buttons.push([
+      { text: "▶️ Start Task", callback_data: `approve:${data.approvalId}` },
+      { text: "⏸️ Skip / Defer", callback_data: `reject:${data.approvalId}` },
+    ]);
+  } else if (isPrMerge) {
+    header = `📋 *Pull Request Merge Approval*`;
+    const prLine = data.prUrl
+      ? `• *PR:* [#${data.prNumber || "Link"}](${data.prUrl})`
+      : "";
+    const verdictLine = data.reviewVerdict
+      ? `\n\n*Review Verdict:*\n${data.reviewVerdict}`
+      : "";
+    actionDetails = `• *Task:* [${data.issueIdentifier}] ${data.issueTitle}\n${prLine}${verdictLine}`;
 
-  const buttons: InlineKeyboardButton[][] = [
-    [
-      { text: "✅ Approve & Merge", callback_data: `approve:${data.approvalId}` },
-      { text: "❌ Request Changes", callback_data: `reject:${data.approvalId}` },
-    ],
-  ];
+    buttons.push([
+      { text: "🚢 Approve & Merge", callback_data: `approve:${data.approvalId}` },
+      { text: "✏️ Request Changes", callback_data: `reject:${data.approvalId}` },
+    ]);
 
-  if (data.prUrl) {
-    buttons.push([{ text: "🔍 Open PR on GitHub", url: data.prUrl }]);
+    if (data.prUrl) {
+      buttons.push([{ text: "🔍 View PR on GitHub", url: data.prUrl }]);
+    }
+  } else {
+    actionDetails = `• *Task:* [${data.issueIdentifier}] ${data.issueTitle}`;
+    buttons.push([
+      { text: "✅ Approve", callback_data: `approve:${data.approvalId}` },
+      { text: "❌ Reject", callback_data: `reject:${data.approvalId}` },
+    ]);
   }
+
+  const requester = data.requestedBy ? `\n• *Requested By:* ${data.requestedBy}` : "";
+  const text = `${header}\n\n${actionDetails}${requester}`;
 
   return {
     text,

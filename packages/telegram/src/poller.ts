@@ -56,14 +56,18 @@ export class PaperclipTelegramPoller {
 
     for (const app of approvals) {
       if (app.status === "pending" && !this.notifiedApprovalIds.has(app.id)) {
+        const payload = app.payload || {};
         const { text, replyMarkup } = formatApprovalCard({
           approvalId: app.id,
-          issueIdentifier: app.issueIdentifier || app.issueId || "TASK",
-          issueTitle: app.issueTitle || app.title || "Pending Operation",
-          prNumber: app.prNumber,
-          prUrl: app.prUrl,
-          reviewVerdict: app.reviewVerdict,
-          requestedBy: app.requestedBy,
+          action: payload.action || app.action,
+          issueIdentifier: payload.identifier || app.issueIdentifier || app.issueId || "TASK",
+          issueTitle: payload.issueTitle || payload.title || app.issueTitle || app.title || "Pending Operation",
+          reason: payload.reason,
+          priority: payload.priority,
+          prNumber: payload.prNumber || app.prNumber,
+          prUrl: payload.prUrl || app.prUrl,
+          reviewVerdict: payload.reviewVerdict || app.reviewVerdict,
+          requestedBy: app.requestedBy || (app.requestedByUserId ? "Paperclip Board" : undefined),
         });
 
         await this.config.botClient.sendMessage({

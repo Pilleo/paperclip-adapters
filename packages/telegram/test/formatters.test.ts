@@ -6,68 +6,77 @@ import {
   formatTaskQueueCard,
 } from "../src/formatters.js";
 
-describe("Telegram Card Formatters", () => {
-  it("formats pending approval card with inline action buttons", () => {
+describe("Telegram Message Formatters", () => {
+  it("formats task start approval card with Start / Defer buttons", () => {
     const card = formatApprovalCard({
-      approvalId: "app-123",
-      issueIdentifier: "MAZ-100",
-      issueTitle: "Implement FFM ABI",
-      prNumber: 42,
-      prUrl: "https://github.com/pilleo/mazewall/pull/42",
-      reviewVerdict: "✅ Green CI & Grok Approved",
-      requestedBy: "jules",
+      approvalId: "app-1",
+      action: "task_start",
+      issueIdentifier: "MAZ-101",
+      issueTitle: "Implement BPF linear scan",
+      reason: "Routed to primary Jules lane",
+      priority: "high",
     });
 
-    expect(card.text).toContain("MAZ-100");
-    expect(card.text).toContain("Implement FFM ABI");
-    expect(card.text).toContain("pull/42");
-    expect(card.text).toContain("Green CI & Grok Approved");
-
-    const buttons = card.replyMarkup.inline_keyboard;
-    expect(buttons[0]?.[0]?.callback_data).toBe("approve:app-123");
-    expect(buttons[0]?.[1]?.callback_data).toBe("reject:app-123");
-    expect(buttons[1]?.[0]?.url).toBe("https://github.com/pilleo/mazewall/pull/42");
+    expect(card.text).toContain("Task Dispatch Approval");
+    expect(card.text).toContain("[MAZ-101] Implement BPF linear scan");
+    expect(card.text).toContain("HIGH");
+    expect(card.replyMarkup.inline_keyboard[0]![0]!.text).toBe("▶️ Start Task");
+    expect(card.replyMarkup.inline_keyboard[0]![1]!.text).toBe("⏸️ Skip / Defer");
   });
 
-  it("formats clarification question card", () => {
-    const text = formatClarificationQuestionCard({
-      issueIdentifier: "MAZ-105",
-      issueTitle: "Clarify struct layout",
-      question: "Should we use 64-bit alignment?",
+  it("formats PR merge approval card with Approve & Merge button and link", () => {
+    const card = formatApprovalCard({
+      approvalId: "app-2",
+      action: "pr_merge",
+      issueIdentifier: "MAZ-102",
+      issueTitle: "Fix seccomp offset",
+      prNumber: 42,
+      prUrl: "https://github.com/Pilleo/mazewall/pull/42",
+      reviewVerdict: "Passed with zero findings.",
+    });
+
+    expect(card.text).toContain("Pull Request Merge Approval");
+    expect(card.text).toContain("[#42]");
+    expect(card.replyMarkup.inline_keyboard[0]![0]!.text).toBe("🚢 Approve & Merge");
+    expect(card.replyMarkup.inline_keyboard[0]![1]!.text).toBe("✏️ Request Changes");
+    expect(card.replyMarkup.inline_keyboard[1]![0]!.text).toBe("🔍 View PR on GitHub");
+  });
+
+  it("formats clarification question card cleanly", () => {
+    const card = formatClarificationQuestionCard({
+      issueIdentifier: "MAZ-103",
+      issueTitle: "Clarify struct size",
+      question: "Should sock_filter use 64-bit alignment?",
       agentName: "Jules",
     });
 
-    expect(text).toContain("Clarification Question from Jules");
-    expect(text).toContain("MAZ-105");
-    expect(text).toContain("Should we use 64-bit alignment?");
+    expect(card).toContain("Clarification Question from Jules");
+    expect(card).toContain("Should sock_filter use 64-bit alignment?");
   });
 
-  it("formats fleet status live telemetry card", () => {
-    const text = formatFleetStatusCard({
-      activeSessions: 5,
+  it("formats fleet status telemetry correctly with budget math", () => {
+    const card = formatFleetStatusCard({
+      activeSessions: 3,
       maxConcurrent: 15,
-      dailySpendEstimate: 0.25,
+      dailySpendEstimate: 12.5,
       dailySpendBudget: 25.0,
-      openIssuesCount: 42,
-      inReviewCount: 3,
+      openIssuesCount: 40,
+      inReviewCount: 5,
       pendingApprovalsCount: 2,
     });
 
-    expect(text).toContain("5 / 15");
-    expect(text).toContain("$0.250 / $25.00");
-    expect(text).toContain("Pending Approvals:* `2`");
+    expect(card).toContain("Paperclip Fleet Live Telemetry");
+    expect(card).toContain("3 / 15");
+    expect(card).toContain("`$12.500 / $25.00` (50%)");
   });
 
-  it("formats task queue card with empty and populated lists", () => {
-    const empty = formatTaskQueueCard([]);
-    expect(empty).toContain("Task Queue is Empty");
+  it("formats top task queue card", () => {
+    const card = formatTaskQueueCard([
+      { identifier: "MAZ-1", title: "Task One", priority: "high" },
+      { identifier: "MAZ-2", title: "Task Two", priority: "low" },
+    ]);
 
-    const tasks = [
-      { identifier: "MAZ-10", title: "Task 1", priority: "high" },
-      { identifier: "MAZ-11", title: "Task 2", priority: "medium" },
-    ];
-    const card = formatTaskQueueCard(tasks);
-    expect(card).toContain("MAZ-10");
-    expect(card).toContain("MAZ-11");
+    expect(card).toContain("Top Unblocked Tasks (2 ready)");
+    expect(card).toContain("*[MAZ-1]* Task One (`high`)");
   });
 });
