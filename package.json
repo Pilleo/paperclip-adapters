@@ -10,7 +10,7 @@
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
-    "typecheck": "tsc --noEmit -p packages/orchestrator/tsconfig.json && tsc --noEmit -p packages/jules/tsconfig.json",
+    "typecheck": "npm run build -w @pilleo/paperclip-adapter-common && tsc --noEmit -p packages/orchestrator/tsconfig.json && tsc --noEmit -p packages/jules/tsconfig.json",
     "test:e2e": "tsx packages/orchestrator/scripts/e2e-paperclip-lifecycle.ts",
     "release:pack": "tsx scripts/package-release.ts",
     "status": "tsx scripts/status.ts",
