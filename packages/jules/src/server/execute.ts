@@ -48,6 +48,7 @@ import {
   laterCheckpoint,
   normalizeActivities,
 } from "./activity-checkpoint.js";
+import { evaluateJulesStartGate } from "./start-gate.js";
 import {
   listIssueComments,
   createNoPrCompletionInteraction,
@@ -55,6 +56,7 @@ import {
   createJulesFeedbackInteraction,
   createJulesPlanApprovalInteraction,
   getPaperclipInteraction,
+  listPaperclipApprovals,
   listPaperclipInteractions,
   moveIssueToBlocked,
   moveIssueToInProgress,
@@ -365,6 +367,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const client = new JulesClient(apiKey, telemetry);
   const taskTitle = parsedCtxContext.task.title;
   const taskDescription = parsedCtxContext.task.description;
+
+  const startGateCompanyId = companyId || ctx.agent?.companyId;
+  if (ctx.authToken && startGateCompanyId && !process.env["VITEST"]) {
+    try {
+      const approvals = await listPaperclipApprovals(startGateCompanyId, ctx.authToken, ctx.runId);
+      const gate = evaluateJulesStartGate(approvals, taskId);
+      if (!gate.allow) {
+        if (ctx.onLog) await ctx.onLog("stdout", `[jules] ${gate.reason}\n`);
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          summary: gate.reason,
+          resultJson: { provider: "jules", issueStatus: "todo", startGate: "blocked" },
+          clearSession: false,
+        };
+      }
+    } catch (error) {
+      if (ctx.onLog) {
+        await ctx.onLog("stderr", `[jules] Start-gate approval check failed: ${sanitizeError(error)}\n`);
+      }
+    }
+  }
 
   // EARLY CHECK: Check if this issue already has an attached PR on GitHub that is merged.
   let earlyPrUrl = session?.currentPrUrl;

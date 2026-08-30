@@ -14,7 +14,12 @@ import { readWorkspaceGitRemote, syncBacklogMarkdownToPaperclip } from "../core/
 import { archiveResolvedBacklogFiles } from "../core/backlog-archiver.js";
 import { selectClarificationCandidates } from "../core/clarifier.js";
 import { ParsedIssueMetadata } from "../core/types.js";
-import { evaluateTaskStartApproval, evaluatePrMergeApproval, PaperclipApprovalSummary } from "../core/approvals.js";
+import {
+  evaluateTaskStartApproval,
+  evaluatePrMergeApproval,
+  shouldReclaimUnapprovedStart,
+  PaperclipApprovalSummary,
+} from "../core/approvals.js";
 import { formatOrchestratorDashboardCard } from "../core/telemetry-card.js";
 import { identifyStalledIssues } from "../core/stalled-session-reaper.js";
 import { synthesizeTokenFriendlyReviewPrompt } from "../core/review-synthesizer.js";
@@ -526,6 +531,24 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
     };
   }
 
+  const requireApproval = config.requireTaskApproval !== false && (config as Record<string, unknown>)["requireApproval"] !== false;
+  let reclaimedUnapprovedCount = 0;
+  if (requireApproval) {
+    for (const issue of parsedIssues) {
+      if (!shouldReclaimUnapprovedStart(issue, existingApprovals)) continue;
+      await log(
+        `[ORCHESTRATOR] Reclaiming [${issue.identifier || issue.id}] "${issue.title}" — task_start is still pending; workers must not run this issue.`,
+      );
+      const reclaim = await pc.patchIssue(issue.id, { status: "todo", assigneeAgentId: null });
+      if (reclaim.ok) {
+        statusOverrides.set(issue.id, "todo");
+        reclaimedUnapprovedCount++;
+      } else {
+        await log(`[ORCHESTRATOR] Warning: reclaim failed (${reclaim.status}): ${reclaim.text}`);
+      }
+    }
+  }
+
   // 8. PHASE 2: Multi-Tier Review Pipeline (CI -> Vibe Fast Review -> Strong Model Review -> Operator Merge Approval)
   let reviewDispatchedCount = 0;
   for (const reviewTask of inReviewIssues) {
@@ -786,7 +809,6 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
 
   // existingApprovals was evaluated in Phase 2
 
-  const requireApproval = config.requireTaskApproval !== false && (config as any).requireApproval !== false;
   let dispatchedCount = 0;
   let approvalsRequestedCount = 0;
   let awaitingApprovalCount = 0;

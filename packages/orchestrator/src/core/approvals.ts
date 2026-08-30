@@ -23,6 +23,36 @@ export type ApprovalDecision =
   | { action: "AWAIT_APPROVAL"; approvalId: string; reason: string }
   | { action: "SKIP_REJECTED"; approvalId: string; reason: string };
 
+export function isTaskStartApprovalForIssue(
+  approval: PaperclipApprovalSummary,
+  issueId: string,
+): boolean {
+  return (
+    (approval.type === "task_start_approval" ||
+      (approval.type === "request_board_approval" && approval.payload?.["action"] === "task_start")) &&
+    (approval.issueIds.includes(issueId) || approval.payload?.["issueId"] === issueId)
+  );
+}
+
+export function findTaskStartApproval(
+  approvals: readonly PaperclipApprovalSummary[],
+  issueId: string,
+): PaperclipApprovalSummary | undefined {
+  return approvals.find((approval) => isTaskStartApprovalForIssue(approval, issueId));
+}
+
+/** Assigned or in_progress work while task_start is still pending is a gate violation. */
+export function shouldReclaimUnapprovedStart(
+  issue: { readonly id: string; readonly status: string; readonly assigneeAgentId?: string | null | undefined },
+  approvals: readonly PaperclipApprovalSummary[],
+): boolean {
+  if (issue.status === "done" || issue.status === "cancelled") return false;
+  const start = findTaskStartApproval(approvals, issue.id);
+  if (!start || start.status !== "pending") return false;
+  if (issue.assigneeAgentId) return true;
+  return issue.status === "in_progress" || issue.status === "in_review";
+}
+
 export function evaluateTaskStartApproval(
   issue: ParsedIssueMetadata,
   targetAgentId: string,
@@ -35,12 +65,7 @@ export function evaluateTaskStartApproval(
   }
 
   // Find existing start approval for this issue
-  const matchingApproval = existingApprovals.find(
-    (app) =>
-      (app.type === "task_start_approval" ||
-        (app.type === "request_board_approval" && app.payload?.["action"] === "task_start")) &&
-      (app.issueIds.includes(issue.id) || app.payload?.["issueId"] === issue.id)
-  );
+  const matchingApproval = findTaskStartApproval(existingApprovals, issue.id);
 
   if (!matchingApproval) {
     const urlKey = options.companyUrlKey || "MAZ";

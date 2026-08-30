@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { evaluateTaskStartApproval, evaluatePrMergeApproval, PaperclipApprovalSummary } from "../src/core/approvals.js";
+import {
+  evaluateTaskStartApproval,
+  evaluatePrMergeApproval,
+  shouldReclaimUnapprovedStart,
+  PaperclipApprovalSummary,
+} from "../src/core/approvals.js";
 import { ParsedIssueMetadata } from "../src/core/types.js";
 
 function createMockIssue(overrides: Partial<ParsedIssueMetadata> = {}): ParsedIssueMetadata {
@@ -13,8 +18,14 @@ function createMockIssue(overrides: Partial<ParsedIssueMetadata> = {}): ParsedIs
     component: "enforcer",
     targetFiles: ["enforcer/src/Main.kt"],
     targetSymbols: [],
+    targetModules: [],
     dependencies: [],
-    isOpenQuestions: false,
+    hasSideEffects: true,
+    coreLock: false,
+    needsKernel: false,
+    exclusive: false,
+    verifyCheap: [],
+    openQuestions: false,
     isNonInterfering: false,
     rawIssue: {},
     ...overrides,
@@ -71,6 +82,38 @@ describe("evaluateTaskStartApproval", () => {
     if (decision.action === "DISPATCH") {
       expect(decision.reason).toContain("app-123");
     }
+  });
+
+  it.each([
+    {
+      desc: "assigned todo with pending start is reclaimed",
+      issue: { id: "issue-1", status: "todo", assigneeAgentId: "jules-1" },
+      status: "pending" as const,
+      reclaim: true,
+    },
+    {
+      desc: "in_progress with pending start is reclaimed",
+      issue: { id: "issue-1", status: "in_progress", assigneeAgentId: "jules-1" },
+      status: "pending" as const,
+      reclaim: true,
+    },
+    {
+      desc: "approved start is not reclaimed",
+      issue: { id: "issue-1", status: "in_progress", assigneeAgentId: "jules-1" },
+      status: "approved" as const,
+      reclaim: false,
+    },
+    {
+      desc: "unassigned backlog with pending start stays put",
+      issue: { id: "issue-1", status: "backlog", assigneeAgentId: null },
+      status: "pending" as const,
+      reclaim: false,
+    },
+  ])("reclaim table: $desc", ({ issue, status, reclaim }) => {
+    const existing: PaperclipApprovalSummary[] = [
+      { id: "app-123", type: "task_start_approval", status, issueIds: ["issue-1"] },
+    ];
+    expect(shouldReclaimUnapprovedStart(issue, existing)).toBe(reclaim);
   });
 
   it("skips dispatch if existing approval is rejected", () => {

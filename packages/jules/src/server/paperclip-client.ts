@@ -463,6 +463,34 @@ export async function withdrawPaperclipInteraction(
   );
 }
 
+export async function listPaperclipApprovals(
+  companyId: string,
+  authToken: string | undefined,
+  runId?: string,
+): Promise<Array<{ id: string; type: string; status: string; issueIds: string[]; payload?: Record<string, unknown> }>> {
+  const raw = await getPaperclipJson<unknown>(
+    `/api/companies/${encodeURIComponent(companyId)}/approvals`,
+    authToken,
+    runId,
+  );
+  const list = Array.isArray(raw)
+    ? raw
+    : raw && typeof raw === "object" && Array.isArray((raw as { approvals?: unknown }).approvals)
+      ? (raw as { approvals: unknown[] }).approvals
+      : [];
+  return list
+    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+    .map((item) => ({
+      id: String(item["id"] || ""),
+      type: String(item["type"] || ""),
+      status: String(item["status"] || ""),
+      issueIds: Array.isArray(item["issueIds"]) ? item["issueIds"].map(String) : [],
+      ...(item["payload"] && typeof item["payload"] === "object"
+        ? { payload: item["payload"] as Record<string, unknown> }
+        : {}),
+    }));
+}
+
 export async function listPaperclipInteractions(
   issueId: string,
   authToken: string | undefined,
