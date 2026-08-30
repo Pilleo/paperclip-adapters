@@ -135,6 +135,21 @@ describe("interaction-engine pure reducer", () => {
       }
     });
 
+    it("relays an accepted plan card even when pendingInteraction was lost", () => {
+      const accepted: PaperclipInteraction = {
+        id: "plan-inter-lost",
+        kind: "request_confirmation",
+        status: "accepted",
+        result: { planRevisionId: "rev-lost" },
+      };
+      const action = evaluateInteractionAction(baseSession, "AWAITING_PLAN_APPROVAL", [accepted]);
+      expect(action.type).toBe("RELAY_PLAN_APPROVAL");
+      if (action.type === "RELAY_PLAN_APPROVAL") {
+        expect(action.planRevisionId).toBe("rev-lost");
+        expect(action.interactionId).toBe("plan-inter-lost");
+      }
+    });
+
     it("returns WAIT_FOR_HUMAN when plan was already approved", () => {
       const accepted: PaperclipInteraction = {
         id: "plan-inter-1",

@@ -35,6 +35,7 @@ describe("terminal Jules sessions", () => {
         source: "sources/github/example/repository",
         repository: "example/repository",
         baseBranch: "main",
+        ciPolicy: "skip",
       },
     },
     runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: "issue-1" },
@@ -76,11 +77,11 @@ describe("terminal Jules sessions", () => {
       authToken: "paperclip-token",
     });
 
-    expect(completed.clearSession).toBe(true);
-    expect(storedSession).toBeNull();
+    expect(completed.clearSession).toBe(false);
+    expect(storedSession).not.toBeNull();
     expect(baseContext.onLog).toHaveBeenCalledWith(
       "stdout",
-      expect.stringContaining("Reopening this Paperclip issue will start a new Jules task"),
+      expect.stringContaining("Session preserved for code review feedback loop"),
     );
 
     const abortController = new AbortController();
@@ -94,6 +95,11 @@ describe("terminal Jules sessions", () => {
           id: "issue-1",
           title: "Reopened task",
           description: "Address the review feedback",
+        },
+        paperclipWake: {
+          wakeSource: "status_change",
+          previousStatus: "done",
+          wakeReason: "reopened by user",
         },
       },
       abortSignal: abortController.signal,

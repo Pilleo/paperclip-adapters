@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { cachedInferTargetFiles, needsWorkPackageFill } from "./work-package-ingest.js";
 
 export interface BacklogSyncOptions {
   readonly workspacePath: string;
@@ -169,11 +170,30 @@ export async function syncBacklogMarkdownToPaperclip(options: BacklogSyncOptions
   const results: SyncIssueResult[] = [];
 
   for (const filePath of files) {
-    const content = fs.readFileSync(filePath, "utf-8");
+    let content = fs.readFileSync(filePath, "utf-8");
     const parsed = parseYamlFrontmatter(content);
     if (!parsed) continue;
 
     const fields = parsed.fields;
+    if (needsWorkPackageFill(fields) && options.workspacePath) {
+      const symbolsRaw = fields["target_symbols"];
+      const symbols = Array.isArray(symbolsRaw)
+        ? symbolsRaw.map(String)
+        : typeof symbolsRaw === "string" && symbolsRaw.trim()
+          ? [symbolsRaw]
+          : [];
+      if (symbols.length > 0) {
+        const mtimeMs = fs.statSync(filePath).mtimeMs;
+        const inferred = cachedInferTargetFiles(filePath, mtimeMs, symbols, options.workspacePath);
+        if (inferred.length > 0) {
+          fields["target_files"] = [...inferred];
+          updateFileFrontmatter(filePath, content, {
+            target_files: `[${inferred.map((f) => `"${f}"`).join(", ")}]`,
+          });
+          content = fs.readFileSync(filePath, "utf-8");
+        }
+      }
+    }
     const filename = path.basename(filePath, ".md");
     const issueId = fields["id"] || fields["identifier"] || filename;
     const title = fields["title"] || filename;

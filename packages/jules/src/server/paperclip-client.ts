@@ -1,4 +1,10 @@
 import { formatCardPrompt, formatCardSummary, formatCardPromptAndHelpText, SafeCardPrompt, SafeCardSummary } from "./card-prompt.js";
+import {
+  extractJulesSessionId,
+  extractJulesSessionIdFromComments,
+  formatJulesSessionHandleBody,
+  JULES_SESSION_DOCUMENT_KEY,
+} from "./jules-session-handle.js";
 const PAPERCLIP_API_URL_ENV = "PAPERCLIP_API_URL";
 
 export class PaperclipClientError extends Error {
@@ -37,6 +43,15 @@ function requireAuthToken(authToken: string | undefined): string {
     : process.env["PAPERCLIP_AGENT_TOKEN"] || process.env["PAPERCLIP_API_KEY"];
   if (!token) throw new PaperclipClientError(null, "Paperclip local agent token is unavailable");
   return token;
+}
+
+export async function getPaperclipJson<T>(
+  path: string,
+  authToken: string | undefined,
+  runId?: string,
+): Promise<T> {
+  const response = await paperclipRequest(path, authToken, { method: "GET" }, runId);
+  return (await response.json()) as T;
 }
 
 async function paperclipRequest(
@@ -109,6 +124,73 @@ export async function listWorkProducts(
  * POST and the status PATCH would otherwise create duplicate primary PR cards.
  * (Issue #8)
  */
+export async function upsertJulesSessionHandle(
+  issueId: string,
+  sessionId: string,
+  sessionUrl: string | null | undefined,
+  authToken: string | undefined,
+  runId?: string,
+): Promise<void> {
+  let baseRevisionId: string | null = null;
+  try {
+    const headResponse = await paperclipRequest(
+      `/api/issues/${encodeURIComponent(issueId)}/documents/${JULES_SESSION_DOCUMENT_KEY}`,
+      authToken,
+      { method: "GET" },
+      runId,
+    );
+    const head = await headResponse.json() as Record<string, unknown>;
+    baseRevisionId = typeof head["latestRevisionId"] === "string" ? head["latestRevisionId"] : null;
+  } catch (error) {
+    if (!(error instanceof PaperclipClientError) || error.status !== 404) throw error;
+  }
+
+  await paperclipRequest(
+    `/api/issues/${encodeURIComponent(issueId)}/documents/${JULES_SESSION_DOCUMENT_KEY}`,
+    authToken,
+    {
+      method: "PUT",
+      body: JSON.stringify({
+        title: "Jules session",
+        format: "markdown",
+        body: formatJulesSessionHandleBody(sessionId, sessionUrl),
+        changeSummary: `Jules session ${sessionId}`,
+        baseRevisionId,
+      }),
+    },
+    runId,
+  );
+}
+
+export async function readJulesSessionHandle(
+  issueId: string,
+  authToken: string | undefined,
+  runId?: string,
+): Promise<string | null> {
+  try {
+    const response = await paperclipRequest(
+      `/api/issues/${encodeURIComponent(issueId)}/documents/${JULES_SESSION_DOCUMENT_KEY}`,
+      authToken,
+      { method: "GET" },
+      runId,
+    );
+    const document = await response.json() as Record<string, unknown>;
+    const fromBody = extractJulesSessionId(typeof document["body"] === "string" ? document["body"] : null);
+    if (fromBody) return fromBody;
+  } catch (error) {
+    if (!(error instanceof PaperclipClientError) || error.status !== 404) {
+      /* fall through to comments */
+    }
+  }
+
+  try {
+    const comments = await listIssueComments(issueId, authToken, runId);
+    return extractJulesSessionIdFromComments(comments);
+  } catch {
+    return null;
+  }
+}
+
 /** Posts a standalone clickable Jules-session link as an issue comment. */
 export async function postSessionLink(
   issueId: string,
@@ -154,51 +236,15 @@ export async function moveIssueToReview(
   authToken: string | undefined,
   runId?: string,
 ): Promise<void> {
-  await registerPullRequestWorkProduct(issueId, prUrl, authToken, runId);
-  let reviewInteractionId: string | undefined;
   try {
-    const interRes = await paperclipRequest(
-      `/api/issues/${encodeURIComponent(issueId)}/interactions`,
-      authToken,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          kind: "request_confirmation",
-          idempotencyKey: `confirmation:${issueId}:review:${encodeURIComponent(prUrl)}`,
-          title: "Review Jules pull request",
-          summary: `Jules has completed the task and created PR ${prUrl}.`,
-          continuationPolicy: "wake_assignee",
-          payload: {
-            version: 1,
-            prompt: `Please review the pull request created by Jules: ${prUrl}`,
-            acceptLabel: "Approve & merge PR",
-            rejectLabel: "Request revisions",
-            rejectRequiresReason: true,
-            rejectReasonLabel: "Requested revisions"
-          }
-        })
-      },
-      runId
-    );
-    const createdInter: any = await interRes.json();
-    reviewInteractionId = createdInter?.id;
+    await registerPullRequestWorkProduct(issueId, prUrl, authToken, runId);
   } catch {
-    // If interaction card already exists or creation fails, proceed
+    // Work product registration is best-effort
   }
 
-  await paperclipRequest(
-    `/api/issues/${encodeURIComponent(issueId)}`,
-    authToken,
-    {
-      method: "PATCH",
-      body: JSON.stringify({
-        status: "in_review",
-        comment: `Jules completed this task and created PR: ${prUrl}`,
-        ...(reviewInteractionId ? { reviewInteractionId } : {})
-      })
-    },
-    runId
-  );
+  // Note: We do not perform an unbacked status PATCH to in_review here to prevent
+  // Paperclip server 422 invalid_issue_disposition errors on agent-authored transitions.
+  // The Orchestrator automatically detects the registered PR and routes the task to in_review with a reviewer.
 }
 
 export async function moveIssueToInProgress(
@@ -223,8 +269,15 @@ export async function moveIssueToDone(
   sessionId: string,
   authToken: string | undefined,
   runId?: string,
+  comment?: string,
 ): Promise<void> {
-  await moveIssue(issueId, "done", authToken, `Confirmed completion of Jules session ${sessionId} without a PR.`, runId);
+  await moveIssue(
+    issueId,
+    "done",
+    authToken,
+    comment ?? `Confirmed completion of Jules session ${sessionId}.`,
+    runId,
+  );
 }
 
 function interactionFromResponse(raw: unknown, status: number): PaperclipInteraction {
@@ -474,4 +527,44 @@ export async function createNoPrCompletionInteraction(
     runId,
   );
   return interactionFromResponse(await response.json(), response.status);
+}
+
+export async function createIssueComment(
+  issueId: string,
+  body: string,
+  authToken: string | undefined,
+  runId?: string,
+): Promise<void> {
+  await paperclipRequest(
+    `/api/issues/${encodeURIComponent(issueId)}/comments`,
+    authToken,
+    {
+      method: "POST",
+      body: JSON.stringify({ body }),
+    },
+    runId,
+  );
+}
+
+export interface IssueComment {
+  id: string;
+  body: string;
+  authorUserId?: string | null;
+  authorAgentId?: string | null;
+  createdAt: string;
+}
+
+export async function listIssueComments(
+  issueId: string,
+  authToken: string | undefined,
+  runId?: string,
+): Promise<IssueComment[]> {
+  const response = await paperclipRequest(
+    `/api/issues/${encodeURIComponent(issueId)}/comments`,
+    authToken,
+    { method: "GET" },
+    runId,
+  );
+  const raw = (await response.json()) as unknown;
+  return Array.isArray(raw) ? (raw as IssueComment[]) : [];
 }

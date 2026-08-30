@@ -29,6 +29,7 @@ export async function handleTelegramCallback(
   const data = callback.data || "";
   let action = "";
   let targetId = "";
+  let subKind = "";
 
   if (data.startsWith("pcapprove:")) {
     action = "approve";
@@ -39,38 +40,46 @@ export async function handleTelegramCallback(
   } else {
     const parts = data.split(":");
     action = parts[0] || "";
-    targetId = parts[1] || "";
+    if (parts.length > 2) {
+      subKind = parts[1] || "";
+      targetId = parts.slice(2).join(":");
+    } else {
+      targetId = parts[1] || "";
+    }
   }
 
   if (action === "approve" && targetId) {
     try {
-      if (deps.companyId) {
-        await deps.paperclipClient.postJson(`/api/approvals/${targetId}/approve`, {
-          actor: `telegram:${userId}`,
-        });
+      if (!deps.companyId) {
+        await deps.botClient.answerCallbackQuery(callback.id, "Paperclip company is not configured", true);
+        return;
+      }
+      await deps.paperclipClient.postJson(`/api/approvals/${targetId}/approve`, {
+        actor: `telegram:${userId}`,
+      });
 
-        // Trigger orchestrator wakeup immediately to dispatch approved tasks without waiting
-        try {
-          const agentsRes = await deps.paperclipClient.getJson<any>(`/api/companies/${deps.companyId}/agents`);
-          const agentsList: any[] = Array.isArray(agentsRes) ? agentsRes : agentsRes?.agents || [];
-          const orchestrator = agentsList.find(
-            (a) => a.adapterType === "orchestrator" || a.name?.toLowerCase().includes("orchestrator")
-          );
-          if (orchestrator?.id) {
-            await deps.paperclipClient.postJson(`/api/agents/${orchestrator.id}/wakeup`, {
-              reason: "approval_approved",
+      try {
+        const agentsRes = await deps.paperclipClient.getJson<any>(`/api/companies/${deps.companyId}/agents`);
+        const agentsList: any[] = Array.isArray(agentsRes) ? agentsRes : agentsRes?.agents || [];
+        for (const agent of agentsList) {
+          if (agent.adapterType === "orchestrator") {
+            await deps.paperclipClient.postJson(`/api/agents/${agent.id}/wakeup`, {
+              reason: subKind === "plan" ? "plan_approved" : "approval_approved",
             });
           }
-        } catch {
-          // Best effort orchestrator notification
         }
+      } catch {
+        // Orchestrator wakeup is best-effort after a successful approve
       }
       await deps.botClient.answerCallbackQuery(callback.id, "Approved!");
       if (callback.message) {
+        const approvedText = subKind === "plan"
+          ? `📐 *Plan Approved* by @${callback.from.username || userId} — Agent resuming implementation...`
+          : `✅ *Approved* by @${callback.from.username || userId}`;
         await deps.botClient.editMessageText(
           callback.message.chat.id,
           callback.message.message_id,
-          `✅ *Approved* by @${callback.from.username || userId}`
+          approvedText
         );
       }
     } catch (err: any) {
@@ -81,11 +90,13 @@ export async function handleTelegramCallback(
 
   if (action === "reject" && targetId) {
     try {
-      if (deps.companyId) {
-        await deps.paperclipClient.postJson(`/api/approvals/${targetId}/reject`, {
-          reason: `Rejected by operator via Telegram (@${callback.from.username || userId})`,
-        });
+      if (!deps.companyId) {
+        await deps.botClient.answerCallbackQuery(callback.id, "Paperclip company is not configured", true);
+        return;
       }
+      await deps.paperclipClient.postJson(`/api/approvals/${targetId}/reject`, {
+        reason: `Rejected by operator via Telegram (@${callback.from.username || userId})`,
+      });
       await deps.botClient.answerCallbackQuery(callback.id, "Changes requested.");
       if (callback.message) {
         await deps.botClient.editMessageText(
@@ -130,7 +141,7 @@ export async function handleTelegramMessage(
       try {
         if (deps.companyId) {
           await deps.paperclipClient.postJson(`/api/companies/${deps.companyId}/issues/${issueIdentifier}/comments`, {
-            content: `**[Telegram Operator Reply from @${msg.from?.username || userId}]:**\n${text}`,
+            body: `**[Telegram Operator Reply from @${msg.from?.username || userId}]:**\n${text}`,
           });
         }
         await deps.botClient.sendMessage({
@@ -170,8 +181,6 @@ export async function handleTelegramMessage(
       const card = formatFleetStatusCard({
         activeSessions: active,
         maxConcurrent: 15,
-        dailySpendEstimate: 0.05 * active,
-        dailySpendBudget: 25.0,
         openIssuesCount: todo,
         inReviewCount: inReview,
         pendingApprovalsCount: pendingApp,

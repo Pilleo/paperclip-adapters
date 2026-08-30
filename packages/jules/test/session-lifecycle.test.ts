@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { evaluateSessionStartup, isInteractionWake } from "../src/server/session-lifecycle.js";
+import { evaluateSessionStartup, isInteractionWake, sessionMatchesConfig } from "../src/server/session-lifecycle.js";
 import { asPaperclipId, asJulesSessionId } from "../src/server/brands.js";
 import { JulesAdapterSessionV1 } from "../src/server/session.js";
 
@@ -25,6 +25,79 @@ describe("session-lifecycle", () => {
     failedSessions: [],
     createdAt: new Date().toISOString()
   };
+
+  it("matches session identity on repository, source, and base branch", () => {
+    expect(sessionMatchesConfig(sampleSession, config)).toBe(true);
+    expect(sessionMatchesConfig({ ...sampleSession, baseBranch: "dev" }, config)).toBe(false);
+    expect(sessionMatchesConfig(null, config)).toBe(false);
+  });
+
+  it.each([
+    {
+      desc: "interval + decoded session resumes",
+      rawContext: { wakeSource: "interval" },
+      decoded: sampleSession,
+      stored: null as JulesAdapterSessionV1 | null,
+      canonical: null as string | null,
+      handle: null as string | null,
+      action: "RESUME_EXISTING",
+      sessionId: "sess-1",
+    },
+    {
+      desc: "runtime canonical id rebuilds when params empty",
+      rawContext: { wakeSource: "on_demand" },
+      decoded: null,
+      stored: null,
+      canonical: "runtime-id",
+      handle: null,
+      action: "RESUME_EXISTING",
+      sessionId: "runtime-id",
+    },
+    {
+      desc: "issue handle last after disk miss",
+      rawContext: { wakeSource: "on_demand" },
+      decoded: null,
+      stored: null,
+      canonical: null,
+      handle: "issue-handle-777",
+      action: "RESUME_EXISTING",
+      sessionId: "issue-handle-777",
+    },
+    {
+      desc: "status_change from backlog is fresh",
+      rawContext: { wakeSource: "status_change", previousStatus: "backlog" },
+      decoded: sampleSession,
+      stored: null,
+      canonical: null,
+      handle: null,
+      action: "START_FRESH",
+      sessionId: undefined,
+    },
+    {
+      desc: "disk recovery when params and runtime id are empty",
+      rawContext: { wakeSource: "interval" },
+      decoded: null,
+      stored: sampleSession,
+      canonical: null,
+      handle: null,
+      action: "RESUME_EXISTING",
+      sessionId: "sess-1",
+    },
+    {
+      desc: "accepted plan card is a relay, not a fresh session",
+      rawContext: { workspaceRefreshReason: "accepted_plan_confirmation" },
+      decoded: sampleSession,
+      stored: null,
+      canonical: null,
+      handle: null,
+      action: "RELAY_INTERACTION",
+      sessionId: "sess-1",
+    },
+  ])("startup table: $desc", ({ rawContext, decoded, stored, canonical, handle, action, sessionId }) => {
+    const decision = evaluateSessionStartup(rawContext, decoded, stored, canonical, config, handle);
+    expect(decision.action).toBe(action);
+    expect(decision.session?.sessionId).toBe(sessionId);
+  });
 
   it("identifies interaction wakes correctly", () => {
     expect(isInteractionWake({ interactionResponse: "yes" })).toBe(true);
@@ -125,6 +198,34 @@ describe("session-lifecycle", () => {
     expect(decision.action).toBe("RESUME_EXISTING");
     expect(decision.session?.sessionId).toBe("canonical-999");
     expect(decision.session?.julesSessionId).toBe("canonical-999");
+  });
+
+  it("prefers the local recovery record over the Paperclip issue handle", () => {
+    const decision = evaluateSessionStartup(
+      { wakeSource: "interval" },
+      null,
+      sampleSession,
+      null,
+      config,
+      "issue-handle-777",
+    );
+    expect(decision.session?.sessionId).toBe("sess-1");
+  });
+
+  it("rebuilds session identity from the Paperclip issue handle when runtime and disk are empty", () => {
+    const decision = evaluateSessionStartup(
+      { wakeSource: "on_demand" },
+      null,
+      null,
+      null,
+      config,
+      "issue-handle-777",
+    );
+
+    expect(decision.action).toBe("RESUME_EXISTING");
+    expect(decision.forceFreshSession).toBe(false);
+    expect(decision.session?.sessionId).toBe("issue-handle-777");
+    expect(decision.session?.julesSessionId).toBe("issue-handle-777");
   });
 
   it("starts fresh when no session exists anywhere", () => {

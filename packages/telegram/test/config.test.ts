@@ -9,8 +9,14 @@ describe("Telegram Config & Security Whitelist", () => {
     expect(isUserAuthorized(99999, "unknown-chat", whitelist)).toBe(false);
   });
 
-  it("authorizes all users when whitelist is empty or wildcard", () => {
+  it("denies users when whitelist is empty unless TELEGRAM_ALLOW_UNRESTRICTED is set", () => {
+    const prev = process.env["TELEGRAM_ALLOW_UNRESTRICTED"];
+    delete process.env["TELEGRAM_ALLOW_UNRESTRICTED"];
+    expect(isUserAuthorized(12345, 12345, [])).toBe(false);
+    process.env["TELEGRAM_ALLOW_UNRESTRICTED"] = "true";
     expect(isUserAuthorized(12345, 12345, [])).toBe(true);
+    if (prev === undefined) delete process.env["TELEGRAM_ALLOW_UNRESTRICTED"];
+    else process.env["TELEGRAM_ALLOW_UNRESTRICTED"] = prev;
     expect(isUserAuthorized(12345, 12345, ["*"])).toBe(true);
     expect(isUserAuthorized(12345, 12345, ["all"])).toBe(true);
   });

@@ -24,7 +24,7 @@ export interface PullRequestDetails {
 
 export function evaluateChecks(checks: CheckItem[]): CiCheckStatus {
   if (!Array.isArray(checks) || checks.length === 0) {
-    return "success";
+    return "pending";
   }
 
   let hasPending = false;
@@ -42,6 +42,34 @@ export function evaluateChecks(checks: CheckItem[]): CiCheckStatus {
 
   if (hasPending) return "pending";
   return "success";
+}
+
+export async function listPullRequestChangedFiles(prUrl: string, cwd?: string): Promise<string[]> {
+  try {
+    const { stdout } = await execAsync(`gh pr diff "${prUrl}" --name-only`, {
+      cwd: cwd || process.cwd(),
+      timeout: 5_000,
+    });
+    return stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/** Full PR patch for symbol-level scope checks. Empty when `gh` is unavailable. */
+export async function getPullRequestPatch(prUrl: string, cwd?: string): Promise<string> {
+  try {
+    const { stdout } = await execAsync(`gh pr diff "${prUrl}"`, {
+      cwd: cwd || process.cwd(),
+      timeout: 8_000,
+    });
+    return stdout;
+  } catch {
+    return "";
+  }
 }
 
 export async function getPullRequestDetails(
@@ -127,7 +155,7 @@ export async function getPullRequestDetails(
             const checkData: any = await checkRunsRes.json();
             const checkRuns = checkData?.check_runs || [];
             if (checkRuns.length === 0) {
-              return { state: "OPEN", merged: false, ciStatus: "success" };
+              return { state: "OPEN", merged: false, ciStatus: "pending" };
             }
             const items: CheckItem[] = checkRuns.map((cr: any) => ({
               name: cr.name,
@@ -150,7 +178,7 @@ export async function getPullRequestDetails(
   return {
     state: prState,
     merged: isMerged,
-    ciStatus: "success",
+    ciStatus: isMerged ? "success" : "pending",
   };
 }
 

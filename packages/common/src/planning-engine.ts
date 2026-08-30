@@ -78,10 +78,18 @@ export function synthesizeDeterministicPlan(
   // Discover candidate test files deterministically
   const testFiles: string[] = [];
   for (const f of targetFiles) {
+    const ext = path.extname(f);
+    const candidates: string[] = [];
     if (f.includes("/src/main/")) {
-      const candidateTest = f.replace("/src/main/", "/src/test/").replace(/\.(kt|java|ts)$/, "Test.$1");
+      candidates.push(f.replace("/src/main/", "/src/test/").replace(new RegExp(`${ext.replace(".", "\\.")}$`), `Test${ext}`));
+    }
+    candidates.push(f.replace(new RegExp(`${ext.replace(".", "\\.")}$`), `.test${ext}`));
+    candidates.push(f.replace(new RegExp(`${ext.replace(".", "\\.")}$`), `_test${ext}`));
+    candidates.push(f.replace(/\/([^/]+)$/, "/test_$1"));
+    for (const candidateTest of candidates) {
+      if (candidateTest === f) continue;
       if (!workspacePath || fs.existsSync(path.join(workspacePath, candidateTest))) {
-        testFiles.push(candidateTest);
+        if (!testFiles.includes(candidateTest)) testFiles.push(candidateTest);
       }
     }
   }
@@ -182,9 +190,13 @@ export function enrichPlanWithSymbolResearch(
 }
 
 /**
- * Formats the complete implementation plan as a structured Markdown document.
+ * Formats the complete short plan. Codanna outlines belong on the plan
+ * (signatures + callers, not full files). Omit only when explicitly requested.
  */
-export function formatPlanMarkdown(plan: DeterministicPlan): string {
+export function formatPlanMarkdown(
+  plan: DeterministicPlan,
+  options: { includeSymbolOutlines?: boolean | undefined } = {},
+): string {
   const symbolSection =
     plan.targetSymbols.length > 0
       ? `\n\n**Target Methods & Symbols:**\n${plan.targetSymbols.map((s) => `- \`${s.symbol}\``).join("\n")}`
@@ -200,9 +212,11 @@ export function formatPlanMarkdown(plan: DeterministicPlan): string {
       ? `\n\n**⚡ Impacted Caller Test Suites (Codanna Blast Radius):**\n${plan.impactedTestSuites.map((s) => `- \`${s}\``).join("\n")}`
       : "";
 
-  const codannaSection = plan.semanticSymbolContext
-    ? `\n\n### 🔬 Semantic Symbol Research (Codanna)\n\n${plan.semanticSymbolContext}`
-    : "";
+  const includeOutlines = options.includeSymbolOutlines !== false;
+  const codannaSection =
+    includeOutlines && plan.semanticSymbolContext
+      ? `\n\n### Codanna symbol outlines\n\n${plan.semanticSymbolContext}`
+      : "";
 
   return `## 📋 Implementation Plan: ${plan.title}
 
@@ -219,4 +233,15 @@ ${plan.neededSummary}
 
 ### 🛠️ Execution Plan (TDD Protocol)
 ${plan.steps.join("\n\n")}${codannaSection}`;
+}
+
+/** Host-side full short plan: work package + Codanna outlines when the workspace is indexed. */
+export function buildHostImplementationPlan(
+  rawMarkdown: string,
+  issueId: string,
+  workspacePath?: string,
+): { plan: DeterministicPlan; markdown: string } {
+  const synthesized = synthesizeDeterministicPlan(rawMarkdown, issueId, workspacePath);
+  const plan = enrichPlanWithSymbolResearch(synthesized, workspacePath);
+  return { plan, markdown: formatPlanMarkdown(plan) };
 }

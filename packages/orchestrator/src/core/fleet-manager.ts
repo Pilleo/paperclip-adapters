@@ -82,7 +82,7 @@ export const MANAGED_FLEET_DEFINITIONS: readonly ManagedWorkerDefinition[] = Obj
     adapterType: "codex_local",
     role: "qa",
     capabilities:
-      "Token-efficient code review specialist. Inspects PR diffs, validates declared AST target symbols using Codanna, audits project invariants, and provides structured approval recommendations without excessive context consumption.",
+      "Token-efficient code review specialist. Inspects PR diffs, validates declared AST target symbols, and provides structured approval recommendations. STRICT INVARIANT: NEVER POST ON GITHUB (no gh pr comment). Output verdict ONLY as Paperclip comments to be relayed to developer sessions.",
     description: "Token-efficient code review specialist inspecting PRs, symbols, and invariants",
     adapterConfig: {
       pollCadenceSeconds: 0, // Strictly 0

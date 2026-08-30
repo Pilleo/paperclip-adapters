@@ -5,6 +5,8 @@ export * from "./backlog.js";
 export * from "./linter.js";
 export * from "./skills-materializer.js";
 export * from "./planning-engine.js";
+export * from "./scope-conformity.js";
+export * from "./local-agent-tools.js";
 
 export * from "./code-investigation.js";
 

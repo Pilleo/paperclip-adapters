@@ -47,6 +47,16 @@ target_symbols: ["BpfFilter#compile"]
     expect(md).toContain("TDD Protocol");
   });
 
+  it("includes Codanna symbol outlines on the short plan by default", () => {
+    const plan = synthesizeDeterministicPlan(sampleMarkdown, "issue-101");
+    const md = formatPlanMarkdown({
+      ...plan,
+      semanticSymbolContext: "#### Symbol: `BpfFilter#compile`\n```\nfn compile()\n```",
+    });
+    expect(md).toContain("Codanna symbol outlines");
+    expect(md).toContain("fn compile()");
+  });
+
   describe("extractTestSuitesFromCodannaOutput", () => {
     it.each([
       {

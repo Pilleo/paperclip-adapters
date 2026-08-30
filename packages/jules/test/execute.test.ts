@@ -93,12 +93,16 @@ beforeAll(() => {
     console.log("CHECKPOINT RES:", checkpoint.exitCode, checkpoint.errorCode, checkpoint.errorMessage, checkpoint.summary);
     const res = await execute({
       ...baseCtx,
+      agent: {
+        ...baseCtx.agent,
+        adapterConfig: { ...baseCtx.agent.adapterConfig, ciPolicy: "skip" }
+      },
       runtime: { ...baseCtx.runtime, sessionParams: checkpoint.sessionParams },
       authToken: 'jwt-token',
     } as any);
     if (res.exitCode !== 0) console.log("RES DETAILS:", res.exitCode, res.errorCode, res.errorMessage, res.summary);
     expect(res.exitCode).toBe(0);
-    expect(res.clearSession).toBe(true);
+    expect(res.clearSession).toBe(false);
     expect(res.resultJson?.prUrl).toBe('http://pr/1');
     expect(res.resultJson?.issueStatus).toBe('in_review');
   });

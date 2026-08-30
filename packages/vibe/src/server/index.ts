@@ -3,6 +3,7 @@ import { createAcpxEngineExecutor } from "@paperclipai/adapter-utils/acpx-engine
 import { VibeConfigSchema, vibeAdapterConfigSchema, DEFAULT_VIBE_COMMAND } from "./config.js";
 import { testEnvironment } from "./test-environment.js";
 import { VIBE_MODELS } from "./models.js";
+import { LOCAL_AGENT_TOOL_GUIDANCE, withLocalAgentToolBudget } from "@pilleo/paperclip-adapter-common";
 
 export const type = "vibe";
 export const label = "Mistral Vibe Code";
@@ -23,15 +24,16 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
 
 export const vibeAgentConfigurationDoc = `# Mistral Vibe Code Adapter
 
-Integrates Mistral's state-of-the-art **Vibe coding CLI** via the Agent Client Protocol (ACP).
+Integrates Mistral's state-of-the-art **Vibe coding CLI** via the Agent Client Protocol (\`vibe-acp\`).
 
 ---
 
 ## 🚀 Capabilities & Features
-- **Local Subprocess Execution:** Runs directly in your workspace with full tool permissions.
+- **Native ACP Server:** Runs \`vibe-acp\` directly with bidirectional tool communication.
 - **Instructions Bundle:** Automatically materializes workspace rules, \`AGENTS.md\`, and custom instructions.
 - **Skills Studio:** Mounts custom MCP servers and materialized skills into the Vibe subshell.
 - **ACP Integration:** Supports bidirectional tool calls, interactive approvals, and real-time streaming logs.
+- **Token-efficient tools:** Prefer Codanna symbol outlines, git diff hunks, and named tests over dumping whole files.
 
 ---
 
@@ -40,7 +42,7 @@ Integrates Mistral's state-of-the-art **Vibe coding CLI** via the Agent Client P
 | Parameter | Description | Default |
 |---|---|---|
 | **Model** | Select Mistral model (\`devstral-small\`, \`mistral-medium-3.5\`, \`devstral-large\`, etc.) | \`mistral-medium-3.5\` |
-| **Server Command** | Path or command to invoke the Vibe ACP server | \`vibe --acp\` |
+| **Server Command** | Path or command to invoke the Vibe ACP server | \`vibe-acp\` |
 | **Permission Mode** | Tool execution policy (\`approve-all\`, \`prompt-on-write\`, \`read-only\`) | \`approve-all\` |
 | **Environment Variables** | Custom environment variables passed to the Vibe process (e.g. \`MISTRAL_API_KEY\`) | \`{}\` |
 
@@ -66,23 +68,38 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const normalizedModel = normalizeVibeModel(config.model);
 
   const rawEnv = ctx.config ? ctx.config["env"] : undefined;
+  const permissionMode = config.permissionMode || "approve-all";
+  const mergedEnv: Record<string, unknown> = {
+    ...(typeof rawEnv === "object" && rawEnv !== null ? (rawEnv as Record<string, unknown>) : {}),
+    VIBE_ACTIVE_MODEL: normalizedModel,
+    ...config.env,
+  };
+  if (permissionMode === "approve-all") {
+    mergedEnv["VIBE_BYPASS_TOOL_PERMISSIONS"] = "true";
+  } else {
+    delete mergedEnv["VIBE_BYPASS_TOOL_PERMISSIONS"];
+  }
   const acpConfig: Record<string, unknown> = {
     ...ctx.config,
-    agent: "vibe",
+    agent: "custom",
     agentCommand,
-    permissionMode: config.permissionMode || "approve-all",
+    permissionMode,
     model: normalizedModel,
-    env: {
-      ...(typeof rawEnv === "object" && rawEnv !== null ? (rawEnv as Record<string, unknown>) : {}),
-      VIBE_ACTIVE_MODEL: normalizedModel,
-      VIBE_BYPASS_TOOL_PERMISSIONS: "true",
-      ...config.env,
-    },
+    thinkingEffort: config.thinking,
+    timeoutSec: config.timeoutSec,
+    env: mergedEnv,
   };
 
   return await rawAcpExecutor({
     ...ctx,
-    config: acpConfig,
+    context: withLocalAgentToolBudget((ctx.context || {}) as Record<string, unknown>),
+    config: {
+      ...acpConfig,
+      promptTemplate:
+        typeof acpConfig["promptTemplate"] === "string"
+          ? `${LOCAL_AGENT_TOOL_GUIDANCE}\n\n${acpConfig["promptTemplate"]}`
+          : acpConfig["promptTemplate"],
+    },
   });
 }
 

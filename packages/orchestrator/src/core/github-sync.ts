@@ -107,3 +107,41 @@ export async function fetchGitHubPullRequests(workspacePath: string, limit = 50)
     };
   }
 }
+
+export interface PrCiCheckResult {
+  readonly isGreen: boolean;
+  readonly status: "success" | "pending" | "failed" | "none";
+}
+
+export async function checkPrCiIsGreen(
+  prNumber: number,
+  cwd?: string
+): Promise<PrCiCheckResult> {
+  try {
+    const { stdout } = await execFileAsync(
+      "gh",
+      ["pr", "checks", String(prNumber), "--json", "state,bucket,name"],
+      { cwd: cwd || process.cwd(), timeout: 15000 }
+    );
+    const checks = JSON.parse(stdout);
+    if (!Array.isArray(checks) || checks.length === 0) {
+      return { isGreen: false, status: "none" };
+    }
+    const hasPending = checks.some(
+      (c) => c.state === "PENDING" || c.bucket === "pending"
+    );
+    if (hasPending) return { isGreen: false, status: "pending" };
+
+    const hasFailed = checks.some(
+      (c) => c.state === "FAILURE" || c.bucket === "fail" || c.state === "CANCELLED"
+    );
+    if (hasFailed) return { isGreen: false, status: "failed" };
+
+    const allPassed = checks.every(
+      (c) => c.state === "SUCCESS" || c.bucket === "pass"
+    );
+    return { isGreen: allPassed, status: allPassed ? "success" : "pending" };
+  } catch (err: unknown) {
+    return { isGreen: false, status: "pending" };
+  }
+}

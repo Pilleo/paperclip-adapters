@@ -5,34 +5,60 @@ import { ParsedIssueMetadata } from "../src/core/types.js";
 describe("Stalled Session Reaper", () => {
   const baseTimestamp = 1700000000000;
 
+  const vibe = "managed-vibe";
+  const jules = "managed-jules";
+  const independent = "independent-jules";
+  const managedAgentIds = new Set([vibe, jules]);
+  const managedJulesIds = new Set([jules]);
+
   const sampleIssues: ParsedIssueMetadata[] = [
     {
       id: "issue-1",
       identifier: "MAZ-1",
       title: "Active task with live heartbeat",
       status: "in_progress",
-      updatedAt: new Date(baseTimestamp - 5 * 60 * 1000).toISOString(), // 5 min ago
+      assigneeAgentId: vibe,
+      updatedAt: new Date(baseTimestamp - 5 * 60 * 1000).toISOString(),
     },
     {
       id: "issue-2",
       identifier: "MAZ-2",
       title: "Stalled task with no heartbeat",
       status: "in_progress",
-      updatedAt: new Date(baseTimestamp - 20 * 60 * 1000).toISOString(), // 20 min ago
+      assigneeAgentId: vibe,
+      updatedAt: new Date(baseTimestamp - 20 * 60 * 1000).toISOString(),
     },
     {
       id: "issue-3",
       identifier: "MAZ-3",
       title: "Completed task in review",
       status: "in_review",
-      updatedAt: new Date(baseTimestamp - 60 * 60 * 1000).toISOString(), // 60 min ago
+      assigneeAgentId: vibe,
+      updatedAt: new Date(baseTimestamp - 60 * 60 * 1000).toISOString(),
     },
     {
       id: "issue-4",
       identifier: "MAZ-4",
       title: "Active execution running in current tick",
       status: "in_progress",
-      updatedAt: new Date(baseTimestamp - 30 * 60 * 1000).toISOString(), // 30 min ago but active
+      assigneeAgentId: vibe,
+      updatedAt: new Date(baseTimestamp - 30 * 60 * 1000).toISOString(),
+    },
+    {
+      id: "issue-jules",
+      identifier: "MAZ-J",
+      title: "Managed Jules still coding after 20m",
+      status: "in_progress",
+      assigneeAgentId: jules,
+      updatedAt: new Date(baseTimestamp - 20 * 60 * 1000).toISOString(),
+    },
+    {
+      id: "issue-indie",
+      identifier: "MAZ-I",
+      title: "Independent Jules workflow",
+      status: "in_progress",
+      assigneeAgentId: independent,
+      updatedAt: new Date(baseTimestamp - 20 * 60 * 1000).toISOString(),
     },
   ];
 
@@ -40,6 +66,8 @@ describe("Stalled Session Reaper", () => {
     const activeIssueIds = new Set(["issue-4"]);
     const stalled = identifyStalledIssues(sampleIssues, activeIssueIds, {
       stalledThresholdMs: 15 * 60 * 1000,
+      managedAgentIds,
+      managedJulesIds,
       now: () => baseTimestamp,
     });
 
@@ -51,10 +79,22 @@ describe("Stalled Session Reaper", () => {
   it("respects custom threshold", () => {
     const activeIssueIds = new Set<string>();
     const stalled = identifyStalledIssues(sampleIssues, activeIssueIds, {
-      stalledThresholdMs: 4 * 60 * 1000, // 4 min threshold
+      stalledThresholdMs: 4 * 60 * 1000,
+      managedAgentIds,
+      managedJulesIds,
       now: () => baseTimestamp,
     });
 
     expect(stalled.map((s) => s.issue.id)).toEqual(["issue-1", "issue-2", "issue-4"]);
+  });
+
+  it("does not reap independent agents or managed Jules before the session deadline", () => {
+    const stalled = identifyStalledIssues(sampleIssues, new Set(), {
+      stalledThresholdMs: 15 * 60 * 1000,
+      managedAgentIds,
+      managedJulesIds,
+      now: () => baseTimestamp,
+    });
+    expect(stalled.map((s) => s.issue.id)).toEqual(["issue-2", "issue-4"]);
   });
 });

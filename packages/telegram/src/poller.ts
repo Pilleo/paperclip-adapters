@@ -36,8 +36,9 @@ export class PaperclipTelegramPoller {
 
     try {
       await this.checkPendingApprovals();
-    } catch {
-      // Background poll retry
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[telegram] approval poll failed: ${msg}`);
     }
 
     if (this.isRunning) {

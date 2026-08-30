@@ -80,6 +80,7 @@ export const JulesAdapterSessionV1Schema = z.object({
   feedbackInteractionAttempt: z.number().int().min(0).optional(),
   deliveredFeedbackInteractionId: z.string().optional(),
   deliveredActivityIds: z.array(z.string().min(1)).max(200).optional(),
+  relayedReviewCommentIds: z.array(z.string()).optional(),
   activityCheckpoint: z.object({
     createTime: z.string().datetime(),
     id: z.string().min(1),
@@ -172,6 +173,7 @@ export interface JulesAdapterSessionV1 {
     | undefined;
   /** Recent Jules activities already mirrored to the Paperclip issue thread. */
   deliveredActivityIds?: string[] | undefined;
+  relayedReviewCommentIds?: string[] | undefined;
   /** High-water mark for the normalized Jules activity stream. */
   activityCheckpoint?: { createTime: string; id: string } | undefined;
   lastActivityId?: string | undefined;
@@ -193,13 +195,49 @@ function isEmptyRecord(value: unknown): boolean {
   );
 }
 
-function parseCanonicalSessionParams(data: unknown): Record<string, string> | null {
+function readNonEmpty(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+/**
+ * Cursor-cloud-style durable identity. Paperclip may persist only
+ * sessionId, julesSessionId, agentId, or a nested display id.
+ */
+export function readDurableJulesSessionId(data: unknown): string | null {
   if (typeof data !== "object" || data === null || Array.isArray(data)) return null;
+  const record = data as Record<string, unknown>;
+  return (
+    readNonEmpty(record["julesSessionId"]) ??
+    readNonEmpty(record["sessionId"]) ??
+    readNonEmpty(record["agentId"]) ??
+    readNonEmpty(record["sessionDisplayId"])
+  );
+}
 
-  const sessionId = (data as Record<string, unknown>)["sessionId"];
-  if (typeof sessionId !== "string" || sessionId.trim().length === 0) return null;
+export function readLastActivityId(data: unknown): string | null {
+  if (typeof data !== "object" || data === null || Array.isArray(data)) return null;
+  const record = data as Record<string, unknown>;
+  const checkpoint = record["activityCheckpoint"];
+  const checkpointId =
+    checkpoint && typeof checkpoint === "object" && !Array.isArray(checkpoint)
+      ? readNonEmpty((checkpoint as Record<string, unknown>)["id"])
+      : null;
+  return (
+    readNonEmpty(record["lastActivityId"]) ??
+    readNonEmpty(record["latestRunId"]) ??
+    checkpointId
+  );
+}
 
-  return { sessionId: sessionId.trim() };
+function parseCanonicalSessionParams(data: unknown): Record<string, string> | null {
+  const sessionId = readDurableJulesSessionId(data);
+  if (!sessionId) return null;
+  const lastActivityId = readLastActivityId(data);
+  return {
+    sessionId,
+    julesSessionId: sessionId,
+    ...(lastActivityId ? { lastActivityId } : {}),
+  };
 }
 
 function parseSessionRecord(data: unknown): JulesAdapterSessionV1 | null {
@@ -249,13 +287,11 @@ export const sessionCodec = {
   },
 
   getDisplayId(session: Record<string, unknown> | null): string | null {
-    if (!session) return null;
-    const parsed = this.deserialize(session);
-    return parsed?.['julesSessionId'] as string || parsed?.['sessionId'] as string || null;
+    return readDurableJulesSessionId(session);
   },
 
   getCanonicalSessionId(session: unknown): string | null {
-    return parseCanonicalSessionParams(session)?.["sessionId"] ?? null;
+    return readDurableJulesSessionId(session);
   }
 };
 export function serializeSession(session: JulesAdapterSessionV1): SerializedSessionParams {

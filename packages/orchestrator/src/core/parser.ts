@@ -12,6 +12,15 @@ export function parsePriorityRank(priorityStr?: string | null): { readonly prior
   return { priority: "low", rank: 1 };
 }
 
+export function parseYamlBool(raw: unknown, defaultValue = false): boolean {
+  if (typeof raw === "boolean") return raw;
+  if (typeof raw !== "string") return defaultValue;
+  const v = raw.replace(/^["']|["']$/g, "").trim().toLowerCase();
+  if (v === "true" || v === "yes" || v === "1") return true;
+  if (v === "false" || v === "no" || v === "0") return false;
+  return defaultValue;
+}
+
 export function parseYamlList(raw: unknown): readonly string[] {
   if (Array.isArray(raw)) {
     return Object.freeze(raw.map((item) => String(item).trim()).filter(Boolean));
@@ -54,6 +63,11 @@ export function extractIssueMetadata(issue: {
   let component: string | undefined;
   let priorityStr = issue.priority;
   let hasSideEffects = true;
+  let coreLock = false;
+  let needsKernel = false;
+  let exclusive = false;
+  let openQuestions = false;
+  const verifyCheap: string[] = [];
 
   // 1. Extract YAML frontmatter
   const firstTriple = desc.indexOf("---");
@@ -75,6 +89,7 @@ export function extractIssueMetadata(issue: {
             else if (activeListKey === "target_modules" || activeListKey === "targetmodules") targetModules.push(item);
             else if (activeListKey === "target_symbols" || activeListKey === "targetsymbols") targetSymbols.push(item);
             else if (activeListKey === "dependencies" || activeListKey === "depends_on" || activeListKey === "blocked_by") dependencies.push(item);
+            else if (activeListKey === "verify_cheap" || activeListKey === "verifycheap") verifyCheap.push(item);
           }
           continue;
         }
@@ -98,7 +113,17 @@ export function extractIssueMetadata(issue: {
         } else if (key === "priority") {
           priorityStr = value.replace(/^["']|["']$/g, "").trim();
         } else if (key === "has_side_effects" || key === "hassideeffects") {
-          hasSideEffects = value.replace(/^["']|["']$/g, "").trim().toLowerCase() !== "false";
+          hasSideEffects = parseYamlBool(value, true);
+        } else if (key === "core_lock" || key === "corelock") {
+          coreLock = parseYamlBool(value, false);
+        } else if (key === "needs_kernel" || key === "needskernel") {
+          needsKernel = parseYamlBool(value, false);
+        } else if (key === "exclusive") {
+          exclusive = parseYamlBool(value, false);
+        } else if (key === "open_questions" || key === "openquestions") {
+          openQuestions = parseYamlBool(value, false);
+        } else if (key === "verify_cheap" || key === "verifycheap") {
+          if (value) verifyCheap.push(...parseYamlList(value));
         }
       }
     }
@@ -142,6 +167,13 @@ export function extractIssueMetadata(issue: {
     idOrIdent.includes("review-task") ||
     idOrIdent.includes("productivity-review");
 
+  if (!openQuestions && /open_questions\s*:\s*true/i.test(desc)) {
+    openQuestions = true;
+  }
+
+  const executionRunIdRaw = (issue as Record<string, unknown>)["executionRunId"];
+  const executionRunId = typeof executionRunIdRaw === "string" && executionRunIdRaw.length > 0 ? executionRunIdRaw : null;
+
   return Object.freeze({
     id,
     identifier: identifier ?? null,
@@ -155,10 +187,16 @@ export function extractIssueMetadata(issue: {
     targetModules: Object.freeze([...new Set(targetModules)]),
     targetSymbols: Object.freeze([...new Set(targetSymbols)]),
     hasSideEffects,
+    coreLock,
+    needsKernel,
+    exclusive,
+    verifyCheap: Object.freeze([...new Set(verifyCheap)]),
     component: component ?? null,
     isNonInterfering,
+    openQuestions,
     assigneeAgentId: issue.assigneeAgentId ?? null,
     updatedAt: typeof (issue as Record<string, unknown>)["updatedAt"] === "string" ? ((issue as Record<string, unknown>)["updatedAt"] as string) : null,
+    executionRunId,
     rawIssue: Object.freeze({ ...issue }),
   });
 }

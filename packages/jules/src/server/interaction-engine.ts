@@ -5,7 +5,7 @@
 
 import { JulesAdapterSessionV1, SessionPhase } from "./session.js";
 import { PaperclipInteraction } from "./paperclip-client.js";
-import { formatCardPrompt, formatCardSummary, SafeCardPrompt, SafeCardSummary } from "./card-prompt.js";
+import { formatCardSummary, SafeCardPrompt, SafeCardSummary } from "./card-prompt.js";
 
 export type InteractionAction =
   | { type: "RELAY_FEEDBACK"; answer: string; interactionId: string }
@@ -48,87 +48,14 @@ export function evaluateInteractionAction(
   existingInteractions: PaperclipInteraction[] = [],
   rawQuestionText?: string,
 ): InteractionAction {
-  // 1. Terminal / Success states
-  if (julesState === "COMPLETED") {
-    if (session.currentPrUrl) {
-      return { type: "RESOLVE_COMPLETION_WITH_PR", prUrl: session.currentPrUrl };
-    }
-    return { type: "CONFIRM_NO_PR_COMPLETION", sessionId: session.julesSessionId ?? "" };
-  }
+  // If a plan was generated and has NOT been approved yet, prioritize plan approval
+  const hasUnapprovedPlan = Boolean(rawQuestionText && (rawQuestionText.includes("Jules Implementation Plan") || rawQuestionText.includes("**1."))) && !session.planApprovedAt;
+  const effectiveState = (hasUnapprovedPlan && (julesState === "COMPLETED" || julesState === "IN_PROGRESS") && !session.currentPrUrl)
+    ? "AWAITING_PLAN_APPROVAL"
+    : julesState;
 
-  // 2. Operator paused/archived session
-  if (julesState === "PAUSED") {
-    return {
-      type: "RESET_PAUSED_SESSION",
-      sessionId: session.julesSessionId ?? "",
-      reason: "operator_paused",
-    };
-  }
-
-  // 3. Active coding states
-  if (julesState === "QUEUED" || julesState === "PLANNING" || julesState === "IN_PROGRESS") {
-    return { type: "CONTINUE_POLLING" };
-  }
-
-  // 3. Jules is awaiting user feedback
-  if (julesState === "AWAITING_USER_FEEDBACK") {
-    const currentCardId = session.pendingInteraction?.type === "user_feedback"
-      ? session.pendingInteraction.paperclipInteractionId
-      : null;
-
-    if (currentCardId) {
-      const currentCard = existingInteractions.find((i) => i.id === currentCardId);
-      if (currentCard && currentCard.status === "answered") {
-        const answer = extractFeedbackAnswer(currentCard.result);
-        if (answer && session.deliveredFeedbackInteractionId !== currentCard.id) {
-          return {
-            type: "RELAY_FEEDBACK",
-            answer,
-            interactionId: currentCard.id,
-          };
-        }
-        return {
-          type: "WAIT_FOR_HUMAN",
-          interactionId: currentCard.id,
-          summary: `Jules session ${session.julesSessionId} is processing relayed user feedback.`,
-        };
-      }
-      if (currentCard && currentCard.status === "pending") {
-        return {
-          type: "WAIT_FOR_HUMAN",
-          interactionId: currentCard.id,
-          summary: `Jules session ${session.julesSessionId} awaits feedback in Paperclip.`,
-        };
-      }
-    }
-
-    // Check if there is any other active pending card
-    const anyPending = existingInteractions.find(
-      (i) => i.kind === "ask_user_questions" && i.status === "pending"
-    );
-    if (anyPending) {
-      return {
-        type: "WAIT_FOR_HUMAN",
-        interactionId: anyPending.id,
-        summary: `Jules session ${session.julesSessionId} awaits feedback in Paperclip.`,
-      };
-    }
-
-    // No valid pending or un-relayed card exists for current state: create a new card
-    const question = rawQuestionText ?? "Jules is awaiting user feedback.";
-    const summary = formatCardSummary(rawQuestionText ?? "Question from Jules");
-    const attempt = (session.feedbackInteractionAttempt ?? 0) + 1;
-
-    return {
-      type: "CREATE_FEEDBACK_CARD",
-      question,
-      summary,
-      attempt,
-    };
-  }
-
-  // 4. Jules is awaiting plan approval
-  if (julesState === "AWAITING_PLAN_APPROVAL") {
+  // 1. Jules is awaiting plan approval
+  if (effectiveState === "AWAITING_PLAN_APPROVAL") {
     if (session.planApprovedAt) {
       return {
         type: "WAIT_FOR_HUMAN",
@@ -169,11 +96,100 @@ export function evaluateInteractionAction(
       };
     }
 
+    const acceptedPlan = existingInteractions.find(
+      (i) => i.kind === "request_confirmation" && i.status === "accepted"
+    );
+    if (acceptedPlan) {
+      return {
+        type: "RELAY_PLAN_APPROVAL",
+        planRevisionId:
+          (acceptedPlan.result as { planRevisionId?: string } | undefined)?.planRevisionId ?? "accepted",
+        interactionId: acceptedPlan.id,
+      };
+    }
+
     return {
       type: "CREATE_PLAN_CARD",
       planMarkdown: rawQuestionText ?? "Proposed execution plan from Jules.",
       revisionNumber: 1,
     };
+  }
+
+  // 2. Jules is awaiting user feedback
+  if (effectiveState === "AWAITING_USER_FEEDBACK") {
+    const currentCardId = session.pendingInteraction?.type === "user_feedback"
+      ? session.pendingInteraction.paperclipInteractionId
+      : null;
+
+    if (currentCardId) {
+      const currentCard = existingInteractions.find((i) => i.id === currentCardId);
+      if (currentCard && currentCard.status === "answered") {
+        const answer = extractFeedbackAnswer(currentCard.result);
+        if (answer && session.deliveredFeedbackInteractionId !== currentCard.id) {
+          return {
+            type: "RELAY_FEEDBACK",
+            answer,
+            interactionId: currentCard.id,
+          };
+        }
+        return {
+          type: "WAIT_FOR_HUMAN",
+          interactionId: currentCard.id,
+          summary: `Jules session ${session.julesSessionId} is processing relayed user feedback.`,
+        };
+      }
+      if (currentCard && currentCard.status === "pending") {
+        return {
+          type: "WAIT_FOR_HUMAN",
+          interactionId: currentCard.id,
+          summary: `Jules session ${session.julesSessionId} awaits feedback in Paperclip.`,
+        };
+      }
+    }
+
+    const anyPending = existingInteractions.find(
+      (i) => i.kind === "ask_user_questions" && i.status === "pending"
+    );
+    if (anyPending) {
+      return {
+        type: "WAIT_FOR_HUMAN",
+        interactionId: anyPending.id,
+        summary: `Jules session ${session.julesSessionId} awaits feedback in Paperclip.`,
+      };
+    }
+
+    const question = rawQuestionText ?? "Jules is awaiting user feedback.";
+    const summary = formatCardSummary(rawQuestionText ?? "Question from Jules");
+    const attempt = (session.feedbackInteractionAttempt ?? 0) + 1;
+
+    return {
+      type: "CREATE_FEEDBACK_CARD",
+      question,
+      summary,
+      attempt,
+    };
+  }
+
+  // 3. Terminal / Success states
+  if (effectiveState === "COMPLETED") {
+    if (session.currentPrUrl) {
+      return { type: "RESOLVE_COMPLETION_WITH_PR", prUrl: session.currentPrUrl };
+    }
+    return { type: "CONFIRM_NO_PR_COMPLETION", sessionId: session.julesSessionId ?? "" };
+  }
+
+  // 4. Operator paused/archived session
+  if (effectiveState === "PAUSED") {
+    return {
+      type: "RESET_PAUSED_SESSION",
+      sessionId: session.julesSessionId ?? "",
+      reason: "operator_paused",
+    };
+  }
+
+  // 5. Active coding states
+  if (effectiveState === "QUEUED" || effectiveState === "PLANNING" || effectiveState === "IN_PROGRESS") {
+    return { type: "CONTINUE_POLLING" };
   }
 
   return { type: "CONTINUE_POLLING" };

@@ -10,7 +10,10 @@ const plugin = definePlugin({
 
     // 1. Resolve company context
     const companies = await ctx.companies.list().catch(() => []);
-    const companyId = companies[0]?.id || process.env["PAPERCLIP_COMPANY_ID"] || "8f4ef932-d769-43b2-981a-d273ed715162";
+    const companyId = process.env["PAPERCLIP_COMPANY_ID"] || companies[0]?.id;
+    if (!companyId) {
+      throw new Error("PAPERCLIP_COMPANY_ID is required (or at least one Paperclip company must exist)");
+    }
 
     // 2. Load company-scoped plugin configuration from Paperclip
     const companyConfig = (await ctx.config.get(companyId).catch(() => ({}))) as Record<string, any>;

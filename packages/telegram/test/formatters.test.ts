@@ -77,7 +77,7 @@ describe("Telegram Message Formatters", () => {
 
     expect(card).toContain("Paperclip Fleet Live Telemetry");
     expect(card).toContain("3 / 15");
-    expect(card).toContain("`$12.500 / $25.00` (50%)");
+    expect(card).toContain("`$12.500 / $25.00`");
   });
 
   it("formats top task queue card", () => {

@@ -1,14 +1,17 @@
 import { z } from "zod";
 import type { AdapterConfigSchema } from "@paperclipai/adapter-utils";
 
-export const DEFAULT_AGY_SERVER_PATH =
-  "/home/leanid/.local/share/zed/external_agents/registry/antigravity-acp/v_1.0.0_92521fc3cbd964bd_fc45337c399e4ef2/agy_acp_server.par";
+export function defaultAgyServerPath(): string {
+  return process.env["ANTIGRAVITY_ACP_SERVER"] || process.env["AGY_ACP_SERVER"] || "agy";
+}
+
+export const DEFAULT_AGY_SERVER_PATH = defaultAgyServerPath();
 
 export const AntigravityConfigSchema = z.object({
   serverPath: z.string().optional().default(DEFAULT_AGY_SERVER_PATH),
   uid: z.string().optional().default(""),
   debug: z.boolean().optional().default(false),
-  model: z.string().optional().default("gemini-3.7-flash-high"),
+  model: z.string().optional().default("gemini-pro-agent"),
   cwd: z.string().optional(),
   promptTemplate: z.string().optional(),
   timeoutSec: z.number().int().positive().optional().default(300),

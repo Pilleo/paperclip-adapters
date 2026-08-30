@@ -113,23 +113,29 @@ _Reply directly to this message to provide instructions to the agent._`;
 export function formatFleetStatusCard(params: {
   readonly activeSessions: number;
   readonly maxConcurrent: number;
-  readonly dailySpendEstimate: number;
-  readonly dailySpendBudget: number;
+  readonly dailySpendEstimate?: number | undefined;
+  readonly dailySpendBudget?: number | undefined;
   readonly openIssuesCount: number;
   readonly inReviewCount: number;
   readonly pendingApprovalsCount: number;
+  readonly julesQuotaNote?: string | undefined;
+  readonly agentErrorNote?: string | undefined;
 }): string {
-  const spendPct = params.dailySpendBudget > 0 
-    ? Math.round((params.dailySpendEstimate / params.dailySpendBudget) * 100)
-    : 0;
+  const quotaLine = params.julesQuotaNote
+    ? `\n• *Jules quota:* ${params.julesQuotaNote}`
+    : "";
+  const errorLine = params.agentErrorNote ? `\n• *Incidents:* ${params.agentErrorNote}` : "";
+  const spendLine =
+    params.dailySpendEstimate !== undefined && params.dailySpendBudget !== undefined
+      ? `\n• *Daily Spend:* \`$${params.dailySpendEstimate.toFixed(3)} / $${params.dailySpendBudget.toFixed(2)}\``
+      : `\n• *Daily Spend:* \`n/a (not metered)\``;
 
   return `📊 *Paperclip Fleet Live Telemetry*
 
-• *Active Workers:* \`${params.activeSessions} / ${params.maxConcurrent}\`
-• *Daily Spend:* \`$${params.dailySpendEstimate.toFixed(3)} / $${params.dailySpendBudget.toFixed(2)}\` (${spendPct}%)
+• *Active Workers:* \`${params.activeSessions} / ${params.maxConcurrent}\`${spendLine}
 • *Pending Approvals:* \`${params.pendingApprovalsCount}\`
 • *In-Review PRs:* \`${params.inReviewCount}\`
-• *Open Backlog:* \`${params.openIssuesCount}\``;
+• *Open Backlog:* \`${params.openIssuesCount}\`${quotaLine}${errorLine}`;
 }
 
 export function formatTaskQueueCard(
@@ -141,4 +147,43 @@ export function formatTaskQueueCard(
 
   const items = tasks.slice(0, 10).map((t, idx) => `${idx + 1}. *[${t.identifier}]* ${t.title} (\`${t.priority}\`)`);
   return `📋 *Top Unblocked Tasks (${tasks.length} ready)*\n\n${items.join("\n")}`;
+}
+
+export interface PlanApprovalData {
+  readonly planId: string;
+  readonly issueIdentifier: string;
+  readonly issueTitle: string;
+  readonly agentName?: string | undefined;
+  readonly planMarkdown: string;
+  readonly requestedBy?: string | undefined;
+}
+
+export function formatPlanApprovalCard(data: PlanApprovalData): {
+  readonly text: string;
+  readonly replyMarkup: InlineKeyboardMarkup;
+} {
+  const agent = data.agentName ? ` from ${data.agentName}` : "";
+  const header = `📐 *Architectural Plan Approval${agent}*`;
+  const taskLine = `• *Task:* [${data.issueIdentifier}] ${data.issueTitle}`;
+  const planQuote = data.planMarkdown
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .join("\n> ");
+  const planSection = `\n\n> 📋 *Proposed Implementation Plan:*\n> ${planQuote}`;
+  const requester = data.requestedBy ? `\n\n• *Requested By:* ${data.requestedBy}` : "";
+
+  const text = `${header}\n\n${taskLine}${planSection}${requester}`;
+
+  const buttons: InlineKeyboardButton[][] = [
+    [
+      { text: "✅ Approve Plan", callback_data: `approve:plan:${data.planId}` },
+      { text: "✏️ Request Revision", callback_data: `reject:plan:${data.planId}` },
+    ],
+  ];
+
+  return {
+    text,
+    replyMarkup: { inline_keyboard: buttons },
+  };
 }

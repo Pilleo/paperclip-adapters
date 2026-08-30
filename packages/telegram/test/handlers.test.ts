@@ -110,7 +110,7 @@ describe("Telegram Message & Callback Handlers", () => {
     expect(mockPc.postJson).toHaveBeenCalledWith(
       "/api/companies/comp-1/issues/MAZ-105/comments",
       {
-        content: expect.stringContaining("Use 64-bit alignment only."),
+        body: expect.stringContaining("Use 64-bit alignment only."),
       }
     );
     expect(mockBot.sendMessage).toHaveBeenCalledWith(

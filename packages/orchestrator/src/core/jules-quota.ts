@@ -68,10 +68,11 @@ export async function fetchJulesQuota(
       sessionsLast24hCount: 0,
       maxConcurrent,
       maxDaily,
-      availableConcurrentSlots: maxConcurrent,
-      availableDailySlots: maxDaily,
-      effectiveAvailableCapacity: maxConcurrent,
+      availableConcurrentSlots: 0,
+      availableDailySlots: 0,
+      effectiveAvailableCapacity: 0,
       fetchedLive: false,
+      error: "JULES_API_KEY missing; refusing to assume capacity",
     });
   }
 
@@ -91,9 +92,9 @@ export async function fetchJulesQuota(
         sessionsLast24hCount: 0,
         maxConcurrent,
         maxDaily,
-        availableConcurrentSlots: maxConcurrent,
-        availableDailySlots: maxDaily,
-        effectiveAvailableCapacity: maxConcurrent,
+        availableConcurrentSlots: 0,
+        availableDailySlots: 0,
+        effectiveAvailableCapacity: 0,
         fetchedLive: false,
         error: `Jules API error (${res.status}): ${errText}`,
       });
@@ -109,9 +110,9 @@ export async function fetchJulesQuota(
       sessionsLast24hCount: 0,
       maxConcurrent,
       maxDaily,
-      availableConcurrentSlots: maxConcurrent,
-      availableDailySlots: maxDaily,
-      effectiveAvailableCapacity: maxConcurrent,
+      availableConcurrentSlots: 0,
+      availableDailySlots: 0,
+      effectiveAvailableCapacity: 0,
       fetchedLive: false,
       error: err.message,
     });

@@ -5,8 +5,18 @@ export const MAX_COMMENT_LENGTH = 3500;
 export const MAX_SESSION_RESUME_ATTEMPTS = 4;
 
 export function activityComment(activity: JulesActivity): string | null {
-  if (activity.userMessaged) return `**Message sent to Jules**\n\n${activity.userMessaged.userMessage}`;
-  if (activity.sessionFailed) return `**Jules session failed**\n\n${activity.sessionFailed.reason}`;
+  if (activity.agentMessaged?.agentMessage?.trim()) {
+    return `**Message from Jules:**\n\n${activity.agentMessaged.agentMessage.trim()}`;
+  }
+  if (activity.userMessaged?.userMessage?.trim()) {
+    return `**Message sent to Jules:**\n\n${activity.userMessaged.userMessage.trim()}`;
+  }
+  if (activity.sessionFailed?.reason?.trim()) {
+    return `**Jules session failed:**\n\n${activity.sessionFailed.reason.trim()}`;
+  }
+  if (activity.description?.trim() && !activity.planGenerated && !activity.progressUpdated) {
+    return `**Jules:**\n\n${activity.description.trim()}`;
+  }
   return null;
 }
 

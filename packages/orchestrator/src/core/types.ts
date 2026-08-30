@@ -27,11 +27,16 @@ export interface ParsedIssueMetadata {
   readonly targetModules: readonly string[];
   readonly targetSymbols: readonly string[];
   readonly hasSideEffects: boolean;
+  readonly coreLock: boolean;
+  readonly needsKernel: boolean;
+  readonly exclusive: boolean;
+  readonly verifyCheap: readonly string[];
   readonly component?: string | null | undefined;
   readonly isNonInterfering: boolean;
-  readonly openQuestions?: boolean | undefined;
+  readonly openQuestions: boolean;
   readonly assigneeAgentId?: string | null | undefined;
   readonly updatedAt?: string | null | undefined;
+  readonly executionRunId?: string | null | undefined;
   readonly rawIssue: Readonly<Record<string, unknown>>;
 }
 

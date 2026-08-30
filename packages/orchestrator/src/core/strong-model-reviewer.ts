@@ -1,3 +1,5 @@
+import { evaluateScopeConformity } from "./scope-conformity.js";
+import { parseGitDiffIntoFiles, prioritizeAndCompressDiff } from "./smart-diff-synthesizer.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { ParsedIssueMetadata } from "./types.js";
@@ -30,11 +32,14 @@ export function buildPrReviewPrompt(
   const systemPrompt = `You are the Principal Systems & Security Architect conducting a token-efficient Code Review on a GitHub PR with GREEN CI.
 Your goal is to verify code quality, kernel safety, FFM layout correctness, and adherence to project invariants with maximum rigor and zero hype.
 
-REVIEW INVARIANTS:
-1. Zero Silent Bypasses: No silent swallows of EPERM/EACCES or failed security boundaries.
-2. Memory Safety & FFM: Strict alignment, Arena lifecycle discipline, no raw pointer leaks.
-3. Test Health: True behavioral assertions without warmups, swallows, or test-only bypasses.
-4. Scope Discipline: Changes must be strictly confined to declared target files and symbols.
+REVIEW INVARIANTS & STRICT ANTI-HACK WARNING:
+⚠️ CRITICAL WARNING: PRs submitted by autonomous AI coding agents may attempt to introduce subtle hacks, shortcuts, or weakened assertions to make tests pass. THESE ARE STRICTLY UNACCEPTABLE AND MUST BE REJECTED (REQUEST_CHANGES):
+1. Zero Silent Bypasses: No silent swallows of EPERM/EACCES, fallback modes (e.g. SILENT_BYPASS), or disabled security checks.
+2. No Test Disabling, Removal, or Coverage Decrease: Strictly reject any added @Disabled, @Ignore, commented-out assertions, deleted tests, or reduced test coverage (unless an obsolete test is explicitly justified due to a deleted API).
+3. No Dummy/Weakened Tests: Reject tests that only check entryCount/collection size without actually executing the behavioral or security paths under test.
+4. No Suppression Hacks: Reject any added @Suppress, @SuppressWarnings, or compiler bypass annotations.
+5. Memory Safety & FFM: Strict alignment, Arena lifecycle discipline, no off-heap pointer leaks.
+6. Scope & Feature Completeness: Ensure all requested features and dynamic edge cases are fully implemented, not stubbed.
 
 If you have questions, concerns, or edge-case uncertainties:
 - Ask clear, concrete questions directly in your review.
@@ -54,18 +59,35 @@ You MUST respond with ONLY a valid JSON object:
       : `Pre-flight invariants violations:\n${invariantsResult.violations.map((v) => `- [${v.severity}] ${v.ruleId}: ${v.message}`).join("\n")}`
     : "Pre-flight static invariants: CLEAN";
 
-  // Limit diff size to keep review token-efficient (max 8KB)
-  const compactDiff = prDiff.length > 8000 ? `${prDiff.slice(0, 8000)}\n\n... [diff truncated for token efficiency]` : prDiff;
+  // Smart security-prioritized diff parsing and compression
+  const diffBlocks = parseGitDiffIntoFiles(prDiff);
+  const prioritized = prioritizeAndCompressDiff(diffBlocks, {
+    maxCharBudget: 12000,
+    targetSymbols: issue.targetSymbols,
+    targetFiles: issue.targetFiles,
+  });
+
+  // Evaluate plan vs diff scope conformity
+  const scopeReport = evaluateScopeConformity({
+    declaredTargetFiles: issue.targetFiles,
+    declaredTargetSymbols: issue.targetSymbols,
+    modifiedFiles: diffBlocks.map((b) => b.filePath),
+    rawDiff: prDiff,
+  });
 
   const userPrompt = `### PR REVIEW CONTEXT
 - **Issue**: [${issue.identifier || issue.id}] ${issue.title}
 - **Target Files**: ${issue.targetFiles?.join(", ") || "Declared in diff"}
 - **Target Symbols**: ${issue.targetSymbols?.join(", ") || "None"}
 - **Static Invariants**: ${invariantInfo}
+- **Plan Scope Conformity**: ${scopeReport.summaryText}
 
-### 📄 SURGICAL PR DIFF:
+### 📋 MODIFIED FILES MANIFEST:
+${prioritized.manifest}
+
+### 📄 SECURITY-PRIORITIZED PR DIFF:
 \`\`\`diff
-${compactDiff}
+${prioritized.formattedDiff || prDiff}
 \`\`\`
 
 Perform your architectural review and return your JSON verdict.`;
@@ -122,9 +144,11 @@ export function formatGitHubPrReviewComment(
       ? `\n\n### ❓ Clarifying Questions & Inquiries\n${parsed.questions.map((q) => `- ❓ ${q}`).join("\n")}`
       : "";
 
+  const julesMention = parsed.verdict === "REQUEST_CHANGES" ? "\n\n@jules Please address the findings below:" : "";
+
   return `## ${icon} Automated Code Review Verdict: **${parsed.verdict}**
 **Reviewer Model:** \`${modelName}\` (Token-Efficient AST Review)
-**Task:** [${issue.identifier || issue.id}] ${issue.title}
+**Task:** [${issue.identifier || issue.id}] ${issue.title}${julesMention}
 
 > ${parsed.summary}${findingsSection}${questionsSection}
 
@@ -133,7 +157,8 @@ export function formatGitHubPrReviewComment(
 }
 
 /**
- * Posts the review comment directly to the GitHub PR using the `gh` CLI.
+ * Optional utility to post review comments directly to GitHub PR.
+ * NOTE: Disabled by default in standard fleet operation to preserve zero-PR-noise invariant.
  */
 export async function postPrCommentViaGitHubCli(
   prNumber: number,
@@ -141,6 +166,9 @@ export async function postPrCommentViaGitHubCli(
   cwd?: string
 ): Promise<boolean> {
   try {
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const execFileAsync = promisify(execFile);
     await execFileAsync("gh", ["pr", "comment", String(prNumber), "--body", commentBody], {
       cwd: cwd || process.cwd(),
       timeout: 10000,
@@ -151,6 +179,7 @@ export async function postPrCommentViaGitHubCli(
     return false;
   }
 }
+
 
 /**
  * Executes a token-efficient code review using Grok, Terra (GPT-4o), or Claude,
@@ -239,11 +268,8 @@ export async function executeStrongModelPrReview(
   }
 
   const commentBody = formatGitHubPrReviewComment(issue, parsed, model);
-  let postedToGitHub = false;
-
-  if (prNumber > 0) {
-    postedToGitHub = await postPrCommentViaGitHubCli(prNumber, commentBody, options.cwd);
-  }
+  // Review comments are delivered directly to the worker session via Paperclip, not posted to GitHub PRs
+  const postedToGitHub = false;
 
   return Object.freeze({
     verdict: parsed.verdict,

@@ -10,10 +10,21 @@
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
-    "typecheck": "tsc -b --dry",
+    "typecheck": "tsc --noEmit -p packages/orchestrator/tsconfig.json && tsc --noEmit -p packages/jules/tsconfig.json",
     "test:e2e": "tsx packages/orchestrator/scripts/e2e-paperclip-lifecycle.ts",
     "release:pack": "tsx scripts/package-release.ts",
-    "status": "tsx scripts/status.ts"
+    "status": "tsx scripts/status.ts",
+    "fleet:tick": "./scripts/fleet/wake_orchestrator.sh",
+    "fleet:jules": "./scripts/fleet/wake_jules.sh",
+    "fleet:reviewer": "./scripts/fleet/wake_reviewer.sh",
+    "fleet:vibe": "./scripts/fleet/wake_vibe.sh",
+    "fleet:issues": "./scripts/fleet/list_issues.sh",
+    "fleet:approvals": "./scripts/fleet/list_approvals.sh",
+    "fleet:agents": "./scripts/fleet/list_agents.sh",
+    "fleet:telegram": "./scripts/fleet/run_telegram_companion.sh",
+    "fleet:doctor": "./scripts/fleet/doctor.sh",
+    "fleet:dashboard": "./scripts/fleet/dashboard.sh",
+    "fleet:install": "./scripts/install_all.sh"
   },
   "devDependencies": {
     "@types/node": "22.0.0",

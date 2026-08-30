@@ -5,7 +5,44 @@ import {
   CandidateSelection,
   MultiLaneOptions,
 } from "./types.js";
-import { parseSymbolTarget } from "@pilleo/paperclip-adapter-common";
+import { symbolLockKey } from "@pilleo/paperclip-adapter-common";
+
+export function isExclusiveLock(issue: ParsedIssueMetadata): boolean {
+  if (issue.isNonInterfering) return false;
+  if (issue.exclusive || issue.coreLock) return true;
+  return issue.targetFiles.length === 0 && issue.targetModules.length === 0;
+}
+
+export function issueConflictReason(a: ParsedIssueMetadata, b: ParsedIssueMetadata): string | null {
+  if (a.isNonInterfering || b.isNonInterfering) return null;
+  if (isExclusiveLock(a) || isExclusiveLock(b)) {
+    return `Exclusive lock (${isExclusiveLock(a) ? a.identifier || a.id : b.identifier || b.id})`;
+  }
+
+  const aKeys = new Set(a.targetSymbols.map(symbolLockKey));
+  const sharedSymbols = b.targetSymbols.map(symbolLockKey).filter((k) => aKeys.has(k));
+  if (sharedSymbols.length > 0) {
+    return `Shared method/symbol targets: ${sharedSymbols.join(", ")}`;
+  }
+
+  const fineGrained =
+    a.targetSymbols.length > 0 &&
+    b.targetSymbols.length > 0 &&
+    a.hasSideEffects === false &&
+    b.hasSideEffects === false;
+
+  const sharedModules = a.targetModules.filter((m) => b.targetModules.includes(m));
+  if (sharedModules.length > 0 && !fineGrained) {
+    return `Shared modules: ${sharedModules.join(", ")}`;
+  }
+
+  const sharedFiles = a.targetFiles.filter((f) => b.targetFiles.includes(f));
+  if (sharedFiles.length > 0 && !fineGrained) {
+    return `Shared files: ${sharedFiles.join(", ")}`;
+  }
+
+  return null;
+}
 
 /**
  * Pure functions for dependency DAG calculation, conflict edge evaluation,
@@ -69,32 +106,8 @@ export function calculateConflictMatrix(issues: readonly ParsedIssueMetadata[]):
       const b = activeIssues[j];
       if (!b) continue;
 
-      if (a.isNonInterfering || b.isNonInterfering) continue;
-
-      const sharedFiles = a.targetFiles.filter((f) => b.targetFiles.includes(f));
-      
-      // Method/Symbol-level granularity matching
-      const aSymbols = a.targetSymbols.map(parseSymbolTarget);
-      const bSymbols = b.targetSymbols.map(parseSymbolTarget);
-      const sharedSymbols = a.targetSymbols.filter((s) => b.targetSymbols.includes(s));
-
-      let hasConflict = false;
-      let conflictReason = "";
-
-      if (sharedSymbols.length > 0) {
-        hasConflict = true;
-        conflictReason = `Shared method/symbol targets: ${sharedSymbols.join(", ")}`;
-      } else if (sharedFiles.length > 0) {
-        // If both tasks define explicit, disjoint method targets within the shared file,
-        // they can proceed without a hard conflict if both declare fine-grained symbols.
-        const bothHaveMethodTargets = a.targetSymbols.length > 0 && b.targetSymbols.length > 0;
-        if (!bothHaveMethodTargets) {
-          hasConflict = true;
-          conflictReason = `Shared files: ${sharedFiles.join(", ")}`;
-        }
-      }
-
-      if (hasConflict) {
+      const conflictReason = issueConflictReason(a, b);
+      if (conflictReason) {
         let blocker: ParsedIssueMetadata;
         let blocked: ParsedIssueMetadata;
 
@@ -165,14 +178,18 @@ export function selectNextTasksMultiLane(
 
   const blockedMap = conflictResult.blockedByMap;
 
-  // Active in-progress files/symbols/remote PR files that cannot be touched
+  // Active in-progress files/symbols/modules/remote PR files that cannot be touched
   const activeLockedFiles = new Set<string>(options.extraLockedFiles || []);
   const activeLockedSymbols = new Set<string>();
+  const activeLockedModules = new Set<string>();
+  let exclusiveInFlight = false;
 
   for (const issue of allIssues) {
     if (issue.status === "in_progress" || issue.status === "in_review") {
       issue.targetFiles.forEach((f) => activeLockedFiles.add(f));
-      issue.targetSymbols.forEach((s) => activeLockedSymbols.add(s));
+      issue.targetSymbols.forEach((s) => activeLockedSymbols.add(symbolLockKey(s)));
+      issue.targetModules.forEach((m) => activeLockedModules.add(m));
+      if (isExclusiveLock(issue)) exclusiveInFlight = true;
     }
   }
 
@@ -194,12 +211,27 @@ export function selectNextTasksMultiLane(
     }
 
     if (!candidate.isNonInterfering) {
-      // Check method/symbol locks first
-      for (const sym of candidate.targetSymbols) {
-        if (activeLockedSymbols.has(sym)) return false;
+      if (exclusiveInFlight || isExclusiveLock(candidate)) {
+        if (exclusiveInFlight) return false;
+        if (
+          allIssues.some(
+            (i) =>
+              (i.status === "in_progress" || i.status === "in_review") &&
+              !i.isNonInterfering &&
+              i.id !== candidate.id
+          )
+        ) {
+          return false;
+        }
       }
-      // Check file locks if not fine-grained method targets
-      if (candidate.targetSymbols.length === 0) {
+      for (const sym of candidate.targetSymbols) {
+        if (activeLockedSymbols.has(symbolLockKey(sym))) return false;
+      }
+      const fineGrained = candidate.targetSymbols.length > 0 && candidate.hasSideEffects === false;
+      if (!fineGrained) {
+        for (const mod of candidate.targetModules) {
+          if (activeLockedModules.has(mod)) return false;
+        }
         for (const file of candidate.targetFiles) {
           if (activeLockedFiles.has(file)) return false;
         }
@@ -226,17 +258,9 @@ export function selectNextTasksMultiLane(
     let collidesWithSelected = false;
     if (!candidate.isNonInterfering) {
       for (const sel of selections) {
-        const sharedSymbols = candidate.targetSymbols.filter((s) => sel.issue.targetSymbols.includes(s));
-        if (sharedSymbols.length > 0) {
+        if (issueConflictReason(candidate, sel.issue)) {
           collidesWithSelected = true;
           break;
-        }
-        if (candidate.targetSymbols.length === 0 || sel.issue.targetSymbols.length === 0) {
-          const sharedFiles = candidate.targetFiles.filter((f) => sel.issue.targetFiles.includes(f));
-          if (sharedFiles.length > 0) {
-            collidesWithSelected = true;
-            break;
-          }
         }
       }
     }
@@ -258,7 +282,9 @@ export function selectNextTasksMultiLane(
       );
       vibeAvailable--;
       candidate.targetFiles.forEach((f) => activeLockedFiles.add(f));
-      candidate.targetSymbols.forEach((s) => activeLockedSymbols.add(s));
+      candidate.targetSymbols.forEach((s) => activeLockedSymbols.add(symbolLockKey(s)));
+      candidate.targetModules.forEach((m) => activeLockedModules.add(m));
+      if (isExclusiveLock(candidate)) exclusiveInFlight = true;
     } else if (julesAvailable > 0) {
       selections.push(
         Object.freeze({
@@ -269,7 +295,9 @@ export function selectNextTasksMultiLane(
       );
       julesAvailable--;
       candidate.targetFiles.forEach((f) => activeLockedFiles.add(f));
-      candidate.targetSymbols.forEach((s) => activeLockedSymbols.add(s));
+      candidate.targetSymbols.forEach((s) => activeLockedSymbols.add(symbolLockKey(s)));
+      candidate.targetModules.forEach((m) => activeLockedModules.add(m));
+      if (isExclusiveLock(candidate)) exclusiveInFlight = true;
     } else if (vibeAvailable > 0) {
       selections.push(
         Object.freeze({
@@ -280,7 +308,9 @@ export function selectNextTasksMultiLane(
       );
       vibeAvailable--;
       candidate.targetFiles.forEach((f) => activeLockedFiles.add(f));
-      candidate.targetSymbols.forEach((s) => activeLockedSymbols.add(s));
+      candidate.targetSymbols.forEach((s) => activeLockedSymbols.add(symbolLockKey(s)));
+      candidate.targetModules.forEach((m) => activeLockedModules.add(m));
+      if (isExclusiveLock(candidate)) exclusiveInFlight = true;
     }
   }
 

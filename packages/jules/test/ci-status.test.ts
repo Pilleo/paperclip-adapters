@@ -1,9 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
-import { evaluateChecks, getPullRequestDetails, getPullRequestCiStatus, CheckItem } from "../src/server/ci-status";
+import { evaluateChecks, getPullRequestDetails, getPullRequestCiStatus, getPullRequestPatch, listPullRequestChangedFiles, CheckItem } from "../src/server/ci-status";
 
 describe("evaluateChecks", () => {
   it("returns success when checks array is empty", () => {
-    expect(evaluateChecks([])).toBe("success");
+    expect(evaluateChecks([])).toBe("pending");
   });
 
   it("returns pending when any check is pending or in progress", () => {
@@ -42,5 +42,12 @@ describe("getPullRequestDetails", () => {
   it("calls getPullRequestCiStatus returning status string", async () => {
     const status = await getPullRequestCiStatus("https://github.com/nonexistent/repo/pull/9999");
     expect(typeof status).toBe("string");
+  });
+
+  it("returns an empty file list and patch when gh cannot see the PR", async () => {
+    const files = await listPullRequestChangedFiles("https://github.com/nonexistent/repo/pull/9999");
+    const patch = await getPullRequestPatch("https://github.com/nonexistent/repo/pull/9999");
+    expect(files).toEqual([]);
+    expect(patch).toBe("");
   });
 });

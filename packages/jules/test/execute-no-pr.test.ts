@@ -152,7 +152,13 @@ describe("Jules completion without a PR", () => {
     });
 
     expect(deleteStoredSession).toHaveBeenCalledOnce();
-    expect(moveIssueToDone).toHaveBeenCalledWith("issue-1", "session-1", "jwt-token", "run-1");
+    expect(moveIssueToDone).toHaveBeenCalledWith(
+      "issue-1",
+      "session-1",
+      "jwt-token",
+      "run-1",
+      expect.stringContaining("completed without a PR"),
+    );
     expect(result.clearSession).toBe(true);
     expect(result.resultJson?.issueStatus).toBe("done");
     expect(JulesClient.prototype.getSession).not.toHaveBeenCalled();

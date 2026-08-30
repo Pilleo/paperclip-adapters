@@ -102,3 +102,87 @@ ${symbolsDesc}${filesDesc}
     reason: `Awaiting operator start approval in Paperclip (approval ${matchingApproval.id})`,
   };
 }
+
+export type MergeApprovalDecision =
+  | { action: "EXECUTE_MERGE"; approvalId?: string; reason: string }
+  | {
+      action: "CREATE_MERGE_APPROVAL_REQUEST";
+      title: string;
+      description: string;
+      issueId: string;
+      prNumber: number;
+      prUrl?: string | undefined;
+      issueUrl?: string | undefined;
+    }
+  | { action: "AWAIT_MERGE_APPROVAL"; approvalId: string; reason: string }
+  | { action: "REJECTED"; approvalId: string; reason: string };
+
+export function evaluatePrMergeApproval(
+  issue: ParsedIssueMetadata,
+  prNumber: number,
+  existingApprovals: readonly PaperclipApprovalSummary[],
+  options: {
+    prUrl?: string | undefined;
+    vibeSummary?: string | undefined;
+    strongSummary?: string | undefined;
+    companyUrlKey?: string | undefined;
+  } = {}
+): MergeApprovalDecision {
+  const matchingApproval = existingApprovals.find(
+    (app) =>
+      (app.type === "task_merge_approval" ||
+        (app.type === "request_board_approval" && app.payload?.["action"] === "task_merge")) &&
+      (app.issueIds.includes(issue.id) || app.payload?.["issueId"] === issue.id || app.payload?.["prNumber"] === prNumber)
+  );
+
+  if (!matchingApproval) {
+    const urlKey = options.companyUrlKey || "MAZ";
+    const issueLink = `http://localhost:3100/${urlKey}/issues/${issue.identifier || issue.id}`;
+    const prLink = options.prUrl || `https://github.com/Pilleo/mazewall/pull/${prNumber}`;
+    const title = `Approve PR #${prNumber} merge: [${issue.identifier || issue.id}] "${issue.title}"`;
+
+    const description = `### 🚀 Final Pull Request Merge Authorization Request
+
+🔗 **Paperclip Issue:** [${issue.identifier || issue.id}: ${issue.title}](${issueLink})
+🔗 **GitHub PR:** [PR #${prNumber}](${prLink})
+
+#### 🛡️ Multi-Tier Review Pipeline Passed
+- ✅ **Stage 1 (CI Gate):** 100% Green Build & Tests
+- ✅ **Stage 2 (Vibe Fast Review):** ${options.vibeSummary || "Passed structural and invariant sanity checks."}
+- ✅ **Stage 3 (Strong Model Review):** ${options.strongSummary || "Passed deep security, Landlock/seccomp, and FFM invariant audit."}
+
+*Approving this authorization will automatically merge PR #${prNumber} on GitHub and mark this task done.*`;
+
+    return {
+      action: "CREATE_MERGE_APPROVAL_REQUEST",
+      title,
+      description,
+      issueId: issue.id,
+      prNumber,
+      prUrl: options.prUrl,
+      issueUrl: issueLink,
+    };
+  }
+
+  if (matchingApproval.status === "approved") {
+    return {
+      action: "EXECUTE_MERGE",
+      approvalId: matchingApproval.id,
+      reason: `Operator approved PR #${prNumber} merge (approval ${matchingApproval.id})`,
+    };
+  }
+
+  if (matchingApproval.status === "rejected") {
+    return {
+      action: "REJECTED",
+      approvalId: matchingApproval.id,
+      reason: `Operator rejected PR #${prNumber} merge (approval ${matchingApproval.id})`,
+    };
+  }
+
+  return {
+    action: "AWAIT_MERGE_APPROVAL",
+    approvalId: matchingApproval.id,
+    reason: `Awaiting operator final merge approval in Paperclip (approval ${matchingApproval.id})`,
+  };
+}

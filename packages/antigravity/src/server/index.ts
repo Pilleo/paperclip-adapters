@@ -5,6 +5,7 @@ import { AntigravityConfigSchema, antigravityAdapterConfigSchema, DEFAULT_AGY_SE
 import { testEnvironment } from "./test-environment.js";
 import { ANTIGRAVITY_MODELS } from "../ui/models.js";
 import { fetchDynamicAntigravityModels } from "./discover-models.js";
+import { LOCAL_AGENT_TOOL_GUIDANCE, withLocalAgentToolBudget } from "@pilleo/paperclip-adapter-common";
 
 export const type = "antigravity";
 export const label = "Google Antigravity (AGY)";
@@ -33,6 +34,7 @@ Runs **Google Antigravity** pair-programming agent sessions via the Agent Client
 - **Instructions Bundle:** Automatically materializes workspace rules, \`AGENTS.md\`, and custom instructions.
 - **Skills Studio:** Mounts custom MCP servers and materialized skills into the AGY subshell.
 - **ACP Integration:** Supports bidirectional tool calls, interactive approvals, and real-time streaming logs.
+- **Token-efficient tools:** Prefer Codanna symbol outlines, git diff hunks, and named tests over dumping whole files.
 
 ---
 
@@ -62,7 +64,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const parsed = AntigravityConfigSchema.safeParse(ctx.config ?? {});
   const config = parsed.success ? parsed.data : AntigravityConfigSchema.parse({});
 
-  const serverPath = path.resolve(config.serverPath || DEFAULT_AGY_SERVER_PATH);
+  const rawServer = config.serverPath || DEFAULT_AGY_SERVER_PATH;
+  const serverPath =
+    rawServer.includes("/") || rawServer.startsWith(".")
+      ? path.resolve(rawServer)
+      : rawServer;
   const debugArg = config.debug ? " --debug" : "";
   const uidArg = config.uid !== undefined && config.uid !== null ? ` --uid=${config.uid}` : " --uid=";
   const agentCommand = `${serverPath}${uidArg}${debugArg}`;
@@ -74,11 +80,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     agentCommand,
     permissionMode: config.permissionMode || "approve-all",
     model: normalizedModel,
+    timeoutSec: config.timeoutSec,
   };
 
   return await rawAcpExecutor({
     ...ctx,
-    config: acpConfig,
+    context: withLocalAgentToolBudget((ctx.context || {}) as Record<string, unknown>),
+    config: {
+      ...acpConfig,
+      promptTemplate:
+        typeof acpConfig["promptTemplate"] === "string"
+          ? `${LOCAL_AGENT_TOOL_GUIDANCE}\n\n${acpConfig["promptTemplate"]}`
+          : acpConfig["promptTemplate"],
+    },
   });
 }
 

@@ -13,16 +13,12 @@ import {
 describe("Paperclip issue completion", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("moves the assigned issue to review with the local agent token", async () => {
+  it("registers pull request work product when moving issue to review", async () => {
     const fetchMock = vi.fn()
       // GET work-products (dedupe guard): empty list -> POST proceeds
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => [] })
       // POST work-products
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({}) })
-      // POST interactions
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ id: "int-1" }) })
-      // PATCH issue
-      .mockResolvedValue({ ok: true, status: 200 });
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({}) });
     global.fetch = fetchMock as unknown as typeof global.fetch;
 
     await moveIssueToReview("issue-1", "https://github.com/example/repo/pull/1", "jwt-token");
@@ -38,23 +34,6 @@ describe("Paperclip issue completion", () => {
       expect.objectContaining({
         method: "POST",
         body: expect.stringContaining('"type":"pull_request"'),
-      }),
-    );
-    expect(global.fetch).toHaveBeenNthCalledWith(
-      3,
-      "http://127.0.0.1:3100/api/issues/issue-1/interactions",
-      expect.objectContaining({
-        method: "POST",
-        body: expect.stringContaining('"kind":"request_confirmation"'),
-      }),
-    );
-    expect(global.fetch).toHaveBeenNthCalledWith(
-      4,
-      "http://127.0.0.1:3100/api/issues/issue-1",
-      expect.objectContaining({
-        method: "PATCH",
-        headers: expect.objectContaining({ Authorization: "Bearer jwt-token" }),
-        body: expect.stringContaining('"status":"in_review"'),
       }),
     );
   });

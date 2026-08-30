@@ -1,10 +1,6 @@
 import { createHash } from 'crypto';
 import { AdapterConfig } from './config.js';
-import {
-  synthesizeDeterministicPlan,
-  enrichPlanWithSymbolResearch,
-  formatPlanMarkdown,
-} from '@pilleo/paperclip-adapter-common';
+import { buildHostImplementationPlan } from '@pilleo/paperclip-adapter-common';
 
 export interface PromptContext {
   issueId: string;
@@ -37,23 +33,20 @@ export function buildPrompt(ctx: PromptContext, config: AdapterConfig): string {
   prompt += `Repository: ${config.source}\n`;
   prompt += `Base Branch: ${config.baseBranch}\n\n`;
 
-  // Synthesize and attach Codanna-supported implementation plan
   try {
-    const rawPlan = synthesizeDeterministicPlan(ctx.description, ctx.issueId, ctx.workspacePath);
-    const enrichedPlan = enrichPlanWithSymbolResearch(rawPlan, ctx.workspacePath);
-    const formattedPlan = formatPlanMarkdown(enrichedPlan);
-    prompt += `### 📋 Structured Implementation Plan & Codanna Research:\n\n${formattedPlan}\n\n`;
+    const { markdown } = buildHostImplementationPlan(ctx.description, ctx.issueId, ctx.workspacePath);
+    prompt += `### Implementation plan (scope contract — follow this, do not expand):\n\n${markdown}\n\n`;
   } catch {
     // Fallback if markdown parsing encounters non-standard format
   }
 
   prompt += `Instructions:\n`;
+  prompt += `- Implement the attached plan. Do not add files or scope outside it without asking.\n`;
   prompt += `- If repository changes are needed, create a pull request (PR) upon completion.\n`;
   prompt += `- If no repository changes are needed or the task explicitly requests no changes, explain the result and complete without a PR.\n`;
   prompt += `- When creating a PR, include the Paperclip Issue ID (${ctx.issueId}) in its description or title.\n`;
   prompt += `- Do not merge the PR automatically.\n`;
-  prompt += `- If you are blocked or need clarification, ask a focused question.\n`;
-  prompt += `- 🔬 **Codebase Navigation (Codanna in Sandbox):** Use \`codanna retrieve describe <SymbolName>\` or \`codanna retrieve callers <SymbolName>\` in your subshell to inspect exact type signatures, AST outlines, and call graphs without wasting context tokens on full file views.\n\n`;
+  prompt += `- If you are blocked or need clarification, ask a focused question.\n\n`;
 
   if (ctx.isRetry) {
     if (ctx.resumeAttempt && ctx.resumeAttempt > 1) {

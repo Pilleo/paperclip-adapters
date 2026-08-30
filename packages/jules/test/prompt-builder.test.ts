@@ -24,6 +24,25 @@ beforeAll(() => {
     isRetry: false
   };
 
+  it('embeds the host work-package plan in the scope contract', () => {
+    const prompt = buildPrompt(
+      {
+        ...ctx,
+        description: `---
+title: "Cap cache"
+target_files: ["enforcer/src/main/kotlin/io/mazewall/enforcer/SandboxDispatcher.kt"]
+target_symbols: ["SandboxDispatcher#getOrCreate"]
+---
+**Needed:** Bound the cache.
+`,
+      },
+      config,
+    );
+    expect(prompt).toContain('scope contract');
+    expect(prompt).toContain('SandboxDispatcher.kt');
+    expect(prompt).toContain('SandboxDispatcher#getOrCreate');
+  });
+
   it('builds standard prompt correctly', () => {
     const prompt = buildPrompt(ctx, config);
     expect(prompt).toContain('Task: Fix bug');
@@ -33,6 +52,7 @@ beforeAll(() => {
     expect(prompt).toContain('Instruction');
     expect(prompt).toContain('If repository changes are needed, create a pull request');
     expect(prompt).toContain('complete without a PR');
+    expect(prompt).toContain('scope contract');
     expect(prompt).not.toContain('A previous Jules session failed');
   });
 

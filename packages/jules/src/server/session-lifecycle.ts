@@ -50,12 +50,26 @@ export function isInteractionWake(rawContext: Record<string, unknown>): boolean 
   );
 }
 
+export function sessionMatchesConfig(
+  session: JulesAdapterSessionV1 | null,
+  config: { repository: string; source: string; baseBranch: string },
+): boolean {
+  if (!session) return false;
+  if (!session.repository && !session.source && !session.baseBranch) return true;
+  return (
+    session.repository === config.repository &&
+    session.source === config.source &&
+    session.baseBranch === config.baseBranch
+  );
+}
+
 export function evaluateSessionStartup(
   rawContext: Record<string, unknown>,
   decodedSession: JulesAdapterSessionV1 | null,
   storedSession: JulesAdapterSessionV1 | null,
   canonicalSessionId: string | null,
-  config: { repository: string; source: string; baseBranch: string; taskId: PaperclipId }
+  config: { repository: string; source: string; baseBranch: string; taskId: PaperclipId },
+  issueHandleSessionId: string | null = null,
 ): SessionStartupDecision {
   const paperclipWake = readContextRecord(rawContext, "paperclipWake");
   const wakeSource = readContextString(rawContext, "wakeSource") ?? readContextString(paperclipWake, "wakeSource");
@@ -109,6 +123,24 @@ export function evaluateSessionStartup(
 
   if (!session && storedSession) {
     session = storedSession;
+  }
+
+  if (!session && issueHandleSessionId) {
+    session = {
+      version: 1,
+      paperclipIssueId: config.taskId,
+      promptHash: "",
+      repository: config.repository,
+      source: config.source,
+      baseBranch: config.baseBranch,
+      phase: "RUNNING",
+      sessionId: issueHandleSessionId,
+      julesSessionId: asJulesSessionId(issueHandleSessionId),
+      julesSessionUrl: `https://jules.google.com/session/${issueHandleSessionId}`,
+      attempt: 1,
+      failedSessions: [],
+      createdAt: new Date().toISOString()
+    };
   }
 
   if (isInteractionResume && session) {

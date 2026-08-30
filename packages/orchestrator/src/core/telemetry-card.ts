@@ -1,3 +1,4 @@
+import { AgentHealthReport, formatAgentHealthAlertDigest } from "./agent-health-monitor.js";
 import { ConflictMatrixResult, JulesQuotaStatus, GitHubSyncStatus } from "./types.js";
 import { DailyBudgetState, formatBudgetTelemetrySummary } from "./cost-tracker.js";
 
@@ -20,6 +21,7 @@ export interface OrchestratorDashboardParams {
   rateLimitPausedUntilMs?: number | undefined;
   nowMs?: number | undefined;
   dailyBudget?: DailyBudgetState | undefined;
+  agentHealth?: AgentHealthReport | undefined;
 }
 
 export function formatOrchestratorDashboardCard(params: OrchestratorDashboardParams): string {
@@ -37,8 +39,10 @@ export function formatOrchestratorDashboardCard(params: OrchestratorDashboardPar
     const isExhausted = capacityRemaining <= 0;
     const badge = isExhausted ? "⏸️ **Full/Exhausted**" : "⚡ **Active**";
     julesStatusStr = `${badge} (\`${params.julesQuota.activeSessionsCount}/${params.julesQuota.maxConcurrent}\` concurrent, \`${params.julesQuota.sessionsLast24hCount}/${params.julesQuota.maxDaily}\` daily rolling)`;
+  } else if (params.julesQuota.error) {
+    julesStatusStr = `**Quota unavailable** — ${params.julesQuota.error} (dispatch capacity 0)`;
   } else {
-    julesStatusStr = `⚡ \`${params.julesRunning}/${params.julesCapacity}\` configured`;
+    julesStatusStr = `\`${params.julesRunning}/${params.julesCapacity}\` configured`;
   }
 
   const budgetRow = params.dailyBudget
@@ -55,6 +59,12 @@ export function formatOrchestratorDashboardCard(params: OrchestratorDashboardPar
       ? `\n\n#### 🔒 Active File Locks (${params.ghStatus.openPrFiles.size} locked files)\n| File / Symbol | Lock Source |\n|---|---|\n${lockRows}${params.ghStatus.openPrFiles.size > 10 ? "\n| ... | ... |" : ""}`
       : "";
 
+  const incidentsSection = params.agentHealth && !params.agentHealth.isHealthy
+    ? `
+
+${formatAgentHealthAlertDigest(params.agentHealth)}`
+    : "";
+
   return `### 🎛️ Orchestrator Live Telemetry & Scheduling Matrix
 
 | Metric | Status |
@@ -64,5 +74,5 @@ export function formatOrchestratorDashboardCard(params: OrchestratorDashboardPar
 | **Vibe Local Lane** | 💻 \`${params.vibeRunning}/${params.vibeCapacity}\` active slots |
 | **Conflict Matrix** | 🔗 **${params.conflictResult.conflictEdges.length}** DAG conflict edges evaluated |
 | **Operator Approvals** | ⏳ **${params.approvalsPendingCount}** pending start approvals |
-| **Execution Latency** | ⏱️ ${params.elapsedMs}ms |${budgetRow}${locksTable}`;
+| **Execution Latency** | ⏱️ ${params.elapsedMs}ms |${budgetRow}${locksTable}${incidentsSection}`;
 }

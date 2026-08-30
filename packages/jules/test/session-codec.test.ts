@@ -89,11 +89,25 @@ beforeAll(() => {
 
     it('round-trips Paperclip canonical-only resume state', () => {
         const resumeState = { sessionId: 'session-123' };
+        const normalized = { sessionId: 'session-123', julesSessionId: 'session-123' };
 
-        expect(sessionCodec.deserialize(resumeState)).toEqual(resumeState);
-        expect(sessionCodec.serialize(resumeState)).toEqual(resumeState);
+        expect(sessionCodec.deserialize(resumeState)).toEqual(normalized);
+        expect(sessionCodec.serialize(resumeState)).toEqual(normalized);
         expect(sessionCodec.getDisplayId(resumeState)).toBe('session-123');
         expect(sessionCodec.getCanonicalSessionId(resumeState)).toBe('session-123');
+    });
+
+    it('accepts Cursor-style identity aliases and last activity id', () => {
+        expect(sessionCodec.getDisplayId({ julesSessionId: 'j-live' })).toBe('j-live');
+        expect(sessionCodec.getCanonicalSessionId({ agentId: 'j-live' })).toBe('j-live');
+        expect(sessionCodec.deserialize({
+            julesSessionId: 'j-live',
+            lastActivityId: 'act-9',
+        })).toEqual({
+            sessionId: 'j-live',
+            julesSessionId: 'j-live',
+            lastActivityId: 'act-9',
+        });
     });
 
     it('rejects active legacy sessions without the canonical sessionId', () => {

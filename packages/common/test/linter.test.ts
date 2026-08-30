@@ -73,9 +73,25 @@ target_files: ["foo.kt"]
 `;
       const res = lintBacklogMarkdown(md, "issue-20260829-123045-mod.md");
       expect(res.isValid).toBe(false);
-      expect(res.errors.some((e) => e.includes("Invalid Gradle module"))).toBe(true);
+      expect(res.errors.some((e) => e.includes("Invalid target module"))).toBe(true);
     }
   );
+
+  it("accepts npm workspace target_modules for this adapters monorepo", () => {
+    const md = `---
+title: "Plan ladder on Jules"
+component: "orchestrator"
+target_modules: ["packages/jules", "@pilleo/paperclip-jules-adapter"]
+target_files: ["packages/jules/src/server/plan-reviewer.ts"]
+target_symbols: ["evaluatePlanClarity"]
+---
+**Context:** Plan review must try Mistral before Luna.
+**Needed:** Keep Mistral first; Terra is Codex.
+`;
+    const res = lintBacklogMarkdown(md, "issue-20260830-210000-plan-ladder.md");
+    expect(res.isValid).toBe(true);
+    expect(res.errors).toEqual([]);
+  });
 
   describe.each([
     { input: "BpfFilter#compile", expectedClass: "BpfFilter", expectedMethod: "compile" },

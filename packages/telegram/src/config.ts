@@ -19,7 +19,7 @@ export function isUserAuthorized(
   allowedUserIds: readonly (number | string)[]
 ): boolean {
   if (!Array.isArray(allowedUserIds) || allowedUserIds.length === 0) {
-    return true;
+    return process.env["TELEGRAM_ALLOW_UNRESTRICTED"] === "true";
   }
 
   const normalizedWhitelist = allowedUserIds.map((id) => String(id).trim());
@@ -67,7 +67,7 @@ export function loadTelegramConfig(env: NodeJS.ProcessEnv = process.env): Telegr
     conversationId,
     paperclipApiUrl: env["PAPERCLIP_API_URL"] || "http://127.0.0.1:3100",
     paperclipApiKey: env["PAPERCLIP_API_KEY"] || env["PAPERCLIP_AGENT_TOKEN"],
-    paperclipCompanyId: env["PAPERCLIP_COMPANY_ID"] || "8f4ef932-d769-43b2-981a-d273ed715162",
+    paperclipCompanyId: env["PAPERCLIP_COMPANY_ID"] || undefined,
     pollIntervalMs: parseInt(env["TELEGRAM_POLL_INTERVAL_MS"] || "1000", 10),
   };
 }

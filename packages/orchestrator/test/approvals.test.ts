@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { evaluateTaskStartApproval, PaperclipApprovalSummary } from "../src/core/approvals.js";
+import { evaluateTaskStartApproval, evaluatePrMergeApproval, PaperclipApprovalSummary } from "../src/core/approvals.js";
 import { ParsedIssueMetadata } from "../src/core/types.js";
 
 function createMockIssue(overrides: Partial<ParsedIssueMetadata> = {}): ParsedIssueMetadata {
@@ -85,5 +85,53 @@ describe("evaluateTaskStartApproval", () => {
     ];
     const decision = evaluateTaskStartApproval(issue, "agent-jules", existing);
     expect(decision.action).toBe("SKIP_REJECTED");
+  });
+});
+
+describe("evaluatePrMergeApproval", () => {
+  it("creates merge approval request if no matching approval exists", () => {
+    const issue = createMockIssue();
+    const decision = evaluatePrMergeApproval(issue, 526, [], {
+      prUrl: "https://github.com/Pilleo/mazewall/pull/526",
+      vibeSummary: "Clean AST diff.",
+      strongSummary: "Zero invariant violations.",
+    });
+
+    expect(decision.action).toBe("CREATE_MERGE_APPROVAL_REQUEST");
+    if (decision.action === "CREATE_MERGE_APPROVAL_REQUEST") {
+      expect(decision.title).toContain("PR #526");
+      expect(decision.description).toContain("Stage 2 (Vibe Fast Review)");
+      expect(decision.description).toContain("Stage 3 (Strong Model Review)");
+    }
+  });
+
+  it("executes merge if matching merge approval is approved", () => {
+    const issue = createMockIssue();
+    const existing: PaperclipApprovalSummary[] = [
+      {
+        id: "merge-app-1",
+        type: "task_merge_approval",
+        status: "approved",
+        issueIds: [issue.id],
+      },
+    ];
+
+    const decision = evaluatePrMergeApproval(issue, 526, existing);
+    expect(decision.action).toBe("EXECUTE_MERGE");
+  });
+
+  it("awaits approval if matching merge approval is pending", () => {
+    const issue = createMockIssue();
+    const existing: PaperclipApprovalSummary[] = [
+      {
+        id: "merge-app-1",
+        type: "task_merge_approval",
+        status: "pending",
+        issueIds: [issue.id],
+      },
+    ];
+
+    const decision = evaluatePrMergeApproval(issue, 526, existing);
+    expect(decision.action).toBe("AWAIT_MERGE_APPROVAL");
   });
 });

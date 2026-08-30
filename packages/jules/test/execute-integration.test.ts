@@ -30,7 +30,8 @@ beforeAll(() => {
         agent: {
             id: '1', companyId: '1', name: 'agent', adapterType: 'jules',
             adapterConfig: {
-              source: 'github', repository: 'test', baseBranch: 'master', pollIntervalSeconds: 10, heartbeatPollWindowSeconds: 30
+              source: 'github', repository: 'test', baseBranch: 'master', pollIntervalSeconds: 10, heartbeatPollWindowSeconds: 30,
+              ciPolicy: 'skip',
             }
         },
         runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: 'task-1' },
@@ -132,7 +133,7 @@ beforeAll(() => {
 
         expect(res.exitCode).toBe(0);
         expect(res.summary || "").toContain('moved the Paperclip issue to review');
-        expect(res.clearSession).toBe(true);
+        expect(res.clearSession).toBe(false);
         expect(createdCount).toBe(1);
     });
 

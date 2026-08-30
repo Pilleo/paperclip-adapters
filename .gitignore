@@ -5,3 +5,5 @@ coverage/
 .DS_Store
 dist-packages/
 *.tgz
+.env
+.env.*

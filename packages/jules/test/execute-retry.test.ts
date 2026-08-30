@@ -121,13 +121,17 @@ beforeAll(() => {
 
   it('handles COMPLETED state with false success (no PR)', async () => {
      (JulesClient.prototype.getSession as any).mockResolvedValueOnce({ state: 'COMPLETED' });
-     global.fetch = vi.fn()
-       .mockResolvedValueOnce({
+     global.fetch = vi.fn().mockImplementation(async (url: any) => {
+       const urlStr = String(url);
+       if (urlStr.includes("/comments")) {
+         return { ok: true, status: 200, json: async () => [] };
+       }
+       return {
          ok: true,
          status: 201,
-         json: async () => ({ id: 'interaction-1', status: 'pending' }),
-       })
-       .mockResolvedValueOnce({ ok: true, status: 200 });
+         json: async () => ({ id: "interaction-1", status: "pending" }),
+       };
+     });
 
      const res = await execute({ ...resumedCtx, authToken: 'jwt-token' });
      expect(res.exitCode).toBe(0);

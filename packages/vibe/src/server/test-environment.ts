@@ -18,7 +18,7 @@ export async function testEnvironment(
   const parsed = VibeConfigSchema.safeParse(ctx.config ?? {});
   const config = parsed.success ? parsed.data : VibeConfigSchema.parse({});
 
-  // 1. Check vibe --acp in PATH
+  // 1. Check vibe-acp in PATH
   try {
     const { stdout } = await execFileAsync("which", [config.serverCommand]);
     checks.push({
@@ -34,7 +34,7 @@ export async function testEnvironment(
       level: "error",
       message: `Mistral Vibe ACP executable '${config.serverCommand}' was not found in PATH`,
       detail: null,
-      hint: "Ensure vibe --acp is installed and present in PATH.",
+      hint: "Ensure vibe-acp is installed and present in PATH.",
     });
   }
 

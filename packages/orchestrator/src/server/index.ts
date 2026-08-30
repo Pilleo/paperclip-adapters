@@ -42,14 +42,14 @@ export const orchestratorAdapterConfigSchema: AdapterConfigSchema = {
       label: "Jules Worker Agent ID",
       type: "text",
       required: false,
-      hint: "Auto-detects Async software developer if left blank",
+      hint: "Optional override for the [Orchestrated] Jules worker. Independent Jules agents are never selected.",
     },
     {
       key: "vibeAgentId",
       label: "Vibe Worker Agent ID",
       type: "text",
       required: false,
-      hint: "Auto-detects Vibe ACP Developer if left blank",
+      hint: "Optional override for the [Orchestrated] Vibe worker. Independent Vibe agents are never selected.",
     },
     {
       key: "reviewerAgentId",
@@ -63,8 +63,7 @@ export const orchestratorAdapterConfigSchema: AdapterConfigSchema = {
       label: "Workspace Path",
       type: "text",
       required: false,
-      default: "/home/leanid/Documents/code/java/jseccomp",
-      hint: "Absolute path to repository workspace",
+      hint: "Absolute path to the repository workspace (defaults to process cwd / Paperclip workspace)",
     },
   ],
 };

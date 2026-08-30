@@ -33,6 +33,24 @@ export const VALID_GRADLE_MODULES = [
   ":tools:orchestrator",
 ] as const;
 
+/** npm workspaces in this adapters monorepo (planning tool is not mazewall-only). */
+export const VALID_NPM_WORKSPACES = [
+  "packages/common",
+  "packages/jules",
+  "packages/orchestrator",
+  "packages/vibe",
+  "packages/antigravity",
+  "packages/telegram",
+] as const;
+
+export function isValidTargetModule(mod: string): boolean {
+  const trimmed = mod.trim();
+  if ((VALID_GRADLE_MODULES as readonly string[]).includes(trimmed)) return true;
+  if ((VALID_NPM_WORKSPACES as readonly string[]).includes(trimmed)) return true;
+  if (/^@pilleo\/paperclip-[a-z0-9-]+$/.test(trimmed)) return true;
+  return false;
+}
+
 export const VALID_FILENAME_PATTERN = /^issue-(?:\d{8}[-_]\d{6}(?:[-_]\d{2})?|\d{8}[-_]\d{2,4}|\d{1,4})[-_][a-z0-9_-]+\.md$/;
 
 export interface SymbolTarget {
@@ -61,6 +79,15 @@ export function parseSymbolTarget(raw: string): SymbolTarget {
     };
   }
   return { symbol: trimmed };
+}
+
+/** Canonical lock key so `Foo#bar` and `Foo.bar` collide. */
+export function symbolLockKey(raw: string): string {
+  const parsed = parseSymbolTarget(raw);
+  if (parsed.className && parsed.methodName) {
+    return `${parsed.className}#${parsed.methodName}`;
+  }
+  return parsed.symbol;
 }
 
 export interface BacklogIssueLintResult {
@@ -177,11 +204,15 @@ export function lintBacklogMarkdown(
     targetModules = frontmatter["target_modules"].filter((m): m is string => typeof m === "string");
   }
   if (targetModules.length === 0 && (status === "open" || status === "in_progress")) {
-    errors.push("'target_modules' must contain at least one Gradle module (e.g. [':enforcer'])");
+    errors.push(
+      "'target_modules' must contain at least one Gradle module (e.g. [':enforcer']) or npm workspace (e.g. ['packages/jules'])",
+    );
   } else {
     for (const mod of targetModules) {
-      if (!(VALID_GRADLE_MODULES as readonly string[]).includes(mod)) {
-        errors.push(`Invalid Gradle module '${mod}' in target_modules. Allowed: ${VALID_GRADLE_MODULES.join(", ")}`);
+      if (!isValidTargetModule(mod)) {
+        errors.push(
+          `Invalid target module '${mod}'. Allowed Gradle: ${VALID_GRADLE_MODULES.join(", ")}; npm workspaces: ${VALID_NPM_WORKSPACES.join(", ")} or @pilleo/paperclip-*`,
+        );
       }
     }
   }

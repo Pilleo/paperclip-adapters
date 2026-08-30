@@ -11,8 +11,13 @@ import {
   planMarkdown,
   rejectionReason,
 } from "./activity-formatter.js";
-import { evaluateSessionStartup, isInteractionWake } from "./session-lifecycle.js";
+import { evaluateSessionStartup, isInteractionWake, sessionMatchesConfig } from "./session-lifecycle.js";
+import { isLiveJulesRemoteState } from "./jules-live-state.js";
 import { evaluateSessionWatchdog } from "./watchdog.js";
+import { listAllActivities, mirrorNewActivities } from "./activity-mirror.js";
+import { persistSessionBestEffort } from "./session-initializer.js";
+import { evaluatePlanClarity, composePlanForReview, createCheapReviewer, createTerraCodexReviewer, defaultCheapReviewer } from "./plan-reviewer.js";
+import { buildHostImplementationPlan } from "@pilleo/paperclip-adapter-common";
 import { evaluateSessionFailure } from "./failure-recovery.js";
 import { extractResolvedInteraction } from "./interaction-relay.js";
 import {
@@ -22,7 +27,7 @@ import {
   determinePaperclipIssueStatus,
 } from "./interaction-engine.js";
 import { formatCardPrompt, formatCardSummary } from "./card-prompt.js";
-import { getPullRequestCiStatus, getPullRequestDetails } from "./ci-status.js";
+import { getPullRequestCiStatus, getPullRequestDetails, getPullRequestPatch, listPullRequestChangedFiles } from "./ci-status.js";
 import { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { AdapterConfig, validateConfig, requireJulesApiKey, discoverLocalGitRepository, discoverLocalGitDefaultBranch } from "./config.js";
 import { isGhCliAuthenticated, createRemoteGitHubRepo } from "./git-remote-creator.js";
@@ -30,6 +35,8 @@ import { JulesAdapterSessionV1, sessionCodec, serializeSession } from "./session
 import { JulesActivity, JulesClient, JulesClientError, extractPullRequestUrl } from "./jules-client.js";
 import { buildPrompt, hashPromptIdentity, PROMPT_IDENTITY_HASH_VERSION } from "./prompt-builder.js";
 import { handleJulesState } from "./state-machine.js";
+import { evaluateJulesLifecycleState } from "./state-engine.js";
+import { evaluateScopeConformity } from "@pilleo/paperclip-adapter-common";
 import { classifyFailure, toErrorFamily, summarizeJulesFailure } from "./failure-classifier.js";
 import { shouldRetry, getRetryNotBefore } from "./retry-policy.js";
 import { asJulesActivityId, asJulesSessionId, asPaperclipId } from "./brands.js";
@@ -42,6 +49,7 @@ import {
   normalizeActivities,
 } from "./activity-checkpoint.js";
 import {
+  listIssueComments,
   createNoPrCompletionInteraction,
   addJulesActivityComment,
   createJulesFeedbackInteraction,
@@ -51,17 +59,17 @@ import {
   moveIssueToBlocked,
   moveIssueToInProgress,
   postSessionLink,
+  readJulesSessionHandle,
   moveIssueToDone,
   moveIssueToReview,
   listWorkProducts,
   registerPullRequestWorkProduct,
   PaperclipClientError,
+  getPaperclipJson,
   type PaperclipInteraction,
 } from "./paperclip-client.js";
 import { createTelemetry } from "./telemetry.js";
 
-const JULES_POLL_INTERVAL_MS = 45 * 1000;
-const JULES_WATCH_WINDOW_MS = 6 * 60 * 60 * 1000;
 const JULES_CONTINUATION_DELAY_MS = 60 * 1000;
 const JULES_INITIAL_ACTIVITY_CHECK_DELAY_MS = 5 * 1000;
 
@@ -133,15 +141,17 @@ function createProgressSummary(session: JulesAdapterSessionV1): string {
 function createPendingResult(
   session: JulesAdapterSessionV1,
   initialActivityCheck = false,
+  reattachDelayMs?: number,
 ): AdapterExecutionResult {
     const summary = createProgressSummary(session);
+    const delayMs = initialActivityCheck
+      ? JULES_INITIAL_ACTIVITY_CHECK_DELAY_MS
+      : (reattachDelayMs ?? JULES_CONTINUATION_DELAY_MS);
     return {
       exitCode: 0,
       signal: null,
       timedOut: false,
-      retryNotBefore: new Date(
-        Date.now() + (initialActivityCheck ? JULES_INITIAL_ACTIVITY_CHECK_DELAY_MS : JULES_CONTINUATION_DELAY_MS),
-      ).toISOString(),
+      retryNotBefore: new Date(Date.now() + delayMs).toISOString(),
       sessionParams: serializeSession(session),
       sessionDisplayId: session.julesSessionId || null,
       summary,
@@ -153,100 +163,6 @@ function createPendingResult(
       },
       clearSession: false,
     };
-}
-
-async function persistSessionBestEffort(
-  session: JulesAdapterSessionV1,
-  onLog: AdapterExecutionContext["onLog"] | undefined,
-): Promise<void> {
-  try {
-    await saveStoredSession(session);
-  } catch (error) {
-    if (onLog) {
-      await onLog("stderr", `[jules] Could not persist the local recovery record: ${sanitizeError(error)}\n`);
-    }
-  }
-}
-
-async function listAllActivities(client: JulesClient, sessionId: NonNullable<JulesAdapterSessionV1["julesSessionId"]>): Promise<JulesActivity[]> {
-  const activities: JulesActivity[] = [];
-  let pageToken: string | undefined;
-  do {
-    const page = await client.getActivities(sessionId, pageToken);
-    activities.push(...(page.activities ?? []));
-    pageToken = page.nextPageToken;
-  } while (pageToken);
-  return normalizeActivities(activities);
-}
-
-
-async function mirrorNewActivities(
-  client: JulesClient,
-  session: JulesAdapterSessionV1,
-  taskId: string,
-  authToken: string | undefined,
-  runId: string | undefined,
-  onLog: AdapterExecutionContext["onLog"] | undefined,
-): Promise<JulesActivity[]> {
-  const activities = await listAllActivities(client, session.julesSessionId!);
-  const delivered = new Set(session.deliveredActivityIds ?? []);
-  for (const activity of activities) {
-    if (!isAfterCheckpoint(activity, session.activityCheckpoint) || delivered.has(activity.id)) continue;
-    if (onLog) {
-      const logLine = formatActivityForLog(activity);
-      await onLog("stdout", logLine);
-    }
-    const rawBody = activityComment(activity);
-    // Paperclip rejects oversized comments (observed 422 on a long verdict) -
-    // truncate with an explicit marker instead of losing the delivery to an error.
-    const body =
-      rawBody && rawBody.length > MAX_COMMENT_LENGTH
-        ? rawBody.slice(0, MAX_COMMENT_LENGTH) + "\n…[truncated]"
-        : rawBody;
-    if (body) {
-      // Per-activity isolation: one rejected comment (e.g. 422 from board-side
-      // validation) must not abort the whole mirror batch and starve every later
-      // activity behind the durable cursor. Failure is logged with the activity id
-      // and the cursor still advances - the activity is lost from the board but the
-      // session never wedges. (Issue #7)
-      try {
-        await addJulesActivityComment(taskId, activity.id, body, session.julesSessionUrl, authToken, runId);
-      } catch (commentError) {
-        await onLog?.(
-          "stdout",
-          `[jules-mirror] comment delivery skipped for activity ${activity.id}: ${String(commentError)}\n`,
-        );
-      }
-    }
-    delivered.add(activity.id);
-    session.deliveredActivityIds = [...delivered].slice(-200);
-    session.activityCheckpoint = laterCheckpoint(session.activityCheckpoint, activity);
-    await persistSessionBestEffort(session, onLog);
-  }
-  return activities;
-}
-
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal?.aborted) {
-      resolve();
-      return;
-    }
-
-    let timer: NodeJS.Timeout;
-
-    const abortHandler = () => {
-        clearTimeout(timer);
-        resolve();
-    };
-
-    timer = setTimeout(() => {
-      signal?.removeEventListener("abort", abortHandler);
-      resolve();
-    }, ms);
-
-    signal?.addEventListener("abort", abortHandler, { once: true });
-  });
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
@@ -264,18 +180,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? (ctx.context as Record<string, unknown>)
       : {};
   const resumedSessionId: string | undefined = (() => {
-    // sessionParams is Record<string, unknown> | null (adapter-utils types.d.ts).
-    // julesSessionId may sit at top level or nested in a legacy view.
     const sp = (ctx.runtime?.sessionParams ?? null) as Record<string, unknown> | null;
-    if (!sp) return undefined;
-    const direct = sp["julesSessionId"];
-    if (typeof direct === "string" && direct) return direct;
-    for (const v of Object.values(sp)) {
-      if (v && typeof v === "object") {
-        const nested = (v as Record<string, unknown>)["julesSessionId"];
-        if (typeof nested === "string" && nested) return nested;
+    if (sp) {
+      const direct = sp["julesSessionId"] ?? sp["sessionId"];
+      if (typeof direct === "string" && direct) return direct;
+      for (const v of Object.values(sp)) {
+        if (v && typeof v === "object") {
+          const nested = (v as Record<string, unknown>)["julesSessionId"];
+          if (typeof nested === "string" && nested) return nested;
+        }
       }
     }
+    const runtimeSid = (ctx.runtime as { sessionId?: string | null; sessionDisplayId?: string | null } | undefined)
+      ?.sessionId || (ctx.runtime as { sessionDisplayId?: string | null } | undefined)?.sessionDisplayId;
+    if (typeof runtimeSid === "string" && runtimeSid.trim()) return runtimeSid.trim();
     return undefined;
   })();
 
@@ -307,8 +225,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       signal: null,
       timedOut: false,
       summary: "No task or paperclipIssue attached to this run; heartbeat completed.",
-      sessionParams: null,
-      clearSession: true,
+      sessionParams: ctx.runtime?.sessionParams ?? null,
+      sessionDisplayId: resumedSessionId ?? null,
+      clearSession: false,
     };
   }
 
@@ -337,14 +256,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   if (process.env["NODE_ENV"] !== "test" && !projectId && effectiveTaskId && !effectiveTaskId.startsWith("resumed:")) {
     try {
-      const issueRes = await fetch(`http://127.0.0.1:3100/api/issues/${encodeURIComponent(effectiveTaskId)}`, {
-        signal: AbortSignal.timeout(2000),
-      });
-      if (issueRes.ok) {
-        const issueData = await issueRes.json();
-        if (issueData.projectId) projectId = issueData.projectId;
-        if (issueData.companyId) companyId = issueData.companyId;
-      }
+      const issueData = await getPaperclipJson<Record<string, unknown>>(
+        `/api/issues/${encodeURIComponent(effectiveTaskId)}`,
+        ctx.authToken,
+        ctx.runId,
+      );
+      if (typeof issueData["projectId"] === "string") projectId = issueData["projectId"];
+      if (typeof issueData["companyId"] === "string") companyId = issueData["companyId"];
     } catch (e) {
       if (ctx.onLog) await ctx.onLog("stderr", `[jules] Issue fetch error: ${e}\n`);
     }
@@ -354,28 +272,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   if (process.env["NODE_ENV"] !== "test") {
     try {
-      let targetProject: any = null;
+      let targetProject: Record<string, unknown> | null = null;
       if (projectId) {
-        const projectRes = await fetch(`http://127.0.0.1:3100/api/projects/${encodeURIComponent(projectId)}`, {
-          signal: AbortSignal.timeout(2000),
-        });
-        if (projectRes.ok) targetProject = await projectRes.json();
+        targetProject = await getPaperclipJson<Record<string, unknown>>(
+          `/api/projects/${encodeURIComponent(projectId)}`,
+          ctx.authToken,
+          ctx.runId,
+        );
       } else if (companyId) {
-        const projectsRes = await fetch(`http://127.0.0.1:3100/api/companies/${encodeURIComponent(companyId)}/projects`, {
-          signal: AbortSignal.timeout(2000),
-        });
-        if (projectsRes.ok) {
-          const list = await projectsRes.json();
-          if (Array.isArray(list) && list.length > 0) {
-            targetProject = list.find((p: any) => p.name?.toLowerCase().includes("mazewall") || p.urlKey === "mazewall") || list[0];
-          }
+        const list = await getPaperclipJson<unknown>(
+          `/api/companies/${encodeURIComponent(companyId)}/projects`,
+          ctx.authToken,
+          ctx.runId,
+        );
+        if (Array.isArray(list) && list.length === 1) {
+          targetProject = list[0] as Record<string, unknown>;
+        } else if (Array.isArray(list) && list.length > 1) {
+          targetProject = list[0] as Record<string, unknown>;
         }
       }
 
       if (targetProject) {
-        const pRepo = targetProject.primaryWorkspace?.repoUrl ?? targetProject.codebase?.repoUrl;
-        const pBranch = targetProject.primaryWorkspace?.defaultRef ?? targetProject.codebase?.defaultRef;
-        const pCwd = targetProject.primaryWorkspace?.cwd ?? targetProject.codebase?.localFolder ?? targetProject.codebase?.effectiveLocalFolder;
+        const nested = targetProject as {
+          primaryWorkspace?: { repoUrl?: string; defaultRef?: string; cwd?: string };
+          codebase?: { repoUrl?: string; defaultRef?: string; localFolder?: string; effectiveLocalFolder?: string };
+          name?: string;
+        };
+        const pRepo = nested.primaryWorkspace?.repoUrl ?? nested.codebase?.repoUrl;
+        const pBranch = nested.primaryWorkspace?.defaultRef ?? nested.codebase?.defaultRef;
+        const pCwd = nested.primaryWorkspace?.cwd ?? nested.codebase?.localFolder ?? nested.codebase?.effectiveLocalFolder;
         if (pRepo && !workspaceRepositoryUrl) workspaceRepositoryUrl = pRepo;
         if (pBranch && !workspaceDefaultBranch) workspaceDefaultBranch = pBranch;
         if (pCwd) {
@@ -398,7 +323,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             if (discoveredBranch) workspaceDefaultBranch = discoveredBranch;
           }
         }
-        if (ctx.onLog) await ctx.onLog("stdout", `[jules] Resolved project ${targetProject.name} -> repo: ${workspaceRepositoryUrl}, branch: ${workspaceDefaultBranch}\n`);
+        if (ctx.onLog) await ctx.onLog("stdout", `[jules] Resolved project ${nested.name} -> repo: ${workspaceRepositoryUrl}, branch: ${workspaceDefaultBranch}\n`);
       }
     } catch (e) {
       if (ctx.onLog) await ctx.onLog("stderr", `[jules] Project fetch error: ${e}\n`);
@@ -419,8 +344,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const parsedHostCtx = HostContextSchema.parse(ctx);
 
   let session = sessionCodec.decode(ctx.runtime.sessionParams);
-  const canonicalSessionId = sessionCodec.getCanonicalSessionId(ctx.runtime.sessionParams);
-  const heartbeatDeadline = Date.now() + JULES_WATCH_WINDOW_MS;
+  const canonicalSessionId =
+    sessionCodec.getCanonicalSessionId(ctx.runtime.sessionParams) ??
+    sessionCodec.getDisplayId(ctx.runtime.sessionParams) ??
+    resumedSessionId ??
+    (typeof ctx.runtime?.sessionId === "string" ? ctx.runtime.sessionId : null) ??
+    (typeof ctx.runtime?.sessionDisplayId === "string" ? ctx.runtime.sessionDisplayId : null);
+  // sessionDeadlineMinutes is the Jules cloud session TTL, not the Paperclip
+  // heartbeat budget. Each execute() run polls once and yields.
+  const reattachDelayMs = config.pollCadenceSeconds * 1000;
 
   const abortSignal = parsedHostCtx.abortSignal || new AbortController().signal;
 
@@ -474,12 +406,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     storedRecoverySession = await loadStoredSession(taskId, config.source, config.baseBranch);
   } catch {}
 
+  let issueHandleSessionId: string | null = null;
+  if (!session && !canonicalSessionId && !storedRecoverySession && ctx.authToken) {
+    try {
+      issueHandleSessionId = await readJulesSessionHandle(taskId, ctx.authToken, ctx.runId);
+    } catch (error) {
+      if (ctx.onLog) {
+        await ctx.onLog("stderr", `[jules] Could not read Paperclip session handle: ${sanitizeError(error)}\n`);
+      }
+    }
+  }
+
   const startupDecision = evaluateSessionStartup(
     rawContext,
     session,
     storedRecoverySession,
     canonicalSessionId,
-    { repository: config.repository, source: config.source, baseBranch: config.baseBranch, taskId }
+    { repository: config.repository, source: config.source, baseBranch: config.baseBranch, taskId },
+    issueHandleSessionId,
   );
 
   if (startupDecision.forceFreshSession) {
@@ -487,8 +431,39 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     await deleteStoredSession(taskId, config.source, config.baseBranch).catch(() => {});
   } else {
     session = startupDecision.session;
+    if (session && !sessionMatchesConfig(session, config) && ctx.onLog) {
+      await ctx.onLog(
+        "stderr",
+        `[jules] Stored session repo/branch differs from current config; still resuming live Jules session ${session.julesSessionId} (no createSession).\n`,
+      );
+    }
     if (session && storedRecoverySession && session.sessionId === storedRecoverySession.sessionId && ctx.onLog) {
       await ctx.onLog("stdout", "[jules] Restored session " + session.julesSessionId + " from the local recovery record.\n");
+    } else if (session && issueHandleSessionId && session.julesSessionId === issueHandleSessionId && ctx.onLog) {
+      await ctx.onLog("stdout", "[jules] Restored session " + session.julesSessionId + " from the Paperclip issue handle.\n");
+    }
+  }
+
+  if (session && session.julesSessionId && ctx.authToken) {
+    try {
+      const comments = await listIssueComments(taskId, ctx.authToken, ctx.runId);
+      const relayed = new Set(session.relayedReviewCommentIds || []);
+      for (const comment of comments) {
+        if (relayed.has(comment.id)) continue;
+        if (comment.body && (comment.body.includes("REQUEST_CHANGES") || comment.body.includes("Code Review"))) {
+          await client.sendMessage(session.julesSessionId, {
+            prompt: `The code review for this task returned changes requested:\n\n${comment.body}\n\nPlease address these review findings and update the pull request.`,
+          });
+          relayed.add(comment.id);
+          session.relayedReviewCommentIds = [...relayed];
+          await persistSessionBestEffort(session, ctx.onLog);
+          if (ctx.onLog) {
+            await ctx.onLog("stdout", `[jules] Relayed review comment ${comment.id} to Jules session ${session.julesSessionId}\n`);
+          }
+        }
+      }
+    } catch (e) {
+      if (ctx.onLog) await ctx.onLog("stderr", `[jules] Review comment relay check failed: ${String(e)}\n`);
     }
   }
 
@@ -534,7 +509,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     try {
       await deleteStoredSession(taskId, config.source, config.baseBranch);
       if (interactionStatus === "accepted") {
-        await moveIssueToDone(taskId, session!.julesSessionId!, ctx.authToken, ctx.runId);
+        await moveIssueToDone(
+          taskId,
+          session!.julesSessionId!,
+          ctx.authToken,
+          ctx.runId,
+          `Confirmed Jules session ${session!.julesSessionId} completed without a PR; marked the Paperclip issue done.`,
+        );
         return completionInteractionResult(
           session!,
           "done",
@@ -542,6 +523,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           true,
         );
       }
+      await moveIssueToBlocked(taskId, ctx.authToken, ctx.runId);
       return completionInteractionResult(
         session!,
         "blocked",
@@ -751,7 +733,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // Check if remote Jules session is still alive before creating a new one
       try {
         const remoteSession = await client.getSession(session!.julesSessionId);
-        if (remoteSession.state === "IN_PROGRESS" || remoteSession.state === "AWAITING_USER_FEEDBACK") {
+        if (isLiveJulesRemoteState(remoteSession.state)) {
           await ctx.onLog?.('stdout', `[jules] Remote session ${session!.julesSessionId} is active (${remoteSession.state}) - continuing polling.\n`);
           session!.phase = 'RUNNING';
           await persistSessionBestEffort(session!, ctx.onLog);
@@ -806,6 +788,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const prompt = buildPrompt(promptContext, config);
     const pHash = hashPromptIdentity(promptContext, config);
+
+    if (session?.julesSessionId) {
+      try {
+        const remote = await client.getSession(session.julesSessionId);
+        if (isLiveJulesRemoteState(remote.state)) {
+          await ctx.onLog?.("stdout", `[jules] Reattaching live remote session ${session.julesSessionId} (${remote.state}); skipping createSession.\n`);
+          session.phase = "RUNNING";
+          session.julesState = remote.state;
+          await persistSessionBestEffort(session, ctx.onLog);
+          return createPendingResult(session, true);
+        }
+      } catch (err) {
+        await ctx.onLog?.("stderr", `[jules] Remote session probe before create failed: ${sanitizeError(err)}\n`);
+      }
+    }
 
     try {
       const julesSession = await client.createSession({
@@ -890,18 +887,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   if (!session) throw new Error("Session is null after initialization");
 
+  const yieldHeartbeat = async (
+    current: JulesAdapterSessionV1,
+    initialActivityCheck = false,
+  ): Promise<AdapterExecutionResult> => {
+    await persistSessionBestEffort(current, ctx.onLog, { authToken: ctx.authToken, runId: ctx.runId });
+    return createPendingResult(current, initialActivityCheck, reattachDelayMs);
+  };
+
   // Persist the provider identity before waiting on Jules. If Paperclip or the
   // adapter process restarts during a long Jules job, the next run can resume
   // this exact remote session instead of creating another one.
   if (createdSessionThisRun) {
     if (ctx.onLog) {
-      await ctx.onLog("stdout", `[jules] Created session ${session.julesSessionId}; checkpointing before long polling.\n`);
+      await ctx.onLog("stdout", `[jules] Created session ${session.julesSessionId}; checkpointing before yielding the heartbeat.\n`);
     }
     if (session.julesSessionUrl) {
       try { await postSessionLink(taskId, session.julesSessionUrl, ctx.authToken, ctx.runId); }
       catch { /* board unavailable */ }
     }
-    return createPendingResult(session, true);
+    return await yieldHeartbeat(session, true);
   }
 
   const currentPromptContext = {
@@ -922,14 +927,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
 
-  while (!abortSignal.aborted && Date.now() < heartbeatDeadline) {
+  while (!abortSignal.aborted) {
     if (!session.julesSessionId) throw new Error("Missing julesSessionId during polling loop");
 
     try {
       const julesSession = await client.getSession(session.julesSessionId);
       const state = julesSession.state || 'UNKNOWN';
       session.julesState = state;
-      session.lastPolledAt = new Date().toISOString();
       if (ctx.onLog) {
         const timeStr = new Date().toLocaleTimeString();
         const thoughtEvent = JSON.stringify({
@@ -958,19 +962,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
           await persistSessionBestEffort(session, ctx.onLog);
           const prDetails = await getPullRequestDetails(prUrl);
-          if (prDetails.mergeableStatus === "conflicting") {
-            if (ctx.onLog) {
-              await ctx.onLog("stderr", `[jules] Pull request ${prUrl} has Git merge conflicts. Jules cannot resolve conflicts; blocking issue for manual intervention.\n`);
-            }
-            await moveIssueToBlocked(taskId, ctx.authToken, ctx.runId);
-            return completionInteractionResult(
-              session,
-              "blocked",
-              `Pull request ${prUrl} has merge conflicts on GitHub that cannot be resolved automatically by Jules. Manual resolution required.`,
-              false
-            );
-          }
-          if (prDetails.merged) {
+          const changedFiles = await listPullRequestChangedFiles(prUrl).catch(() => [] as string[]);
+          const rawDiff = await getPullRequestPatch(prUrl).catch(() => "");
+          const hostContract = buildHostImplementationPlan(taskDescription ?? "", taskId, workspaceCwd ?? undefined);
+          const scope = evaluateScopeConformity({
+            declaredTargetFiles: hostContract.plan.targetFiles,
+            declaredTargetSymbols: hostContract.plan.targetSymbols.map((s) => s.symbol),
+            modifiedFiles: changedFiles,
+            rawDiff,
+          });
+          const lifecycle = evaluateJulesLifecycleState(session, {
+            julesState: state,
+            prUrl,
+            prDetails: {
+              isMerged: prDetails.merged,
+              ...(prDetails.mergeableStatus ? { mergeableStatus: prDetails.mergeableStatus } : {}),
+            },
+            ciStatus: prDetails.ciStatus === "unknown" ? "pending" : prDetails.ciStatus,
+            scopeConformant: changedFiles.length === 0 ? true : scope.isConformant,
+            scopeSummary: scope.summaryText,
+          });
+
+          if (lifecycle.phase === "COMPLETED_AND_MERGED") {
             if (ctx.onLog) {
               await ctx.onLog("stdout", `[jules] Pull request ${prUrl} is merged on GitHub. Completing session.\n`);
             }
@@ -984,6 +997,67 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               summary: `Jules PR ${prUrl} is merged on GitHub. Session completed and recovery state cleared.`,
               resultJson: { provider: "jules", julesSessionId: session.julesSessionId, prUrl, issueStatus: "done", merged: true },
               clearSession: true
+            };
+          }
+
+          if (lifecycle.issueTransition?.comment?.includes("merge conflicts") || prDetails.mergeableStatus === "conflicting") {
+            if (ctx.onLog) {
+              await ctx.onLog(
+                "stderr",
+                `[jules] Pull request ${prUrl} has Git merge conflicts. Jules will not start a new session; the host must rebase locally.\n`,
+              );
+            }
+            session.phase = "RUNNING";
+            await persistSessionBestEffort(session, ctx.onLog);
+            return {
+              exitCode: 0,
+              signal: null,
+              timedOut: false,
+              retryNotBefore: new Date(Date.now() + reattachDelayMs).toISOString(),
+              sessionParams: serializeSession(session),
+              sessionDisplayId: session.julesSessionId ?? null,
+              summary: `Pull request ${prUrl} has merge conflicts. Jules session ${session.julesSessionId} is paused for local rebase; no new Jules session will be created.`,
+              resultJson: {
+                provider: "jules",
+                julesSessionId: session.julesSessionId,
+                prUrl,
+                mergeableStatus: "conflicting",
+                issueStatus: "in_progress",
+              },
+              clearSession: false,
+            };
+          }
+
+          const drift = lifecycle.actions.find((action) => action.type === "FLAG_SCOPE_DRIFT");
+          if (drift && drift.type === "FLAG_SCOPE_DRIFT") {
+            if (ctx.onLog) {
+              await ctx.onLog("stderr", `[jules] ${drift.summary}\n`);
+            }
+            try {
+              await client.sendMessage(session.julesSessionId, {
+                prompt: `The PR drifted from the host plan contract:\n${drift.summary}\nStay inside the declared files and symbols. Do not start a new Jules session.`,
+              });
+            } catch {
+              /* Jules may reject chat on a completed session; still yield */
+            }
+            session.phase = "RUNNING";
+            await persistSessionBestEffort(session, ctx.onLog);
+            return {
+              exitCode: 0,
+              signal: null,
+              timedOut: false,
+              retryNotBefore: new Date(Date.now() + reattachDelayMs).toISOString(),
+              sessionParams: serializeSession(session),
+              sessionDisplayId: session.julesSessionId ?? null,
+              summary: `Jules PR ${prUrl} drifted from the host plan. Session ${session.julesSessionId} stays attached for a scoped fix.`,
+              resultJson: {
+                provider: "jules",
+                julesSessionId: session.julesSessionId,
+                prUrl,
+                scopeConformant: false,
+                issueStatus: "in_progress",
+              },
+              clearSession: false,
             };
           }
       }
@@ -1005,8 +1079,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const lastAct = activities.length > 0 && activities[activities.length - 1]
         ? activities[activities.length - 1]
         : null;
-      const latestActivityTime = lastAct ? lastAct.createTime : session.lastPolledAt;
+      const latestActivityTime = lastAct?.createTime || session.createdAt;
       const watchdogEval = evaluateSessionWatchdog(session, latestActivityTime);
+      session.lastPolledAt = new Date().toISOString();
       if (watchdogEval.shouldNudge && watchdogEval.nudgeMessage) {
         if (ctx.onLog) {
           await ctx.onLog("stdout", "[jules] Watchdog auto-nudge: " + watchdogEval.reason + "\n");
@@ -1038,7 +1113,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
       session.phase = stateMachineRes.nextPhase;
 
-      if (stateMachineRes.isTerminal) {
+      const unapprovedPlan = latestPlan(activities);
+      const isPlanningTurnCompleted = Boolean(
+        unapprovedPlan &&
+        config.requirePlanApproval &&
+        !session.planApprovedAt
+      );
+
+      if (isPlanningTurnCompleted) {
+        session.phase = "WAITING_FOR_PLAN_APPROVAL";
+      } else if (stateMachineRes.isTerminal) {
          if (session.phase === 'COMPLETED') {
              if (!stateMachineRes.isSuccess) {
                  try {
@@ -1075,6 +1159,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                      }
                      if (interaction.status === "rejected") {
                        await deleteStoredSession(taskId, config.source, config.baseBranch);
+                       await moveIssueToBlocked(taskId, ctx.authToken, ctx.runId);
                        return completionInteractionResult(
                          session,
                          "blocked",
@@ -1097,7 +1182,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
              }
 
              if (session.currentPrUrl) {
-               const ciStatus = await getPullRequestCiStatus(session.currentPrUrl);
+               const skipCi =
+                 (ctx.agent.adapterConfig as Record<string, unknown> | undefined)?.["ciPolicy"] === "skip" ||
+                 (ctx.config as Record<string, unknown> | undefined)?.["ciPolicy"] === "skip";
+               const ciStatus = skipCi ? "success" : await getPullRequestCiStatus(session.currentPrUrl);
                if (ciStatus === "pending") {
                  if (ctx.onLog) {
                    await ctx.onLog(
@@ -1106,8 +1194,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                    );
                  }
                  session.phase = "RUNNING";
-                 await sleep(JULES_POLL_INTERVAL_MS, abortSignal);
-                 continue;
+                 return await yieldHeartbeat(session);
                }
                if (ciStatus === "failed") {
                  if (ctx.onLog) {
@@ -1119,11 +1206,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                }
              }
              await moveIssueToReview(taskId, session.currentPrUrl!, ctx.authToken, ctx.runId);
-             await deleteStoredSession(taskId, config.source, config.baseBranch);
+              await persistSessionBestEffort(session, ctx.onLog);
              if (ctx.onLog) {
                  await ctx.onLog(
                      "stdout",
-                     `[jules] Session ${session.julesSessionId} completed; cleared its recovery state. Reopening this Paperclip issue will start a new Jules task.\n`,
+                      `[jules] Session ${session.julesSessionId} created PR ${session.currentPrUrl}. Session preserved for code review feedback loop.\n`,
                  );
              }
              return {
@@ -1134,7 +1221,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                  sessionDisplayId: session.julesSessionId || null,
                  summary: `Jules session ${session.julesSessionId} completed, created a PR, and moved the Paperclip issue to review: ${session.currentPrUrl}`,
                  resultJson: { provider: "jules", julesSessionId: session.julesSessionId, prUrl: session.currentPrUrl, issueStatus: "in_review" },
-                 clearSession: true
+                  clearSession: false
              };
          } else if (session.phase === 'FAILED') {
              const failureDetails = julesSession.errorInfo || {};
@@ -1176,7 +1263,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
          }
       }
 
-      if (stateMachineRes.requiresReturn) {
+      if (stateMachineRes.requiresReturn || isPlanningTurnCompleted) {
         try {
           const existingInteractions = await listPaperclipInteractions(taskId, ctx.authToken, ctx.runId).catch(() => []);
           let rawQuestionText: string | undefined;
@@ -1201,8 +1288,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               }
               await client.sendMessage(session.julesSessionId!, { prompt: action.answer });
               session = recordFeedbackRelayed(session, action.interactionId);
-              await persistSessionBestEffort(session, ctx.onLog);
-              continue;
+              return await yieldHeartbeat(session);
             }
 
             case "RELAY_PLAN_APPROVAL": {
@@ -1211,8 +1297,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               }
               await client.approvePlan(session.julesSessionId!);
               session = recordPlanApprovalRelayed(session);
-              await persistSessionBestEffort(session, ctx.onLog);
-              continue;
+              return await yieldHeartbeat(session);
             }
 
             case "CREATE_FEEDBACK_CARD": {
@@ -1249,6 +1334,32 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             case "CREATE_PLAN_CARD": {
               const activity = latestPlan(activities);
               const activityId = activity?.id ?? "awaiting-plan-approval";
+              const { plan: hostPlan, markdown: hostPlanMarkdown } = buildHostImplementationPlan(
+                taskDescription ?? "",
+                taskId,
+                workspaceCwd ?? undefined,
+              );
+              const fullPlan = composePlanForReview(action.planMarkdown, hostPlanMarkdown);
+              const planReview = await evaluatePlanClarity(fullPlan, {
+                title: taskTitle,
+                description: taskDescription,
+                targetFiles: hostPlan.targetFiles,
+                targetSymbols: hostPlan.targetSymbols.map((s) => s.symbol),
+                testFiles: hostPlan.testFiles,
+                hostPlanMarkdown,
+                cheapReviewer: createCheapReviewer() ?? defaultCheapReviewer,
+                terraCodexReviewer: createTerraCodexReviewer(),
+              });
+              if (planReview.action === "AUTO_APPROVE" && planReview.stage === "terra_codex" && config.planApprovalPolicy !== "required") {
+                if (ctx.onLog) {
+                  await ctx.onLog("stdout", `[jules] Terra/Codex approved the plan (planApprovalPolicy=${config.planApprovalPolicy}).\n`);
+                }
+                await client.approvePlan(session.julesSessionId!);
+                session.planApprovedAt = new Date().toISOString();
+                session = recordPlanApprovalRelayed(session);
+                return await yieldHeartbeat(session);
+              }
+
               const interaction = await createJulesPlanApprovalInteraction(
                 taskId, session.julesSessionId!, activityId, action.planMarkdown, ctx.authToken, ctx.runId,
               );
@@ -1269,7 +1380,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 timedOut: false,
                 sessionParams: serializeSession(session),
                 sessionDisplayId: session.julesSessionId ?? null,
-                summary: `Jules session ${session.julesSessionId} awaits plan approval in Paperclip.`,
+                summary: `Jules session ${session.julesSessionId} plan ${planReview.stage} review awaits plan approval from operator (last resort).`,
                 resultJson: { provider: "jules", interactionId: interaction.id },
                 clearSession: false,
               };
@@ -1374,21 +1485,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             }
 
             case "CONTINUE_POLLING":
-              break;
+              return await yieldHeartbeat(session);
           }
         } catch (error) {
           return paperclipInteractionFailure(session, error);
         }
       }
 
-      await sleep(JULES_POLL_INTERVAL_MS, abortSignal);
+      return await yieldHeartbeat(session);
 
     } catch (error) {
       const classification = classifyFailure(error);
 
       if (classification === 'transient') {
-         await sleep(JULES_POLL_INTERVAL_MS, abortSignal);
-         continue;
+         return await yieldHeartbeat(session);
       } else {
           return {
              exitCode: 1,
@@ -1398,11 +1508,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
              errorFamily: toErrorFamily(classification),
              errorMessage: sanitizeError(error),
              sessionParams: serializeSession(session),
+             sessionDisplayId: session.julesSessionId ?? null,
              clearSession: false
           };
       }
     }
   }
 
-  return createPendingResult(session);
+  return await yieldHeartbeat(session);
 }

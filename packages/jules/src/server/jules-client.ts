@@ -319,15 +319,13 @@ export class JulesClient {
   async getActivities(sessionId: JulesSessionId, pageToken?: string, pageSize = 100) {
     const searchParams = new URLSearchParams({ pageSize: String(pageSize) });
     if (pageToken) searchParams.set("pageToken", pageToken);
-    const rawData = await this.fetchApi(
+    const rawData = (await this.fetchApi(
       `/sessions/${encodeURIComponent(sessionId)}/activities?${searchParams.toString()}`,
-    );
-    const parsed = JulesActivitiesResponseSchema.safeParse(rawData);
-    if (!parsed.success) {
-      return { activities: [], nextPageToken: undefined };
-    }
+    )) as Record<string, unknown>;
+
+    const rawActivities = Array.isArray(rawData?.["activities"]) ? rawData["activities"] : [];
     const safeActivities: JulesActivity[] = [];
-    for (const item of parsed.data.activities ?? []) {
+    for (const item of rawActivities) {
       const res = JulesActivitySchema.safeParse(item);
       if (res.success) {
         safeActivities.push(res.data as JulesActivity);
@@ -337,7 +335,7 @@ export class JulesClient {
     }
     return {
       activities: safeActivities,
-      nextPageToken: parsed.data.nextPageToken,
+      nextPageToken: typeof rawData?.["nextPageToken"] === "string" ? rawData["nextPageToken"] : undefined,
     };
   }
 
