@@ -1,3 +1,4 @@
+import path from "node:path";
 import { ParsedIssueMetadata, TaskPriority } from "./types.js";
 
 /**
@@ -61,6 +62,7 @@ export function extractIssueMetadata(issue: {
   const targetSymbols: string[] = [];
   const dependencies: string[] = [];
   let component: string | undefined;
+  let projectSlug: string | undefined;
   let priorityStr = issue.priority;
   let hasSideEffects = true;
   let coreLock = false;
@@ -110,6 +112,8 @@ export function extractIssueMetadata(issue: {
           if (value) dependencies.push(...parseYamlList(value));
         } else if (key === "component") {
           component = value.replace(/^["']|["']$/g, "").trim();
+        } else if (key === "project" || key === "paperclip_project") {
+          projectSlug = value.replace(/^["']|["']$/g, "").trim();
         } else if (key === "priority") {
           priorityStr = value.replace(/^["']|["']$/g, "").trim();
         } else if (key === "has_side_effects" || key === "hassideeffects") {
@@ -192,6 +196,8 @@ export function extractIssueMetadata(issue: {
     exclusive,
     verifyCheap: Object.freeze([...new Set(verifyCheap)]),
     component: component ?? null,
+    projectSlug: projectSlug ?? null,
+    projectId: typeof issue["projectId"] === "string" ? (issue["projectId"] as string) : null,
     isNonInterfering,
     openQuestions,
     assigneeAgentId: issue.assigneeAgentId ?? null,
@@ -199,4 +205,108 @@ export function extractIssueMetadata(issue: {
     executionRunId,
     rawIssue: Object.freeze({ ...issue }),
   });
+}
+
+export interface PaperclipProjectRecord {
+  readonly id: string;
+  readonly name?: string | null | undefined;
+  readonly urlKey?: string | null | undefined;
+  readonly primaryWorkspace?:
+    | { readonly repoUrl?: string | null | undefined; readonly cwd?: string | null | undefined }
+    | null
+    | undefined;
+  readonly codebase?:
+    | {
+        readonly repoUrl?: string | null | undefined;
+        readonly cwd?: string | null | undefined;
+        readonly localFolder?: string | null | undefined;
+        readonly effectiveLocalFolder?: string | null | undefined;
+      }
+    | null
+    | undefined;
+}
+
+/** owner/repo from a GitHub URL, SSH remote, or already-canonical slug. */
+export function normalizeGitHubOwnerRepo(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const sshNormalized = trimmed.replace(/^git@github\.com:/i, "github.com/");
+  const withoutCredentials = sshNormalized.replace(/^[a-z]+:\/\/[^/@]+@/i, "https://");
+  const match = withoutCredentials.match(/(?:github\.com[/:]|^)([^/\s]+)\/([^/#\s]+?)(?:\.git)?$/i);
+  if (!match?.[1] || !match[2]) return null;
+  return `${match[1]}/${match[2]}`.toLowerCase();
+}
+
+function projectRepoSlug(project: PaperclipProjectRecord): string | null {
+  return (
+    normalizeGitHubOwnerRepo(project.primaryWorkspace?.repoUrl) ||
+    normalizeGitHubOwnerRepo(project.codebase?.repoUrl)
+  );
+}
+
+function projectFolders(project: PaperclipProjectRecord): string[] {
+  const raw = [
+    project.primaryWorkspace?.cwd,
+    project.codebase?.cwd,
+    project.codebase?.localFolder,
+    project.codebase?.effectiveLocalFolder,
+  ];
+  return raw
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .map((value) => path.resolve(value.trim()));
+}
+
+/**
+ * Pick the Paperclip project for a workspace folder.
+ * Folder/cwd and git remote win. Do not map `packages/jules` onto the retired
+ * standalone jules-adapter project when the cwd is the adapters monorepo.
+ */
+export function resolvePaperclipProject(params: {
+  readonly workspacePath: string;
+  readonly gitRemoteUrl?: string | null | undefined;
+  readonly projects: readonly PaperclipProjectRecord[];
+  readonly frontmatterProject?: string | null | undefined;
+}): PaperclipProjectRecord | null {
+  const projects = params.projects.filter((p) => Boolean(p.id));
+  if (projects.length === 0) return null;
+
+  const workspace = path.resolve(params.workspacePath);
+  const folderSlug = path.basename(workspace).toLowerCase();
+  const remote = normalizeGitHubOwnerRepo(params.gitRemoteUrl);
+
+  const front = params.frontmatterProject?.trim();
+  if (front) {
+    const key = front.toLowerCase();
+    const named = projects.find(
+      (p) =>
+        p.id === front ||
+        (p.urlKey || "").toLowerCase() === key ||
+        (p.name || "").toLowerCase() === key,
+    );
+    if (named) return named;
+  }
+
+  const cwdHits = projects.filter((p) =>
+    projectFolders(p).some((folder) => workspace === folder || workspace.startsWith(`${folder}${path.sep}`)),
+  );
+  if (cwdHits.length === 1) return cwdHits[0] ?? null;
+  if (cwdHits.length > 1) {
+    cwdHits.sort((a, b) => {
+      const aLen = Math.max(0, ...projectFolders(a).map((f) => f.length));
+      const bLen = Math.max(0, ...projectFolders(b).map((f) => f.length));
+      return bLen - aLen;
+    });
+    return cwdHits[0] ?? null;
+  }
+
+  if (remote) {
+    const byRemote = projects.find((p) => projectRepoSlug(p) === remote);
+    if (byRemote) return byRemote;
+  }
+
+  const byName = projects.find(
+    (p) => (p.name || "").toLowerCase() === folderSlug || (p.urlKey || "").toLowerCase() === folderSlug,
+  );
+  return byName ?? null;
 }

@@ -32,6 +32,8 @@ export interface ParsedIssueMetadata {
   readonly exclusive: boolean;
   readonly verifyCheap: readonly string[];
   readonly component?: string | null | undefined;
+  readonly projectSlug?: string | null | undefined;
+  readonly projectId?: string | null | undefined;
   readonly isNonInterfering: boolean;
   readonly openQuestions: boolean;
   readonly assigneeAgentId?: string | null | undefined;

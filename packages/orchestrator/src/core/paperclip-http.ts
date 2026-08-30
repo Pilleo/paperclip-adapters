@@ -90,6 +90,9 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
     async listIssues<T = unknown>(companyId: string): Promise<T> {
       return getJson<T>(`/api/companies/${encodeURIComponent(companyId)}/issues?limit=1000`);
     },
+    async listProjects<T = unknown>(companyId: string): Promise<T> {
+      return getJson<T>(`/api/companies/${encodeURIComponent(companyId)}/projects`);
+    },
     async listApprovals<T = unknown>(companyId: string): Promise<T> {
       return getJson<T>(`/api/companies/${encodeURIComponent(companyId)}/approvals`);
     },
@@ -145,7 +148,7 @@ export function asArray<T>(raw: unknown): T[] {
   if (Array.isArray(raw)) return raw as T[];
   if (raw && typeof raw === "object") {
     const record = raw as Record<string, unknown>;
-    for (const key of ["agents", "issues", "approvals", "comments", "items"]) {
+    for (const key of ["agents", "issues", "approvals", "comments", "projects", "items"]) {
       if (Array.isArray(record[key])) return record[key] as T[];
     }
   }

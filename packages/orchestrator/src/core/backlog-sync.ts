@@ -1,6 +1,8 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { cachedInferTargetFiles, needsWorkPackageFill } from "./work-package-ingest.js";
+import { resolvePaperclipProject, type PaperclipProjectRecord } from "./parser.js";
 
 export interface BacklogSyncOptions {
   readonly workspacePath: string;
@@ -9,6 +11,8 @@ export interface BacklogSyncOptions {
   readonly backlogDirectory?: string | undefined;
   readonly resolvedDirectory?: string | undefined;
   readonly projectId?: string | undefined;
+  readonly gitRemoteUrl?: string | undefined;
+  readonly projects?: readonly PaperclipProjectRecord[] | undefined;
 }
 
 export interface SyncIssueResult {
@@ -118,6 +122,20 @@ export function updateFileFrontmatter(
   fs.writeFileSync(filePath, updatedContent, "utf-8");
 }
 
+export function readWorkspaceGitRemote(workspacePath: string): string | undefined {
+  try {
+    const remote = execFileSync("git", ["config", "--get", "remote.origin.url"], {
+      cwd: workspacePath,
+      encoding: "utf-8",
+      timeout: 3000,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return remote.length > 0 ? remote : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function scanBacklogDirectory(backlogDir: string): string[] {
   if (!fs.existsSync(backlogDir)) return [];
   const results: string[] = [];
@@ -199,6 +217,15 @@ export async function syncBacklogMarkdownToPaperclip(options: BacklogSyncOptions
     const title = fields["title"] || filename;
     const priority = (fields["priority"] || fields["severity"] || "medium").toLowerCase();
     const formattedTitle = `[${issueId}] ${title}`;
+    const resolvedProject = resolvePaperclipProject({
+      workspacePath: options.workspacePath,
+      gitRemoteUrl: options.gitRemoteUrl,
+      projects: options.projects || [],
+      frontmatterProject:
+        (typeof fields["project"] === "string" ? fields["project"] : undefined) ||
+        (typeof fields["paperclip_project"] === "string" ? fields["paperclip_project"] : undefined),
+    });
+    const projectId = resolvedProject?.id || options.projectId;
 
     let existing = existingIssues.find((i) => i.id === fields["paperclip_issue_id"]);
     if (!existing) {
@@ -214,7 +241,7 @@ export async function syncBacklogMarkdownToPaperclip(options: BacklogSyncOptions
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             companyId: options.companyId,
-            projectId: options.projectId,
+            ...(projectId ? { projectId } : {}),
             title: formattedTitle,
             description: content,
             priority: priority === "critical" || priority === "high" || priority === "medium" || priority === "low" ? priority : "medium",
@@ -251,11 +278,28 @@ export async function syncBacklogMarkdownToPaperclip(options: BacklogSyncOptions
         });
         syncedHeadersCount++;
       }
+      let action: SyncIssueResult["action"] = "unchanged";
+      if (projectId && existing.projectId !== projectId) {
+        try {
+          const patchRes = await fetch(`${options.apiUrl}/api/issues/${existing.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ projectId }),
+          });
+          if (patchRes.ok) {
+            existing.projectId = projectId;
+            updatedCount++;
+            action = "updated";
+          }
+        } catch {
+          /* best-effort project repair */
+        }
+      }
       results.push({
         filePath,
         issueId,
         title,
-        action: "unchanged",
+        action,
         paperclipId: existing.id,
         paperclipIdentifier: existing.identifier,
       });

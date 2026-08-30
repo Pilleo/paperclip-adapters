@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { extractIssueMetadata, parsePriorityRank, parseYamlList } from "../src/core/parser.js";
+import {
+  extractIssueMetadata,
+  parsePriorityRank,
+  parseYamlList,
+  resolvePaperclipProject,
+  type PaperclipProjectRecord,
+} from "../src/core/parser.js";
 
 describe("Parser Core Module", () => {
   describe("parsePriorityRank", () => {
@@ -128,5 +134,94 @@ Depends_on: [MAZ-1]
       expect(meta.targetSymbols).toEqual(["MySymbol"]);
       expect(meta.dependencies).toEqual(["MAZ-1"]);
     });
+
+    it("parses project slug from frontmatter", () => {
+      const meta = extractIssueMetadata({
+        id: "issue-project",
+        title: "Adapters work",
+        status: "todo",
+        projectId: "should-not-hide-slug",
+        description: `---
+project: "paperclip-adapters"
+component: "tools"
+---
+**Context:** folder.
+**Needed:** bind project.
+`,
+      });
+      expect(meta.projectSlug).toBe("paperclip-adapters");
+      expect(meta.projectId).toBe("should-not-hide-slug");
+    });
+  });
+});
+
+const mazewall: PaperclipProjectRecord = {
+  id: "9cc47c7d-0cb6-404a-b6b8-b94713f3e5df",
+  name: "mazewall",
+  urlKey: "mazewall",
+  primaryWorkspace: { repoUrl: "https://github.com/Pilleo/mazewall", cwd: "/home/leanid/Documents/code/java/mazewall" },
+};
+const adapters: PaperclipProjectRecord = {
+  id: "d936e7a7-38b8-4909-a21b-4d85f167b269",
+  name: "paperclip-adapters",
+  urlKey: "paperclip-adapters",
+  primaryWorkspace: {
+    repoUrl: "https://github.com/Pilleo/paperclip-adapters.git",
+    cwd: "/home/leanid/Documents/code/java/paperclip-adapters",
+  },
+};
+const julesStandalone: PaperclipProjectRecord = {
+  id: "ba0b7cff-42c7-474f-9d1a-01c8ba8ef78e",
+  name: "paperclip-jules-adapter",
+  urlKey: "paperclip-jules-adapter",
+  primaryWorkspace: { repoUrl: "https://github.com/Pilleo/paperclip-jules-adapter" },
+};
+const catalog = [mazewall, adapters, julesStandalone];
+
+describe("resolvePaperclipProject from workspace folder", () => {
+  it.each([
+    {
+      desc: "adapters cwd maps to paperclip-adapters, not mazewall",
+      workspacePath: "/home/leanid/Documents/code/java/paperclip-adapters",
+      gitRemoteUrl: "git@github.com:Pilleo/paperclip-adapters.git",
+      frontmatterProject: undefined as string | undefined,
+      expectedId: adapters.id,
+    },
+    {
+      desc: "mazewall cwd maps to mazewall",
+      workspacePath: "/home/leanid/Documents/code/java/mazewall",
+      gitRemoteUrl: "https://github.com/Pilleo/mazewall.git",
+      frontmatterProject: undefined,
+      expectedId: mazewall.id,
+    },
+    {
+      desc: "folder name wins when remote is missing",
+      workspacePath: "/tmp/paperclip-adapters",
+      gitRemoteUrl: undefined,
+      frontmatterProject: undefined,
+      expectedId: adapters.id,
+    },
+    {
+      desc: "frontmatter project overrides folder",
+      workspacePath: "/home/leanid/Documents/code/java/paperclip-adapters",
+      gitRemoteUrl: "https://github.com/Pilleo/paperclip-adapters.git",
+      frontmatterProject: "mazewall",
+      expectedId: mazewall.id,
+    },
+    {
+      desc: "packages/jules files do not steal the standalone jules-adapter project",
+      workspacePath: "/home/leanid/Documents/code/java/paperclip-adapters",
+      gitRemoteUrl: "https://github.com/Pilleo/paperclip-adapters.git",
+      frontmatterProject: undefined,
+      expectedId: adapters.id,
+    },
+  ])("$desc", ({ workspacePath, gitRemoteUrl, frontmatterProject, expectedId }) => {
+    const resolved = resolvePaperclipProject({
+      workspacePath,
+      gitRemoteUrl,
+      projects: catalog,
+      frontmatterProject,
+    });
+    expect(resolved?.id).toBe(expectedId);
   });
 });

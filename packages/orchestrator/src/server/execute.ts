@@ -4,13 +4,13 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 
 import { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
-import { extractIssueMetadata } from "../core/parser.js";
+import { extractIssueMetadata, resolvePaperclipProject, type PaperclipProjectRecord } from "../core/parser.js";
 import { calculateConflictMatrix, selectNextTasksMultiLane } from "../core/dispatcher.js";
 import { fetchJulesQuota } from "../core/jules-quota.js";
 import { checkWorkspaceConsistency } from "../core/consistency.js";
 import { fetchGitHubPullRequests, matchPrToIssue, checkPrCiIsGreen } from "../core/github-sync.js";
 import { evaluateIssueTransition } from "../core/state-machine.js";
-import { syncBacklogMarkdownToPaperclip } from "../core/backlog-sync.js";
+import { readWorkspaceGitRemote, syncBacklogMarkdownToPaperclip } from "../core/backlog-sync.js";
 import { archiveResolvedBacklogFiles } from "../core/backlog-archiver.js";
 import { selectClarificationCandidates } from "../core/clarifier.js";
 import { ParsedIssueMetadata } from "../core/types.js";
@@ -161,13 +161,34 @@ export async function execute(context: AdapterExecutionContext): Promise<Adapter
     await log(`[ORCHESTRATOR] ℹ️ Workspace note: ${wsConsistency.warning}`);
   }
 
-  // 3. Two-Way Markdown Ingestion
+  // 3. Two-Way Markdown Ingestion (project comes from workspace folder / git remote)
+  let companyProjects: PaperclipProjectRecord[] = [];
+  try {
+    companyProjects = asArray<PaperclipProjectRecord>(await pc.listProjects(companyId));
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await log(`[ORCHESTRATOR] Warning: could not list Paperclip projects: ${msg}`);
+  }
+  const gitRemoteUrl = readWorkspaceGitRemote(workspacePath);
+  const workspaceProject = resolvePaperclipProject({
+    workspacePath,
+    gitRemoteUrl,
+    projects: companyProjects,
+  });
+  if (workspaceProject) {
+    await log(
+      `[ORCHESTRATOR] Workspace folder maps to Paperclip project ${workspaceProject.name || workspaceProject.urlKey || workspaceProject.id}`,
+    );
+  }
   const syncSummary = await syncBacklogMarkdownToPaperclip({
     workspacePath,
     companyId,
     apiUrl,
     backlogDirectory: config.backlogDirectory,
     resolvedDirectory: config.resolvedDirectory,
+    gitRemoteUrl,
+    projects: companyProjects,
+    ...(workspaceProject?.id ? { projectId: workspaceProject.id } : {}),
   });
   if (syncSummary.createdCount > 0 || syncSummary.syncedHeadersCount > 0) {
     await log(
