@@ -93,6 +93,23 @@ target_symbols: ["evaluatePlanClarity"]
     expect(res.errors).toEqual([]);
   });
 
+  it("rejects generic core or platform strings not prefixed", () => {
+    const md = `---
+title: "Test Reject generic modules"
+component: "orchestrator"
+target_modules: ["core", "platform"]
+target_files: ["packages/jules/src/server/plan-reviewer.ts"]
+target_symbols: ["evaluatePlanClarity"]
+---
+**Context:** Generic names
+**Needed:** Fix generic names
+`;
+    const res = lintBacklogMarkdown(md, "issue-20260830-210001-generic-names.md");
+    expect(res.isValid).toBe(false);
+    expect(res.errors.some((e) => e.includes("Invalid target module 'core'"))).toBe(true);
+    expect(res.errors.some((e) => e.includes("Invalid target module 'platform'"))).toBe(true);
+  });
+
   describe.each([
     { input: "BpfFilter#compile", expectedClass: "BpfFilter", expectedMethod: "compile" },
     { input: "io.mazewall.Landlock.ruleset", expectedClass: "io.mazewall.Landlock", expectedMethod: "ruleset" },
