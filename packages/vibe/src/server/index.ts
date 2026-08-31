@@ -85,10 +85,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     agentCommand,
     permissionMode,
     model: normalizedModel,
-    thinkingEffort: config.thinking,
+    // ACPX maps thinkingEffort to the generic `effort` session option. Vibe
+    // ACP advertises `thinking` instead and rejects that option, which makes a
+    // review worker fail before it can read the PR. Until ACPX supports an
+    // adapter-specific option mapping, omit this incompatible override and let
+    // Vibe use its server-side default.
     timeoutSec: config.timeoutSec,
     env: mergedEnv,
   };
+  // Remove incompatible thinking config options that Vibe ACP doesn't support
+  delete acpConfig["thinking"];
+  delete acpConfig["thinkingEffort"];
+  delete acpConfig["effort"];
 
   return await rawAcpExecutor({
     ...ctx,
