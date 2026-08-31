@@ -159,7 +159,7 @@ describe("E2E plan review ladder (static → Mistral → Luna → Terra/Codex �
     vi.mocked(JulesClient.prototype.approvePlan).mockResolvedValue({ id: "act-approved" });
   });
 
-  it("does not call Terra/Grok when Vibe/Luna still sees gaps (TBD, no work-package answers)", async () => {
+  it("does not call Terra/Codex when Vibe/Luna still sees gaps (TBD, no work-package answers)", async () => {
     await presentPlan([{ title: "Look into the issue and figure out cache design later (TBD)" }]);
     const result = await execute(
       ctx({
@@ -172,7 +172,7 @@ describe("E2E plan review ladder (static → Mistral → Luna → Terra/Codex �
     expect(result.summary).toMatch(/operator/);
   });
 
-  it("does not call Terra/Grok on static invariant failures", async () => {
+  it("does not call Terra/Codex on static invariant failures", async () => {
     await presentPlan([
       { title: "Catch EPERM silently so tests pass" },
       { title: "Skip gradle test suite to speed up CI" },
@@ -182,7 +182,7 @@ describe("E2E plan review ladder (static → Mistral → Luna → Terra/Codex �
     expect(JulesClient.prototype.approvePlan).not.toHaveBeenCalled();
   });
 
-  it("calls Terra/Grok only after Vibe/Luna is clean, with the full host plan including Codanna outlines", async () => {
+  it("calls Terra/Codex only after Vibe/Luna is clean, with the full host plan including Codanna outlines", async () => {
     await presentPlan([
       { title: "Modify SandboxDispatcher.kt to add bounded cache" },
       { title: "Add unit tests in SandboxDispatcherTest.kt and run ./gradlew test" },
@@ -198,7 +198,7 @@ describe("E2E plan review ladder (static → Mistral → Luna → Terra/Codex �
     expect(result.exitCode).toBe(0);
   });
 
-  it("skips Terra/Grok when the cheap Vibe/Luna reviewer reports issues", async () => {
+  it("skips Terra/Codex when the cheap Vibe/Luna reviewer reports issues", async () => {
     await presentPlan([
       { title: "Modify SandboxDispatcher.kt to add bounded cache" },
       { title: "Add unit tests in SandboxDispatcherTest.kt and run ./gradlew test" },
@@ -218,7 +218,7 @@ describe("E2E plan review ladder (static → Mistral → Luna → Terra/Codex �
     expect(result.summary).toMatch(/operator/);
   });
 
-  it("pages the operator when Vibe/Luna is clean but Terra/Grok is not configured", async () => {
+  it("pages the operator when Vibe/Luna is clean but Terra/Codex is not configured", async () => {
     await presentPlan([
       { title: "Modify SandboxDispatcher.kt to add bounded cache" },
       { title: "Add unit tests in SandboxDispatcherTest.kt and run ./gradlew test" },
@@ -230,7 +230,7 @@ describe("E2E plan review ladder (static → Mistral → Luna → Terra/Codex �
     expect(result.summary).toMatch(/operator/);
   });
 
-  it("still does not auto-approve when planApprovalPolicy is required, even after Terra/Grok", async () => {
+  it("still does not auto-approve when planApprovalPolicy is required, even after Terra/Codex", async () => {
     await presentPlan([
       { title: "Modify SandboxDispatcher.kt to add bounded cache" },
       { title: "Add unit tests in SandboxDispatcherTest.kt and run ./gradlew test" },

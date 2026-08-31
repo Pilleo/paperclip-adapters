@@ -279,7 +279,7 @@ describe("plan review ladder", () => {
       terraCalled: true,
     },
     {
-      desc: "clean Vibe without Grok pages the human",
+      desc: "clean Vibe without Terra/Codex pages the human",
       plan: `1. Change Foo.kt\n2. Run tests in FooTest.kt`,
       host: false,
       terra: false,
