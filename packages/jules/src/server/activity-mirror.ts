@@ -2,7 +2,8 @@ import { JulesActivity, JulesClient } from "./jules-client.js";
 import { JulesAdapterSessionV1 } from "./session.js";
 import { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { formatActivityForLog, activityComment, MAX_COMMENT_LENGTH } from "./activity-formatter.js";
-import { isAfterCheckpoint, laterCheckpoint, normalizeActivities } from "./activity-checkpoint.js";
+import { normalizeActivities } from "./activity-checkpoint.js";
+import { advanceActivityCursor, selectUndeliveredActivities } from "./activity-reconciliation.js";
 import { addJulesActivityComment } from "./paperclip-client.js";
 
 /**
@@ -57,8 +58,8 @@ export async function mirrorNewActivities(
 ): Promise<JulesActivity[]> {
   const activities = await listAllActivities(client, session.julesSessionId!, maxPages);
   const delivered = new Set(session.deliveredActivityIds ?? []);
-  for (const activity of activities) {
-    if (!isAfterCheckpoint(activity, session.activityCheckpoint) || delivered.has(activity.id)) continue;
+  const deliveredThisRun: JulesActivity[] = [];
+  for (const activity of selectUndeliveredActivities(activities, session.activityCheckpoint, [...delivered])) {
     if (onLog) {
       const logLine = formatActivityForLog(activity);
       await onLog("stdout", logLine);
@@ -86,8 +87,9 @@ export async function mirrorNewActivities(
       }
     }
     delivered.add(activity.id);
-    session.activityCheckpoint = laterCheckpoint(session.activityCheckpoint, activity);
+    deliveredThisRun.push(activity);
   }
+  session.activityCheckpoint = advanceActivityCursor(session.activityCheckpoint, deliveredThisRun);
   const deliveredIds = Array.from(delivered);
   session.deliveredActivityIds = deliveredIds.slice(Math.max(0, deliveredIds.length - 200));
   return activities;
