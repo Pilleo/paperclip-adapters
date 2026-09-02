@@ -1,6 +1,7 @@
 import { JulesAdapterSessionV1, JulesSessionState } from "./session.js";
 import { IssueStatus, IssueDisposition } from "./disposition.js";
 import { evaluateSessionWatchdog } from "./watchdog.js";
+import { evaluateCompletionTransition } from "./transition-guards.js";
 
 export type JulesTaskPhase =
   | "INITIALIZING"
@@ -65,6 +66,21 @@ export function evaluateJulesLifecycleState(
 
   // 1. PR Merged -> Terminal success
   if (signals.prDetails?.isMerged) {
+    const completion = evaluateCompletionTransition({
+      providerState: signals.julesState,
+      prMerged: true,
+      mutationPending: false,
+    });
+    if (!completion.allowed) {
+      return {
+        phase: "CODING",
+        issueTransition: null,
+        actions: [],
+        shouldDeleteSession: false,
+        shouldExitRun: false,
+        exitCode: 0,
+      };
+    }
     return {
       phase: "COMPLETED_AND_MERGED",
       issueTransition: {

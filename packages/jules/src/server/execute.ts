@@ -1307,7 +1307,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               await ctx.onLog("stdout", `[jules] Discovered pull request created by Jules: ${prUrl}\n`);
             }
             try {
-              await registerPullRequestWorkProduct(taskId, prUrl, ctx.authToken, ctx.runId);
+              await runCheckpointedMutation({
+                session: session!,
+                key: `jules:work-product:${taskId}:${prUrl}`,
+                operation: "register_pull_request_work_product",
+                issueId: taskId,
+                sessionId: session!.julesSessionId,
+                persist: () => persistSessionBestEffort(session!, ctx.onLog),
+                run: () => registerPullRequestWorkProduct(taskId, prUrl, ctx.authToken, ctx.runId),
+              });
               session.prRegisteredOnBoard = true;
             } catch {
               /* best-effort early registration of work product */
@@ -1911,7 +1919,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                  }
                }
              }
-             await moveIssueToReview(taskId, session.currentPrUrl!, ctx.authToken, ctx.runId);
+             await runCheckpointedMutation({
+               session: session!,
+               key: `jules:review:${taskId}:${session!.currentPrUrl}`,
+               operation: "register_pull_request_review",
+               issueId: taskId,
+               sessionId: session!.julesSessionId,
+               persist: () => persistSessionBestEffort(session!, ctx.onLog),
+               run: () => moveIssueToReview(taskId, session!.currentPrUrl!, ctx.authToken, ctx.runId),
+             });
               await persistSessionBestEffort(session, ctx.onLog);
              if (ctx.onLog) {
                  await ctx.onLog(
@@ -2126,8 +2142,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               );
               const fullPlan = composePlanForReview(action.planMarkdown, hostPlanMarkdown);
               if (config.planReviewerAgentId && config.planStrongReviewerAgentId) {
-                const revision = await saveJulesPlanDocument(taskId, activityId, fullPlan, ctx.authToken, ctx.runId);
-                const child = await createJulesPlanReviewChild(taskId, config.planReviewerAgentId, "vibe", fullPlan, revision.revisionId, ctx.authToken, ctx.runId, ctx.agent.companyId);
+                const revision = await runCheckpointedMutation({
+                  session: session!,
+                  key: `jules:plan-document:${taskId}:${activityId}`,
+                  operation: "save_plan_document",
+                  issueId: taskId,
+                  sessionId: session!.julesSessionId,
+                  activityId,
+                  persist: () => persistSessionBestEffort(session!, ctx.onLog),
+                  run: () => saveJulesPlanDocument(taskId, activityId, fullPlan, ctx.authToken, ctx.runId),
+                });
+                const child = await runCheckpointedMutation({
+                  session: session!,
+                  key: `jules:plan-review:${taskId}:${revision.revisionId}:vibe`,
+                  operation: "create_plan_review_child",
+                  issueId: taskId,
+                  sessionId: session!.julesSessionId,
+                  activityId,
+                  persist: () => persistSessionBestEffort(session!, ctx.onLog),
+                  run: () => createJulesPlanReviewChild(taskId, config.planReviewerAgentId!, "vibe", fullPlan, revision.revisionId, ctx.authToken, ctx.runId, ctx.agent.companyId),
+                });
                 session.planReviewRevisionId = revision.revisionId;
                 session.planReviewOutcome = undefined;
                 session.pendingInteraction = { type: "plan_agent_review", julesActivityId: asJulesActivityId(activityId), question: fullPlan, planDocumentId: revision.documentId, planRevisionId: revision.revisionId, planRevisionNumber: revision.revisionNumber, reviewIssueId: child.id, reviewerAgentId: config.planReviewerAgentId, stage: "vibe", createdAt: new Date().toISOString() };
