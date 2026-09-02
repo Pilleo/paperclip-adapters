@@ -93,6 +93,18 @@ export const SettingsSchema = z.object({
   heartbeatPollWindowSeconds: z.number().min(30).max(10_800).optional(),
   maxSessionAgeHours: z.number().min(1).optional(),
   invariantsFile: z.string().optional(),
+  /** Paperclip agent that adjudicates provider questions before a human is asked. */
+  questionReviewerAgentId: z.string().uuid().optional(),
+  /** Paperclip ACP agents used for Jules plan review; no provider API keys are used. */
+  planReviewerAgentId: z.string().uuid().optional(),
+  planStrongReviewerAgentId: z.string().uuid().optional(),
+  /** Accept the UI's comma-separated text field as well as API arrays. */
+  codeReviewerAgentIds: z.preprocess(
+    value => typeof value === "string"
+      ? value.split(",").map(id => id.trim()).filter(Boolean)
+      : value,
+    z.array(z.string().uuid()).optional(),
+  ),
 }).passthrough();
 
 export const AdapterConfigSchema = SettingsSchema;
@@ -118,6 +130,10 @@ export interface AdapterConfig {
   requirePlanApproval: boolean;
   automationMode: "AUTO_CREATE_PR" | "AUTOMATION_MODE_UNSPECIFIED";
   maxAutomaticRestarts: number;
+  questionReviewerAgentId?: string | undefined;
+  planReviewerAgentId?: string | undefined;
+  planStrongReviewerAgentId?: string | undefined;
+  codeReviewerAgentIds?: string[] | undefined;
 }
 
 export const SAFE_DEFAULTS: Omit<AdapterConfig, "repository" | "source" | "baseBranch" | "requirePlanApproval"> = {

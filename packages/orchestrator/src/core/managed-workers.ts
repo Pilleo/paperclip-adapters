@@ -7,6 +7,7 @@ export interface FleetAgentRecord {
   readonly reportsTo?: string | null | undefined;
   readonly metadata?: Record<string, unknown> | null | undefined;
   readonly status: string;
+  readonly adapterConfig?: Record<string, unknown> | null | undefined;
   readonly errorReason?: string | null | undefined;
   readonly pauseReason?: string | null | undefined;
   readonly orgChainHealth?: {
@@ -45,8 +46,11 @@ export interface ManagedFleetIds {
   readonly managedIds: ReadonlySet<string>;
   readonly julesAgentId?: string | undefined;
   readonly vibeAgentId?: string | undefined;
+  readonly vibeReviewerAgentId?: string | undefined;
   readonly antigravityAgentId?: string | undefined;
   readonly reviewerAgentId?: string | undefined;
+  readonly lunaReviewerAgentId?: string | undefined;
+  readonly terraReviewerAgentId?: string | undefined;
   readonly managedJulesIds: ReadonlySet<string>;
 }
 
@@ -56,7 +60,10 @@ export function resolveManagedFleet(
   configured?: {
     readonly julesAgentId?: string | undefined;
     readonly vibeAgentId?: string | undefined;
+    readonly vibeReviewerAgentId?: string | undefined;
     readonly reviewerAgentId?: string | undefined;
+    readonly lunaReviewerAgentId?: string | undefined;
+    readonly terraReviewerAgentId?: string | undefined;
   }
 ): ManagedFleetIds {
   const managed = agents.filter((a) => isManagedWorker(a, orchestratorAgentId));
@@ -78,7 +85,19 @@ export function resolveManagedFleet(
   );
   const vibeAgentId = pick(
     configured?.vibeAgentId,
-    (a) => a.adapterType === "vibe" || a.name.toLowerCase().includes("vibe")
+    (a) =>
+      a.name === "[Orchestrated] Vibe Local Worker" ||
+      (a.adapterType === "vibe" && !a.name.toLowerCase().includes("review"))
+  );
+  const vibeReviewerAgentId = pick(
+    configured?.vibeReviewerAgentId,
+    (a) =>
+      a.name === "[Orchestrated] Vibe Fast Reviewer" ||
+      (a.adapterType === "vibe" && a.name.toLowerCase().includes("review"))
+  );
+  const lunaReviewerAgentId = pick(
+    configured?.lunaReviewerAgentId,
+    (a) => a.metadata?.["workerKey"] === "luna_reviewer" && a.name === "[Orchestrated] Luna Fast Reviewer",
   );
   const antigravityAgentId = managed.find(
     (a) => a.adapterType === "antigravity" || a.name.toLowerCase().includes("antigravity")
@@ -90,6 +109,10 @@ export function resolveManagedFleet(
       a.name.toLowerCase().includes("reviewer") ||
       a.name.toLowerCase().includes("security")
   );
+  const terraReviewerAgentId = pick(
+    configured?.terraReviewerAgentId,
+    (a) => (a.metadata?.["workerKey"] === "terra_reviewer" || a.name === "[Orchestrated] Terra Strong Reviewer" || a.name === "[Orchestrated] Code Reviewer") && a.adapterType === "codex_local",
+  );
 
   const managedJulesIds = new Set(
     managed.filter((a) => isJulesAdapterType(a.adapterType)).map((a) => a.id)
@@ -99,8 +122,11 @@ export function resolveManagedFleet(
     managedIds,
     julesAgentId,
     vibeAgentId,
+    vibeReviewerAgentId,
     antigravityAgentId,
     reviewerAgentId,
+    lunaReviewerAgentId,
+    terraReviewerAgentId,
     managedJulesIds,
   };
 }

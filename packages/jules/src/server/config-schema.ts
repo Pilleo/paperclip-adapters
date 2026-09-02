@@ -79,5 +79,33 @@ export const julesConfigSchema: AdapterConfigSchema = {
         { label: "Verbose", value: "verbose" },
       ],
     },
+    {
+      key: "questionReviewerAgentId",
+      label: "Provider-question reviewer agent ID",
+      type: "text",
+      required: true,
+      hint: "Strong Paperclip agent assigned to adjudicate Jules questions. Humans are asked only when this reviewer returns ESCALATE.",
+    },
+    {
+      key: "planReviewerAgentId",
+      label: "Plan fast reviewer agent ID",
+      type: "text",
+      required: false,
+      hint: "Paperclip ACP Vibe reviewer. Plan review is delegated to this agent before the strong reviewer.",
+    },
+    {
+      key: "planStrongReviewerAgentId",
+      label: "Plan strong reviewer agent ID",
+      type: "text",
+      required: false,
+      hint: "Paperclip ACP strong reviewer. Human escalation is used only for this agent's ESCALATE verdict.",
+    },
+    {
+      key: "codeReviewerAgentIds",
+      label: "PR reviewer agent IDs",
+      type: "text",
+      required: false,
+      hint: "Comma-separated managed reviewer IDs whose structured needs_work decisions may reopen Jules.",
+    },
   ],
 };

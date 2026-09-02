@@ -37,7 +37,8 @@ describe("Token-Friendly Review Synthesizer", () => {
     expect(prompt).toContain("Project Invariants:** Clean");
     expect(prompt).toContain("Token-Efficient Review Guidelines");
     expect(prompt).toContain("codanna retrieve describe");
-    expect(prompt).toContain("APPROVE / REQUEST_CHANGES");
+    expect(prompt).toContain("all good");
+    expect(prompt).toContain("need work");
   });
 
   it("handles invariant violation warnings in prompt", () => {

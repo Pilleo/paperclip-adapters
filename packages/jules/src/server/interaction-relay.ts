@@ -64,7 +64,9 @@ export function extractResolvedInteraction(
 
   let type: ResolvedInteractionType = "none";
   if (session?.pendingInteraction) {
-    type = session.pendingInteraction.type;
+    type = session.pendingInteraction.type === "agent_adjudication" || session.pendingInteraction.type === "plan_agent_review"
+      ? "none"
+      : session.pendingInteraction.type;
   } else if (planReviewInteraction && Object.keys(planReviewInteraction).length > 0) {
     type = "plan_approval";
   }

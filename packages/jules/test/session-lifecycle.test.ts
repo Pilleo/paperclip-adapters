@@ -29,6 +29,7 @@ describe("session-lifecycle", () => {
   it("matches session identity on repository, source, and base branch", () => {
     expect(sessionMatchesConfig(sampleSession, config)).toBe(true);
     expect(sessionMatchesConfig({ ...sampleSession, baseBranch: "dev" }, config)).toBe(false);
+    expect(sessionMatchesConfig({ ...sampleSession, repository: "paperclipai/paperclip" }, config)).toBe(false);
     expect(sessionMatchesConfig(null, config)).toBe(false);
   });
 
@@ -121,6 +122,14 @@ describe("session-lifecycle", () => {
     expect(decision.action).toBe("RESUME_EXISTING");
     expect(decision.forceFreshSession).toBe(false);
     expect(decision.session?.sessionId).toBe("sess-1");
+  });
+
+  it("merges newer local idempotency checkpoints into a replayed session envelope", () => {
+    const stored = { ...sampleSession, scopeDriftFingerprint: "pr-1\ndrift-1" };
+    const decision = evaluateSessionStartup(
+      {}, sampleSession, stored, null, config,
+    );
+    expect(decision.session?.scopeDriftFingerprint).toBe("pr-1\ndrift-1");
   });
 
   it("relays interaction when wake is an interaction response", () => {

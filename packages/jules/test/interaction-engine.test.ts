@@ -35,13 +35,43 @@ describe("interaction-engine pure reducer", () => {
   });
 
   describe("AWAITING_USER_FEEDBACK transitions", () => {
-    it("returns CREATE_FEEDBACK_CARD when no existing interaction exists", () => {
+    it("delegates a provider question to the strong-reviewer lane", () => {
       const action = evaluateInteractionAction(baseSession, "AWAITING_USER_FEEDBACK", [], "What is next?");
-      expect(action.type).toBe("CREATE_FEEDBACK_CARD");
-      if (action.type === "CREATE_FEEDBACK_CARD") {
+      expect(action.type).toBe("CREATE_AGENT_ADJUDICATION");
+      if (action.type === "CREATE_AGENT_ADJUDICATION") {
         expect(action.question).toBe("What is next?");
-        expect(action.attempt).toBe(1);
       }
+    });
+
+    it("does not reopen a question whose Jules activity was already answered", () => {
+      const action = evaluateInteractionAction(
+        { ...baseSession, deliveredFeedbackActivityId: "activity-1" },
+        "AWAITING_USER_FEEDBACK",
+        [],
+        "Anything else?",
+        "activity-1",
+      );
+      expect(action.type).toBe("CONTINUE_POLLING");
+    });
+
+    it("does not let a stale agent-adjudication form hide a newer Jules question", () => {
+      const staleReviewerRecord: PaperclipInteraction = {
+        id: "old-reviewer-form",
+        kind: "ask_user_questions",
+        status: "pending",
+        idempotencyKey: "jules:agent-adjudication:MAZ-834:session-1:old-question",
+      };
+      const action = evaluateInteractionAction(
+        baseSession,
+        "AWAITING_USER_FEEDBACK",
+        [staleReviewerRecord],
+        "Am I clear to finalize these changes?",
+        "new-question",
+      );
+      expect(action).toEqual({
+        type: "CREATE_AGENT_ADJUDICATION",
+        question: "Am I clear to finalize these changes?",
+      });
     });
 
     it("returns WAIT_FOR_HUMAN when an unanswered pending interaction exists", () => {
@@ -82,7 +112,7 @@ describe("interaction-engine pure reducer", () => {
       }
     });
 
-    it("creates a fresh card when previous interaction was already answered and delivered", () => {
+    it("delegates a new question when previous feedback was already delivered", () => {
       const answeredOld: PaperclipInteraction = {
         id: "inter-old-1",
         kind: "ask_user_questions",
@@ -94,14 +124,19 @@ describe("interaction-engine pure reducer", () => {
         deliveredFeedbackInteractionId: "inter-old-1",
       };
       const action = evaluateInteractionAction(sessionWithDelivered, "AWAITING_USER_FEEDBACK", [answeredOld], "Second question from Jules?");
-      expect(action.type).toBe("CREATE_FEEDBACK_CARD");
-      if (action.type === "CREATE_FEEDBACK_CARD") {
+      expect(action.type).toBe("CREATE_AGENT_ADJUDICATION");
+      if (action.type === "CREATE_AGENT_ADJUDICATION") {
         expect(action.question).toBe("Second question from Jules?");
       }
     });
   });
 
   describe("AWAITING_PLAN_APPROVAL transitions", () => {
+    it("does not infer a plan gate from provider prose while state is active", () => {
+      const action = evaluateInteractionAction(baseSession, "IN_PROGRESS", [], "Jules Implementation Plan\nStep 1");
+      expect(action.type).toBe("CONTINUE_POLLING");
+    });
+
     it("returns CREATE_PLAN_CARD when no plan card exists", () => {
       const action = evaluateInteractionAction(baseSession, "AWAITING_PLAN_APPROVAL", [], "Step 1: Code");
       expect(action.type).toBe("CREATE_PLAN_CARD");

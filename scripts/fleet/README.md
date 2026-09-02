@@ -17,6 +17,10 @@ A suite of modular, zero-dependency bash scripts for operating, triaging, and in
 | [`list_approvals.sh`](list_approvals.sh) | Lists pending task start authorizations and Stage 4 merge approval cards. | `./scripts/fleet/list_approvals.sh pending` |
 | [`list_agents.sh`](list_agents.sh) | Lists all fleet agents, roles, error reasons, and chain of command health. | `./scripts/fleet/list_agents.sh` |
 | [`run_telegram_companion.sh`](run_telegram_companion.sh) | Starts the interactive Telegram bot companion for live cards and push alerts. | `./scripts/fleet/run_telegram_companion.sh` |
+| [`diagnostics.sh`](diagnostics.sh) | Read-only service, Jules heartbeat, marked-child, and capability-incident summary. | `./scripts/fleet/diagnostics.sh` |
+| [`reconcile_stale_children.sh`](reconcile_stale_children.sh) | Finds stale Jules supervisor/adjudication children; dry-run by default. | `./scripts/fleet/reconcile_stale_children.sh --apply` |
+| [`reconcile_jules_prs.mjs`](reconcile_jules_prs.mjs) | Board-owned convergence of verified ready Jules PRs into review; closes false productivity blockers. | `node scripts/fleet/reconcile_jules_prs.mjs --dry-run --json` |
+| [`install_jules_pr_reconciler_timer.sh`](install_jules_pr_reconciler_timer.sh) | Installs the two-minute local systemd reconciliation timer. | `./scripts/fleet/install_jules_pr_reconciler_timer.sh` |
 
 ---
 
@@ -28,6 +32,10 @@ All scripts source [`common.sh`](common.sh) and respect standard environment var
 export PAPERCLIP_API_URL="http://127.0.0.1:3100"
 export COMPANY_ID="8f4ef932-d769-43b2-981a-d273ed715162" # mazewall
 ```
+
+The Jules PR reconciler intentionally uses the authenticated board CLI context,
+not an adapter token. It only advances an issue when its Jules-linked GitHub PR
+is open, mergeable, non-draft, and all reported checks completed successfully.
 
 ---
 

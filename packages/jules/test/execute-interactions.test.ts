@@ -5,7 +5,9 @@ import { JulesClient } from "../src/server/jules-client";
 import { sessionCodec } from "../src/server/session";
 import {
   addJulesActivityComment,
+  createJulesAgentAdjudicationInteraction,
   createJulesFeedbackInteraction,
+  createJulesQuestionAdjudication,
   createJulesPlanApprovalInteraction,
   getPaperclipInteraction,
   moveIssueToBlocked,
@@ -26,10 +28,13 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
   return {
     ...mod,
     addJulesActivityComment: vi.fn(),
+    createJulesAgentAdjudicationInteraction: vi.fn(),
     createJulesFeedbackInteraction: vi.fn(),
+    createJulesQuestionAdjudication: vi.fn(),
     createJulesPlanApprovalInteraction: vi.fn(),
     getPaperclipInteraction: vi.fn(),
     moveIssueToBlocked: vi.fn(),
+    scheduleJulesSessionMonitor: vi.fn().mockResolvedValue(),
   };
 });
 
@@ -57,6 +62,7 @@ const baseContext = {
       source: "sources/github/example/repository",
       repository: "example/repository",
       baseBranch: "main",
+      questionReviewerAgentId: "00000000-0000-4000-8000-000000000123",
     },
   },
   runtime: { sessionId: "session-1", sessionParams: sessionCodec.encode(session), taskKey: "issue-1" },
@@ -77,7 +83,7 @@ describe("Jules activity interactions", { timeout: 30000 }, () => {
     vi.mocked(moveIssueToBlocked).mockResolvedValue();
   });
 
-  it("mirrors a Jules question and creates one Paperclip reply card", async () => {
+  it("mirrors a Jules question and assigns an adjudication task to the strong reviewer", async () => {
     vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_USER_FEEDBACK" } as never);
     vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({
       activities: [{
@@ -86,16 +92,20 @@ describe("Jules activity interactions", { timeout: 30000 }, () => {
         agentMessaged: { agentMessage: "Which branch should I use?" },
       }],
     } as never);
-    vi.mocked(createJulesFeedbackInteraction).mockResolvedValue({ id: "feedback-1", status: "pending" });
+    vi.mocked(createJulesQuestionAdjudication).mockResolvedValue({ id: "adjudication-1", status: "todo" });
+    vi.mocked(createJulesAgentAdjudicationInteraction).mockResolvedValue({ id: "visible-question-1", status: "pending" });
 
     const result = await execute(baseContext);
 
-    // Question is rendered inside the interactive card rather than duplicated as an orphaned comment
-    expect(createJulesFeedbackInteraction).toHaveBeenCalledWith(
-      "issue-1", "session-1", "activity-question", "Which branch should I use?", "jwt-token", 1, "run-1",
+    expect(createJulesQuestionAdjudication).toHaveBeenCalledWith(
+      "issue-1", "00000000-0000-4000-8000-000000000123", "Which branch should I use?", "jwt-token", "run-1", "company-1",
+    );
+    expect(createJulesAgentAdjudicationInteraction).toHaveBeenCalledWith(
+      "issue-1", "session-1", "activity-question", "Which branch should I use?",
+      "00000000-0000-4000-8000-000000000123", "jwt-token", "run-1",
     );
     expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
-      type: "user_feedback", paperclipInteractionId: "feedback-1", julesActivityId: "activity-question",
+      type: "agent_adjudication", adjudicationIssueId: "adjudication-1", paperclipInteractionId: "visible-question-1", julesActivityId: "activity-question",
     });
   });
 

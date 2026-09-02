@@ -1,17 +1,53 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   addJulesActivityComment,
+  clearJulesSessionMonitor,
+  completeInternalReviewIssue,
+  createIssueComment,
   createJulesFeedbackInteraction,
   createJulesPlanApprovalInteraction,
   createNoPrCompletionInteraction,
+  getPaperclipInteraction,
+  getPaperclipIssue,
+  listIssueComments,
+  listPaperclipApprovals,
+  listPaperclipInteractions,
+  listWorkProducts,
   moveIssueToBlocked,
   moveIssueToDone,
+  moveIssueToInProgress,
   moveIssueToReview,
+  normalizeInternalReviewIssue,
   PaperclipClientError,
+  postSessionLink,
+  readJulesSessionHandle,
+  registerPullRequestWorkProduct,
+  scheduleJulesSessionMonitor,
+  upsertJulesSessionHandle,
+  withdrawPaperclipInteraction,
+  paperclipRequestForInternalUse,
 } from "../src/server/paperclip-client";
 
 describe("Paperclip issue completion", () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it("uses Paperclip local-trusted mode without requiring an agent token", async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+
+    await expect(paperclipRequestForInternalUse(
+      "/api/issues/issue-1",
+      undefined,
+      { method: "GET" },
+    )).resolves.toMatchObject({ ok: true });
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:3100/api/issues/issue-1",
+      expect.objectContaining({
+        method: "GET",
+        headers: expect.not.objectContaining({ Authorization: expect.anything() }),
+      }),
+    );
+  });
 
   it("registers pull request work product when moving issue to review", async () => {
     const fetchMock = vi.fn()
@@ -140,5 +176,84 @@ describe("Paperclip issue completion", () => {
       undefined,
       "jwt-token",
     )).rejects.toBeInstanceOf(PaperclipClientError);
+  });
+
+  it("covers read-only issue, comment, interaction, approval, and work-product queries", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => [{ url: "pr-1" }, { id: "ignored" }, null] })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ id: "issue-1", status: "in_progress" }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => [{ id: "comment-1", body: "hello", createdAt: "now" }] })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => [{ id: "i-1", status: "pending", kind: "ask_user_questions", payload: { target: { type: "x" } } }] })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => [{ id: "i-1", status: "pending", kind: "ask_user_questions", payload: { target: { type: "x" } } }] })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ approvals: [{ id: "a-1", type: "interaction", status: "pending", issueIds: ["issue-1"], payload: { x: true } }, { id: 2, type: 3, status: 4 }] }) });
+    global.fetch = fetchMock as unknown as typeof global.fetch;
+
+    await expect(listWorkProducts("issue-1", "jwt-token")).resolves.toEqual([{ url: "pr-1" }]);
+    await expect(getPaperclipIssue("issue-1", "jwt-token")).resolves.toMatchObject({ status: "in_progress" });
+    await expect(listIssueComments("issue-1", "jwt-token")).resolves.toHaveLength(1);
+    await expect(listPaperclipInteractions("issue-1", "jwt-token")).resolves.toMatchObject([{ id: "i-1", target: { type: "x" } }]);
+    await expect(getPaperclipInteraction("issue-1", "i-1", "jwt-token")).resolves.toMatchObject({ id: "i-1" });
+    await expect(listPaperclipApprovals("company-1", "jwt-token")).resolves.toEqual([
+      { id: "a-1", type: "interaction", status: "pending", issueIds: ["issue-1"], payload: { x: true } },
+      { id: "2", type: "3", status: "4", issueIds: [] },
+    ]);
+  });
+
+  it("is idempotent when the pull request work product already exists", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => [{ url: "https://github.com/o/r/pull/1" }] });
+    global.fetch = fetchMock as unknown as typeof global.fetch;
+    await registerPullRequestWorkProduct("issue-1", "https://github.com/o/r/pull/1", "jwt-token", "run-1");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("stores and reads a Jules session handle, falling back to comments", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ latestRevisionId: "rev-1" }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({}) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ body: "julesSessionId: session-1\nurl: https://jules.google.com/session/session-1" }) })
+      .mockResolvedValueOnce({ ok: false, status: 404, text: async () => "missing" })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => [{ id: "c", body: "Jules session: https://jules.google.com/session/session-2", createdAt: "now" }] });
+    global.fetch = fetchMock as unknown as typeof global.fetch;
+    await upsertJulesSessionHandle("issue-1", "session-1", "https://jules.google.com/session/session-1", "jwt-token");
+    await expect(readJulesSessionHandle("issue-1", "jwt-token")).resolves.toBe("session-1");
+    await expect(readJulesSessionHandle("issue-1", "jwt-token")).resolves.toBe("session-2");
+    expect(JSON.parse(fetchMock.mock.calls[1]![1]!.body as string)).toMatchObject({ baseRevisionId: "rev-1" });
+  });
+
+  it("posts links/comments, withdraws interactions, and schedules durable monitoring", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 201 })
+      .mockResolvedValueOnce({ ok: true, status: 201 })
+      .mockResolvedValueOnce({ ok: true, status: 200 })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ id: "issue-1", status: "in_progress", executionPolicy: { mode: "normal", stages: ["review"], commentRequired: true, custom: "keep" } }) })
+      .mockResolvedValueOnce({ ok: true, status: 200 })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ id: "issue-1", status: "in_progress", executionPolicy: { mode: "normal", monitor: { externalRef: "old" } } }) })
+      .mockResolvedValueOnce({ ok: true, status: 200 });
+    global.fetch = fetchMock as unknown as typeof global.fetch;
+    await postSessionLink("issue-1", "https://jules.google.com/session/s-1", "jwt-token", "run-1");
+    await createIssueComment("issue-1", "hello", "jwt-token");
+    await withdrawPaperclipInteraction("issue-1", "interaction-1", "superseded", "jwt-token");
+    await scheduleJulesSessionMonitor("issue-1", "s-1", "2026-08-31T12:00:00Z", "2026-09-01T12:00:00Z", "jwt-token");
+    await clearJulesSessionMonitor("issue-1", "jwt-token");
+    expect(fetchMock).toHaveBeenCalledTimes(7);
+    expect(JSON.parse(fetchMock.mock.calls[4]![1]!.body as string).executionPolicy).toMatchObject({ stages: [], commentRequired: false, custom: "keep" });
+  });
+
+  it("recovers an existing feedback interaction after an idempotency conflict", async () => {
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 409, text: async () => "duplicate" })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => [{ id: "existing", status: "pending", kind: "ask_user_questions", idempotencyKey: "jules:user-feedback:issue-1:s-1:a-1:1" }] });
+    await expect(createJulesFeedbackInteraction("issue-1", "s-1", "a-1", "question", "jwt-token")).resolves.toMatchObject({ id: "existing" });
+  });
+
+  it("repairs and completes an internal reviewer child explicitly", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200 })
+      .mockResolvedValueOnce({ ok: true, status: 200 });
+    global.fetch = fetchMock as unknown as typeof global.fetch;
+    await normalizeInternalReviewIssue({ id: "child-1", status: "in_progress", executionPolicy: { stages: ["review"] } }, "jwt-token");
+    await completeInternalReviewIssue("child-1", "jwt-token");
+    expect(JSON.parse(fetchMock.mock.calls[0]![1]!.body as string)).toEqual({ blockParentUntilDone: false, executionPolicy: { mode: "normal", stages: [], commentRequired: false } });
+    expect(JSON.parse(fetchMock.mock.calls[1]![1]!.body as string)).toEqual({ status: "done", blockParentUntilDone: false, executionPolicy: { mode: "normal", stages: [], commentRequired: false } });
   });
 });

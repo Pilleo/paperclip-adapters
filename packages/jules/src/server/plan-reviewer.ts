@@ -9,7 +9,7 @@
 
 export type PlanReviewStage = "static" | "vibe_mistral" | "luna" | "terra_codex" | "human";
 
-export type PlanReviewAction = "CONTINUE" | "AUTO_APPROVE" | "ESCALATE_TO_OPERATOR";
+export type PlanReviewAction = "CONTINUE" | "AUTO_APPROVE" | "REQUEST_REVISION" | "ESCALATE_TO_OPERATOR";
 
 export interface PlanReviewContext {
   title?: string | undefined;
@@ -199,7 +199,7 @@ function hostAnswersQuestion(question: string, context: PlanReviewContext, hostT
   return false;
 }
 
-/** Cheap local pass. If this finds issues, Terra/Codex is not spent. */
+/** Cheap local pass. Its findings are evidence for the strong reviewer. */
 export function defaultCheapReviewer(input: {
   planMarkdown: string;
   context: PlanReviewContext;
@@ -221,7 +221,7 @@ export function defaultCheapReviewer(input: {
       action: "CONTINUE",
       stage,
       isClear: false,
-      reviewSummary: "[Cheap] Gaps remain after a cheap reread; not calling Terra/Codex.",
+      reviewSummary: "[Cheap] Gaps found; handing them to Terra/Codex for adjudication.",
     };
   }
   return {
@@ -440,15 +440,13 @@ export async function evaluatePlanClarity(
     };
   }
 
-  if (!stagePassed(cheapVerdict)) {
+  if (hasInvariant(cheapVerdict)) {
     return {
       ...cheapVerdict,
       isClear: false,
       action: "ESCALATE_TO_OPERATOR",
       stage: "human",
-      reviewSummary: hasInvariant(cheapVerdict)
-        ? "[Human] Static/cheap flagged invariants. Terra/Codex was not called."
-        : `[Human] Cheap review still has ${cheapVerdict.questions.length} gap(s). Terra/Codex was not called.`,
+      reviewSummary: "[Human] Static invariant flags require operator judgment before coding.",
     };
   }
 
@@ -489,8 +487,12 @@ export async function evaluatePlanClarity(
   return {
     ...terraVerdict,
     isClear: false,
-    action: "ESCALATE_TO_OPERATOR",
-    stage: "human",
+    action: terraVerdict.questions.length > 0 || terraVerdict.findings.length > 0
+      ? "REQUEST_REVISION"
+      : "ESCALATE_TO_OPERATOR",
+    stage: terraVerdict.questions.length > 0 || terraVerdict.findings.length > 0
+      ? "terra_codex"
+      : "human",
     reviewSummary:
       terraVerdict.reviewSummary ||
       "[Human] Terra/Codex did not approve; operator is last resort.",

@@ -8,6 +8,7 @@ export interface ReviewPromptParams {
   readonly branchName?: string | undefined;
   readonly invariantResult?: InvariantCheckResult | undefined;
   readonly testBlastRadius?: readonly string[] | undefined;
+  readonly reviewInteractionId?: string | undefined;
 }
 
 /**
@@ -38,7 +39,11 @@ export function synthesizeTokenFriendlyReviewPrompt(params: ReviewPromptParams):
       : `⚠️ **Project Invariants Flagged:**\n${invariantResult.violations.map((v) => `- [${v.severity}] ${v.ruleId}: ${v.message}`).join("\n")}`
     : "ℹ️ Invariant check passed.";
 
-  return `## 🔍 Code Review Request: [${issue.identifier || issue.id}] ${issue.title}
+  const interactionSection = params.reviewInteractionId
+    ? `\n**Paperclip review dialog:** Resolve the review card with interaction ID \`${params.reviewInteractionId}\`. Use exactly **all good** or **need work**; selecting **need work** requires actionable feedback in the required comment field. Then, as the active execution-policy participant, apply the matching normal issue update (approve with status \`done\` plus a concise comment; request changes with status \`in_progress\` plus the same reason) and re-fetch to confirm the execution stage advanced. Do not use a free-form issue comment as the review disposition.\n`
+    : "";
+
+  return `## 🔍 Code Review Request: [${issue.identifier || issue.id}] ${issue.title}${interactionSection}
 
 **Pull Request:** ${prUrl || (prNumber ? `#${prNumber}` : "Pending")} | **Branch:** \`${branchName || "feature branch"}\`
 
@@ -62,8 +67,9 @@ ${invariantSection}
    - **Scope Discipline:** Ensure changes did not escape the declared \`target_files\` or \`target_symbols\`.
 
 ### 📝 Response Format
-When providing your review assessment, output:
-- **🚨 Severity:** [CLEAN / MINOR / MAJOR / BLOCKING]
-- **💡 Findings:** [Concise bullet points on logic, security, or test coverage]
-- **🎯 Recommendation:** [APPROVE / REQUEST_CHANGES]`;
+Resolve the Paperclip review dialog. The dialog is the authoritative review result and provides only two choices:
+- **all good**
+- **need work** (requires a concrete comment)
+
+Do not report a disposition only in a normal issue comment.`;
 }

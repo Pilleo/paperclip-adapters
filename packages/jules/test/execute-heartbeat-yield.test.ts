@@ -3,7 +3,7 @@ import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { execute } from "../src/server/execute";
 import { JulesClient } from "../src/server/jules-client";
 import { sessionCodec } from "../src/server/session";
-import { listPaperclipInteractions } from "../src/server/paperclip-client";
+import { listPaperclipInteractions, scheduleJulesSessionMonitor } from "../src/server/paperclip-client";
 
 vi.mock("../src/server/jules-client", async (importOriginal) => {
   const mod = await importOriginal<typeof import("../src/server/jules-client")>();
@@ -24,6 +24,7 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
     listPaperclipInteractions: vi.fn().mockResolvedValue([]),
     listIssueComments: vi.fn().mockResolvedValue([]),
     getPaperclipInteraction: vi.fn(),
+    scheduleJulesSessionMonitor: vi.fn().mockResolvedValue(),
   };
 });
 
@@ -96,10 +97,29 @@ describe("heartbeat yield vs session deadline", () => {
     expect(result.clearSession).toBe(false);
     expect(result.sessionDisplayId).toBe("session-live");
     expect(sessionCodec.decode(result.sessionParams!)?.julesSessionId).toBe("session-live");
-    expect(result.summary).toMatch(/resume polling/);
+    expect(result.summary).toBeUndefined();
     const retryAt = new Date(result.retryNotBefore!).getTime();
     expect(retryAt).toBeGreaterThanOrEqual(before + 30_000);
     expect(retryAt).toBeLessThan(before + 90_000);
+  });
+
+  it("keeps a persisted Jules session resumable when monitor scheduling is unavailable", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({
+      id: "session-live",
+      state: "IN_PROGRESS",
+    } as never);
+    vi.mocked(scheduleJulesSessionMonitor).mockRejectedValueOnce(new Error("Paperclip monitor unavailable"));
+    const onLog = vi.fn();
+
+    const result = await execute({ ...ctx(), onLog });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.clearSession).toBe(false);
+    expect(sessionCodec.decode(result.sessionParams!)?.julesSessionId).toBe("session-live");
+    expect(onLog).toHaveBeenCalledWith(
+      "stderr",
+      expect.stringContaining("Could not schedule the next Paperclip monitor"),
+    );
   });
 
   it("relays an accepted plan when Jules is AWAITING_PLAN_APPROVAL even if pendingInteraction is missing", async () => {

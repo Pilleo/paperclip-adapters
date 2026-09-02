@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { JulesAdapterSessionV1, sessionCodec, serializeSession } from "./session.js";
@@ -55,6 +55,35 @@ export async function loadStoredSession(
     return null;
   }
   return session;
+}
+
+/**
+ * Recovers issue identity when Paperclip wakes an adapter with only the
+ * provider session ID. Some manual/automation wake paths omit the issue
+ * snapshot, but the local recovery record still has the authoritative mapping.
+ */
+export async function findStoredSessionByJulesSessionId(
+  julesSessionId: string,
+): Promise<JulesAdapterSessionV1 | null> {
+  const directory = sessionStoreDirectory();
+  if (!directory) return null;
+  let names: string[];
+  try {
+    names = await readdir(directory);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    try {
+      const session = sessionCodec.decode(JSON.parse(await readFile(join(directory, name), "utf8")));
+      if (session?.julesSessionId === julesSessionId) return session;
+    } catch {
+      // Ignore an unrelated or partially-written recovery record.
+    }
+  }
+  return null;
 }
 
 export async function saveStoredSession(session: JulesAdapterSessionV1): Promise<void> {

@@ -2,21 +2,31 @@ import { describe, it, expect } from "vitest";
 import {
   buildMazewallExecutionPolicy,
   issueHasExecutionPolicy,
+  issueHasUnsafeVibeReviewParticipant,
   issueNeedsExecutionPolicyBackfill,
 } from "../src/core/execution-policy.js";
 
 describe("mazewall execution policy builder", () => {
-  it("builds vibe then strong review stages without a fake merge type", () => {
+  it("builds read-only Vibe then strong review stages without a fake merge type", () => {
     const policy = buildMazewallExecutionPolicy({
-      vibeAgentId: "vibe-1",
+      vibeReviewerAgentId: "vibe-review-1",
       reviewerAgentId: "rev-1",
     });
     expect(policy?.stages).toHaveLength(2);
     expect(policy?.stages[0]).toEqual({
       type: "review",
-      participants: [{ type: "agent", agentId: "vibe-1" }],
+      participants: [{ type: "agent", agentId: "vibe-review-1" }],
     });
     expect(policy?.stages[1]?.type).toBe("review");
+  });
+
+  it("identifies only the legacy writable Vibe review participant for migration", () => {
+    expect(issueHasUnsafeVibeReviewParticipant({
+      executionPolicy: { stages: [{ type: "review", participants: [{ type: "agent", agentId: "vibe-dev" }] }] },
+    }, "vibe-dev")).toBe(true);
+    expect(issueHasUnsafeVibeReviewParticipant({
+      executionPolicy: { stages: [{ type: "review", participants: [{ type: "agent", agentId: "vibe-review" }] }] },
+    }, "vibe-dev")).toBe(false);
   });
 
   it("detects an existing Paperclip executionPolicy", () => {

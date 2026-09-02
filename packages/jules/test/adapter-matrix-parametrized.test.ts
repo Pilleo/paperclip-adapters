@@ -147,7 +147,7 @@ describe("Parametrized Adapter Logic Matrix", () => {
       state: "IN_PROGRESS",
       pendingCard: false,
       lastNudgedMinutesAgo: null,
-      expectedNudge: true
+      expectedNudge: false
     },
     {
       desc: "Silent for 25m but waiting for human on decision card",
@@ -174,7 +174,7 @@ describe("Parametrized Adapter Logic Matrix", () => {
       state: "IN_PROGRESS",
       pendingCard: false,
       lastNudgedMinutesAgo: 20,
-      expectedNudge: true
+      expectedNudge: false
     },
     {
       desc: "Session in terminal completed state",

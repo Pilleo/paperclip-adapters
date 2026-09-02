@@ -1,9 +1,8 @@
-# Work packages
+# Mazewall Backlog Index
 
-Lint with:
+*Total Active Issues:* 2 | *Total Resolved Issues:* 2
 
-```bash
-node packages/common/bin/lint-backlog.js docs/internals/backlog
-```
-
-Each `issue-YYYYMMDD-HHMMSS-slug.md` must have YAML frontmatter (`title`, `component`, `target_modules`, `target_files`), plus **Context:** and **Needed:**. `target_modules` may be mazewall Gradle ids or this repo's npm workspaces (`packages/jules`, …).
+| Issue | Title | Priority | Component |
+|---|---|---|---|
+| [issue-20260830-210200-planning-engine-ts-test-discovery](issue-20260830-210200-planning-engine-ts-test-discovery.md) | Host plan synthesizer discovers TypeScript tests next to npm packages | medium | tools |
+| [issue-20260830-210300-e2e-execute-plan-ladder](issue-20260830-210300-e2e-execute-plan-ladder.md) | E2E execute: Mistral first, Luna fallback, Terra Codex, never xAI as Terra | high | testing |

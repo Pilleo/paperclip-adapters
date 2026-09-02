@@ -69,6 +69,7 @@ export function extractIssueMetadata(issue: {
   let needsKernel = false;
   let exclusive = false;
   let openQuestions = false;
+  let orchestratorManaged = false;
   const verifyCheap: string[] = [];
 
   // 1. Extract YAML frontmatter
@@ -126,6 +127,8 @@ export function extractIssueMetadata(issue: {
           exclusive = parseYamlBool(value, false);
         } else if (key === "open_questions" || key === "openquestions") {
           openQuestions = parseYamlBool(value, false);
+        } else if (key === "orchestrator_managed" || key === "orchestratormanaged") {
+          orchestratorManaged = parseYamlBool(value, false);
         } else if (key === "verify_cheap" || key === "verifycheap") {
           if (value) verifyCheap.push(...parseYamlList(value));
         }
@@ -174,9 +177,18 @@ export function extractIssueMetadata(issue: {
   if (!openQuestions && /open_questions\s*:\s*true/i.test(desc)) {
     openQuestions = true;
   }
+  if (!orchestratorManaged && /orchestrator_managed\s*:\s*true/i.test(desc)) {
+    orchestratorManaged = true;
+  }
 
   const executionRunIdRaw = (issue as Record<string, unknown>)["executionRunId"];
   const executionRunId = typeof executionRunIdRaw === "string" && executionRunIdRaw.length > 0 ? executionRunIdRaw : null;
+  const parentIdRaw = (issue as Record<string, unknown>)["parentId"];
+  const parentId = typeof parentIdRaw === "string" && parentIdRaw.length > 0 ? parentIdRaw : null;
+  // These markers are adapter protocol records, never ordinary PR-review
+  // tasks. Parent linkage was absent on some historical Paperclip child rows,
+  // so marker identity is authoritative for safe exclusion.
+  const isDelegatedReviewChild = /<!-- jules-(?:plan-review|question-adjudication):/.test(desc);
 
   return Object.freeze({
     id,
@@ -200,9 +212,12 @@ export function extractIssueMetadata(issue: {
     projectId: typeof issue["projectId"] === "string" ? (issue["projectId"] as string) : null,
     isNonInterfering,
     openQuestions,
+    orchestratorManaged,
     assigneeAgentId: issue.assigneeAgentId ?? null,
     updatedAt: typeof (issue as Record<string, unknown>)["updatedAt"] === "string" ? ((issue as Record<string, unknown>)["updatedAt"] as string) : null,
     executionRunId,
+    parentId,
+    isDelegatedReviewChild,
     rawIssue: Object.freeze({ ...issue }),
   });
 }

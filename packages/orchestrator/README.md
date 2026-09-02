@@ -12,10 +12,10 @@ PRs follow an automated, ascending-cost validation chain:
 [ PR Opened / Updated ] ──► [ 1. CI Gate (100% Green) ]
                                       │
                                       ▼
-                            [ 2. Vibe Fast Review (Cheap Triage) ]
+                            [ 2. OpenAI Luna Review (Cheap Triage) ]
                                       │
                                       ▼
-                            [ 3. Strong Review (Terra/Grok Audit) ]
+                            [ 3. OpenAI Terra Review (Deep Audit) ]
                                       │
                                       ▼
                             [ 4. Operator Merge Card in Paperclip ]
@@ -24,11 +24,12 @@ PRs follow an automated, ascending-cost validation chain:
                             [ Auto-Merge (--merge) & Done ]
 ```
 - **Stage 1 (CI Gate):** PRs with pending or failing checks are held at `AWAIT_CI` to prevent wasting review tokens.
-- **Stage 2 (Cheap Vibe Review):** Fast ACP sanity and AST structure check. `REQUEST_CHANGES` immediately reassigns the issue back to the author worker, skipping expensive models.
-- **Stage 3 (Deep Strong Review):** Deep kernel invariant, memory safety, and Landlock audit.
+- **Stage 2 (Cheap Luna Review):** Read-only OpenAI Luna sanity and AST structure check. `REQUEST_CHANGES` immediately reassigns the issue back to the author worker, skipping expensive models.
+- **Stage 3 (Deep Terra Review):** Read-only OpenAI Terra kernel invariant, memory safety, and Landlock audit.
+- Review stages are native Paperclip verdict cards, keyed by immutable PR head and reviewer stage. Legacy Vibe/Strong cards cannot satisfy the Luna/Terra state machine. Missing reviewer identities fail closed instead of silently approving.
 - **Stage 4 (Human Operator Gate):** 1-click Paperclip Board Approval Card (`task_merge_approval`).
 - **Standard Merge Commit Strategy (`--merge`):** Approved PRs are merged via `gh pr merge --merge` (never squashed) to preserve exact git commit trees and eliminate downstream branch conflicts.
-- **Iterative ACP Review Continuity:** Vibe’s ACP session context (`sessionId`) is preserved between wakeups so it remembers prior feedback while inspecting fresh branch diffs (`git diff origin/master...HEAD`).
+- **Iterative ACP Review Continuity:** Implementation workers retain their ACP session context; reviewers are separate read-only identities and inspect fresh branch diffs (`git diff origin/master...HEAD`).
 
 ### 2. Strict Anti-Hack, Test Protection & Zero-Bypass Standards
 All reviewer prompts enforce explicit rejection criteria (`REQUEST_CHANGES`):
@@ -47,13 +48,15 @@ All reviewer prompts enforce explicit rejection criteria (`REQUEST_CHANGES`):
 - Reviews are never posted as noisy comments on GitHub PR threads.
 
 ### 5. Fleet Management & Concurrency Controls
-- **Auto-Provisioned Managed Worker Fleet:** Dedicated worker agents (`[Orchestrated] Jules Async Worker`, `[Orchestrated] Vibe Local Worker`, `[Orchestrated] Antigravity Local Worker`, `[Orchestrated] Code Reviewer`) with zero polling drift (`pollCadenceSeconds: 0`).
+- **Auto-Provisioned Managed Worker Fleet:** Dedicated worker agents (`[Orchestrated] Jules Async Worker`, `[Orchestrated] Vibe Local Worker`, `[Orchestrated] Antigravity Local Worker`, `[Orchestrated] Luna Fast Reviewer`, `[Orchestrated] Terra Strong Reviewer`) with zero polling drift (`pollCadenceSeconds: 0`).
+- **Reviewer identity safety:** Luna/Terra are explicitly managed `codex_local` agents with read-only permissions and sandbox bypass disabled. An unrelated personal Luna agent is never selected. If a local installation denies `agents:create`, reconciliation reports the missing grant instead of weakening this fence.
 - **Fine-Grained Method-Level DAG & AST Concurrency:** Parses `target_symbols` and `target_files` to enable safe intra-file concurrency when tasks target disjoint AST symbols while locking overlapping functions.
 - **Operator Start-Approval Gate:** Halts execution until explicit 1-click Board Approvals are approved in Paperclip with rich markdown links and symbol inspection.
 - **Task Granularity & Autonomous Splitting Gate:** Detects multi-phase epics or cross-module sprawl and autonomously decomposes them into sequential sub-tasks with dependency links.
-- **Autonomous Q&A Clarification Firewall (`qa-firewall.ts`):** Evaluates worker questions using strong models (Grok, Gemini, GPT-4o, Claude) to auto-answer spec-covered inquiries or gracefully escalate to the operator.
+- **Agent Q&A adjudication:** Jules questions are delegated to the configured strong reviewer. It returns a strict structured answer only when confident, or an explicit escalation when a real ambiguity remains; provider prose is never regex-classified.
 - **Daily Budget & Cost Optimization Tracker (`cost-tracker.ts`):** Tracks estimated cloud spend per session, displays real-time budget telemetry, and enforces configurable daily spending thresholds.
 - **Self-Healing Stalled Session Reaper (48h Async Threshold):** Grants 48-hour reaper immunity to long-running asynchronous cloud workers (Jules) while reclaiming orphaned local runs idle $>15\text{ minutes}$ back to `todo`.
+- **Jules continuation workaround (temporary):** Until Paperclip natively persists an external-provider poll as a continuation, the adapter performs cadence-limited, issue-scoped wakes using the last successful heartbeat run as `resumeFromRunId`. This bypasses Paperclip's no-progress re-wake throttle while preserving the existing Jules provider session. It uses only structured heartbeat state and never parses provider prose or creates monitor child issues. Remove this workaround when upstream monitor dispatch persists and exposes a reliable provider continuation state.
 - **Merged Feature Branch Pruner:** Discovers merged GitHub branches for safe pruning.
 
 ---

@@ -5,6 +5,7 @@ import {
   VALID_SEVERITIES,
   VALID_COMPONENTS,
   VALID_GRADLE_MODULES,
+  VALID_NPM_WORKSPACES,
 } from "../src/index.js";
 
 describe("Strict Backlog Linter - Parameterized Validation Suite", () => {
@@ -77,20 +78,25 @@ target_files: ["foo.kt"]
     }
   );
 
-  it("accepts npm workspace target_modules for this adapters monorepo", () => {
-    const md = `---
-title: "Plan ladder on Jules"
+  describe.each([
+    ...VALID_GRADLE_MODULES.map((module) => ({ catalog: "Gradle", module })),
+    ...VALID_NPM_WORKSPACES.map((module) => ({ catalog: "npm workspace", module })),
+    { catalog: "scoped npm package", module: "@pilleo/paperclip-jules-adapter" },
+  ])("accepts valid $catalog target module: $module", ({ catalog, module }) => {
+    it("is accepted by the backlog linter", () => {
+      const md = `---
+title: "Valid ${catalog} target module"
 component: "orchestrator"
-target_modules: ["packages/jules", "@pilleo/paperclip-jules-adapter"]
+target_modules: ["${module}"]
 target_files: ["packages/jules/src/server/plan-reviewer.ts"]
-target_symbols: ["evaluatePlanClarity"]
 ---
-**Context:** Plan review must try Mistral before Luna.
-**Needed:** Keep Mistral first; Terra is Codex.
+**Context:** Valid target module.
+**Needed:** Keep the target module accepted.
 `;
-    const res = lintBacklogMarkdown(md, "issue-20260830-210000-plan-ladder.md");
-    expect(res.isValid).toBe(true);
-    expect(res.errors).toEqual([]);
+      const res = lintBacklogMarkdown(md, "issue-20260830-210000-valid-module.md");
+      expect(res.isValid).toBe(true);
+      expect(res.errors).toEqual([]);
+    });
   });
 
   describe.each([

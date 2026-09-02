@@ -45,8 +45,9 @@ stateDiagram-v2
 
 1. **Watchdog Stall Detection (`src/server/watchdog.ts`):**
    - Detects when an active session in `IN_PROGRESS` emits no activities for $> 15$ minutes.
-   - Automatically sends `sendMessage("Status check: please continue executing the plan and report progress.")` to wake the container reasoning loop.
-   - Enforces a 15-minute cooldown between nudges.
+   - Records the stall and relies on the durable Paperclip monitor for the next poll.
+   - It deliberately sends no synthetic provider message: a heartbeat must not
+     overwrite or obscure a real Jules question, plan, or completion event.
 
 2. **In-Place Failure Recovery (`src/server/failure-recovery.ts`):**
    - Automatically recovers from `FAILED` state via `sendMessage("retry")` without creating new sessions or discarding git workspace state (up to 2 in-place attempts).

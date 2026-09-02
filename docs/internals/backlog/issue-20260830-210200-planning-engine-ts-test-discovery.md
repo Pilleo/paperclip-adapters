@@ -3,6 +3,7 @@ title: "Host plan synthesizer discovers TypeScript tests next to npm packages"
 severity: "MEDIUM"
 priority: "medium"
 status: "open"
+orchestrator_managed: true
 component: "tools"
 target_modules: ["packages/common", "@pilleo/paperclip-adapter-common"]
 target_files:
@@ -15,8 +16,8 @@ open_questions: false
 dependencies:
   - "issue-20260830-210100-backlog-linter-npm-workspaces"
 
-paperclip_issue_id: "d95dbabb-7644-4e9e-a274-8a2ce307f15f"
-paperclip_identifier: "MAZ-824"
+paperclip_issue_id: "0ba2154f-c542-48a9-b9db-abc64f518d4f"
+paperclip_identifier: "MAZ-835"
 ---
 
 **Context:** `synthesizeDeterministicPlan` already guesses `src/main` → `src/test` and `.test.ts` siblings, but it does not look at `packages/<name>/test/*.test.ts` for this monorepo. Host short plans for Jules/orchestrator issues therefore omit the real test files.

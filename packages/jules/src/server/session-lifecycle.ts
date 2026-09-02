@@ -101,8 +101,27 @@ export function evaluateSessionStartup(
     };
   }
 
-  // Active session candidates: decoded from sessionParams > canonical from paperclip > stored on disk
+  // Active session candidates: decoded from sessionParams > canonical from paperclip > stored on disk.
+  // Paperclip may replay an older sessionParams envelope after a restart while
+  // the adapter's local recovery record contains newer idempotency checkpoints.
+  // Merge those checkpoints before executing side effects; otherwise a replayed
+  // envelope can resend an already-delivered provider message.
   let session = decodedSession;
+
+  if (session && storedSession &&
+      session.paperclipIssueId === storedSession.paperclipIssueId &&
+      session.julesSessionId === storedSession.julesSessionId &&
+      sessionMatchesConfig(storedSession, config)) {
+    session = {
+      ...session,
+      scopeDriftFingerprint: session.scopeDriftFingerprint ?? storedSession.scopeDriftFingerprint,
+      deliveredFeedbackActivityId: session.deliveredFeedbackActivityId ?? storedSession.deliveredFeedbackActivityId,
+      deliveredFeedbackInteractionId: session.deliveredFeedbackInteractionId ?? storedSession.deliveredFeedbackInteractionId,
+      deliveredActivityIds: session.deliveredActivityIds ?? storedSession.deliveredActivityIds,
+      relayedReviewCommentIds: session.relayedReviewCommentIds ?? storedSession.relayedReviewCommentIds,
+      pendingInteraction: session.pendingInteraction ?? storedSession.pendingInteraction,
+    };
+  }
 
   if (!session && canonicalSessionId) {
     session = {

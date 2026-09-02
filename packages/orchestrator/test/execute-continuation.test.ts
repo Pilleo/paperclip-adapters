@@ -32,7 +32,7 @@ describe("orchestrator live session continuation", () => {
     else process.env["PAPERCLIP_API_KEY"] = originalKey;
   });
 
-  it("wakes managed Jules with payload.issueId when a live session is due to poll", async () => {
+  it("requests an issue-scoped managed Jules continuation when the poll is due", async () => {
     const wakeupBodies: unknown[] = [];
     const finishedAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
@@ -102,16 +102,16 @@ describe("orchestrator live session continuation", () => {
 
     const result = await execute(ctx());
     expect(result.exitCode).toBe(0);
-    expect(wakeupBodies).toEqual([
-      {
-        source: "on_demand",
-        triggerDetail: "ping",
-        reason: "Continue live jules session 2024763132299585220",
-        forceFreshSession: false,
-        payload: { issueId: "issue-821" },
-      },
-    ]);
-    expect(String(result.summary)).toContain("continued 1 live sessions");
+    expect(wakeupBodies).toEqual([{
+      source: "on_demand",
+      triggerDetail: "ping",
+      reason: "Poll supervised Jules session 2024763132299585220",
+      forceFreshSession: false,
+      payload: { issueId: "issue-821", resumeFromRunId: "hb-1" },
+    }]);
+    // The Jules adapter performed the explicit resume wake first, so the
+    // generic continuation pass correctly finds no second session to wake.
+    expect(String(result.summary)).toContain("continued 0 live sessions");
   });
 
   it("does not wake when retryNotBefore is still in the future", async () => {

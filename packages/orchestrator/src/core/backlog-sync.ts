@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { cachedInferTargetFiles, needsWorkPackageFill } from "./work-package-ingest.js";
 import { resolvePaperclipProject, type PaperclipProjectRecord } from "./parser.js";
+import { stripPaperclipIdentityMetadata } from "@pilleo/paperclip-adapter-common";
 
 export interface BacklogSyncOptions {
   readonly workspacePath: string;
@@ -13,6 +14,10 @@ export interface BacklogSyncOptions {
   readonly projectId?: string | undefined;
   readonly gitRemoteUrl?: string | undefined;
   readonly projects?: readonly PaperclipProjectRecord[] | undefined;
+  /** Agent that owns imported work until the orchestrator dispatches it. */
+  readonly orchestratorAgentId?: string | undefined;
+  /** Managed execution agents are allowed to hold imported work after dispatch. */
+  readonly managedAgentIds?: ReadonlySet<string> | undefined;
 }
 
 export interface SyncIssueResult {
@@ -24,12 +29,52 @@ export interface SyncIssueResult {
   readonly paperclipIdentifier?: string | undefined;
 }
 
+export interface BacklogIdentityConflict {
+  readonly filePath: string;
+  readonly logicalId: string;
+  readonly candidateIssueIds: readonly string[];
+  readonly reason: string;
+}
+
 export interface BacklogSyncSummary {
   readonly discoveredCount: number;
   readonly createdCount: number;
   readonly updatedCount: number;
   readonly syncedHeadersCount: number;
   readonly results: readonly SyncIssueResult[];
+  readonly conflicts: readonly BacklogIdentityConflict[];
+}
+
+export type BacklogIssueCandidate = Record<string, any> & {
+  id: string;
+  status?: string | undefined;
+  title?: string | undefined;
+  assigneeAgentId?: string | null | undefined;
+  identifier?: string | null | undefined;
+  projectId?: string | null | undefined;
+};
+
+/**
+ * Resolves a backlog file to a Paperclip issue without fuzzy description
+ * matching. A declared Paperclip id wins; otherwise an exact canonical title
+ * may resolve one legacy issue, while duplicates are explicitly ambiguous.
+ */
+export function resolveBacklogIssueCandidates(
+  issues: readonly BacklogIssueCandidate[],
+  declaredPaperclipId: string | undefined,
+  formattedTitle: string,
+): { readonly issue?: BacklogIssueCandidate; readonly candidates: readonly BacklogIssueCandidate[]; readonly declaredMismatch?: BacklogIssueCandidate } {
+  const reusable = (issue: BacklogIssueCandidate) => issue.status !== "cancelled";
+  const declared = declaredPaperclipId
+    ? issues.find((issue) => reusable(issue) && issue.id === declaredPaperclipId)
+    : undefined;
+  // A copied/stale header must not attach a new backlog file to an unrelated
+  // issue. Require the canonical title to agree before treating the declared
+  // id as authoritative; callers quarantine mismatches for explicit repair.
+  if (declared && declared.title === formattedTitle) return { issue: declared, candidates: Object.freeze([declared]) };
+  if (declared) return { candidates: Object.freeze([]), declaredMismatch: declared };
+  const candidates = issues.filter((issue) => reusable(issue) && issue.title === formattedTitle);
+  return { candidates: Object.freeze(candidates) };
 }
 
 export function parseYamlFrontmatter(content: string): {
@@ -171,6 +216,7 @@ export async function syncBacklogMarkdownToPaperclip(options: BacklogSyncOptions
       updatedCount: 0,
       syncedHeadersCount: 0,
       results: Object.freeze([]),
+      conflicts: Object.freeze([]),
     });
   }
 
@@ -186,6 +232,7 @@ export async function syncBacklogMarkdownToPaperclip(options: BacklogSyncOptions
   let updatedCount = 0;
   let syncedHeadersCount = 0;
   const results: SyncIssueResult[] = [];
+  const conflicts: BacklogIdentityConflict[] = [];
 
   for (const filePath of files) {
     let content = fs.readFileSync(filePath, "utf-8");
@@ -227,12 +274,34 @@ export async function syncBacklogMarkdownToPaperclip(options: BacklogSyncOptions
     });
     const projectId = resolvedProject?.id || options.projectId;
 
-    let existing = existingIssues.find((i) => i.id === fields["paperclip_issue_id"]);
-    if (!existing) {
-      existing = existingIssues.find(
-        (i) => i.title?.startsWith(`[${issueId}]`) || (i.description && i.description.includes(issueId))
-      );
+    const declaredPaperclipId = typeof fields["paperclip_issue_id"] === "string"
+      ? fields["paperclip_issue_id"].trim()
+      : "";
+    const resolution = resolveBacklogIssueCandidates(existingIssues, declaredPaperclipId, formattedTitle);
+    const declared = resolution.issue;
+    const titleCandidates = resolution.candidates;
+    if (resolution.declaredMismatch) {
+      conflicts.push({
+        filePath,
+        logicalId: String(issueId),
+        candidateIssueIds: Object.freeze([String(resolution.declaredMismatch.id)]),
+        reason: `Declared Paperclip issue ${resolution.declaredMismatch.id} has title ${JSON.stringify(resolution.declaredMismatch.title)} instead of ${formattedTitle}`,
+      });
+      continue;
     }
+    // A declared header is authoritative. Without it, an exact title may
+    // identify one legacy issue, but multiple candidates are ambiguous and
+    // must be quarantined instead of silently attaching to the first match.
+    if (!declared && titleCandidates.length > 1) {
+      conflicts.push({
+        filePath,
+        logicalId: String(issueId),
+        candidateIssueIds: Object.freeze(titleCandidates.map((i) => String(i.id))),
+        reason: `Multiple Paperclip issues have the exact canonical title ${formattedTitle}`,
+      });
+      continue;
+    }
+    const existing = declared || titleCandidates[0];
 
     if (!existing) {
       try {
@@ -243,9 +312,12 @@ export async function syncBacklogMarkdownToPaperclip(options: BacklogSyncOptions
             companyId: options.companyId,
             ...(projectId ? { projectId } : {}),
             title: formattedTitle,
-            description: content,
+            description: stripPaperclipIdentityMetadata(content),
             priority: priority === "critical" || priority === "high" || priority === "medium" || priority === "low" ? priority : "medium",
             status: "backlog",
+            ...(fields["orchestrator_managed"] === "true" && options.orchestratorAgentId
+              ? { assigneeAgentId: options.orchestratorAgentId }
+              : {}),
           }),
         });
 
@@ -271,6 +343,52 @@ export async function syncBacklogMarkdownToPaperclip(options: BacklogSyncOptions
         }
       } catch {}
     } else {
+      let action: SyncIssueResult["action"] = "unchanged";
+      const sanitizedDescription = stripPaperclipIdentityMetadata(String(existing["description"] ?? ""));
+      if (sanitizedDescription !== String(existing["description"] ?? "")) {
+        try {
+          const descriptionRes = await fetch(`${options.apiUrl}/api/issues/${existing.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ description: sanitizedDescription }),
+          });
+          if (descriptionRes.ok) {
+            existing["description"] = sanitizedDescription;
+            updatedCount++;
+            action = "updated";
+          }
+        } catch {
+          /* best-effort metadata cleanup; retry on the next sync */
+        }
+      }
+      const orchestratorManaged =
+        String(fields["orchestrator_managed"] ?? "").toLowerCase() === "true";
+      const managedAgents = options.managedAgentIds ?? new Set<string>();
+      const shouldReclaim =
+        orchestratorManaged &&
+        options.orchestratorAgentId &&
+        existing.assigneeAgentId &&
+        existing.assigneeAgentId !== options.orchestratorAgentId &&
+        !managedAgents.has(existing.assigneeAgentId) &&
+        existing.status !== "done" &&
+        existing.status !== "cancelled";
+      if (shouldReclaim) {
+        try {
+          const reclaimRes = await fetch(`${options.apiUrl}/api/issues/${existing.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ status: "backlog", assigneeAgentId: options.orchestratorAgentId }),
+          });
+          if (reclaimRes.ok) {
+            existing.status = "backlog";
+            existing.assigneeAgentId = options.orchestratorAgentId;
+            updatedCount++;
+            action = "updated";
+          }
+        } catch {
+          /* best-effort ownership repair; the next tick retries it */
+        }
+      }
       if (!fields["paperclip_issue_id"] || !fields["paperclip_identifier"]) {
         updateFileFrontmatter(filePath, content, {
           paperclip_issue_id: existing.id,
@@ -278,7 +396,6 @@ export async function syncBacklogMarkdownToPaperclip(options: BacklogSyncOptions
         });
         syncedHeadersCount++;
       }
-      let action: SyncIssueResult["action"] = "unchanged";
       if (projectId && existing.projectId !== projectId) {
         try {
           const patchRes = await fetch(`${options.apiUrl}/api/issues/${existing.id}`, {
@@ -301,7 +418,7 @@ export async function syncBacklogMarkdownToPaperclip(options: BacklogSyncOptions
         title,
         action,
         paperclipId: existing.id,
-        paperclipIdentifier: existing.identifier,
+        paperclipIdentifier: existing.identifier ?? undefined,
       });
     }
   }
@@ -312,5 +429,6 @@ export async function syncBacklogMarkdownToPaperclip(options: BacklogSyncOptions
     updatedCount,
     syncedHeadersCount,
     results: Object.freeze(results),
+    conflicts: Object.freeze(conflicts),
   });
 }

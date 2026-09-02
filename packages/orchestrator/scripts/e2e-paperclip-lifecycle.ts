@@ -11,8 +11,10 @@ import {
 import { buildPrompt } from "../../jules/src/server/prompt-builder.js";
 import { buildClarifierAutonomousPrompt } from "../src/core/clarifier.js";
 
-const PAPERCLIP_API = process.env["PAPERCLIP_API_URL"] || "http://127.0.0.1:3100";
-const WORKSPACE_PATH = process.env["WORKSPACE_PATH"] || "/home/leanid/Documents/code/java/jseccomp";
+// This harness creates and deletes a company. Requiring a dedicated endpoint
+// prevents a normal developer invocation from mutating the live local board.
+const PAPERCLIP_API = process.env["PAPERCLIP_TEST_API_URL"];
+const WORKSPACE_PATH = process.env["WORKSPACE_PATH"] || process.cwd();
 
 async function log(step: string, status: "RUNNING" | "PASS" | "FAIL", msg?: string) {
   const icon = status === "PASS" ? "✅" : status === "FAIL" ? "❌" : "⏳";
@@ -58,6 +60,9 @@ async function createAdapterContext(
 }
 
 async function main() {
+  if (!PAPERCLIP_API) {
+    throw new Error("PAPERCLIP_TEST_API_URL is required; refuse to run destructive E2E work against the default board");
+  }
   console.log("\n================================================================================");
   console.log("  🔬 Paperclip Deep End-to-End Orchestration & Planning Test Suite");
   console.log("================================================================================\n");

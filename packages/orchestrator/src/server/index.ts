@@ -14,7 +14,11 @@ export const OrchestratorConfigSchema = z.object({
   maxConcurrentVibe: z.number().int().min(1).default(1),
   julesAgentId: z.string().optional(),
   vibeAgentId: z.string().optional(),
+  vibeReviewerAgentId: z.string().optional(),
   reviewerAgentId: z.string().optional(),
+  lunaReviewerAgentId: z.string().optional(),
+  terraReviewerAgentId: z.string().optional(),
+  julesPlanApprovalPolicy: z.enum(["required", "trusted_opt_out"]).default("required"),
   workspacePath: z.string().optional(),
   apiUrl: z.string().optional(),
 });
@@ -52,11 +56,44 @@ export const orchestratorAdapterConfigSchema: AdapterConfigSchema = {
       hint: "Optional override for the [Orchestrated] Vibe worker. Independent Vibe agents are never selected.",
     },
     {
+      key: "lunaReviewerAgentId",
+      label: "OpenAI Luna Reviewer Agent ID",
+      type: "text",
+      required: false,
+      hint: "Optional override for the managed read-only OpenAI Luna first reviewer.",
+    },
+    {
+      key: "terraReviewerAgentId",
+      label: "OpenAI Terra Reviewer Agent ID",
+      type: "text",
+      required: false,
+      hint: "Optional override for the managed read-only OpenAI Terra strong reviewer.",
+    },
+    {
+      key: "vibeReviewerAgentId",
+      label: "Vibe Reviewer Agent ID",
+      type: "text",
+      required: false,
+      hint: "Deprecated compatibility setting; use OpenAI Luna Reviewer Agent ID.",
+    },
+    {
       key: "reviewerAgentId",
       label: "Reviewer Agent ID",
       type: "text",
       required: false,
-      hint: "Auto-detects Security/Reviewer agent if left blank",
+      hint: "Deprecated compatibility setting; use OpenAI Terra Reviewer Agent ID.",
+    },
+    {
+      key: "julesPlanApprovalPolicy",
+      label: "Jules Plan Approval Policy",
+      type: "select",
+      required: false,
+      default: "required",
+      options: [
+        { value: "required", label: "Strong review + operator approval" },
+        { value: "trusted_opt_out", label: "Strong review + automatic approval" },
+      ],
+      hint: "The orchestrator selects the managed Jules plan gate. A configured strong reviewer always runs first.",
     },
     {
       key: "workspacePath",
@@ -121,8 +158,5 @@ export function createServerAdapter(): ServerAdapterModule {
 
 export default createServerAdapter;
 
-export * from "../core/qa-firewall.js";
-
-export * from "../core/strong-model-reviewer.js";
 
 export * from "../core/cost-tracker.js";

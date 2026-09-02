@@ -11,6 +11,7 @@ export type InteractionAction =
   | { type: "RELAY_FEEDBACK"; answer: string; interactionId: string }
   | { type: "RELAY_PLAN_APPROVAL"; planRevisionId: string; interactionId: string }
   | { type: "CREATE_FEEDBACK_CARD"; question: SafeCardPrompt | string; summary: SafeCardSummary; attempt: number }
+  | { type: "CREATE_AGENT_ADJUDICATION"; question: string }
   | { type: "CREATE_PLAN_CARD"; planMarkdown: string; revisionNumber: number }
   | { type: "WAIT_FOR_HUMAN"; interactionId?: string; summary: string }
   | { type: "CONTINUE_POLLING" }
@@ -47,12 +48,13 @@ export function evaluateInteractionAction(
   julesState: string,
   existingInteractions: PaperclipInteraction[] = [],
   rawQuestionText?: string,
+  rawQuestionActivityId?: string,
 ): InteractionAction {
-  // If a plan was generated and has NOT been approved yet, prioritize plan approval
-  const hasUnapprovedPlan = Boolean(rawQuestionText && (rawQuestionText.includes("Jules Implementation Plan") || rawQuestionText.includes("**1."))) && !session.planApprovedAt;
-  const effectiveState = (hasUnapprovedPlan && (julesState === "COMPLETED" || julesState === "IN_PROGRESS") && !session.currentPrUrl)
-    ? "AWAITING_PLAN_APPROVAL"
-    : julesState;
+  // Plan availability is supplied by the provider activity/state machine.
+  // Never infer a transition by matching Jules-generated prose: wording is
+  // not a stable protocol and can cause an unrelated message to open a plan
+  // gate.
+  const effectiveState = julesState;
 
   // 1. Jules is awaiting plan approval
   if (effectiveState === "AWAITING_PLAN_APPROVAL") {
@@ -117,6 +119,12 @@ export function evaluateInteractionAction(
 
   // 2. Jules is awaiting user feedback
   if (effectiveState === "AWAITING_USER_FEEDBACK") {
+    if (session.pendingInteraction?.type === "agent_adjudication") {
+      return { type: "WAIT_FOR_HUMAN", summary: "Jules question is being adjudicated by the assigned reviewer." };
+    }
+    if (rawQuestionActivityId && session.deliveredFeedbackActivityId === rawQuestionActivityId) {
+      return { type: "CONTINUE_POLLING" };
+    }
     const currentCardId = session.pendingInteraction?.type === "user_feedback"
       ? session.pendingInteraction.paperclipInteractionId
       : null;
@@ -147,8 +155,15 @@ export function evaluateInteractionAction(
       }
     }
 
+    // Agent-adjudication records deliberately use Paperclip's question form
+    // so their question and final answer are visible on the parent issue.
+    // They are not human cards, however.  A stale or historical reviewer
+    // record must never suppress a newer provider question; only a real
+    // user-feedback card may hold this state machine at a human boundary.
     const anyPending = existingInteractions.find(
-      (i) => i.kind === "ask_user_questions" && i.status === "pending"
+      (i) => i.kind === "ask_user_questions" &&
+        i.status === "pending" &&
+        !i.idempotencyKey?.startsWith("jules:agent-adjudication:")
     );
     if (anyPending) {
       return {
@@ -158,16 +173,7 @@ export function evaluateInteractionAction(
       };
     }
 
-    const question = rawQuestionText ?? "Jules is awaiting user feedback.";
-    const summary = formatCardSummary(rawQuestionText ?? "Question from Jules");
-    const attempt = (session.feedbackInteractionAttempt ?? 0) + 1;
-
-    return {
-      type: "CREATE_FEEDBACK_CARD",
-      question,
-      summary,
-      attempt,
-    };
+    return { type: "CREATE_AGENT_ADJUDICATION", question: rawQuestionText ?? "Jules is awaiting user feedback." };
   }
 
   // 3. Terminal / Success states
@@ -205,6 +211,9 @@ export function recordFeedbackRelayed(
   return {
     ...session,
     deliveredFeedbackInteractionId: interactionId,
+    deliveredFeedbackActivityId: session.pendingInteraction?.type === "user_feedback"
+      ? session.pendingInteraction.julesActivityId
+      : session.deliveredFeedbackActivityId,
     pendingInteraction: undefined,
     phase: "RUNNING",
   };

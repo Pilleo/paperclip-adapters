@@ -7,6 +7,8 @@ export * from "./skills-materializer.js";
 export * from "./planning-engine.js";
 export * from "./scope-conformity.js";
 export * from "./local-agent-tools.js";
+export * from "./review-decision.js";
+export * from "./identity-metadata.js";
 
 export * from "./code-investigation.js";
 

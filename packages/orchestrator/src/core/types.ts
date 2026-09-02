@@ -36,7 +36,13 @@ export interface ParsedIssueMetadata {
   readonly projectId?: string | null | undefined;
   readonly isNonInterfering: boolean;
   readonly openQuestions: boolean;
+  /** True when the task is owned by this orchestrator's imported backlog. */
+  readonly orchestratorManaged: boolean;
   readonly assigneeAgentId?: string | null | undefined;
+  /** Native Paperclip parent relationship, when this is a child issue. */
+  readonly parentId?: string | null | undefined;
+  /** Stable marker identifies children whose state is owned by a reviewer ladder. */
+  readonly isDelegatedReviewChild?: boolean;
   readonly updatedAt?: string | null | undefined;
   readonly executionRunId?: string | null | undefined;
   readonly rawIssue: Readonly<Record<string, unknown>>;
@@ -87,6 +93,8 @@ export interface GitHubPullRequest {
   readonly title: string;
   readonly state: "OPEN" | "CLOSED" | "MERGED";
   readonly headRefName: string;
+  /** Immutable Git commit identity used to invalidate prior review verdicts. */
+  readonly headRefOid?: string | undefined;
   readonly baseRefName: string;
   readonly mergedAt: string | null;
   readonly url: string;

@@ -97,4 +97,33 @@ describe("Stalled Session Reaper", () => {
     });
     expect(stalled.map((s) => s.issue.id)).toEqual(["issue-2", "issue-4"]);
   });
+
+  it("allows callers to protect durable delegated state machines", () => {
+    const delegatedChild: ParsedIssueMetadata = {
+      id: "review-child",
+      identifier: "MAZ-REVIEW",
+      title: "Review Jules plan (vibe)",
+      status: "in_progress",
+      assigneeAgentId: vibe,
+      parentId: "issue-parent",
+      isDelegatedReviewChild: true,
+      updatedAt: new Date(baseTimestamp - 60 * 60 * 1000).toISOString(),
+    };
+    const stalled = identifyStalledIssues(sampleIssues, new Set(), {
+      stalledThresholdMs: 15 * 60 * 1000,
+      managedAgentIds,
+      managedJulesIds,
+      now: () => baseTimestamp,
+      skipIssue: (issue) => issue.isDelegatedReviewChild === true,
+    });
+    const withChild = identifyStalledIssues([...sampleIssues, delegatedChild], new Set(), {
+      stalledThresholdMs: 15 * 60 * 1000,
+      managedAgentIds,
+      managedJulesIds,
+      now: () => baseTimestamp,
+      skipIssue: (issue) => issue.isDelegatedReviewChild === true,
+    });
+    expect(stalled.some((s) => s.issue.id === "review-child")).toBe(false);
+    expect(withChild.some((s) => s.issue.id === "review-child")).toBe(false);
+  });
 });

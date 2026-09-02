@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
-import { JulesClient, JulesClientError, extractPullRequestUrl } from '../src/server/jules-client';
+import { JulesClient, JulesClientError, extractPullRequestUrl, ownerRepoFromJulesSource } from '../src/server/jules-client';
 import { parseJulesSessionName, asJulesSessionId } from '../src/server/brands';
 
 beforeAll(() => {
@@ -146,6 +146,35 @@ beforeAll(() => {
     });
   });
 
+  it('lists sources and resolves a GitHub source across pages', async () => {
+    (global.fetch as any)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ sources: [{ name: 'sources/github/other/repo' }], nextPageToken: 'p2' }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ sources: [{ name: 'sources/github/example/repo' }] }) });
+    const listed = await client.listSources(25, 'p1');
+    expect(listed.sources[0]?.name).toContain('other/repo');
+    expect(listed.nextPageToken).toBe('p2');
+    expect(await client.resolveGithubSourceName('Example/Repo')).toBe('sources/github/example/repo');
+  });
+
+  it('returns no source when the catalog is exhausted', async () => {
+    (global.fetch as any).mockResolvedValueOnce({ ok: true, json: async () => ({ sources: [] }) });
+    expect(await client.resolveGithubSourceName('missing/repo')).toBeUndefined();
+  });
+
+  it('parses valid and id-bearing unrecognized activity payloads', async () => {
+    (global.fetch as any).mockResolvedValueOnce({ ok: true, json: async () => ({
+      activities: [
+        { id: 'valid', createTime: '2026-08-31T00:00:00.000Z', description: 'hello' },
+        { id: 'loose', unknownProviderField: true },
+        { unknownProviderField: true },
+      ],
+      nextPageToken: 'next',
+    }) });
+    const result = await client.getActivities(asJulesSessionId('123'), undefined, 10);
+    expect(result.activities.map((activity) => activity.id)).toEqual(['valid', 'loose']);
+    expect(result.nextPageToken).toBe('next');
+  });
+
   it('sendMessage sends correct request', async () => {
       (global.fetch as any).mockResolvedValueOnce({
         ok: true,
@@ -219,5 +248,19 @@ beforeAll(() => {
           });
           expect(url).toBeUndefined();
       });
+  });
+});
+
+describe("ownerRepoFromJulesSource", () => {
+  it.each([
+    ["sources/github/Pilleo/paperclip-adapters", "pilleo/paperclip-adapters"],
+    ["sources/github/paperclipai/paperclip", "paperclipai/paperclip"],
+    ["Pilleo/mazewall", "pilleo/mazewall"],
+    [
+      { name: "sources/github/Pilleo/paperclip-adapters", githubRepo: { owner: "Pilleo", repo: "paperclip-adapters" } },
+      "pilleo/paperclip-adapters",
+    ],
+  ])("%j -> %s", (input, expected) => {
+    expect(ownerRepoFromJulesSource(input as never)).toBe(expected);
   });
 });

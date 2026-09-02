@@ -152,6 +152,16 @@ component: "tools"
       expect(meta.projectSlug).toBe("paperclip-adapters");
       expect(meta.projectId).toBe("should-not-hide-slug");
     });
+
+    it("recognizes orchestrator-owned imported tasks", () => {
+      const meta = extractIssueMetadata({
+        id: "issue-owned",
+        title: "Imported task",
+        status: "backlog",
+        description: "---\norchestrator_managed: true\n---\nBody",
+      });
+      expect(meta.orchestratorManaged).toBe(true);
+    });
   });
 });
 

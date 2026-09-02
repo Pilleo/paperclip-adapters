@@ -45,12 +45,48 @@ export const PendingInteractionSchema = z.discriminatedUnion("type", [
     createdAt: z.string()
   }),
   z.object({
+    type: z.literal("plan_agent_review"),
+    julesActivityId: z.string(),
+    paperclipInteractionId: z.string().optional(),
+    question: z.string(),
+    planRevisionId: z.string(),
+    planRevisionNumber: z.number().int().positive(),
+    planDocumentId: z.string(),
+    reviewIssueId: z.string().min(1),
+    reviewerAgentId: z.string().min(1),
+    stage: z.enum(["vibe", "strong"]),
+    createdAt: z.string(),
+  }),
+  z.object({
     type: z.literal("completion_confirmation"),
     paperclipInteractionId: z.string().min(1),
     question: z.string(),
     createdAt: z.string()
+  }),
+  z.object({
+    type: z.literal("agent_adjudication"),
+    julesActivityId: z.string(),
+    paperclipInteractionId: z.string().optional(),
+    question: z.string(),
+    adjudicationIssueId: z.string().min(1),
+    reviewerAgentId: z.string().min(1),
+    createdAt: z.string()
   })
 ]);
+
+const PlanAgentReviewSchema = z.object({
+  type: z.literal("plan_agent_review"),
+  julesActivityId: z.string(),
+  paperclipInteractionId: z.string().optional(),
+  question: z.string(),
+  planRevisionId: z.string(),
+  planRevisionNumber: z.number().int().positive(),
+  planDocumentId: z.string(),
+  reviewIssueId: z.string().min(1),
+  reviewerAgentId: z.string().min(1),
+  stage: z.enum(["vibe", "strong"]),
+  createdAt: z.string(),
+});
 
 export const JulesAdapterSessionV1Schema = z.object({
   version: z.literal(1),
@@ -72,15 +108,23 @@ export const JulesAdapterSessionV1Schema = z.object({
   currentPrUrl: z.string().optional(),
   prRegisteredOnBoard: z.boolean().optional(),
   pendingInteraction: PendingInteractionSchema.optional(),
+  /** Internal plan review temporarily suspended while Jules asks a question. */
+  deferredPlanReview: PlanAgentReviewSchema.optional(),
   /** Standing channel: id of the always-open "Reply to Jules" interaction. */
   standingChannelId: z.string().optional(),
   relayNextAnswerToJules: z.boolean().optional(),
   /** Set after approvePlan is relayed successfully; prevents double-approve on resume. */
   planApprovedAt: z.string().optional(),
+  planReviewRevisionId: z.string().optional(),
+  planReviewOutcome: z.enum(["approved", "revision_requested", "human_escalation", "superseded_terminal"]).optional(),
   feedbackInteractionAttempt: z.number().int().min(0).optional(),
   deliveredFeedbackInteractionId: z.string().optional(),
+  /** Jules activity ID whose reply was sent; prevents stale remote state reopening it. */
+  deliveredFeedbackActivityId: z.string().optional(),
   deliveredActivityIds: z.array(z.string().min(1)).max(200).optional(),
   relayedReviewCommentIds: z.array(z.string()).optional(),
+  /** Stable key for the last PR scope-drift notification sent to Jules. */
+  scopeDriftFingerprint: z.string().optional(),
   activityCheckpoint: z.object({
     createTime: z.string().datetime(),
     id: z.string().min(1),
@@ -143,7 +187,10 @@ export interface JulesAdapterSessionV1 {
   /** Monotonic key suffix used when a feedback card must be re-opened. */
   feedbackInteractionAttempt?: number | undefined;
   deliveredFeedbackInteractionId?: string | undefined;
+  deliveredFeedbackActivityId?: string | undefined;
   planApprovedAt?: string;
+  planReviewRevisionId?: string | undefined;
+  planReviewOutcome?: "approved" | "revision_requested" | "human_escalation" | "superseded_terminal" | undefined;
   standingChannelId?: string | undefined;
   relayNextAnswerToJules?: boolean | undefined;
   pendingInteraction?:
@@ -170,10 +217,48 @@ export interface JulesAdapterSessionV1 {
         question: string;
         createdAt: string;
       }
+    | {
+        type: "agent_adjudication";
+        julesActivityId: JulesActivityId;
+        paperclipInteractionId?: string | undefined;
+        question: string;
+        adjudicationIssueId: string;
+        reviewerAgentId: string;
+        createdAt: string;
+      }
+    | {
+        type: "plan_agent_review";
+        julesActivityId: JulesActivityId;
+        paperclipInteractionId?: string | undefined;
+        question: string;
+        planRevisionId: string;
+        planRevisionNumber: number;
+        planDocumentId: string;
+        reviewIssueId: string;
+        reviewerAgentId: string;
+        stage: "vibe" | "strong";
+        createdAt: string;
+      }
     | undefined;
+  /** Internal plan review temporarily suspended while a provider question is adjudicated. */
+  deferredPlanReview?: {
+    type: "plan_agent_review";
+    julesActivityId: JulesActivityId;
+    paperclipInteractionId?: string | undefined;
+    question: string;
+    planRevisionId: string;
+    planRevisionNumber: number;
+    planDocumentId: string;
+    reviewIssueId: string;
+    reviewerAgentId: string;
+    stage: "vibe" | "strong";
+    createdAt: string;
+  } | undefined;
   /** Recent Jules activities already mirrored to the Paperclip issue thread. */
   deliveredActivityIds?: string[] | undefined;
   relayedReviewCommentIds?: string[] | undefined;
+  /** Prevents identical PR drift observations from replaying provider messages. */
+  scopeDriftFingerprint?: string | undefined;
   /** High-water mark for the normalized Jules activity stream. */
   activityCheckpoint?: { createTime: string; id: string } | undefined;
   lastActivityId?: string | undefined;
@@ -278,6 +363,12 @@ export const sessionCodec = {
                 ...raw.pendingInteraction,
                 julesActivityId: asJulesActivityId(raw.pendingInteraction.julesActivityId)
               }
+          : undefined,
+        deferredPlanReview: raw.deferredPlanReview
+          ? {
+              ...raw.deferredPlanReview,
+              julesActivityId: asJulesActivityId(raw.deferredPlanReview.julesActivityId),
+            }
           : undefined
     } as JulesAdapterSessionV1;
   },

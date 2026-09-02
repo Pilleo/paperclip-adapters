@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import { AdapterConfig } from './config.js';
-import { buildHostImplementationPlan } from '@pilleo/paperclip-adapter-common';
+import { buildHostImplementationPlan, stripPaperclipIdentityMetadata } from '@pilleo/paperclip-adapter-common';
 
 export interface PromptContext {
   issueId: string;
@@ -25,7 +25,8 @@ export function hashPrompt(prompt: string): string {
 
 export function buildPrompt(ctx: PromptContext, config: AdapterConfig): string {
   let prompt = `Task: ${ctx.title}\n\n`;
-  prompt += `Description:\n${ctx.description}\n\n`;
+  const taskDescription = stripPaperclipIdentityMetadata(ctx.description);
+  prompt += `Description:\n${taskDescription}\n\n`;
 
   prompt += `Paperclip Issue ID: ${ctx.issueId}\n`;
   prompt += `Paperclip Run Marker: [paperclip-run:${ctx.runId}]\n\n`;
@@ -34,7 +35,7 @@ export function buildPrompt(ctx: PromptContext, config: AdapterConfig): string {
   prompt += `Base Branch: ${config.baseBranch}\n\n`;
 
   try {
-    const { markdown } = buildHostImplementationPlan(ctx.description, ctx.issueId, ctx.workspacePath);
+    const { markdown } = buildHostImplementationPlan(taskDescription, ctx.issueId, ctx.workspacePath);
     prompt += `### Implementation plan (scope contract — follow this, do not expand):\n\n${markdown}\n\n`;
   } catch {
     // Fallback if markdown parsing encounters non-standard format
@@ -83,11 +84,11 @@ export function hashPromptIdentity(
     const ctx = contextOrIssueId;
     const cfg = configOrTitle as AdapterConfig;
     return createHash('sha256')
-      .update(`${PROMPT_IDENTITY_HASH_VERSION}:${ctx.issueId}:${ctx.title}:${ctx.description}:${cfg.source}:${cfg.baseBranch}`)
+      .update(`${PROMPT_IDENTITY_HASH_VERSION}:${ctx.issueId}:${ctx.title}:${stripPaperclipIdentityMetadata(ctx.description)}:${cfg.source}:${cfg.baseBranch}`)
       .digest('hex');
   }
 
   return createHash('sha256')
-    .update(`${PROMPT_IDENTITY_HASH_VERSION}:${contextOrIssueId}:${configOrTitle}:${description || ''}:${source || ''}:${baseBranch || ''}`)
+    .update(`${PROMPT_IDENTITY_HASH_VERSION}:${contextOrIssueId}:${configOrTitle}:${stripPaperclipIdentityMetadata(description || '')}:${source || ''}:${baseBranch || ''}`)
     .digest('hex');
 }

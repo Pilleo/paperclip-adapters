@@ -107,4 +107,23 @@ beforeAll(() => {
         expect(res.errorCode).toBe('jules_create_failure');
         expect(res.errorFamily).toBeNull();
   });
+
+  it('completes a heartbeat cleanly when Paperclip provides neither a task nor a session', async () => {
+        const res = await execute({
+          ...baseCtx,
+          context: {},
+          runtime: { ...baseCtx.runtime, sessionParams: null },
+        } as any);
+
+        expect(res.exitCode).toBe(0);
+        expect(res.clearSession).toBe(false);
+        expect(res.summary).toContain('No task or paperclipIssue');
+  });
+
+  it('fails loudly when the Jules credential binding is absent', async () => {
+        await expect(execute({
+          ...baseCtx,
+          config: { env: {} },
+        } as any)).rejects.toThrow('JULES_API_KEY did not resolve');
+  });
 });

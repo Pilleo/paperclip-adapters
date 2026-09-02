@@ -27,7 +27,10 @@ beforeAll(() => {
             fs.mkdirSync(extractDir);
         }
         execSync(`tar -xzf ${tgzPath} -C ${extractDir}`);
-    }, 30000);
+    // npm pack runs the adapter's prepack build. Under the workspace suite it
+    // competes with coverage workers, so 30 seconds caused a false timeout
+    // before the package-load assertion even ran.
+    }, 120000);
 
     afterAll(() => {
         // Cleanup

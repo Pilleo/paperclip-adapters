@@ -21,6 +21,15 @@ vi.mock('../src/server/retry-policy', async (importOriginal) => {
         shouldRetry: vi.fn((c, a, config) => mod.shouldRetry(c, a, config))
     };
 });
+vi.mock('../src/server/paperclip-client', async (importOriginal) => {
+    const mod = await importOriginal<typeof import('../src/server/paperclip-client')>();
+    return {
+        ...mod,
+        listPaperclipInteractions: vi.fn().mockResolvedValue([]),
+        listIssueComments: vi.fn().mockResolvedValue([]),
+        scheduleJulesSessionMonitor: vi.fn().mockResolvedValue(undefined),
+    };
+});
 
 beforeAll(() => {
     process.env['JULES_API_KEY'] = 'test-key';
@@ -72,6 +81,12 @@ beforeAll(() => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks preserves one-shot implementations. Reset the provider
+    // poll mock so a heartbeat-aborted test cannot leak its queued rejection
+    // into the next retry scenario.
+    (JulesClient.prototype.getSession as any).mockReset();
+    vi.mocked(classifyFailure).mockReset().mockReturnValue('configuration');
+    vi.mocked(shouldRetry).mockReset().mockReturnValue(false);
     (JulesClient.prototype.listSessions as any).mockResolvedValue({ sessions: [] });
     (JulesClient.prototype.getActivities as any).mockResolvedValue({ activities: [] });
   });
@@ -120,7 +135,7 @@ beforeAll(() => {
   });
 
   it('handles COMPLETED state with false success (no PR)', async () => {
-     (JulesClient.prototype.getSession as any).mockResolvedValueOnce({ state: 'COMPLETED' });
+     (JulesClient.prototype.getSession as any).mockResolvedValue({ state: 'COMPLETED' });
      global.fetch = vi.fn().mockImplementation(async (url: any) => {
        const urlStr = String(url);
        if (urlStr.includes("/comments")) {
@@ -144,7 +159,7 @@ beforeAll(() => {
   });
 
   it('handles FAILED jules state with retry', async () => {
-      (JulesClient.prototype.getSession as any).mockResolvedValueOnce({ state: 'FAILED' });
+      (JulesClient.prototype.getSession as any).mockResolvedValue({ state: 'FAILED' });
       vi.mocked(shouldRetry).mockReturnValueOnce(true); // Retry the explicitly failed session
 
       const abortCtrl = new AbortController();
@@ -157,7 +172,7 @@ beforeAll(() => {
   });
 
   it('handles FAILED jules state without retry (exhausted)', async () => {
-        (JulesClient.prototype.getSession as any).mockResolvedValueOnce({ state: 'FAILED' });
+        (JulesClient.prototype.getSession as any).mockResolvedValue({ state: 'FAILED' });
         vi.mocked(shouldRetry).mockReturnValueOnce(false);
 
         const res = await execute(resumedCtx);

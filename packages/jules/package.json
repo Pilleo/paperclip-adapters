@@ -32,10 +32,10 @@
     "./ui-parser": "./ui-parser.cjs"
   },
   "peerDependencies": {
-    "@paperclipai/adapter-utils": "2026.722.0"
+    "@paperclipai/adapter-utils": "2026.831.1"
   },
   "devDependencies": {
-    "@paperclipai/adapter-utils": "2026.722.0",
+    "@paperclipai/adapter-utils": "2026.831.1",
     "@types/node": "22.0.0",
     "@vitest/coverage-v8": "^3.0.0",
     "typescript": "5.7.3",

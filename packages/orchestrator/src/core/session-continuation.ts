@@ -5,6 +5,7 @@ export interface ContinuationIssue {
   readonly identifier?: string | null | undefined;
   readonly status: string;
   readonly assigneeAgentId?: string | null | undefined;
+  readonly orchestratorManaged?: boolean | undefined;
 }
 
 export interface ContinuationWorker {
@@ -33,7 +34,10 @@ export type ContinuationDecision =
 const CONTINUABLE_ISSUE_STATUSES = new Set(["in_progress", "in_review"]);
 const BUSY_AGENT_STATUSES = new Set(["running", "queued", "busy"]);
 const BUSY_RUN_STATUSES = new Set(["running", "queued", "claimed"]);
-const CONTINUABLE_ADAPTERS = new Set(["jules", "vibe", "antigravity"]);
+// Jules uses Paperclip issue monitors for durable continuation. Waking it from
+// this generic scan races the monitor's atomic due claim and can duplicate a
+// provider message. Other adapters retain the legacy continuation behavior.
+const CONTINUABLE_ADAPTERS = new Set(["vibe", "antigravity"]);
 
 function nonEmpty(value: unknown): string | null {
   if (typeof value !== "string") return null;

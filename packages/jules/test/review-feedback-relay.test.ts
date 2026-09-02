@@ -51,6 +51,7 @@ describe("Review Feedback Relay to Jules", () => {
     sessionId: "session-141",
     julesSessionId: "session-141",
     julesSessionUrl: "https://jules.example/session-141",
+    currentPrUrl: "https://github.com/Pilleo/mazewall/pull/400",
     attempt: 1,
     failedSessions: [],
     relayedReviewCommentIds: [],
@@ -67,7 +68,7 @@ describe("Review Feedback Relay to Jules", () => {
     vi.clearAllMocks();
   });
 
-  it("relays new code review feedback comments directly to active Jules session via sendMessage", async () => {
+  it("does not relay a comment-shaped review decision to Jules", async () => {
     vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({
       id: "session-141",
       state: "COMPLETED",
@@ -89,7 +90,7 @@ describe("Review Feedback Relay to Jules", () => {
     vi.mocked(listIssueComments).mockResolvedValue([
       {
         id: "comment-review-1",
-        body: "## 🛑 Automated Code Review Verdict: **REQUEST_CHANGES**\n- Violation: Unbounded cache growth detected.",
+        body: 'PAPERCLIP_REVIEW_DECISION {"decision":"needs_work","comment":"Unbounded cache growth detected."}',
         authorAgentId: "reviewer-agent-id",
         createdAt: new Date().toISOString(),
       },
@@ -112,11 +113,26 @@ describe("Review Feedback Relay to Jules", () => {
 
     const result = await execute(ctx);
     expect(result.exitCode).toBe(0);
-    expect(JulesClient.prototype.sendMessage).toHaveBeenCalledWith(
-      "session-141",
-      expect.objectContaining({
-        prompt: expect.stringContaining("REQUEST_CHANGES"),
-      })
-    );
+    expect(JulesClient.prototype.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not relay review prompts or plan/adjudication prose", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "COMPLETED" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [] } as never);
+    vi.mocked(listIssueComments).mockResolvedValue([
+      { id: "prompt", body: "## 🔍 Code Review Request: inspect the PR", authorAgentId: "00000000-0000-4000-8000-000000000141" },
+      { id: "plan", body: '{"kind":"ANSWER","answer":"Approve and proceed with the plan."}', authorAgentId: "00000000-0000-4000-8000-000000000141" },
+      { id: "prose", body: "Code Review Verdict: REQUEST_CHANGES", authorAgentId: "00000000-0000-4000-8000-000000000141" },
+    ]);
+    const result = await execute({
+      agent: { id: "jules-1", companyId: "c-1", name: "Jules", adapterType: "jules", adapterConfig: { ...adapterConfig, codeReviewerAgentIds: ["00000000-0000-4000-8000-000000000141"] } },
+      runtime: { sessionParams: sessionCodec.encode(session) },
+      context: { task: { id: "issue-141", title: "Review" } },
+      config: adapterConfig,
+      authToken: "mock-token",
+      onLog: vi.fn().mockResolvedValue(undefined),
+    } as unknown as AdapterExecutionContext);
+    expect(result.exitCode).toBe(0);
+    expect(JulesClient.prototype.sendMessage).not.toHaveBeenCalled();
   });
 });

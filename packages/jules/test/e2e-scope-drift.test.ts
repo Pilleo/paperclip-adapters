@@ -4,6 +4,11 @@ import { execute } from "../src/server/execute.js";
 import { JulesClient } from "../src/server/jules-client.js";
 import { sessionCodec } from "../src/server/session.js";
 import { getPullRequestDetails, getPullRequestPatch, listPullRequestChangedFiles } from "../src/server/ci-status.js";
+import {
+  createJulesAgentAdjudicationInteraction,
+  createJulesQuestionAdjudication,
+  scheduleJulesSessionMonitor,
+} from "../src/server/paperclip-client.js";
 
 vi.mock("../src/server/ci-status.js", () => ({
   getPullRequestDetails: vi.fn(),
@@ -27,8 +32,11 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
   return {
     ...mod,
     createIssueComment: vi.fn().mockResolvedValue(undefined),
+    createJulesAgentAdjudicationInteraction: vi.fn().mockResolvedValue({ id: "visible-question-1", status: "pending" }),
+    createJulesQuestionAdjudication: vi.fn().mockResolvedValue({ id: "question-review-1", status: "todo" }),
     listIssueComments: vi.fn().mockResolvedValue([]),
     listPaperclipInteractions: vi.fn().mockResolvedValue([]),
+    scheduleJulesSessionMonitor: vi.fn().mockResolvedValue(undefined),
     moveIssueToBlocked: vi.fn(),
     moveIssueToInProgress: vi.fn(),
     moveIssueToReview: vi.fn(),
@@ -70,9 +78,10 @@ describe("E2E host-plan scope conformity on Jules PRs", () => {
     repository: "Pilleo/mazewall",
     baseBranch: "master",
     ciPolicy: "skip",
+    questionReviewerAgentId: "00000000-0000-4000-8000-000000000834",
   };
 
-  function ctx(): AdapterExecutionContext {
+  function ctx(runtimeSession = session): AdapterExecutionContext {
     return {
       agent: {
         id: "jules-1",
@@ -81,7 +90,7 @@ describe("E2E host-plan scope conformity on Jules PRs", () => {
         adapterType: "jules",
         adapterConfig,
       },
-      runtime: { sessionParams: sessionCodec.encode(session) },
+      runtime: { sessionParams: sessionCodec.encode(runtimeSession) },
       context: {
         task: {
           id: "issue-141",
@@ -119,7 +128,7 @@ describe("E2E host-plan scope conformity on Jules PRs", () => {
     });
   });
 
-  it("keeps the Jules session and relays a scoped fix when the PR adds unplanned files", async () => {
+  it("routes scope drift to host review without messaging Jules", async () => {
     vi.mocked(listPullRequestChangedFiles).mockResolvedValue([
       "enforcer/src/main/kotlin/io/mazewall/enforcer/SandboxDispatcher.kt",
       "README.md",
@@ -130,13 +139,9 @@ describe("E2E host-plan scope conformity on Jules PRs", () => {
     expect(result.exitCode).toBe(0);
     expect(result.clearSession).toBe(false);
     expect(result.resultJson?.scopeConformant).toBe(false);
-    expect(result.summary).toMatch(/drifted from the host plan/);
-    expect(JulesClient.prototype.sendMessage).toHaveBeenCalledWith(
-      "session-141",
-      expect.objectContaining({
-        prompt: expect.stringContaining("Unplanned"),
-      }),
-    );
+    expect(result.summary).toMatch(/requires host review/);
+    expect(result.resultJson).toMatchObject({ issueStatus: "in_review", reviewRequired: true, providerMessageSent: false });
+    expect(JulesClient.prototype.sendMessage).not.toHaveBeenCalled();
   });
 
   it("does not flag drift when the PR stays inside declared files and symbols", async () => {
@@ -148,5 +153,118 @@ describe("E2E host-plan scope conformity on Jules PRs", () => {
     const result = await execute(ctx());
     expect(result.resultJson?.scopeConformant).not.toBe(false);
     expect(result.summary).not.toMatch(/drifted from the host plan/);
+  });
+
+  it("keeps polling and routes a question that arrives after the drift heartbeat", async () => {
+    vi.mocked(listPullRequestChangedFiles).mockResolvedValue([
+      "enforcer/src/main/kotlin/io/mazewall/enforcer/SandboxDispatcher.kt",
+      "README.md",
+    ]);
+    vi.mocked(getPullRequestPatch).mockResolvedValue("fun getOrCreate()");
+    vi.mocked(JulesClient.prototype.getSession)
+      .mockResolvedValueOnce({ state: "COMPLETED", rawOutputs: [{ pullRequest: { url: "https://github.com/o/r/pull/1" } }] } as never)
+      .mockResolvedValueOnce({ state: "AWAITING_USER_FEEDBACK", rawOutputs: [{ pullRequest: { url: "https://github.com/o/r/pull/1" } }] } as never);
+    vi.mocked(JulesClient.prototype.getActivities)
+      .mockResolvedValueOnce({ activities: [] } as never)
+      .mockResolvedValueOnce({
+        activities: [{ id: "question-1", createTime: "2026-08-31T10:00:00.000Z", agentMessaged: { agentMessage: "Which branch should I use?" } }],
+      } as never);
+
+    const first = await execute(ctx());
+    expect(first.resultJson).toMatchObject({ issueStatus: "in_review", reviewRequired: true });
+    expect(scheduleJulesSessionMonitor).toHaveBeenCalledTimes(1);
+
+    const second = await execute(ctx(sessionCodec.decode(first.sessionParams)!));
+    expect(createJulesQuestionAdjudication).toHaveBeenCalledWith(
+      "issue-141",
+      "00000000-0000-4000-8000-000000000834",
+      "Which branch should I use?",
+      undefined,
+      "",
+      "c-1",
+    );
+    expect(scheduleJulesSessionMonitor).toHaveBeenCalledTimes(2);
+    expect(second.resultJson).toMatchObject({ pending: true });
+  });
+
+  it("routes a fresh typed Jules message during an in-flight plan review before the provider state flips", async () => {
+    vi.mocked(listPullRequestChangedFiles).mockResolvedValue([
+      "enforcer/src/main/kotlin/io/mazewall/enforcer/SandboxDispatcher.kt",
+    ]);
+    vi.mocked(getPullRequestPatch).mockResolvedValue("+ fun getOrCreate() { /* LRU */ }");
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({
+      // Jules can still report IN_PROGRESS while the activity stream already
+      // contains the message that needs a reviewer answer.
+      state: "IN_PROGRESS",
+      rawOutputs: [{ pullRequest: { url: "https://github.com/o/r/pull/1" } }],
+    } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({
+      activities: [{
+        id: "question-while-reviewing",
+        createTime: "2026-08-31T10:01:00.000Z",
+        // Jules can publish its plan and its follow-up question in the same
+        // heartbeat. The question must remain the adjudication prompt.
+        planGenerated: { plan: { steps: [{ index: 0, title: "Unrelated plan text" }] } },
+        agentMessaged: { agentMessage: "Please confirm the target branch." },
+      }],
+    } as never);
+
+    const planReview = {
+      type: "plan_agent_review" as const,
+      julesActivityId: "plan-activity",
+      question: "Plan contents",
+      planRevisionId: "plan-revision",
+      planRevisionNumber: 1,
+      planDocumentId: "plan-document",
+      reviewIssueId: "review-child",
+      reviewerAgentId: "reviewer-1",
+      stage: "vibe" as const,
+      createdAt: "2026-08-31T10:00:00.000Z",
+    };
+    const result = await execute(ctx({ ...session, pendingInteraction: planReview }));
+    const checkpoint = sessionCodec.decode(result.sessionParams!);
+
+    expect(createJulesQuestionAdjudication).toHaveBeenCalledTimes(1);
+    expect(createJulesAgentAdjudicationInteraction).toHaveBeenCalledWith(
+      "issue-141",
+      "session-141",
+      "question-while-reviewing",
+      "Please confirm the target branch.",
+      "00000000-0000-4000-8000-000000000834",
+      undefined,
+      "",
+    );
+    expect(createJulesQuestionAdjudication).toHaveBeenCalledWith(
+      "issue-141",
+      "00000000-0000-4000-8000-000000000834",
+      "Please confirm the target branch.",
+      undefined,
+      "",
+      "c-1",
+    );
+    expect(checkpoint?.pendingInteraction).toMatchObject({ type: "agent_adjudication", paperclipInteractionId: "visible-question-1" });
+    expect(checkpoint?.deferredPlanReview).toMatchObject({
+      type: "plan_agent_review",
+      reviewIssueId: "review-child",
+    });
+    expect(scheduleJulesSessionMonitor).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not replay or send the same drift finding on a repeated heartbeat", async () => {
+    vi.mocked(listPullRequestChangedFiles).mockResolvedValue([
+      "enforcer/src/main/kotlin/io/mazewall/enforcer/SandboxDispatcher.kt",
+      "README.md",
+    ]);
+    vi.mocked(getPullRequestPatch).mockResolvedValue("fun getOrCreate()");
+
+    const first = await execute(ctx());
+    const nextSession = sessionCodec.decode(first.sessionParams);
+    expect(nextSession?.scopeDriftFingerprint).toBeDefined();
+    vi.mocked(JulesClient.prototype.sendMessage).mockClear();
+
+    const second = await execute(ctx(nextSession!));
+    expect(JulesClient.prototype.sendMessage).not.toHaveBeenCalled();
+    expect(second.summary).toMatch(/requires host review/);
+    expect(second.resultJson).toMatchObject({ providerMessageSent: false, reviewRequired: true });
   });
 });

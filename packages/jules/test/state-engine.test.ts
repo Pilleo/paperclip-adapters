@@ -182,7 +182,7 @@ describe("Jules Pure State Engine & Disposition Invariants", () => {
       ]);
     });
 
-    it("triggers watchdog nudge when session is idle for >15m in IN_PROGRESS", () => {
+    it("does not create a provider nudge when session is idle for >15m in IN_PROGRESS", () => {
       const now = Date.now();
       const signals: JulesLifecycleSignals = {
         julesState: "IN_PROGRESS",
@@ -193,11 +193,7 @@ describe("Jules Pure State Engine & Disposition Invariants", () => {
       };
 
       const plan = evaluateJulesLifecycleState(baseSession, signals);
-      expect(plan.actions).toContainEqual(
-        expect.objectContaining({
-          type: "NUDGE_WATCHDOG",
-        })
-      );
+      expect(plan.actions).not.toContainEqual(expect.objectContaining({ type: "NUDGE_WATCHDOG" }));
     });
   });
 });
