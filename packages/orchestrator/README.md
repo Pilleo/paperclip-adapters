@@ -78,18 +78,18 @@ All reviewer prompts enforce explicit rejection criteria (`REQUEST_CHANGES`):
 ## 🧪 Testing
 
 ```bash
-# Run all orchestrator unit tests (100% green)
+# Run all workspace tests
 pnpm test
 
 # Build all packages
 pnpm build
 
 # Run the full isolated Paperclip lifecycle harness
-PAPERCLIP_TEST_API_URL=http://localhost:3100 \\
+PAPERCLIP_TEST_API_URL=http://localhost:3100 \
 WORKSPACE_PATH=/path/to/project pnpm test:e2e
 
 # Run only the fast Jules open-PR recovery canary
-PAPERCLIP_TEST_API_URL=http://localhost:3100 \\
+PAPERCLIP_TEST_API_URL=http://localhost:3100 \
 WORKSPACE_PATH=/path/to/project pnpm test:e2e:jules-recovery
 ```
 
@@ -97,3 +97,8 @@ Both E2E commands create a disposable Paperclip company and delete it in a
 `finally` block. The recovery canary uses a temporary `gh` fixture, so it does
 not create Jules sessions, consume provider quota, or mutate GitHub. The API
 URL and workspace must be explicit; the canary refuses non-loopback servers.
+
+The lifecycle harness currently contains seven phases. The dedicated recovery
+canary is the required pre-deployment smoke test because it specifically
+verifies recovery of an `in_progress` Jules issue, stale-child cleanup, and
+repeat-heartbeat idempotency.
