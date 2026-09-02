@@ -1816,13 +1816,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                      : null;
                    if (!completion) {
                      const question = `Jules session ${session.julesSessionId} completed without creating a PR. Is this task complete?`;
-                     const interaction = await createNoPrCompletionInteraction(
-                       taskId,
-                       session.julesSessionId!,
-                       session.julesSessionUrl,
-                       ctx.authToken,
-                       ctx.runId,
-                     );
+                     const interaction = await runCheckpointedMutation({
+                       session: session!,
+                       key: `jules:no-pr-completion:${taskId}:${session!.julesSessionId}`,
+                       operation: "create_no_pr_completion_interaction",
+                       issueId: taskId,
+                       sessionId: session!.julesSessionId,
+                       persist: () => persistSessionBestEffort(session!, ctx.onLog),
+                       run: () => createNoPrCompletionInteraction(
+                         taskId,
+                         session!.julesSessionId!,
+                         session!.julesSessionUrl,
+                         ctx.authToken,
+                         ctx.runId,
+                       ),
+                     });
                      completion = {
                        type: "completion_confirmation",
                        paperclipInteractionId: interaction.id,
