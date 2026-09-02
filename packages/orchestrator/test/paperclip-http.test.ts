@@ -95,6 +95,29 @@ describe("createPaperclipHttp wakeup", () => {
     expect(headers.get("X-Paperclip-Run-Id")).toBeNull();
   });
 
+  it("adds a deterministic idempotency key to ordinary issue mutations", async () => {
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    globalThis.fetch = fetchMock as typeof fetch;
+    const pc = createPaperclipHttp({ apiUrl: "http://127.0.0.1:3100", authToken: "test-token" });
+    await pc.patchIssue("issue-834", { status: "todo" });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(new Headers(init.headers).get("Idempotency-Key")).toMatch(/^paperclip:(PATCH|POST|DELETE):/);
+  });
+
+  it("retries a transient ordinary mutation with the same idempotency key", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response("temporary", { status: 503 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }));
+    globalThis.fetch = fetchMock as typeof fetch;
+    const pc = createPaperclipHttp({ apiUrl: "http://127.0.0.1:3100", authToken: "test-token" });
+    await pc.patchIssue("issue-834", { status: "todo" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const first = new Headers((fetchMock.mock.calls[0] as [string, RequestInit])[1].headers).get("Idempotency-Key");
+    const second = new Headers((fetchMock.mock.calls[1] as [string, RequestInit])[1].headers).get("Idempotency-Key");
+    expect(first).toBeTruthy();
+    expect(second).toBe(first);
+  });
+
   it("fetches an enriched issue detail for work-product recovery", async () => {
     const fetchMock = vi.fn(async () => new Response('{"workProducts":[]}', { status: 200 }));
     globalThis.fetch = fetchMock as typeof fetch;

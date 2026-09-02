@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { resilientFetch } from "./resilient-fetch.js";
 import { createUpdateIssuePayload, type UpdateIssuePayload } from "./paperclip-orchestrator-client.js";
 import type { IssueStatus } from "./types.js";
+import { executePaperclipCommand, type PaperclipCommandResponse } from "@pilleo/paperclip-adapter-common";
 
 export class OrchestratorPaperclipError extends Error {
   constructor(
@@ -79,19 +81,55 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
     body: unknown,
     idempotencyKey?: string,
   ): Promise<{ ok: boolean; status: number; text: string; data?: unknown }> {
-    const response = await request(path, {
-      method,
-      body: JSON.stringify(body),
-      ...(idempotencyKey ? { headers: { "Idempotency-Key": idempotencyKey } } : {}),
-    });
-    const rawText = await response.text().catch(() => "");
-    const text = rawText.trim().slice(0, 500);
-    if (response.status === 409) {
-      throw new OrchestratorPaperclipError(409, `Conflict on ${method} ${path}: ${text}`);
-    }
-    let data: unknown;
-    try { data = rawText ? JSON.parse(rawText) : undefined; } catch { /* plain-text responses remain diagnostic text */ }
-    return { ok: response.ok, status: response.status, text, ...(data !== undefined ? { data } : {}) };
+    const key = idempotencyKey || explicitIdempotencyKey(body) || derivedIdempotencyKey(method, path, body);
+    const commandResponse = await executePaperclipCommand(
+      {
+        key,
+        issueId: issueIdFromPath(path),
+        action: commandAction(method, path),
+        payload: body,
+      },
+      async () => {
+        const response = await request(path, {
+          method,
+          body: JSON.stringify(body),
+          headers: { "Idempotency-Key": key },
+        });
+        const rawText = await response.text().catch(() => "");
+        const text = rawText.trim().slice(0, 500);
+        if (response.status === 409) {
+          throw new OrchestratorPaperclipError(409, `Conflict on ${method} ${path}: ${text}`);
+        }
+        let data: unknown;
+        try { data = rawText ? JSON.parse(rawText) : undefined; } catch { /* plain-text responses remain diagnostic text */ }
+        return { ok: response.ok, status: response.status, text, ...(data !== undefined ? { data } : {}) } satisfies PaperclipCommandResponse;
+      },
+    );
+    return { ok: commandResponse.ok, status: commandResponse.status, text: commandResponse.text ?? "", ...(commandResponse.data !== undefined ? { data: commandResponse.data } : {}) };
+  }
+
+  function explicitIdempotencyKey(body: unknown): string | undefined {
+    if (!body || typeof body !== "object" || Array.isArray(body)) return undefined;
+    const value = (body as Record<string, unknown>)["idempotencyKey"];
+    return typeof value === "string" && value.trim() ? value.trim() : undefined;
+  }
+
+  function derivedIdempotencyKey(method: string, path: string, body: unknown): string {
+    const digest = createHash("sha256").update(JSON.stringify(body) ?? "null").digest("hex").slice(0, 24);
+    return `paperclip:${method}:${path}:${digest}`;
+  }
+
+  function issueIdFromPath(path: string): string {
+    const match = path.match(/\/api\/issues\/([^/]+)/);
+    return match?.[1] || "company";
+  }
+
+  function commandAction(method: "POST" | "PATCH" | "DELETE", path: string): "comment" | "interaction" | "status" | "assignment" | "wakeup" {
+    if (path.endsWith("/wakeup")) return "wakeup";
+    if (path.includes("/interactions")) return "interaction";
+    if (path.includes("/comments")) return "comment";
+    if (path.includes("/agents/")) return "assignment";
+    return method === "PATCH" ? "status" : "interaction";
   }
 
   return {
