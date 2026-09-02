@@ -95,7 +95,7 @@ export function decidePullRequestReconciliation(
     };
   }
 
-  if (input.pullRequest.state === "OPEN" && input.issueStatus === "done") {
+  if (input.pullRequest.state === "OPEN" && ["done", "blocked", "in_progress"].includes(input.issueStatus)) {
     return {
       action: "RECOVER_OPEN_PR_REVIEW",
       issueStatus: "in_review",

@@ -83,4 +83,17 @@ pnpm test
 
 # Build all packages
 pnpm build
+
+# Run the full isolated Paperclip lifecycle harness
+PAPERCLIP_TEST_API_URL=http://localhost:3100 \\
+WORKSPACE_PATH=/path/to/project pnpm test:e2e
+
+# Run only the fast Jules open-PR recovery canary
+PAPERCLIP_TEST_API_URL=http://localhost:3100 \\
+WORKSPACE_PATH=/path/to/project pnpm test:e2e:jules-recovery
 ```
+
+Both E2E commands create a disposable Paperclip company and delete it in a
+`finally` block. The recovery canary uses a temporary `gh` fixture, so it does
+not create Jules sessions, consume provider quota, or mutate GitHub. The API
+URL and workspace must be explicit; the canary refuses non-loopback servers.

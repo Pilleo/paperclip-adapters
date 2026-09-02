@@ -10,6 +10,7 @@ const parent = (overrides: Partial<BoardIssueSnapshot> = {}): BoardIssueSnapshot
   assigneeKind: "orchestrator",
   executionRunLive: false,
   resumableMonitor: true,
+  monitorExpired: false,
   nativeReviewInteraction: false,
   hasPullRequest: false,
   parentId: null,
@@ -74,6 +75,25 @@ describe("board reconciliation planner", () => {
     expect(planBoardReconciliation([parent({ resumableMonitor: false })])).toEqual([
       expect.objectContaining({ action: "return_to_todo", issueId: "parent-836" }),
     ]);
+  });
+
+  it("returns an in-progress task with an expired monitor to todo", () => {
+    expect(planBoardReconciliation([parent({ monitorExpired: true })])).toEqual([
+      expect.objectContaining({ action: "return_to_todo", issueId: "parent-836" }),
+    ]);
+  });
+
+  it("keeps an in-progress task with a live monitor", () => {
+    expect(planBoardReconciliation([parent({ monitorExpired: false })])).toEqual([]);
+  });
+
+  it("produces a stable single recovery command across repeated heartbeats", () => {
+    const snapshot = parent({ monitorExpired: true });
+    const first = planBoardReconciliation([snapshot]);
+    const second = planBoardReconciliation([snapshot]);
+    expect(first).toEqual(second);
+    expect(second).toHaveLength(1);
+    expect(second[0]).toMatchObject({ action: "return_to_todo", issueId: "parent-836" });
   });
 
   it("does not mutate unmanaged historical work", () => {

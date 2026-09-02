@@ -10,6 +10,8 @@ export interface BoardIssueSnapshot {
   readonly assigneeKind: BoardAssigneeKind;
   readonly executionRunLive: boolean;
   readonly resumableMonitor: boolean;
+  /** True when the monitor's due time has elapsed and it is no longer executable. */
+  readonly monitorExpired?: boolean;
   readonly nativeReviewInteraction: boolean;
   readonly hasPullRequest: boolean;
   readonly parentId: string | null;
@@ -29,7 +31,7 @@ export function planBoardReconciliation(issues: readonly BoardIssueSnapshot[]): 
     if (issue.status === "blocked" && issue.resumableMonitor) {
       commands.push({ action: "resume_provider", issueId: issue.id, reason: "managed task has a resumable provider monitor but no live execution" });
     }
-    if (issue.status === "in_progress" && !issue.executionRunLive && !issue.resumableMonitor) {
+    if (issue.status === "in_progress" && !issue.executionRunLive && (!issue.resumableMonitor || issue.monitorExpired === true)) {
       commands.push({ action: "return_to_todo", issueId: issue.id, reason: "managed task is in progress without a live execution or resumable provider monitor" });
     }
     if (issue.status === "in_review" && !issue.hasPullRequest && !issue.nativeReviewInteraction && !issue.resumableMonitor) {

@@ -62,7 +62,7 @@ import { capabilityCircuit } from "../core/capability-circuit.js";
 import { decideIssueLifecycleReconciliation } from "../core/issue-lifecycle-reconciliation.js";
 import { ConvergenceGuard } from "../core/convergence-guard.js";
 import { planTerminalParentBarrier } from "../core/terminal-parent-barrier.js";
-import { decideJulesMonitorReconciliation } from "../core/jules-monitor-reconciliation.js";
+import { buildJulesMonitorReattachment, decideJulesMonitorReconciliation } from "../core/jules-monitor-reconciliation.js";
 import { needsFullIssueRecord } from "../core/issue-enrichment-policy.js";
 import { planBoardReconciliation, type BoardIssueSnapshot } from "../core/board-reconciliation.js";
 import { decideBlockedManagedWork, decideRecoveryArtifact } from "../core/recovery-artifact.js";
@@ -128,7 +128,12 @@ export async function executeAllProjects(
   const pc = createPaperclipHttp({ apiUrl, authToken });
   let projects: PaperclipProjectRecord[];
   try {
-    projects = asArray<PaperclipProjectRecord>(await pc.listProjects(companyId));
+    const listedProjects = asArray<PaperclipProjectRecord>(await pc.listProjects(companyId));
+    // Paperclip projections can briefly contain the same project more than
+    // once during workspace/company reconciliation. A company heartbeat must
+    // never run one project twice; dedupe before capacity allocation and
+    // worker-pool dispatch so duplicate rows cannot double-write the board.
+    projects = [...new Map(listedProjects.map((project) => [project.id, project])).values()];
   } catch (err: unknown) {
     const message = `Could not list company projects: ${err instanceof Error ? err.message : String(err)}`;
     await context.onLog?.("stderr", `[ORCHESTRATOR] 🚨 ${message}\n`);
@@ -162,7 +167,10 @@ export async function executeAllProjects(
       config: {
         ...rawConfig,
         ...(capacity ? { maxConcurrentJules: capacity.jules, maxConcurrentVibe: capacity.vibe } : {}),
-        reconcileFleet: project === runnableProjects[0],
+        // Respect an explicit test/manual opt-out. Without this guard an
+        // isolated canary still attempts fleet provisioning and emits noisy
+        // agents:create denials even though it only needs existing workers.
+        reconcileFleet: rawConfig["reconcileFleet"] !== false && project === runnableProjects[0],
       },
       context: {
         ...((context.context as Record<string, unknown> | undefined) || {}),
@@ -567,7 +575,8 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
   const enrichedIssues = await Promise.all(scopedIssues.map(async (issue) => {
     const status = String(issue["status"] ?? "").toLowerCase();
     const orchestratorOwnedRecoveryRecord =
-      (status === "todo" || status === "in_progress") && issue["assigneeAgentId"] === orchestratorId;
+      (status === "todo" || status === "in_progress") &&
+      (issue["assigneeAgentId"] === orchestratorId || managedJulesIds.has(String(issue["assigneeAgentId"] || "")));
     if (!needsFullIssueRecord(status) && !orchestratorOwnedRecoveryRecord) return issue;
     try {
       return await pc.getIssue<Record<string, unknown>>(String(issue["id"] ?? ""));
@@ -725,6 +734,56 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     }
   }
 
+  // A Jules PR can outlive a lost Paperclip monitor and leave its source issue
+  // blocked/in_progress. Recover only a registered Jules work product after
+  // GitHub confirms its checks are green; the normal native review pipeline
+  // then owns reviewer dispatch. This replaces the old external timer bridge.
+  const openPrRecoveryIds = new Set<string>();
+  if (!ghStatus.error) {
+    for (const issue of parsedIssues) {
+      if (!issue.orchestratorManaged || !["blocked", "in_progress"].includes(issue.status)) continue;
+      const rawProducts = issue.rawIssue["workProducts"] ?? issue.rawIssue["work_products"];
+      const julesProduct = Array.isArray(rawProducts)
+        ? rawProducts.find((product) => {
+            if (!product || typeof product !== "object") return false;
+            const candidate = product as Record<string, unknown>;
+            return (candidate["type"] === "pull_request" || candidate["kind"] === "pull_request") &&
+              (candidate["metadata"] as Record<string, unknown> | undefined)?.["source"] === "jules";
+          })
+        : undefined;
+      if (!julesProduct) continue;
+      const matchingPr = ghStatus.openPrs.find((pr) => matchPrToIssue(pr, issue));
+      if (!matchingPr) continue;
+      const ci = await checkPrCiIsGreen(matchingPr.number, workspacePath, matchingPr.url);
+      if (!ci.isGreen) {
+        await log(`[ORCHESTRATOR] Deferring open Jules PR recovery for [${issue.identifier || issue.id}]: CI is ${ci.status}.`);
+        continue;
+      }
+      const recoveryKey = `jules-open-pr-recovery:${issue.id}:${matchingPr.url}`;
+      await lifecycleConvergenceGuard.runOnce(recoveryKey, async () => {
+        const staleChildren = parsedIssues.filter((candidate) =>
+          candidate.parentId === issue.id &&
+          !["done", "cancelled"].includes(candidate.status) &&
+          (candidate.rawIssue["originKind"] === "issue_productivity_review" ||
+            (typeof candidate.rawIssue["description"] === "string" &&
+              (/jules-session-supervisor|jules-question-adjudication/.test(candidate.rawIssue["description"] as string)))),
+        );
+        for (const child of staleChildren) {
+          const closed = await pc.patchIssue(child.id, { status: "done" });
+          if (!closed.ok) await log(`[ORCHESTRATOR] Could not close stale Jules PR child [${child.identifier || child.id}] (${closed.status}): ${closed.text}`);
+        }
+        const recovered = await pc.patchIssue(issue.id, { status: "in_review", assigneeAgentId: null });
+        if (!recovered.ok) {
+          await log(`[ORCHESTRATOR] Could not recover open Jules PR for [${issue.identifier || issue.id}] (${recovered.status}): ${recovered.text}`);
+          return;
+        }
+        statusOverrides.set(issue.id, "in_review");
+        openPrRecoveryIds.add(issue.id);
+        await log(`[ORCHESTRATOR] Recovered open Jules PR for [${issue.identifier || issue.id}] into native review.`);
+      });
+    }
+  }
+
   // Paperclip creates monitor issues directly, outside the adapter transition
   // guard. Reconcile those persisted states before scheduling so diagnostics
   // cannot occupy worker lanes forever and review children cannot outlive a
@@ -738,6 +797,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       ? { ...issue, status: statusOverrides.get(issue.id) as IssueState }
       : issue,
   );
+  const reattachedJulesMonitorIssueIds = new Set<string>();
 
   // Paperclip can leave an external Jules task blocked after its monitor
   // timeout, even though the persisted provider session is resumable. Resume
@@ -749,30 +809,64 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       ? executionState as Record<string, unknown>
       : null;
     const monitor = state?.["monitor"];
+    const executionPolicyRaw = issue.rawIssue["executionPolicy"];
+    const executionPolicyRecord = executionPolicyRaw && typeof executionPolicyRaw === "object" && !Array.isArray(executionPolicyRaw)
+      ? executionPolicyRaw as Record<string, unknown>
+      : null;
+    const policyMonitor = executionPolicyRecord?.["monitor"];
     const monitorRecord = monitor && typeof monitor === "object" && !Array.isArray(monitor)
       ? monitor as Record<string, unknown>
-      : null;
+      : policyMonitor && typeof policyMonitor === "object" && !Array.isArray(policyMonitor)
+        ? policyMonitor as Record<string, unknown>
+        : null;
     const monitorStatus = typeof monitorRecord?.["status"] === "string" ? monitorRecord["status"] : null;
     const timeoutAt = typeof monitorRecord?.["timeoutAt"] === "string" ? monitorRecord["timeoutAt"] : null;
     const serviceName = typeof monitorRecord?.["serviceName"] === "string" ? monitorRecord["serviceName"] : null;
     const externalRef = monitorRecord?.["externalRef"];
+    const executionPolicy = executionPolicyRecord;
+    const nativePolicyMonitor = executionPolicy?.["monitor"];
+    const canReattachNativeMonitor = Boolean(
+      nativePolicyMonitor && typeof nativePolicyMonitor === "object" && !Array.isArray(nativePolicyMonitor) &&
+      typeof (nativePolicyMonitor as Record<string, unknown>)["externalRef"] === "string" &&
+      String((nativePolicyMonitor as Record<string, unknown>)["externalRef"]).trim(),
+    );
     const monitorDecision = decideJulesMonitorReconciliation({
       issueStatus: statusOverrides.get(issue.id) || issue.status,
-      assigneeIsOrchestrator: issue.assigneeAgentId === orchestratorId,
+      assigneeIsOrchestrator: issue.assigneeAgentId === orchestratorId || issue.assigneeAgentId === julesAgentId || managedJulesIds.has(issue.assigneeAgentId || ""),
       serviceName,
       monitorStatus,
       timeoutAt,
       hasProviderSession: typeof externalRef === "string" && externalRef.trim().length > 0,
+      monitorCanBeReattached: canReattachNativeMonitor,
     }, Date.now());
+    if (monitorDecision.action === "return_to_todo") {
+      const key = `jules-monitor-reclaim:${issue.id}:${timeoutAt}`;
+      await lifecycleConvergenceGuard.runOnce(key, async () => {
+        const reclaimed = await pc.patchIssue(issue.id, { status: "todo" });
+        if (!reclaimed.ok) {
+          await log(`[ORCHESTRATOR] Could not reclaim expired Jules monitor for [${issue.identifier || issue.id}] (${reclaimed.status}): ${reclaimed.text}`);
+          return;
+        }
+        statusOverrides.set(issue.id, "todo");
+        await log(`[ORCHESTRATOR] Reclaimed expired Jules monitor for [${issue.identifier || issue.id}] to todo: ${monitorDecision.reason}.`);
+      });
+      continue;
+    }
     if (monitorDecision.action !== "resume_provider") continue;
     const key = `jules-monitor-resume:${issue.id}:${timeoutAt}`;
     await lifecycleConvergenceGuard.runOnce(key, async () => {
-      const resumed = await pc.patchIssue(issue.id, { status: "in_progress" });
+      if (!executionPolicy || !canReattachNativeMonitor || typeof externalRef !== "string") {
+        await log(`[ORCHESTRATOR] Refusing Jules monitor reattachment for [${issue.identifier || issue.id}]: native monitor payload is incomplete.`);
+        return;
+      }
+      const reattachedPolicy = buildJulesMonitorReattachment(executionPolicy, externalRef, Date.now());
+      const resumed = await pc.patchIssue(issue.id, { status: "in_progress", executionPolicy: reattachedPolicy });
       if (!resumed.ok) {
         await log(`[ORCHESTRATOR] Could not resume expired Jules monitor for [${issue.identifier || issue.id}] (${resumed.status}): ${resumed.text}`);
         return;
       }
       statusOverrides.set(issue.id, "in_progress");
+      reattachedJulesMonitorIssueIds.add(issue.id);
       await pc.comment(issue.id, `[Orchestrator] ${monitorDecision.reason}; returning the issue to \`in_progress\` for provider-session continuation.`).catch(() => undefined);
       await log(`[ORCHESTRATOR] Resumed expired Jules monitor for [${issue.identifier || issue.id}].`);
     });
@@ -790,7 +884,16 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     const monitor = stateRecord?.["monitor"];
     const monitorRecord = monitor && typeof monitor === "object" && !Array.isArray(monitor)
       ? monitor as Record<string, unknown>
-      : null;
+      : (() => {
+          const policy = issue.rawIssue["executionPolicy"];
+          const policyRecord = policy && typeof policy === "object" && !Array.isArray(policy)
+            ? policy as Record<string, unknown>
+            : null;
+          const candidate = policyRecord?.["monitor"];
+          return candidate && typeof candidate === "object" && !Array.isArray(candidate)
+            ? candidate as Record<string, unknown>
+            : null;
+        })();
     const delegation = typeof issue.rawIssue["description"] === "string"
       ? (issue.rawIssue["description"] as string).match(/paperclip-delegation\s+kind=([^\s]+)\s+parent=([^\s]+)\s+revision=([^\s]+)\s+stage=([^\s]+)/i)
       : null;
@@ -804,10 +907,11 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     // managed-scope proof; generic historical children remain untouched.
     const managed = issue.orchestratorManaged || isDelegatedReviewChild(issue) || Boolean(issue.parentId && lifecycleIssues.some((candidate) => candidate.id === issue.parentId && candidate.orchestratorManaged));
     const resumableMonitor = monitorRecord?.["serviceName"] === "jules" && typeof monitorRecord["externalRef"] === "string" && Boolean(monitorRecord["externalRef"]);
+    const monitorExpired = Boolean(monitorRecord?.["timeoutAt"] && Number.isFinite(Date.parse(String(monitorRecord["timeoutAt"]))) && Date.now() >= Date.parse(String(monitorRecord["timeoutAt"])));
     return {
       id: issue.id,
       identifier: issue.identifier || issue.id,
-      status: issue.status as BoardIssueSnapshot["status"],
+      status: (statusOverrides.get(issue.id) || issue.status) as BoardIssueSnapshot["status"],
       title: issue.title,
       managed,
       assigneeKind: issue.assigneeAgentId && managedJulesIds.has(issue.assigneeAgentId)
@@ -817,6 +921,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
           : issue.assigneeAgentId === orchestratorId ? "orchestrator" : "other",
       executionRunLive: Boolean(issue.executionRunId) || ["queued", "running", "active", "waiting"].includes(String(executionStatus)),
       resumableMonitor,
+      monitorExpired: reattachedJulesMonitorIssueIds.has(issue.id) ? false : monitorExpired,
       nativeReviewInteraction,
       hasPullRequest: issue.status === "in_review" && !ghStatus.error && Boolean(ghStatus.openPrs.find((pr) => matchPrToIssue(pr, issue))),
       parentId: issue.parentId || null,

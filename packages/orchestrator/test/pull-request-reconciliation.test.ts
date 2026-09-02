@@ -58,6 +58,20 @@ describe("pull-request reconciliation reducer", () => {
     }))).toMatchObject({ action: "RECOVER_OPEN_PR_REVIEW", issueStatus: "in_review" });
   });
 
+  it("recovers an active issue when its registered PR is explicitly open", () => {
+    expect(decidePullRequestReconciliation(baseInput({
+      issueStatus: "in_progress",
+      pullRequest: { number: 3, url: "https://github.com/Pilleo/paperclip-adapters/pull/3", state: "OPEN", mergedAt: null },
+    }))).toMatchObject({ action: "RECOVER_OPEN_PR_REVIEW", issueStatus: "in_review" });
+  });
+
+  it("recovers a blocked issue with an explicitly open PR", () => {
+    expect(decidePullRequestReconciliation(baseInput({
+      issueStatus: "blocked",
+      pullRequest: { number: 3, url: "https://github.com/Pilleo/paperclip-adapters/pull/3", state: "OPEN", mergedAt: null },
+    })).action).toBe("RECOVER_OPEN_PR_REVIEW");
+  });
+
   it("defers when GitHub state is unavailable instead of guessing", () => {
     expect(decidePullRequestReconciliation(baseInput({ pullRequest: undefined }))).toMatchObject({
       action: "DEFER",

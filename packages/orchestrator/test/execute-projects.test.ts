@@ -49,4 +49,47 @@ describe("executeAllProjects", () => {
     expect(result.summary).toContain("Processed 2 project(s), skipped 1");
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
   });
+
+  it("preserves an explicit fleet reconciliation opt-out for every project", async () => {
+    process.env["PAPERCLIP_API_KEY"] = "test-token";
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify([
+      { id: "project-a", primaryWorkspace: { cwd: process.cwd() } },
+      { id: "project-b", primaryWorkspace: { cwd: "/tmp" } },
+    ]), { status: 200 })) as typeof fetch;
+    const calls: boolean[] = [];
+    const runProject = vi.fn(async (context: AdapterExecutionContext): Promise<AdapterExecutionResult> => {
+      calls.push((context.config as Record<string, unknown>)["reconcileFleet"] === true);
+      return { exitCode: 0, signal: null, timedOut: false, summary: "ok" };
+    });
+    await executeAllProjects({
+      agent: { id: "orchestrator", companyId: "company-1", name: "Orchestrator", adapterConfig: {} },
+      config: { reconcileFleet: false },
+      context: { companyId: "company-1" },
+      runtime: { sessionId: null, sessionParams: null },
+      onLog: vi.fn().mockResolvedValue(undefined),
+    } as AdapterExecutionContext, runProject);
+    expect(calls).toEqual([false, false]);
+  });
+
+  it("runs a duplicated Paperclip project projection only once", async () => {
+    process.env["PAPERCLIP_API_KEY"] = "test-token";
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify([
+      { id: "project-a", primaryWorkspace: { cwd: process.cwd() } },
+      { id: "project-a", primaryWorkspace: { cwd: process.cwd() } },
+    ]), { status: 200 })) as typeof fetch;
+    const calls: string[] = [];
+    const runProject = vi.fn(async (context: AdapterExecutionContext): Promise<AdapterExecutionResult> => {
+      calls.push(String((context.context as Record<string, unknown>)["projectId"]));
+      return { exitCode: 0, signal: null, timedOut: false, summary: "ok" };
+    });
+    const result = await executeAllProjects({
+      agent: { id: "orchestrator", companyId: "company-1", name: "Orchestrator", adapterConfig: {} },
+      config: { reconcileFleet: false },
+      context: { companyId: "company-1" },
+      runtime: { sessionId: null, sessionParams: null },
+      onLog: vi.fn().mockResolvedValue(undefined),
+    } as AdapterExecutionContext, runProject);
+    expect(calls).toEqual(["project-a"]);
+    expect(result.summary).toContain("Processed 1 project(s)");
+  });
 });
