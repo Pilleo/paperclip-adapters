@@ -59,7 +59,7 @@ async function createAdapterContext(
 
 async function main() {
   console.log("\n================================================================================");
-  console.log("  🔬 Paperclip Deep End-to-End Orchestration & Planning Test Suite");
+  console.log("  🔬 Run the Paperclip Jules recovery canary in CI against a disposable server");
   console.log("================================================================================\n");
 
   let testCompanyId = "";
@@ -385,22 +385,22 @@ paperclip_issue_id: "${idClarify}"
     await log("PHASE 6", "PASS", "Autonomous Clarifier resolved open questions from code and moved task to ready state");
 
     console.log("\n================================================================================");
-    console.log("  🎉 ALL 6 DEEP E2E LIFECYCLE PHASES PASSED WITH ZERO SHORTCUTS!");
+    console.log("  🎉 ALL 6 Run the Paperclip Jules recovery canary in CI against a disposable server PHASES PASSED WITH ZERO SHORTCUTS!");
     console.log("================================================================================\n");
   } finally {
     // -------------------------------------------------------------------------
     // Teardown: Clean up isolated test company and temporary directory
     // -------------------------------------------------------------------------
     if (testCompanyId) {
-      await fetch(`${PAPERCLIP_API}/api/companies/${testCompanyId}`, { method: "DELETE" }).catch(() => {});
+      const res = await fetch(`${PAPERCLIP_API}/api/companies/${testCompanyId}`, { method: "DELETE" }).catch((e: any) => { if (e.code === "EPERM" || e.code === "EACCES") { console.error("Teardown failed: EPERM/EACCES bypass prevented. Fail closed."); throw e; } throw e; }); if (res && !res.ok) { throw new Error(`Failed to delete company: HTTP ${res.status}`); }
     }
     if (tempBacklogDir && fs.existsSync(tempBacklogDir)) {
-      fs.rmSync(tempBacklogDir, { recursive: true, force: true });
+      try { fs.rmSync(tempBacklogDir, { recursive: true, force: true }); } catch (e: any) { if (e.code === "EPERM" || e.code === "EACCES") { console.error("Teardown failed: EPERM/EACCES bypass prevented. Fail closed."); throw e; } throw e; }
     }
   }
 }
 
 main().catch((err) => {
-  console.error("❌ Deep E2E Lifecycle Test failed:", err);
+  console.error("❌ Run the Paperclip Jules recovery canary in CI against a disposable server failed:", err);
   process.exit(1);
 });
