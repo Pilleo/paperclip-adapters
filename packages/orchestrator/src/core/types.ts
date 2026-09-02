@@ -14,12 +14,31 @@ export type IssueStatus =
   | "cancelled"
   | "blocked";
 
+export type IssueState = IssueStatus | "unknown";
+
+const ISSUE_STATUSES: ReadonlySet<string> = new Set<IssueStatus>([
+  "backlog",
+  "todo",
+  "in_progress",
+  "in_review",
+  "done",
+  "cancelled",
+  "blocked",
+]);
+
+export function normalizeIssueStatus(raw: unknown): IssueState {
+  if (typeof raw !== "string") return "unknown";
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === "resolved") return "done";
+  return ISSUE_STATUSES.has(normalized) ? normalized as IssueStatus : "unknown";
+}
+
 export interface ParsedIssueMetadata {
   readonly id: string;
   readonly identifier?: string | null | undefined;
   readonly issueNumber?: number | null | undefined;
   readonly title: string;
-  readonly status: IssueStatus | string;
+  readonly status: IssueState;
   readonly priority: TaskPriority;
   readonly priorityRank: number;
   readonly dependencies: readonly string[];

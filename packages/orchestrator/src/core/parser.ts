@@ -1,5 +1,6 @@
 import path from "node:path";
 import { ParsedIssueMetadata, TaskPriority } from "./types.js";
+import { normalizeIssueStatus } from "./types.js";
 
 /**
  * Pure parsing functions for task metadata.
@@ -195,7 +196,7 @@ export function extractIssueMetadata(issue: {
     identifier: identifier ?? null,
     issueNumber: issue.issueNumber ?? null,
     title: issue.title,
-    status: issue.status,
+    status: normalizeIssueStatus(issue.status),
     priority,
     priorityRank: rank,
     dependencies: Object.freeze([...new Set(dependencies)]),

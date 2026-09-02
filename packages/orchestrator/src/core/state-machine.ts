@@ -1,4 +1,6 @@
-import { IssueStatus } from "./types.js";
+import { IssueStatus, IssueState, normalizeIssueStatus } from "./types.js";
+
+export { normalizeIssueStatus } from "./types.js";
 
 export type OrchestratorEvent =
   | { readonly type: "DISPATCH"; readonly targetAgentId: string; readonly reason: string }
@@ -10,8 +12,8 @@ export type OrchestratorEvent =
   | { readonly type: "UNBLOCK" };
 
 export interface StateTransitionResult {
-  readonly fromStatus: IssueStatus | string;
-  readonly toStatus: IssueStatus;
+  readonly fromStatus: IssueState;
+  readonly toStatus: IssueState;
   readonly isAllowed: boolean;
   readonly updatedAssigneeAgentId?: string | null | undefined;
   readonly reason: string;
@@ -22,7 +24,16 @@ export function evaluateIssueTransition(
   currentAssigneeId: string | null | undefined,
   event: OrchestratorEvent
 ): StateTransitionResult {
-  const normStatus = (currentStatus || "").toLowerCase() as IssueStatus;
+  const normStatus = normalizeIssueStatus(currentStatus);
+  if (normStatus === "unknown") {
+    return {
+      fromStatus: "unknown",
+      toStatus: "unknown",
+      isAllowed: false,
+      updatedAssigneeAgentId: currentAssigneeId,
+      reason: "Cannot transition an issue with an unknown status; reconcile the Paperclip record first",
+    };
+  }
 
   switch (event.type) {
     case "DISPATCH": {

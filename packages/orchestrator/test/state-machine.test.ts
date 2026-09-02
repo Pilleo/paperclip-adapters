@@ -1,7 +1,27 @@
 import { describe, it, expect } from "vitest";
-import { evaluateIssueTransition } from "../src/core/state-machine.js";
+import { evaluateIssueTransition, normalizeIssueStatus } from "../src/core/state-machine.js";
 
 describe("Issue State Machine", () => {
+  it("normalizes only the supported Paperclip issue states", () => {
+    expect(normalizeIssueStatus(" IN_REVIEW ")).toBe("in_review");
+    expect(normalizeIssueStatus("done")).toBe("done");
+    expect(normalizeIssueStatus("resolved")).toBe("done");
+    expect(normalizeIssueStatus(undefined)).toBe("unknown");
+    expect(normalizeIssueStatus("waiting_for_magic")).toBe("unknown");
+  });
+
+  it("fails closed for an unknown state without proposing a Paperclip mutation", () => {
+    const result = evaluateIssueTransition("waiting_for_magic", null, {
+      type: "DISPATCH",
+      targetAgentId: "agent-1",
+      reason: "attempt",
+    });
+    expect(result.isAllowed).toBe(false);
+    expect(result.fromStatus).toBe("unknown");
+    expect(result.toStatus).toBe("unknown");
+    expect(result.reason).toMatch(/unknown/i);
+  });
+
   it("allows DISPATCH from backlog or todo to in_progress", () => {
     const res1 = evaluateIssueTransition("backlog", null, {
       type: "DISPATCH",

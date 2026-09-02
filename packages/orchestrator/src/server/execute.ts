@@ -70,6 +70,7 @@ import { allocateProjectCapacity } from "../core/project-capacity.js";
 import { isProjectWorkspaceDirectory } from "../core/project-workspaces.js";
 import { IncidentDeduper } from "../core/incident-deduper.js";
 import { runProjectWorkerPool } from "../core/project-worker-pool.js";
+import type { IssueState } from "../core/types.js";
 
 // One orchestrator process can receive overlapping Paperclip heartbeats. Keep
 // merge effects single-flight so concurrent ticks cannot duplicate comments or
@@ -646,7 +647,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
   }
 
   // 7. PHASE 1: Reconcile board status with merged GitHub PRs & Archive files
-  const statusOverrides = new Map<string, string>();
+  const statusOverrides = new Map<string, IssueState>();
   const mergedIssueIds = new Set<string>();
   let mergedAutoCompleted = 0;
   if (!ghStatus.error) {
@@ -723,7 +724,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
   let lifecycleOrphanCount = 0;
   const lifecycleIssues = parsedIssues.map((issue) =>
     statusOverrides.has(issue.id)
-      ? { ...issue, status: statusOverrides.get(issue.id) as string }
+      ? { ...issue, status: statusOverrides.get(issue.id) as IssueState }
       : issue,
   );
 
@@ -1106,7 +1107,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
       const dep = parsedIssues.find((p) => p.id === depId || p.identifier === depId);
       if (!dep) return true;
       const depStatus = statusOverrides.get(dep.id) || dep.status;
-      return depStatus !== "done" && depStatus !== "resolved";
+      return depStatus !== "done";
     });
 
     if (!hasUnresolvedDependency || delegatedReviewReleased) {
@@ -1147,7 +1148,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
 
   const overlayedIssues = parsedIssues.map((issue) =>
     statusOverrides.has(issue.id)
-      ? { ...issue, status: statusOverrides.get(issue.id) as string }
+      ? { ...issue, status: statusOverrides.get(issue.id) as IssueState }
       : issue
   );
 
@@ -1748,7 +1749,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
   }
 
   const dispatchIssues = overlayedIssues.filter((issue) => issue.orchestratorManaged).map((issue) =>
-    statusOverrides.has(issue.id) ? { ...issue, status: statusOverrides.get(issue.id) as string } : issue
+    statusOverrides.has(issue.id) ? { ...issue, status: statusOverrides.get(issue.id) as IssueState } : issue
   );
   const conflictForDispatch = calculateConflictMatrix(dispatchIssues);
 
@@ -1899,7 +1900,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
     totalIssues: parsedIssues.length,
     inProgressCount: inProgressIssues.length,
     inReviewCount: inReviewIssues.length,
-    resolvedCount: parsedIssues.filter((i) => i.status === "done" || i.status === "resolved").length,
+    resolvedCount: parsedIssues.filter((i) => i.status === "done").length,
     todoCount: parsedIssues.filter((i) => i.status === "todo" || i.status === "backlog").length,
     julesQuota,
     julesRunning,
