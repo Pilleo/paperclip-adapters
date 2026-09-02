@@ -1,9 +1,32 @@
 import { z } from "zod";
 import { JulesSessionId, PaperclipId, JulesActivityId, PrUrl, asJulesSessionId, asPaperclipId, asJulesActivityId, asPrUrl } from "./brands.js";
 import { AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { MutationCheckpointSchema, MutationCheckpoint } from "./mutation-checkpoint.js";
 
-export const JulesSessionStateSchema = z.string();
-export type JulesSessionState = z.infer<typeof JulesSessionStateSchema>;
+export const JULES_SESSION_STATES = [
+  "QUEUED",
+  "PLANNING",
+  "IN_PROGRESS",
+  "AWAITING_USER_FEEDBACK",
+  "AWAITING_PLAN_APPROVAL",
+  "COMPLETED",
+  "FAILED",
+  "CANCELLED",
+  "UNKNOWN",
+] as const;
+
+export type JulesSessionState = typeof JULES_SESSION_STATES[number];
+
+export function normalizeJulesState(value: unknown): JulesSessionState {
+  return typeof value === "string" && (JULES_SESSION_STATES as readonly string[]).includes(value)
+    ? value as JulesSessionState
+    : "UNKNOWN";
+}
+
+export const JulesSessionStateSchema: z.ZodType<JulesSessionState | undefined, z.ZodTypeDef, unknown> = z.preprocess(
+  (value) => value === undefined ? undefined : normalizeJulesState(value),
+  z.enum(JULES_SESSION_STATES).optional(),
+);
 
 export type SessionPhase = z.infer<typeof SessionPhaseSchema>;
 export const SessionPhaseSchema = z.enum([
@@ -133,6 +156,7 @@ export const JulesAdapterSessionV1Schema = z.object({
   lastWatchdogNudgeAt: z.string().optional(),
   watchdogNudgeCount: z.number().int().min(0).optional(),
   inPlaceRetryCount: z.number().int().min(0).optional(),
+  mutationCheckpoint: MutationCheckpointSchema.optional(),
   createdAt: z.string(),
   lastPolledAt: z.string().optional()
 }).superRefine((session, ctx) => {
@@ -173,7 +197,7 @@ export interface JulesAdapterSessionV1 {
   sessionId?: string | undefined;
   julesSessionId?: JulesSessionId | undefined;
   julesSessionUrl?: string | undefined;
-  julesState?: string | undefined;
+  julesState?: JulesSessionState | undefined;
   attempt: number;
   failedSessions: Array<{
     sessionId?: string | undefined;
@@ -265,6 +289,7 @@ export interface JulesAdapterSessionV1 {
   lastWatchdogNudgeAt?: string | undefined;
   watchdogNudgeCount?: number | undefined;
   inPlaceRetryCount?: number | undefined;
+  mutationCheckpoint?: MutationCheckpoint | undefined;
   createdAt: string;
   lastPolledAt?: string | undefined;
 }

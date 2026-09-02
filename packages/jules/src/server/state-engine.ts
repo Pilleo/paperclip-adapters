@@ -1,4 +1,4 @@
-import { JulesAdapterSessionV1 } from "./session.js";
+import { JulesAdapterSessionV1, JulesSessionState } from "./session.js";
 import { IssueStatus, IssueDisposition } from "./disposition.js";
 import { evaluateSessionWatchdog } from "./watchdog.js";
 
@@ -15,7 +15,7 @@ export type JulesTaskPhase =
   | "FAILED";
 
 export interface JulesLifecycleSignals {
-  readonly julesState: string;
+  readonly julesState: JulesSessionState;
   readonly prUrl?: string | undefined;
   readonly prDetails?: { readonly isMerged: boolean; readonly mergeableStatus?: string } | undefined;
   readonly ciStatus?: "success" | "pending" | "failed" | "unknown" | null | undefined;

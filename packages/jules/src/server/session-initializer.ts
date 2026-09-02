@@ -1,7 +1,7 @@
 import { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { AdapterConfig, discoverLocalGitRepository, discoverLocalGitDefaultBranch } from "./config.js";
 import { isGhCliAuthenticated, createRemoteGitHubRepo } from "./git-remote-creator.js";
-import { JulesAdapterSessionV1, serializeSession } from "./session.js";
+import { JulesAdapterSessionV1, normalizeJulesState, serializeSession } from "./session.js";
 import { JulesClient } from "./jules-client.js";
 import { buildPrompt, hashPromptIdentity } from "./prompt-builder.js";
 import { asJulesSessionId, asPaperclipId } from "./brands.js";
@@ -101,7 +101,7 @@ export async function initializeOrResumeSession(
       sessionId: asJulesSessionId(julesSession.id),
       julesSessionId: asJulesSessionId(julesSession.id),
       julesSessionUrl: julesSession.url,
-      julesState: julesSession.state,
+      julesState: normalizeJulesState(julesSession.state),
       phase: "RUNNING",
       attempt,
       failedSessions,

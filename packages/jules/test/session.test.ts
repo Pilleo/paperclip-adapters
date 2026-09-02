@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { sessionCodec, JulesAdapterSessionV1 } from '../src/server/session';
+import { sessionCodec, JulesAdapterSessionV1, normalizeJulesState } from '../src/server/session';
 
 beforeAll(() => {
     process.env['JULES_API_KEY'] = 'test-key';
@@ -52,6 +52,12 @@ beforeAll(() => {
   it('preserves unknown Jules state safely', () => {
      const sessionWithUnknownState = { ...validSession, julesState: 'SOME_WEIRD_STATE_XYZ' };
      const decoded = sessionCodec.decode(sessionWithUnknownState);
-     expect(decoded.julesState).toBe('SOME_WEIRD_STATE_XYZ');
+     expect(decoded?.julesState).toBe('UNKNOWN');
+  });
+
+  it('normalizes provider states through a closed state set', () => {
+    expect(normalizeJulesState('IN_PROGRESS')).toBe('IN_PROGRESS');
+    expect(normalizeJulesState('future-provider-state')).toBe('UNKNOWN');
+    expect(normalizeJulesState(undefined)).toBe('UNKNOWN');
   });
 });

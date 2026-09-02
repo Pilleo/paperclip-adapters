@@ -31,7 +31,7 @@ import { getPullRequestCiStatus, getPullRequestDetails, getPullRequestPatch, lis
 import { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { AdapterConfig, validateConfig, requireJulesApiKey, discoverLocalGitRepository, discoverLocalGitDefaultBranch } from "./config.js";
 import { isGhCliAuthenticated, createRemoteGitHubRepo } from "./git-remote-creator.js";
-import { JulesAdapterSessionV1, sessionCodec, serializeSession } from "./session.js";
+import { JulesAdapterSessionV1, normalizeJulesState, sessionCodec, serializeSession } from "./session.js";
 import { JulesActivity, JulesClient, JulesClientError, extractPullRequestUrl, ownerRepoFromJulesSource } from "./jules-client.js";
 import { buildPrompt, hashPromptIdentity, PROMPT_IDENTITY_HASH_VERSION } from "./prompt-builder.js";
 import { handleJulesState } from "./state-machine.js";
@@ -42,6 +42,7 @@ import { shouldRetry, getRetryNotBefore } from "./retry-policy.js";
 import { asJulesActivityId, asJulesSessionId, asPaperclipId } from "./brands.js";
 import { CtxContextSchema, HostContextSchema } from "./context-schemas.js";
 import { sanitizeError } from "./error-sanitizer.js";
+import { beginMutation, markMutationFailed, markMutationSucceeded } from "./mutation-checkpoint.js";
 import { deleteStoredSession, findStoredSessionByJulesSessionId, loadStoredSession, saveStoredSession } from "./session-store.js";
 import {
   isAfterCheckpoint,
@@ -98,6 +99,36 @@ function readContextRecord(context: Record<string, unknown>, key: string): Recor
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+}
+
+async function runCheckpointedMutation<T>(input: {
+  session: JulesAdapterSessionV1;
+  key: string;
+  operation: string;
+  issueId: string;
+  sessionId?: string;
+  activityId?: string;
+  persist: () => Promise<void>;
+  run: () => Promise<T>;
+}): Promise<T> {
+  input.session.mutationCheckpoint = beginMutation(input);
+  await input.persist();
+  try {
+    const result = await input.run();
+    const responseId = result && typeof result === "object" && "id" in result && typeof result.id === "string"
+      ? result.id
+      : undefined;
+    input.session.mutationCheckpoint = markMutationSucceeded(
+      input.session.mutationCheckpoint,
+      responseId ? { responseId } : {},
+    );
+    await input.persist();
+    return result;
+  } catch (error) {
+    input.session.mutationCheckpoint = markMutationFailed(input.session.mutationCheckpoint, sanitizeError(error));
+    await input.persist();
+    throw error;
+  }
 }
 
 function completionInteractionResult(
@@ -1011,7 +1042,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         if (isLiveJulesRemoteState(remote.state) && repoMatches) {
           await ctx.onLog?.("stdout", `[jules] Reattaching live remote session ${session.julesSessionId} (${remote.state}); skipping createSession.\n`);
           session.phase = "RUNNING";
-          session.julesState = remote.state;
+          session.julesState = normalizeJulesState(remote.state);
           await persistSessionBestEffort(session, ctx.onLog);
           await scheduleLiveSessionMonitor(session, true);
           return createPendingResult(session, true);
@@ -1253,7 +1284,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     try {
       const julesSession = await client.getSession(session.julesSessionId);
-      const state = julesSession.state || 'UNKNOWN';
+      const state = normalizeJulesState(julesSession.state);
       const terminalProviderState = state === "COMPLETED" || state === "FAILED";
       let scopeDriftSummary: string | undefined;
       session.julesState = state;
@@ -1588,7 +1619,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             return await yieldHeartbeat(session);
           }
           if (pendingPlanAgentReview.stage === "strong" && decision?.kind === "ESCALATE") {
-            const interaction = await createJulesPlanApprovalInteraction(taskId, session.julesSessionId!, pendingPlanAgentReview.julesActivityId, pendingPlanAgentReview.question, ctx.authToken, ctx.runId);
+            const interaction = await runCheckpointedMutation({
+              session: session!,
+              key: `confirmation:${taskId}:plan:${pendingPlanAgentReview.planRevisionId}`,
+              operation: "create_plan_approval_interaction",
+              issueId: taskId,
+              sessionId: session!.julesSessionId,
+              activityId: pendingPlanAgentReview.julesActivityId,
+              persist: () => persistSessionBestEffort(session!, ctx.onLog),
+              run: () => createJulesPlanApprovalInteraction(taskId, session!.julesSessionId!, pendingPlanAgentReview.julesActivityId, pendingPlanAgentReview.question, ctx.authToken, ctx.runId),
+            });
             session.pendingInteraction = { type: "plan_approval", julesActivityId: pendingPlanAgentReview.julesActivityId, paperclipInteractionId: interaction.id, question: pendingPlanAgentReview.question, planDocumentId: interaction.planRevision.documentId, planRevisionId: interaction.planRevision.revisionId, planRevisionNumber: interaction.planRevision.revisionNumber, createdAt: new Date().toISOString() };
             session.planReviewOutcome = "human_escalation";
             await persistSessionBestEffort(session, ctx.onLog);
@@ -1707,15 +1747,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           await completeInternalReviewIssue(pending.adjudicationIssueId, ctx.authToken, ctx.runId).catch(() => undefined);
           const activityId = pending.julesActivityId;
           const attempt = (session.feedbackInteractionAttempt ?? 0) + 1;
-          const interaction = await createJulesFeedbackInteraction(
-            taskId,
-            session.julesSessionId!,
+          const interaction = await runCheckpointedMutation({
+            session: session!,
+            key: `jules:user-feedback:${taskId}:${session!.julesSessionId}:${activityId}:${attempt}`,
+            operation: "create_user_feedback_interaction",
+            issueId: taskId,
+            sessionId: session!.julesSessionId,
             activityId,
-            `${pending.question}\n\nReviewer escalation: ${decision.reason}`,
-            ctx.authToken,
-            attempt,
-            ctx.runId,
-          );
+            persist: () => persistSessionBestEffort(session!, ctx.onLog),
+            run: () => createJulesFeedbackInteraction(
+              taskId,
+              session!.julesSessionId!,
+              activityId,
+              `${pending.question}\n\nReviewer escalation: ${decision.reason}`,
+              ctx.authToken,
+              attempt,
+              ctx.runId,
+            ),
+          });
           session.feedbackInteractionAttempt = attempt;
           session.pendingInteraction = {
             type: "user_feedback",
@@ -1973,9 +2022,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 activity = latestAgentMessage(allActivities);
               }
               const activityId = activity?.id ?? "awaiting-user-feedback";
-              const interaction = await createJulesFeedbackInteraction(
-                taskId, session.julesSessionId!, activityId, action.question, ctx.authToken, action.attempt, ctx.runId,
-              );
+              const interaction = await runCheckpointedMutation({
+                session: session!,
+                key: `jules:user-feedback:${taskId}:${session!.julesSessionId}:${activityId}:${action.attempt}`,
+                operation: "create_user_feedback_interaction",
+                issueId: taskId,
+                sessionId: session!.julesSessionId,
+                activityId,
+                persist: () => persistSessionBestEffort(session!, ctx.onLog),
+                run: () => createJulesFeedbackInteraction(
+                  taskId, session!.julesSessionId!, activityId, action.question, ctx.authToken, action.attempt, ctx.runId,
+                ),
+              });
               session.feedbackInteractionAttempt = action.attempt;
               session.pendingInteraction = {
                 type: "user_feedback",
@@ -2013,18 +2071,30 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 ) ?? null;
               }
               const activityId = activity?.id ?? "awaiting-user-feedback";
-              const visibleInteraction = await createJulesAgentAdjudicationInteraction(
-                taskId,
-                session.julesSessionId!,
+              const visibleInteraction = await runCheckpointedMutation({
+                session: session!,
+                key: `jules:agent-adjudication:${taskId}:${session!.julesSessionId}:${activityId}`,
+                operation: "create_agent_adjudication_interaction",
+                issueId: taskId,
+                sessionId: session!.julesSessionId,
                 activityId,
-                action.question,
-                reviewerAgentId,
-                ctx.authToken,
-                ctx.runId,
-              );
-              const adjudication = await createJulesQuestionAdjudication(
-                taskId, reviewerAgentId, action.question, ctx.authToken, ctx.runId, ctx.agent.companyId,
-              );
+                persist: () => persistSessionBestEffort(session!, ctx.onLog),
+                run: () => createJulesAgentAdjudicationInteraction(
+                  taskId, session!.julesSessionId!, activityId, action.question, reviewerAgentId, ctx.authToken, ctx.runId,
+                ),
+              });
+              const adjudication = await runCheckpointedMutation({
+                session: session!,
+                key: `jules:question-adjudication:${taskId}:${action.question}`,
+                operation: "create_question_adjudication_issue",
+                issueId: taskId,
+                sessionId: session!.julesSessionId,
+                activityId,
+                persist: () => persistSessionBestEffort(session!, ctx.onLog),
+                run: () => createJulesQuestionAdjudication(
+                  taskId, reviewerAgentId, action.question, ctx.authToken, ctx.runId, ctx.agent.companyId,
+                ),
+              });
               session.pendingInteraction = {
                 type: "agent_adjudication",
                 julesActivityId: asJulesActivityId(activityId),
