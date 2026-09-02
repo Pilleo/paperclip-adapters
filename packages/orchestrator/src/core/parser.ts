@@ -241,6 +241,42 @@ export interface PaperclipProjectRecord {
     | undefined;
 }
 
+export type ProjectWorkspaceResolution =
+  | { readonly ok: true; readonly project: PaperclipProjectRecord; readonly workspacePath: string }
+  | { readonly ok: false; readonly reason: "missing-project" | "unknown-project" | "missing-workspace"; readonly projectId?: string | undefined };
+
+/**
+ * Resolve the checkout from the issue-owned Paperclip project.
+ *
+ * This deliberately ignores the orchestrator process cwd and git remote. A
+ * company heartbeat may service several repositories, so cwd-based inference
+ * can silently run a task in the wrong repository.
+ */
+export function resolveProjectWorkspace(params: {
+  readonly projectId?: string | null | undefined;
+  readonly projects: readonly PaperclipProjectRecord[];
+  /** @deprecated Legacy hints are accepted only to prove they are ignored. */
+  readonly workspacePath?: string | undefined;
+  /** @deprecated Legacy hints are accepted only to prove they are ignored. */
+  readonly gitRemoteUrl?: string | null | undefined;
+}): ProjectWorkspaceResolution {
+  const projectId = typeof params.projectId === "string" ? params.projectId.trim() : "";
+  if (!projectId) return { ok: false, reason: "missing-project" };
+
+  const project = params.projects.find((candidate) => candidate.id === projectId);
+  if (!project) return { ok: false, reason: "unknown-project", projectId };
+
+  const workspacePath = [
+    project.primaryWorkspace?.cwd,
+    project.codebase?.cwd,
+    project.codebase?.effectiveLocalFolder,
+    project.codebase?.localFolder,
+  ].find((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0);
+  if (!workspacePath) return { ok: false, reason: "missing-workspace", projectId };
+
+  return { ok: true, project, workspacePath: path.resolve(workspacePath.trim()) };
+}
+
 /** owner/repo from a GitHub URL, SSH remote, or already-canonical slug. */
 export function normalizeGitHubOwnerRepo(raw: string | null | undefined): string | null {
   if (!raw) return null;

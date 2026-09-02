@@ -75,6 +75,11 @@ describe("orchestrator live session continuation", () => {
           { status: 200 }
         );
       }
+      if (href.includes("/projects")) {
+        return new Response(JSON.stringify([
+          { id: "project-1", name: "paperclip-adapters", primaryWorkspace: { cwd: process.cwd() } },
+        ]), { status: 200 });
+      }
       if (href.includes("/issues")) {
         return new Response(
           JSON.stringify([
@@ -83,6 +88,7 @@ describe("orchestrator live session continuation", () => {
               identifier: "MAZ-821",
               title: "PROBE: Jules reattach ping",
               status: "in_progress",
+              projectId: "project-1",
               assigneeAgentId: "jules-orch",
               updatedAt: finishedAt,
             },
@@ -156,6 +162,11 @@ describe("orchestrator live session continuation", () => {
           { status: 200 }
         );
       }
+      if (href.includes("/projects")) {
+        return new Response(JSON.stringify([
+          { id: "project-1", name: "paperclip-adapters", primaryWorkspace: { cwd: process.cwd() } },
+        ]), { status: 200 });
+      }
       if (href.includes("/issues")) {
         return new Response(
           JSON.stringify([
@@ -163,6 +174,7 @@ describe("orchestrator live session continuation", () => {
               id: "issue-821",
               title: "ping",
               status: "in_progress",
+              projectId: "project-1",
               assigneeAgentId: "jules-orch",
               updatedAt: finishedAt,
             },

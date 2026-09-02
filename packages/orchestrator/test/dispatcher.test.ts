@@ -136,6 +136,23 @@ describe("Multi-Lane Concurrency & Jules Quota Selection", () => {
 });
 
 describe("Method-level granularity conflict evaluation", () => {
+  it("selects no task when the project has no remaining lane capacity", () => {
+    const task = extractIssueMetadata({
+      id: "no-slot",
+      title: "No slot",
+      status: "todo",
+      description: "---\npriority: low\n---",
+    });
+    const selections = selectNextTasksMultiLane([task], calculateConflictMatrix([task]), {
+      julesAgentId: "jules",
+      vibeAgentId: "vibe",
+      julesCapacity: 0,
+      vibeCapacity: 0,
+      maxToSelect: 0,
+    });
+    expect(selections).toEqual([]);
+  });
+
   it("allows concurrent scheduling for disjoint method targets in the same file", () => {
     const taskA: ParsedIssueMetadata = {
       id: "task-a",

@@ -11,7 +11,7 @@ const execFileAsync = promisify(execFile);
 const reconciledOperatorGates = new Set<string>();
 
 import { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
-import { extractIssueMetadata, resolvePaperclipProject, type PaperclipProjectRecord } from "../core/parser.js";
+import { extractIssueMetadata, resolvePaperclipProject, resolveProjectWorkspace, type PaperclipProjectRecord } from "../core/parser.js";
 import { calculateConflictMatrix, selectNextTasksMultiLane } from "../core/dispatcher.js";
 import { fetchJulesQuota } from "../core/jules-quota.js";
 import { checkWorkspaceConsistency } from "../core/consistency.js";
@@ -66,6 +66,9 @@ import { decideJulesMonitorReconciliation } from "../core/jules-monitor-reconcil
 import { needsFullIssueRecord } from "../core/issue-enrichment-policy.js";
 import { planBoardReconciliation, type BoardIssueSnapshot } from "../core/board-reconciliation.js";
 import { decideBlockedManagedWork, decideRecoveryArtifact } from "../core/recovery-artifact.js";
+import { allocateProjectCapacity } from "../core/project-capacity.js";
+import { isProjectWorkspaceDirectory } from "../core/project-workspaces.js";
+import { IncidentDeduper } from "../core/incident-deduper.js";
 
 // One orchestrator process can receive overlapping Paperclip heartbeats. Keep
 // merge effects single-flight so concurrent ticks cannot duplicate comments or
@@ -73,6 +76,7 @@ import { decideBlockedManagedWork, decideRecoveryArtifact } from "../core/recove
 // this only protects the read/decide/write window within this adapter process.
 const mergeConvergenceGuard = new ConvergenceGuard();
 const lifecycleConvergenceGuard = new ConvergenceGuard();
+const agentIncidentDeduper = new IncidentDeduper();
 
 export interface OrchestratorAdapterConfig {
   readonly maxConcurrentJules?: number | undefined;
@@ -84,7 +88,6 @@ export interface OrchestratorAdapterConfig {
   readonly lunaReviewerAgentId?: string | undefined;
   readonly terraReviewerAgentId?: string | undefined;
   readonly julesPlanApprovalPolicy?: "required" | "trusted_opt_out" | undefined;
-  readonly workspacePath?: string | undefined;
   readonly backlogDirectory?: string | undefined;
   readonly resolvedDirectory?: string | undefined;
   readonly apiUrl?: string | undefined;
@@ -92,7 +95,86 @@ export interface OrchestratorAdapterConfig {
   readonly stalledThresholdMinutes?: number | undefined;
 }
 
+/**
+ * Company heartbeat entrypoint. Paperclip sends one heartbeat for the
+ * orchestrator, but projects own repositories and workspaces. Run the state
+ * machine once per configured project so Git/PR state cannot leak between
+ * repositories.
+ */
 export async function execute(context: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  // Unit tests exercise the project state machine directly with mocked HTTP.
+  // Production heartbeats always enumerate the company projects first.
+  if (process.env["NODE_ENV"] === "test") return executeProject(context);
+  return executeAllProjects(context);
+}
+
+export async function executeAllProjects(
+  context: AdapterExecutionContext,
+  runProject: (context: AdapterExecutionContext) => Promise<AdapterExecutionResult> = executeProject,
+): Promise<AdapterExecutionResult> {
+  const rawContext = (context.context as Record<string, unknown> | undefined) || {};
+  const companyId = context.agent?.companyId || String(rawContext["companyId"] || "");
+  const apiUrl = ((context.config as Record<string, unknown> | undefined)?.["apiUrl"] as string | undefined)
+    || process.env["PAPERCLIP_API_URL"] || "http://127.0.0.1:3100";
+  const authToken =
+    (context as AdapterExecutionContext & { authToken?: string }).authToken
+    || process.env["PAPERCLIP_AGENT_TOKEN"]
+    || process.env["PAPERCLIP_API_KEY"];
+  const pc = createPaperclipHttp({ apiUrl, authToken });
+  let projects: PaperclipProjectRecord[];
+  try {
+    projects = asArray<PaperclipProjectRecord>(await pc.listProjects(companyId));
+  } catch (err: unknown) {
+    const message = `Could not list company projects: ${err instanceof Error ? err.message : String(err)}`;
+    await context.onLog?.("stderr", `[ORCHESTRATOR] 🚨 ${message}\n`);
+    return { exitCode: 1, signal: null, timedOut: false, errorMessage: message, summary: message };
+  }
+
+  const runnableProjects = projects.filter((project) => {
+    const resolution = resolveProjectWorkspace({ projectId: project.id, projects });
+    return resolution.ok && isProjectWorkspaceDirectory(resolution.workspacePath);
+  });
+  const skippedProjects = projects.length - runnableProjects.length;
+  if (runnableProjects.length === 0) {
+    const message = `No company project has a usable local workspace; skipped ${projects.length} project(s)`;
+    await context.onLog?.("stderr", `[ORCHESTRATOR] 🚨 ${message}\n`);
+    return { exitCode: 1, signal: null, timedOut: false, errorMessage: message, summary: message };
+  }
+
+  const rawConfig = (context.config as Record<string, unknown> | undefined) || {};
+  const projectCapacity = allocateProjectCapacity({
+    projectIds: runnableProjects.map((project) => project.id),
+    maxConcurrentJules: typeof rawConfig["maxConcurrentJules"] === "number" ? rawConfig["maxConcurrentJules"] : 15,
+    maxConcurrentVibe: typeof rawConfig["maxConcurrentVibe"] === "number" ? rawConfig["maxConcurrentVibe"] : 1,
+  });
+  const results: AdapterExecutionResult[] = [];
+  for (const project of runnableProjects) {
+    const capacity = projectCapacity.find((item) => item.projectId === project.id);
+    results.push(await runProject({
+      ...context,
+      config: {
+        ...rawConfig,
+        ...(capacity ? { maxConcurrentJules: capacity.jules, maxConcurrentVibe: capacity.vibe } : {}),
+      },
+      context: {
+        ...((context.context as Record<string, unknown> | undefined) || {}),
+        projectId: project.id,
+      },
+    }));
+  }
+
+  const failures = results.filter((result) => result.exitCode !== 0);
+  const summary = `Processed ${runnableProjects.length} project(s), skipped ${skippedProjects}; ${failures.length} project execution(s) failed. ${results.map((result) => result.summary || result.errorMessage || "completed").join(" | ")}`;
+  return {
+    exitCode: failures.length > 0 ? 1 : 0,
+    signal: null,
+    timedOut: results.some((result) => result.timedOut),
+    ...(failures[0]?.errorMessage ? { errorMessage: failures[0].errorMessage } : {}),
+    summary,
+  };
+}
+
+async function executeProject(context: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const runId = context.runId || process.env["PAPERCLIP_RUN_ID"];
   const t0 = Date.now();
   const rawContext = (context.context as Record<string, unknown> | undefined) || {};
@@ -106,7 +188,11 @@ export async function execute(context: AdapterExecutionContext): Promise<Adapter
       : typeof (rawContext["workspace"] as Record<string, unknown> | undefined)?.["cwd"] === "string"
         ? ((rawContext["workspace"] as Record<string, unknown>)["cwd"] as string)
         : undefined;
-  const workspacePath = config.workspacePath || envMap["WORKSPACE_PATH"] || workspaceFromCtx || process.cwd();
+  // Kept only for direct unit-test fixtures and older internal callers. The
+  // production entrypoint always injects projectId and overrides this value
+  // from the Paperclip project's workspace.
+  let workspacePath = ((config as Record<string, unknown>)["workspacePath"] as string | undefined)
+    || envMap["WORKSPACE_PATH"] || workspaceFromCtx || process.cwd();
   const authToken =
     (context as AdapterExecutionContext & { authToken?: string }).authToken ||
     envMap["PAPERCLIP_AGENT_TOKEN"] ||
@@ -121,6 +207,7 @@ export async function execute(context: AdapterExecutionContext): Promise<Adapter
     // never enable this fallback for non-loopback deployments.
     localTrustedBoardWrites: true,
   });
+  const explicitProjectId = typeof rawContext["projectId"] === "string" ? String(rawContext["projectId"]).trim() : "";
   const orchestratorId = context.agent?.id || "";
   let managedIds = new Set<string>();
 
@@ -130,6 +217,22 @@ export async function execute(context: AdapterExecutionContext): Promise<Adapter
       await context.onLog("stdout", msg + "\n").catch(() => {});
     }
   };
+  if (explicitProjectId) {
+    try {
+      const project = await pc.getJson<PaperclipProjectRecord>(`/api/projects/${encodeURIComponent(explicitProjectId)}`);
+      const resolution = resolveProjectWorkspace({ projectId: explicitProjectId, projects: [project] });
+      if (!resolution.ok) {
+        const message = `Project ${explicitProjectId} has no usable local workspace (${resolution.reason})`;
+        await log(`[ORCHESTRATOR] 🚨 ${message}`);
+        return { exitCode: 1, signal: null, timedOut: false, errorMessage: message, summary: message };
+      }
+      workspacePath = resolution.workspacePath;
+    } catch (err: unknown) {
+      const message = `Could not resolve project ${explicitProjectId}: ${err instanceof Error ? err.message : String(err)}`;
+      await log(`[ORCHESTRATOR] 🚨 ${message}`);
+      return { exitCode: 1, signal: null, timedOut: false, errorMessage: message, summary: message };
+    }
+  }
   const managedWakeup = async (
     agentId: string | undefined,
     reason: string,
@@ -316,8 +419,9 @@ export async function execute(context: AdapterExecutionContext): Promise<Adapter
     );
 
     agentHealthReport = evaluateAgentHealth(agents);
-    if (!agentHealthReport.isHealthy) {
-      for (const inc of agentHealthReport.incidents) {
+    const newIncidents = agentIncidentDeduper.reconcile(agentHealthReport.incidents);
+    if (newIncidents.length > 0) {
+      for (const inc of newIncidents) {
         await log(
           `[ORCHESTRATOR] [Agent Incident] [${inc.severity}] ${inc.agentName} (${inc.status}): ${inc.issue}`
         );
@@ -350,11 +454,14 @@ export async function execute(context: AdapterExecutionContext): Promise<Adapter
     await log(`[ORCHESTRATOR] Warning: could not list Paperclip projects: ${msg}`);
   }
   const gitRemoteUrl = readWorkspaceGitRemote(workspacePath);
-  const workspaceProject = resolvePaperclipProject({
-    workspacePath,
-    gitRemoteUrl,
-    projects: companyProjects,
-  });
+  const explicitProjectResolution = explicitProjectId
+    ? resolveProjectWorkspace({ projectId: explicitProjectId, projects: companyProjects })
+    : null;
+  const workspaceProject = explicitProjectResolution?.ok
+    ? explicitProjectResolution.project
+    : explicitProjectId
+      ? null
+      : resolvePaperclipProject({ workspacePath, gitRemoteUrl, projects: companyProjects });
   if (workspaceProject) {
     await log(
       `[ORCHESTRATOR] Workspace folder maps to Paperclip project ${workspaceProject.name || workspaceProject.urlKey || workspaceProject.id}`,
@@ -433,7 +540,7 @@ export async function execute(context: AdapterExecutionContext): Promise<Adapter
   // backlog. The workspace project is the orchestrator's isolation boundary.
   const scopedIssues = workspaceProject?.id
     ? issuesList.filter((issue) => issue["projectId"] === workspaceProject.id)
-    : issuesList;
+    : [];
   // Paperclip's company issue list intentionally omits workProducts. Enrich
   // terminal and active-review issues; otherwise a ready Jules PR becomes
   // invisible immediately after the recovery tick changes `done` to
@@ -1646,7 +1753,9 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
     vibeCapacity,
     julesRunningCount: julesRunning,
     vibeRunningCount: vibeRunning,
-    maxToSelect: Math.max(1, julesCapacity - julesRunning + (vibeCapacity - vibeRunning)),
+    // A project may receive zero capacity when the company has more runnable
+    // projects than slots. Never turn that safe allocation into a dispatch.
+    maxToSelect: Math.max(0, julesCapacity - julesRunning + (vibeCapacity - vibeRunning)),
     extraLockedFiles: ghStatus.openPrFiles,
   });
 
