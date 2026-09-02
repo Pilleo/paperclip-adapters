@@ -76,11 +76,13 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
   async function sendJson(
     path: string,
     method: "POST" | "PATCH" | "DELETE",
-    body: unknown
+    body: unknown,
+    idempotencyKey?: string,
   ): Promise<{ ok: boolean; status: number; text: string; data?: unknown }> {
     const response = await request(path, {
       method,
       body: JSON.stringify(body),
+      ...(idempotencyKey ? { headers: { "Idempotency-Key": idempotencyKey } } : {}),
     });
     const rawText = await response.text().catch(() => "");
     const text = rawText.trim().slice(0, 500);
@@ -165,7 +167,7 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
       agentId: string,
       reason: string,
       issueId?: string,
-      options?: { resumeFromRunId?: string | undefined },
+      options?: { resumeFromRunId?: string | undefined; idempotencyKey?: string | undefined },
     ) {
       // Paperclip wakeAgentSchema ignores top-level issueId. Heartbeat only
       // injects context.paperclipIssue / task when payload.issueId is set.
@@ -182,7 +184,7 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
               },
             }
           : {}),
-      });
+      }, options?.idempotencyKey);
     },
   };
 }

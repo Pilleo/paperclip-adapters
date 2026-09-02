@@ -57,6 +57,7 @@ All reviewer prompts enforce explicit rejection criteria (`REQUEST_CHANGES`):
 - **Daily Budget & Cost Optimization Tracker (`cost-tracker.ts`):** Tracks estimated cloud spend per session, displays real-time budget telemetry, and enforces configurable daily spending thresholds.
 - **Self-Healing Stalled Session Reaper (48h Async Threshold):** Grants 48-hour reaper immunity to long-running asynchronous cloud workers (Jules) while reclaiming orphaned local runs idle $>15\text{ minutes}$ back to `todo`.
 - **Jules continuation workaround (temporary):** Until Paperclip natively persists an external-provider poll as a continuation, the adapter performs cadence-limited, issue-scoped wakes using the last successful heartbeat run as `resumeFromRunId`. This bypasses Paperclip's no-progress re-wake throttle while preserving the existing Jules provider session. It uses only structured heartbeat state and never parses provider prose or creates monitor child issues. Remove this workaround when upstream monitor dispatch persists and exposes a reliable provider continuation state.
+- **Idempotent managed wakes:** Every orchestrator wake carries a stable `Idempotency-Key` derived from agent, issue, and resume run. Transient 429/5xx responses use bounded exponential retry; authorization, validation, not-found, and conflict responses are surfaced immediately.
 - **Merged Feature Branch Pruner:** Discovers merged GitHub branches for safe pruning.
 
 ---

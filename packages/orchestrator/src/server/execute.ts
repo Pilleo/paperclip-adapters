@@ -71,6 +71,7 @@ import { isProjectWorkspaceDirectory } from "../core/project-workspaces.js";
 import { IncidentDeduper } from "../core/incident-deduper.js";
 import { runProjectWorkerPool } from "../core/project-worker-pool.js";
 import type { IssueState } from "../core/types.js";
+import { executePaperclipCommand } from "@pilleo/paperclip-adapter-common";
 
 // One orchestrator process can receive overlapping Paperclip heartbeats. Keep
 // merge effects single-flight so concurrent ticks cannot duplicate comments or
@@ -254,11 +255,21 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       await log(`[ORCHESTRATOR] Skipped managed-worker wakeup: run attribution is missing.`);
       return;
     }
-    const result = await pc.wakeup(agentId, reason, issueId, options);
-    const circuitState = capabilityCircuit.record(circuitKey, result);
+    const idempotencyKey = `orchestrator:wakeup:${agentId}:${issueId || "company"}:${options?.resumeFromRunId || "current"}`;
+    const result = await executePaperclipCommand(
+      {
+        key: idempotencyKey,
+        issueId: issueId || "company",
+        action: "wakeup",
+        payload: { agentId, reason, ...options },
+      },
+      () => pc.wakeup(agentId, reason, issueId, { ...options, idempotencyKey }),
+    );
+    const normalizedResult = { ...result, text: result.text ?? "" };
+    const circuitState = capabilityCircuit.record(circuitKey, normalizedResult);
     let wakeResponse: Record<string, unknown> = {};
     try {
-      const parsed = JSON.parse(result.text);
+      const parsed = JSON.parse(normalizedResult.text);
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
         wakeResponse = parsed as Record<string, unknown>;
       }
@@ -266,7 +277,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       // The HTTP helper deliberately keeps response bodies opaque; malformed
       // success bodies are reported only through the normal status path.
     }
-    if (result.ok && wakeResponse["status"] === "skipped") {
+    if (normalizedResult.ok && wakeResponse["status"] === "skipped") {
       await log(
         `[ORCHESTRATOR] Managed-worker wakeup skipped for ${issueId || "unscoped"}: ${String(wakeResponse["reason"] || "unknown")}. Next scheduled poll will retry.`,
       );
@@ -288,11 +299,11 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
         }
       }
     }
-    if (!result.ok && circuitState !== "already_open") {
+    if (!normalizedResult.ok && circuitState !== "already_open") {
       const suffix = circuitState === "opened"
         ? " Capability circuit opened; this wake will not be retried until the adapter is reloaded after a Paperclip authorization change."
         : "";
-      await log(`[ORCHESTRATOR] Managed-worker wakeup failed (${result.status}): ${result.text}${suffix}`);
+      await log(`[ORCHESTRATOR] Managed-worker wakeup failed (${normalizedResult.status}): ${normalizedResult.text}${suffix}`);
     }
   };
 

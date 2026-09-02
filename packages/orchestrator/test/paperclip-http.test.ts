@@ -61,6 +61,15 @@ describe("createPaperclipHttp wakeup", () => {
     });
   });
 
+  it("sends a stable idempotency key for a wakeup mutation", async () => {
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 202 }));
+    globalThis.fetch = fetchMock as typeof fetch;
+    const pc = createPaperclipHttp({ apiUrl: "http://127.0.0.1:3100", authToken: "test-token" });
+    await pc.wakeup("agent-jules", "poll", "issue-834", { idempotencyKey: "wake:issue-834:cursor-1" });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(new Headers(init.headers).get("Idempotency-Key")).toBe("wake:issue-834:cursor-1");
+  });
+
   it("cancels a stale heartbeat run through the board recovery route", async () => {
     const fetchMock = vi.fn(async () => new Response('{"status":"cancelled"}', { status: 200 }));
     globalThis.fetch = fetchMock as typeof fetch;
