@@ -1,5 +1,6 @@
 import { formatCardPrompt, formatCardSummary, formatCardPromptAndHelpText, SafeCardPrompt, SafeCardSummary } from "./card-prompt.js";
 import { createHash } from "node:crypto";
+import { executePaperclipCommand, type PaperclipCommandResponse } from "@pilleo/paperclip-adapter-common";
 import {
   extractJulesSessionId,
   extractJulesSessionIdFromComments,
@@ -94,27 +95,52 @@ async function paperclipRequest(
   runId?: string,
 ): Promise<Response> {
   const token = requireAuthToken(authToken);
-  let response: Response;
-  try {
-    response = await fetch(`${paperclipApiBaseUrl()}${path}`, {
-      ...init,
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...(runId ? { "X-Paperclip-Run-Id": runId } : {}),
-        ...init.headers,
-      },
-      signal: init.signal ?? AbortSignal.timeout(30_000),
-    });
-  } catch (error) {
-    throw new PaperclipClientError(null, `Paperclip API request failed: ${error instanceof Error ? error.message : String(error)}`);
+  const method = (init.method ?? "GET").toUpperCase();
+  const isMutation = method !== "GET" && method !== "HEAD";
+  const body = typeof init.body === "string" ? init.body : "";
+  const bodyKey = body.match(/\"idempotencyKey\"\s*:\s*\"([^\"]+)\"/)?.[1];
+  const idempotencyKey = bodyKey ?? (isMutation
+    ? `jules:paperclip:${createHash("sha256").update(`${method}:${path}:${body}`).digest("hex")}`
+    : undefined);
+  let lastNetworkError: unknown;
+  const command = {
+    key: idempotencyKey ?? `jules:paperclip:read:${method}:${path}`,
+    issueId: path.match(/\/api\/issues\/([^/]+)/)?.[1] ?? "unknown",
+    action: isMutation ? "comment" as const : "status" as const,
+    payload: { method, path },
+  };
+  const result = await executePaperclipCommand(command, async (): Promise<PaperclipCommandResponse> => {
+    try {
+      const response = await fetch(`${paperclipApiBaseUrl()}${path}`, {
+        ...init,
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(runId ? { "X-Paperclip-Run-Id": runId } : {}),
+          ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+          ...init.headers,
+        },
+        signal: init.signal ?? AbortSignal.timeout(30_000),
+      });
+      return {
+        ok: response.ok,
+        status: response.status,
+        data: response,
+        ...(!response.ok && typeof response.text === "function"
+          ? { text: await response.text().catch(() => "") }
+          : {}),
+      };
+    } catch (error) {
+      lastNetworkError = error;
+      return { ok: false, status: 503, text: error instanceof Error ? error.message : String(error) };
+    }
+  });
+  if (result.ok) return result.data as Response;
+  if (lastNetworkError && result.status === 503) {
+    throw new PaperclipClientError(null, `Paperclip API request failed: ${String(result.text ?? lastNetworkError)}`);
   }
-  if (!response.ok) {
-    const detail = typeof response.text === "function" ? await response.text().catch(() => "") : "";
-    const suffix = detail.trim() ? ": " + detail.trim().slice(0, 500) : "";
-    throw new PaperclipClientError(response.status, "Paperclip API request failed (" + response.status + ")" + suffix);
-  }
-  return response;
+  const suffix = result.text?.trim() ? ": " + result.text.trim().slice(0, 500) : "";
+  throw new PaperclipClientError(result.status, "Paperclip API request failed (" + result.status + ")" + suffix);
 }
 
 // Used by durable ACP delegation helpers in this package. Keeping the request

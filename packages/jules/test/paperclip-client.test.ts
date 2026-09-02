@@ -163,6 +163,41 @@ describe("Paperclip issue completion", () => {
     );
   });
 
+  it("sends a stable idempotency key for ordinary mutations", async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+
+    await moveIssueToBlocked("issue-1", "jwt-token");
+    const request = vi.mocked(global.fetch).mock.calls[0]?.[1] as RequestInit;
+    expect(request.headers).toEqual(expect.objectContaining({
+      "Idempotency-Key": expect.stringMatching(/^jules:paperclip:[a-f0-9]{64}$/),
+    }));
+  });
+
+  it("retries transient Paperclip failures with the same idempotency key", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 503, text: async () => "temporarily unavailable" })
+      .mockResolvedValueOnce({ ok: true, status: 200 });
+    global.fetch = fetchMock as unknown as typeof global.fetch;
+
+    await moveIssueToBlocked("issue-1", "jwt-token");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const firstHeaders = (fetchMock.mock.calls[0]?.[1] as RequestInit).headers;
+    const secondHeaders = (fetchMock.mock.calls[1]?.[1] as RequestInit).headers;
+    expect(firstHeaders).toEqual(expect.objectContaining({ "Idempotency-Key": expect.any(String) }));
+    expect(secondHeaders).toEqual(expect.objectContaining({
+      "Idempotency-Key": (firstHeaders as Record<string, string>)["Idempotency-Key"],
+    }));
+  });
+
+  it("does not retry a permanent authorization failure", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 403, text: async () => "forbidden" });
+    global.fetch = fetchMock as unknown as typeof global.fetch;
+
+    await expect(moveIssueToBlocked("issue-1", "jwt-token")).rejects.toMatchObject({ status: 403 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("returns typed failures for invalid Paperclip responses", async () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
