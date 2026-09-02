@@ -69,6 +69,7 @@ import { decideBlockedManagedWork, decideRecoveryArtifact } from "../core/recove
 import { allocateProjectCapacity } from "../core/project-capacity.js";
 import { isProjectWorkspaceDirectory } from "../core/project-workspaces.js";
 import { IncidentDeduper } from "../core/incident-deduper.js";
+import { runProjectWorkerPool } from "../core/project-worker-pool.js";
 
 // One orchestrator process can receive overlapping Paperclip heartbeats. Keep
 // merge effects single-flight so concurrent ticks cannot duplicate comments or
@@ -149,10 +150,12 @@ export async function executeAllProjects(
     maxConcurrentJules: typeof rawConfig["maxConcurrentJules"] === "number" ? rawConfig["maxConcurrentJules"] : 15,
     maxConcurrentVibe: typeof rawConfig["maxConcurrentVibe"] === "number" ? rawConfig["maxConcurrentVibe"] : 1,
   });
-  const results: AdapterExecutionResult[] = [];
-  for (const project of runnableProjects) {
+  const projectRuns = await runProjectWorkerPool(
+    runnableProjects,
+    typeof rawConfig["maxConcurrentProjects"] === "number" ? rawConfig["maxConcurrentProjects"] : 2,
+    async (project) => {
     const capacity = projectCapacity.find((item) => item.projectId === project.id);
-    results.push(await runProject({
+    return runProject({
       ...context,
       config: {
         ...rawConfig,
@@ -163,16 +166,17 @@ export async function executeAllProjects(
         ...((context.context as Record<string, unknown> | undefined) || {}),
         projectId: project.id,
       },
-    }));
-  }
+    });
+    },
+  );
 
-  const failures = results.filter((result) => result.exitCode !== 0);
-  const summary = `Processed ${runnableProjects.length} project(s), skipped ${skippedProjects}; ${failures.length} project execution(s) failed. ${results.map((result) => result.summary || result.errorMessage || "completed").join(" | ")}`;
+  const failures = projectRuns.filter((result) => !result.ok || result.value.exitCode !== 0);
+  const summary = `Processed ${runnableProjects.length} project(s), skipped ${skippedProjects}; ${failures.length} project execution(s) failed. ${projectRuns.map((result) => result.ok ? (result.value.summary || result.value.errorMessage || "completed") : result.error).join(" | ")}`;
   return {
     exitCode: failures.length > 0 ? 1 : 0,
     signal: null,
-    timedOut: results.some((result) => result.timedOut),
-    ...(failures[0]?.errorMessage ? { errorMessage: failures[0].errorMessage } : {}),
+    timedOut: projectRuns.some((result) => result.ok && result.value.timedOut),
+    ...(failures[0] ? { errorMessage: failures[0].ok ? failures[0].value.errorMessage : failures[0].error } : {}),
     summary,
   };
 }

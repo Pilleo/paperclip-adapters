@@ -10,6 +10,7 @@ import { execute } from "./execute.js";
 export { execute };
 
 export const OrchestratorConfigSchema = z.object({
+  maxConcurrentProjects: z.number().int().min(1).default(2),
   maxConcurrentJules: z.number().int().min(1).default(15),
   maxConcurrentVibe: z.number().int().min(1).default(1),
   julesAgentId: z.string().optional(),
@@ -24,6 +25,14 @@ export const OrchestratorConfigSchema = z.object({
 
 export const orchestratorAdapterConfigSchema: AdapterConfigSchema = {
   fields: [
+    {
+      key: "maxConcurrentProjects",
+      label: "Max Concurrent Projects",
+      type: "number",
+      required: false,
+      default: 2,
+      hint: "Maximum project state machines running concurrently in one company heartbeat (default: 2)",
+    },
     {
       key: "maxConcurrentJules",
       label: "Max Concurrent Jules Sessions",
