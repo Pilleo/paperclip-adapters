@@ -93,6 +93,8 @@ export interface OrchestratorAdapterConfig {
   readonly apiUrl?: string | undefined;
   readonly requireTaskApproval?: boolean | undefined;
   readonly stalledThresholdMinutes?: number | undefined;
+  /** Internal: fleet provisioning is company-scoped, not project-scoped. */
+  readonly reconcileFleet?: boolean | undefined;
 }
 
 /**
@@ -155,6 +157,7 @@ export async function executeAllProjects(
       config: {
         ...rawConfig,
         ...(capacity ? { maxConcurrentJules: capacity.jules, maxConcurrentVibe: capacity.vibe } : {}),
+        reconcileFleet: project === runnableProjects[0],
       },
       context: {
         ...((context.context as Record<string, unknown> | undefined) || {}),
@@ -313,7 +316,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     // be provisioned and the state machine correctly—but permanently—failed
     // closed. Reconciliation is idempotent and restricted to managed names.
     const fleetToken = authToken || process.env["PAPERCLIP_AGENT_TOKEN"] || process.env["PAPERCLIP_API_KEY"];
-    if (fleetToken) {
+    if (fleetToken && config.reconcileFleet !== false) {
       const fleetResult = await reconcileManagedFleet(apiUrl, companyId, {
         orchestratorAgentId: orchestratorId,
         authToken: fleetToken,

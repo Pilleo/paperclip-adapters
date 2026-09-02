@@ -20,13 +20,14 @@ describe("executeAllProjects", () => {
       { id: "project-no-checkout" },
     ]), { status: 200 })) as typeof fetch;
 
-    const calls: Array<{ projectId: string; jules: number; vibe: number }> = [];
+    const calls: Array<{ projectId: string; jules: number; vibe: number; reconcileFleet: boolean }> = [];
     const runProject = vi.fn(async (context: AdapterExecutionContext): Promise<AdapterExecutionResult> => {
       const rawConfig = context.config as Record<string, unknown>;
       calls.push({
         projectId: String((context.context as Record<string, unknown>).projectId),
         jules: Number(rawConfig["maxConcurrentJules"]),
         vibe: Number(rawConfig["maxConcurrentVibe"]),
+        reconcileFleet: rawConfig["reconcileFleet"] === true,
       });
       return { exitCode: 0, signal: null, timedOut: false, summary: "ok" };
     });
@@ -41,8 +42,8 @@ describe("executeAllProjects", () => {
     } as AdapterExecutionContext, runProject);
 
     expect(calls).toEqual([
-      { projectId: "project-a", jules: 1, vibe: 0 },
-      { projectId: "project-b", jules: 2, vibe: 1 },
+      { projectId: "project-a", jules: 1, vibe: 0, reconcileFleet: true },
+      { projectId: "project-b", jules: 2, vibe: 1, reconcileFleet: false },
     ]);
     expect(result.exitCode).toBe(0);
     expect(result.summary).toContain("Processed 2 project(s), skipped 1");
