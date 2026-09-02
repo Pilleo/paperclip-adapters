@@ -47,7 +47,7 @@ describe("Vibe Adapter Execution", () => {
 
     const env = captured.config?.["env"] as Record<string, unknown>;
     expect(env["VIBE_BYPASS_TOOL_PERMISSIONS"]).toBeUndefined();
-    expect(captured.config?.["thinkingEffort"]).toBe("off");
+    expect(captured.config?.["thinkingEffort"]).toBeUndefined();
     expect(captured.config?.["timeoutSec"]).toBe(12);
   });
 
