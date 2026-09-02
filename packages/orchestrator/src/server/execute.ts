@@ -65,6 +65,7 @@ import { planTerminalParentBarrier } from "../core/terminal-parent-barrier.js";
 import { decideJulesMonitorReconciliation } from "../core/jules-monitor-reconciliation.js";
 import { needsFullIssueRecord } from "../core/issue-enrichment-policy.js";
 import { planBoardReconciliation, type BoardIssueSnapshot } from "../core/board-reconciliation.js";
+import { decideBlockedManagedWork, decideRecoveryArtifact } from "../core/recovery-artifact.js";
 
 // One orchestrator process can receive overlapping Paperclip heartbeats. Keep
 // merge effects single-flight so concurrent ticks cannot duplicate comments or
@@ -201,6 +202,7 @@ export async function execute(context: AdapterExecutionContext): Promise<Adapter
   let managedJulesIds = new Set<string>();
   let managedWorkerStates: ContinuationWorker[] = [];
   let managedAgentStatuses = new Map<string, string>();
+  let agentAdapterTypes = new Map<string, string>();
   let julesNeedsReattach = false;
   try {
     // Reconcile before resolving. Previously the executor only resolved
@@ -250,6 +252,7 @@ export async function execute(context: AdapterExecutionContext): Promise<Adapter
       metadata: (a["metadata"] as Record<string, unknown> | null) || null,
     }));
     managedAgentStatuses = new Map(agents.map((agent) => [agent.id, agent.status]));
+    agentAdapterTypes = new Map(agents.map((agent) => [agent.id, agent.adapterType]));
 
     const fleet = resolveManagedFleet(agents, orchestratorId, {
       julesAgentId,
@@ -761,6 +764,59 @@ export async function execute(context: AdapterExecutionContext): Promise<Adapter
   }
   for (const issue of lifecycleIssues) {
     if (statusOverrides.has(issue.id)) continue;
+    const sourceReference = typeof issue.rawIssue["description"] === "string"
+      ? (issue.rawIssue["description"] as string).match(/source issue:\s*\[([^\]]+)\]/i)?.[1]
+      : undefined;
+    const source = issue.parentId
+      ? lifecycleIssues.find((candidate) => candidate.id === issue.parentId) || null
+      : sourceReference
+        ? lifecycleIssues.find((candidate) => candidate.id === sourceReference || candidate.identifier === sourceReference) || null
+        : null;
+    const artifactDecision = decideRecoveryArtifact(
+      issue,
+      source,
+      Boolean(issue.assigneeAgentId && ["idle", "running", "busy"].includes(managedAgentStatuses.get(issue.assigneeAgentId) || "")),
+    );
+    if (artifactDecision.action === "close") {
+      const artifactKey = `recovery-artifact:${issue.id}`;
+      if (issue.status === artifactDecision.status) continue;
+      await lifecycleConvergenceGuard.runOnce(artifactKey, async () => {
+        const patch = await pc.patchIssue(issue.id, { status: artifactDecision.status });
+        if (!patch.ok) {
+          await log(`[ORCHESTRATOR] Recovery artifact cleanup failed for [${issue.identifier || issue.id}] (${patch.status}): ${patch.text}`);
+          return;
+        }
+        statusOverrides.set(issue.id, artifactDecision.status);
+        await log(`[ORCHESTRATOR] Closed recovery artifact [${issue.identifier || issue.id}] (${artifactDecision.reason}).`);
+      });
+      continue;
+    }
+    const assignedWorker = issue.assigneeAgentId
+      ? managedWorkerStates.find((worker) => worker.id === issue.assigneeAgentId) || {
+          id: issue.assigneeAgentId,
+          status: managedAgentStatuses.get(issue.assigneeAgentId) || "",
+          adapterType: agentAdapterTypes.get(issue.assigneeAgentId) || "",
+        }
+      : undefined;
+    const blockedWorkDecision = decideBlockedManagedWork(
+      issue,
+      assignedWorker?.adapterType || null,
+      assignedWorker?.status || null,
+    );
+    if (blockedWorkDecision.action === "reclaim") {
+      const reclaimKey = `blocked-managed-work:${issue.id}`;
+      if (issue.status !== blockedWorkDecision.status) continue;
+      await lifecycleConvergenceGuard.runOnce(reclaimKey, async () => {
+        const patch = await pc.patchIssue(issue.id, { status: blockedWorkDecision.status });
+        if (!patch.ok) {
+          await log(`[ORCHESTRATOR] Stale managed work recovery failed for [${issue.identifier || issue.id}] (${patch.status}): ${patch.text}`);
+          return;
+        }
+        statusOverrides.set(issue.id, blockedWorkDecision.status);
+        await log(`[ORCHESTRATOR] Reclaimed stale managed work [${issue.identifier || issue.id}] (${blockedWorkDecision.reason}).`);
+      });
+      continue;
+    }
     const decision = decideIssueLifecycleReconciliation(issue, lifecycleIssues);
     if (decision.action === "preserve") continue;
     const marker = `<!-- orchestrator:lifecycle:${decision.action}:${issue.id} -->`;
@@ -862,6 +918,59 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
   const blockedIssues = parsedIssues.filter((i) => (statusOverrides.get(i.id) || i.status) === "blocked");
   let unblockedCount = 0;
   for (const issue of blockedIssues) {
+    const sourceReference = typeof issue.rawIssue["description"] === "string"
+      ? (issue.rawIssue["description"] as string).match(/source issue:\s*\[([^\]]+)\]/i)?.[1]
+      : undefined;
+    const source = issue.parentId
+      ? parsedIssues.find((candidate) => candidate.id === issue.parentId) || null
+      : sourceReference
+        ? parsedIssues.find((candidate) => candidate.id === sourceReference || candidate.identifier === sourceReference) || null
+        : null;
+    const artifactDecision = decideRecoveryArtifact(
+      issue,
+      source,
+      Boolean(issue.assigneeAgentId && ["idle", "running", "busy"].includes(managedAgentStatuses.get(issue.assigneeAgentId) || "")),
+    );
+    if (artifactDecision.action === "close") {
+      const key = `recovery-artifact:${issue.id}`;
+      lifecycleConvergenceGuard.clear(key);
+      await lifecycleConvergenceGuard.runOnce(key, async () => {
+        const patch = await pc.patchIssue(issue.id, { status: artifactDecision.status });
+        if (!patch.ok) {
+          await log(`[ORCHESTRATOR] Recovery artifact cleanup failed for [${issue.identifier || issue.id}] (${patch.status}): ${patch.text}`);
+          return;
+        }
+        statusOverrides.set(issue.id, artifactDecision.status);
+        await log(`[ORCHESTRATOR] Closed recovery artifact [${issue.identifier || issue.id}] (${artifactDecision.reason}).`);
+      });
+      continue;
+    }
+    const assignedWorker = issue.assigneeAgentId
+      ? managedWorkerStates.find((worker) => worker.id === issue.assigneeAgentId) || {
+          id: issue.assigneeAgentId,
+          status: managedAgentStatuses.get(issue.assigneeAgentId) || "",
+          adapterType: agentAdapterTypes.get(issue.assigneeAgentId) || "",
+        }
+      : undefined;
+    const blockedWorkDecision = decideBlockedManagedWork(
+      issue,
+      assignedWorker?.adapterType || null,
+      assignedWorker?.status || null,
+    );
+    if (blockedWorkDecision.action === "reclaim") {
+      const key = `blocked-managed-work:${issue.id}`;
+      lifecycleConvergenceGuard.clear(key);
+      await lifecycleConvergenceGuard.runOnce(key, async () => {
+        const patch = await pc.patchIssue(issue.id, { status: blockedWorkDecision.status });
+        if (!patch.ok) {
+          await log(`[ORCHESTRATOR] Stale managed work recovery failed for [${issue.identifier || issue.id}] (${patch.status}): ${patch.text}`);
+          return;
+        }
+        statusOverrides.set(issue.id, blockedWorkDecision.status);
+        await log(`[ORCHESTRATOR] Reclaimed stale managed work [${issue.identifier || issue.id}] (${blockedWorkDecision.reason}).`);
+      });
+      continue;
+    }
     // A delegated review child, or its Jules parent while that child exists,
     // is governed by the Jules/ACP ladder. Never turn age/dependency cleanup
     // into an implicit reviewer decision or wakeup loop.
