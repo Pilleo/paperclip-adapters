@@ -11,7 +11,7 @@
     "test": "npm run test --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
     "typecheck": "npm run build -w @pilleo/paperclip-adapter-common && tsc --noEmit -p packages/orchestrator/tsconfig.json && tsc --noEmit -p packages/jules/tsconfig.json",
-    "test:e2e": "tsx packages/orchestrator/scripts/e2e-paperclip-lifecycle.ts",
+    "test:e2e": "tsx packages/orchestrator/scripts/e2e-jules-recovery.ts",
     "release:pack": "tsx scripts/package-release.ts",
     "status": "tsx scripts/status.ts",
     "fleet:tick": "./scripts/fleet/wake_orchestrator.sh",
