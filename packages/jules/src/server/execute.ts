@@ -632,6 +632,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
         const answer = storedPendingInteraction ? feedbackAnswer(storedPendingInteraction.result) : null;
         if (!answer) {
+          if (storedPendingInteraction && storedPendingInteraction.status !== 'cancelled' && storedPendingInteraction.status !== 'superseded') {
+             try {
+                const pcEndpoint = new URL('/api/interactions/' + encodeURIComponent(storedPendingInteraction.id), process.env['PAPERCLIP_API_URL'] || 'http://127.0.0.1:3100').toString();
+                await fetch(pcEndpoint, {
+                   method: 'PATCH',
+                   headers: {
+                      'Authorization': `Bearer ${ctx.authToken}`,
+                      'Content-Type': 'application/json'
+                   },
+                   body: JSON.stringify({ status: 'cancelled' })
+                });
+             } catch (e) {
+                 // Best effort
+             }
+          }
+
           const nextAttempt = (session!.feedbackInteractionAttempt ?? 0) + 1;
           const replacement = await createJulesFeedbackInteraction(
             taskId,
