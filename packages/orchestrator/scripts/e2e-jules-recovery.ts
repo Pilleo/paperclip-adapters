@@ -206,8 +206,13 @@ open_questions: false
 
     // Verify repeat-heartbeat idempotency
     await log("PHASE 3", "RUNNING", "Validating repeat-heartbeat idempotency...");
+    // Canonicalize state before heartbeat
+    const issueResBeforeIdempotency = await fetch(`${PAPERCLIP_API}/api/issues/${paperclipIssueIdA}`);
+    const issueBeforeIdempotency = await issueResBeforeIdempotency.json();
     const childrenResBefore = await fetch(`${PAPERCLIP_API}/api/issues/${paperclipIssueIdA}/children`);
     const childrenBefore = await childrenResBefore.json();
+    const workProductsResBefore = await fetch(`${PAPERCLIP_API}/api/issues/${paperclipIssueIdA}/work-products`);
+    const workProductsBefore = await workProductsResBefore.json();
 
     // Run orchestrator tick 3 -> idempotency check
     const ctx3_idempotency = await createAdapterContext(orchAgent.id, testCompanyId, tempBacklogDir, tempResolvedDir, {
@@ -221,12 +226,17 @@ open_questions: false
     const issueAfterIdempotency = await issueResAfterIdempotency.json();
     const childrenResAfter = await fetch(`${PAPERCLIP_API}/api/issues/${paperclipIssueIdA}/children`);
     const childrenAfter = await childrenResAfter.json();
+    const workProductsResAfter = await fetch(`${PAPERCLIP_API}/api/issues/${paperclipIssueIdA}/work-products`);
+    const workProductsAfter = await workProductsResAfter.json();
 
-    if (issueAfterIdempotency.status !== "in_progress") {
-      throw new Error(`Expected status 'in_progress' after idempotent execution, but got '${issueAfterIdempotency.status}'`);
+    if (JSON.stringify(issueBeforeIdempotency) !== JSON.stringify(issueAfterIdempotency)) {
+      throw new Error("Expected issue state to be strictly idempotent across repeated heartbeats");
     }
-    if (childrenBefore.length !== childrenAfter.length) {
-       throw new Error(`Expected children count to be idempotent, but got ${childrenBefore.length} -> ${childrenAfter.length}`);
+    if (JSON.stringify(childrenBefore) !== JSON.stringify(childrenAfter)) {
+       throw new Error("Expected children state to be strictly idempotent across repeated heartbeats");
+    }
+    if (JSON.stringify(workProductsBefore) !== JSON.stringify(workProductsAfter)) {
+       throw new Error("Expected work products to be strictly idempotent across repeated heartbeats");
     }
     await log("PHASE 3", "PASS", "Repeat-heartbeat idempotency verified via server state snapshot");
 

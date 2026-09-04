@@ -42,6 +42,17 @@ jobs:
       - name: Run Full Test Matrix (399+ unit tests)
         run: pnpm -r test
 
+      - name: Start Disposable Paperclip Server
+        run: |
+          docker run -d -p 3100:3100 --name paperclip-ci-server ghcr.io/paperclipai/paperclip-server:latest
+          sleep 10
+
+      - name: Run Jules Recovery Canary E2E Test
+        run: pnpm test:e2e
+        env:
+          PAPERCLIP_API_URL: http://127.0.0.1:3100
+
+
       - name: Build Production Packages (pnpm release:pack)
         run: pnpm release:pack
 
