@@ -102,7 +102,7 @@ beforeAll(() => {
     } as any);
     if (res.exitCode !== 0) console.log("RES DETAILS:", res.exitCode, res.errorCode, res.errorMessage, res.summary);
     expect(res.exitCode).toBe(0);
-    expect(res.clearSession).toBe(false);
+    expect(res.clearSession).toBe(true);
     expect(res.resultJson?.prUrl).toBe('http://pr/1');
     expect(res.resultJson?.issueStatus).toBe('in_review');
   });

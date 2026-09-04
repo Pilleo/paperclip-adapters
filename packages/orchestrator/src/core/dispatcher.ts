@@ -61,6 +61,7 @@ export function calculateConflictMatrix(issues: readonly ParsedIssueMetadata[]):
 
   // 1. Direct explicit dependencies
   const identifierToId = new Map<string, string>();
+  const uuidRegex = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
   for (const issue of issues) {
     if (issue.identifier) {
       identifierToId.set(issue.identifier.toUpperCase(), issue.id);
@@ -81,7 +82,8 @@ export function calculateConflictMatrix(issues: readonly ParsedIssueMetadata[]):
     for (const dep of issue.dependencies) {
       const depKey = dep.trim().toUpperCase();
       const depNumMatch = depKey.match(/\d+/)?.[0];
-      const blockerId = identifierToId.get(depKey) || (depNumMatch ? identifierToId.get(depNumMatch) : undefined);
+      const uuidMatch = dep.match(uuidRegex)?.[1];
+      const blockerId = (uuidMatch ? identifierToId.get(uuidMatch) : undefined) || identifierToId.get(depKey) || (depNumMatch ? identifierToId.get(depNumMatch) : undefined);
       if (blockerId && blockerId !== issue.id && !directBlockers.includes(blockerId)) {
         directBlockers.push(blockerId);
         conflictEdges.push({

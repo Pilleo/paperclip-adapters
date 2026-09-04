@@ -390,15 +390,38 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
   let unblockedCount = 0;
   for (const issue of blockedIssues) {
     const missingDep = issue.dependencies.some((depId) => {
-      return !parsedIssues.some((p) => p.id === depId || p.identifier === depId);
+      const depKey = depId.trim().toUpperCase();
+      const depNumMatch = depKey.match(/\d+/)?.[0];
+      const uuidRegex = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+      const uuidMatch = depId.match(uuidRegex)?.[1];
+
+      return !parsedIssues.some((p) => {
+        if (uuidMatch && p.id === uuidMatch) return true;
+        if (p.id === depId) return true;
+        if (p.identifier && p.identifier.toUpperCase() === depKey) return true;
+        if (depNumMatch && p.identifier && p.identifier.match(/\d+/)?.[0] === depNumMatch) return true;
+        return false;
+      });
     });
     if (missingDep) continue;
 
     const hasUnresolvedDependency = issue.dependencies.some((depId) => {
-      const dep = parsedIssues.find((p) => p.id === depId || p.identifier === depId);
+      const depKey = depId.trim().toUpperCase();
+      const depNumMatch = depKey.match(/\d+/)?.[0];
+      const uuidRegex = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+      const uuidMatch = depId.match(uuidRegex)?.[1];
+
+      const dep = parsedIssues.find((p) => {
+        if (uuidMatch && p.id === uuidMatch) return true;
+        if (p.id === depId) return true;
+        if (p.identifier && p.identifier.toUpperCase() === depKey) return true;
+        if (depNumMatch && p.identifier && p.identifier.match(/\d+/)?.[0] === depNumMatch) return true;
+        return false;
+      });
+
       if (!dep) return true;
       const depStatus = statusOverrides.get(dep.id) || dep.status;
-      return depStatus !== "done" && depStatus !== "resolved";
+      return depStatus !== "done" && depStatus !== "resolved" && depStatus !== "cancelled";
     });
 
     if (!hasUnresolvedDependency) {

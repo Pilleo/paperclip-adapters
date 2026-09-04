@@ -1246,7 +1246,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                  sessionDisplayId: session.julesSessionId || null,
                  summary: `Jules session ${session.julesSessionId} completed, created a PR, and moved the Paperclip issue to review: ${session.currentPrUrl}`,
                  resultJson: { provider: "jules", julesSessionId: session.julesSessionId, prUrl: session.currentPrUrl, issueStatus: "in_review" },
-                  clearSession: false
+                  clearSession: true
              };
          } else if (session.phase === 'FAILED') {
              const failureDetails = julesSession.errorInfo || {};

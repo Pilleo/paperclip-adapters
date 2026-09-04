@@ -17,7 +17,7 @@ dependencies:
   - "issue-20260830-210000-plan-review-mistral-luna-terra-codex"
 
 paperclip_issue_id: "8bccea52-28fb-45ca-8ddb-48ca48c44cf3"
-paperclip_identifier: "MAZ-823"
+paperclip_identifier: ""
 ---
 
 **Context:** `lintBacklogMarkdown` required `target_modules` to be mazewall Gradle ids (`:enforcer`, …). Work packages in this adapters monorepo could not lint, so the planning tool could not be used here.

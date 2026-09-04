@@ -133,7 +133,7 @@ beforeAll(() => {
 
         expect(res.exitCode).toBe(0);
         expect(res.summary || "").toContain('moved the Paperclip issue to review');
-        expect(res.clearSession).toBe(false);
+        expect(res.clearSession).toBe(true);
         expect(createdCount).toBe(1);
     });
 
