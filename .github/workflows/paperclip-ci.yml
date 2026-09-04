@@ -41,13 +41,10 @@ jobs:
 
       - name: Run Full Test Matrix (399+ unit tests)
         run: pnpm -r test
-
       - name: Start Disposable Paperclip Server
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo $GITHUB_TOKEN | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-          docker run -d -p 3100:3100 --name paperclip-ci-server ghcr.io/paperclipai/paperclip-server:latest
+          echo "Starting disposable mock Paperclip server using npx since docker login requires a specific PAT for paperclipai's ghcr..."
+          npx paperclip-server --port 3100 &
           sleep 10
 
       - name: Run Jules Recovery Canary E2E Test
