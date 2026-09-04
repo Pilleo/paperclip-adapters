@@ -596,3 +596,15 @@ export async function listIssueComments(
   const raw = (await response.json()) as unknown;
   return Array.isArray(raw) ? (raw as IssueComment[]) : [];
 }
+
+
+export async function cancelPaperclipInteraction(
+  interactionId: string,
+  authToken: string | undefined,
+  runId?: string,
+): Promise<void> {
+  await paperclipRequest(`/api/interactions/${encodeURIComponent(interactionId)}`, authToken, {
+    method: "PATCH",
+    body: JSON.stringify({ status: "cancelled" }),
+  }, runId);
+}

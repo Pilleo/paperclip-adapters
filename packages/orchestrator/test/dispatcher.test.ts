@@ -235,7 +235,7 @@ describe("Blocker ID normalization", () => {
       status: "todo",
       priority: "high",
       priorityRank: 3,
-      dependencies: ["paperclip://uuid-1234-5678-0000-0000-0000-000000000000"],
+      dependencies: ["paperclip://task/uuid-1234-5678-0000-0000-0000-000000000000"],
       targetFiles: [],
       targetModules: [],
       targetSymbols: [],

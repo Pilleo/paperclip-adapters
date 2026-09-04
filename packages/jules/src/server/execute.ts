@@ -67,6 +67,7 @@ import {
   listWorkProducts,
   registerPullRequestWorkProduct,
   PaperclipClientError,
+  cancelPaperclipInteraction,
   getPaperclipJson,
   type PaperclipInteraction,
 } from "./paperclip-client.js";
@@ -634,15 +635,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         if (!answer) {
           if (storedPendingInteraction && storedPendingInteraction.status !== 'cancelled' && storedPendingInteraction.status !== 'superseded') {
              try {
-                const pcEndpoint = new URL('/api/interactions/' + encodeURIComponent(storedPendingInteraction.id), process.env['PAPERCLIP_API_URL'] || 'http://127.0.0.1:3100').toString();
-                await fetch(pcEndpoint, {
-                   method: 'PATCH',
-                   headers: {
-                      'Authorization': `Bearer ${ctx.authToken}`,
-                      'Content-Type': 'application/json'
-                   },
-                   body: JSON.stringify({ status: 'cancelled' })
-                });
+                await cancelPaperclipInteraction(storedPendingInteraction.id, ctx.authToken, ctx.runId);
              } catch (e) {
                  // Best effort
              }

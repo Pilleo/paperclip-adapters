@@ -9,6 +9,7 @@ import {
   createJulesPlanApprovalInteraction,
   getPaperclipInteraction,
   moveIssueToBlocked,
+  cancelPaperclipInteraction,
 } from "../src/server/paperclip-client";
 
 vi.mock("../src/server/jules-client", async (importOriginal) => {
@@ -30,6 +31,7 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
     createJulesPlanApprovalInteraction: vi.fn(),
     getPaperclipInteraction: vi.fn(),
     moveIssueToBlocked: vi.fn(),
+    cancelPaperclipInteraction: vi.fn(),
   };
 });
 
@@ -219,6 +221,45 @@ describe("Jules activity interactions", { timeout: 30000 }, () => {
     } as AdapterExecutionContext);
 
     expect(JulesClient.prototype.approvePlan).toHaveBeenCalledWith("session-1");
+  });
+
+  it("cancels a malformed active interaction before creating a new one", async () => {
+    vi.mocked(getPaperclipInteraction).mockResolvedValue({
+      id: "malformed-1",
+      kind: "ask_user_questions",
+      status: "answered",
+      result: {}, // Malformed: missing answers
+      target: { type: "issue", key: "issue-1" },
+    });
+    vi.mocked(createJulesFeedbackInteraction).mockResolvedValue({ id: "replacement-1", status: "pending", kind: "ask_user_questions" });
+
+    const result = await execute({
+      ...baseContext,
+      runtime: {
+        ...baseContext.runtime,
+        sessionParams: sessionCodec.encode({
+          ...session,
+          phase: "WAITING_FOR_FEEDBACK",
+          pendingInteraction: {
+            type: "user_feedback",
+            julesActivityId: "activity-q1",
+            paperclipInteractionId: "malformed-1",
+            question: "Question",
+            createdAt: "2026-08-08T00:00:00.000Z",
+          },
+        }),
+      },
+      context: {
+        ...baseContext.context,
+        interactionId: "malformed-1",
+        interactionKind: "ask_user_questions",
+        interactionStatus: "answered",
+      },
+    } as AdapterExecutionContext);
+
+    expect(cancelPaperclipInteraction).toHaveBeenCalledWith("malformed-1", "jwt-token", "run-1");
+    expect(createJulesFeedbackInteraction).toHaveBeenCalled();
+    expect(result.exitCode).toBe(0);
   });
 
   it("sends a plan rejection reason to Jules so it can regenerate the plan", async () => {
