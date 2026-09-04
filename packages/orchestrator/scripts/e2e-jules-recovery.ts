@@ -204,6 +204,32 @@ open_questions: false
     }
     await log("PHASE 3", "PASS", `Approved task transitioned to 'in_progress' and assigned to worker ${julesAgent.id.slice(0, 8)}`);
 
+    // Verify repeat-heartbeat idempotency
+    await log("PHASE 3", "RUNNING", "Validating repeat-heartbeat idempotency...");
+    const childrenResBefore = await fetch(`${PAPERCLIP_API}/api/issues/${paperclipIssueIdA}/children`);
+    const childrenBefore = await childrenResBefore.json();
+
+    // Run orchestrator tick 3 -> idempotency check
+    const ctx3_idempotency = await createAdapterContext(orchAgent.id, testCompanyId, tempBacklogDir, tempResolvedDir, {
+      julesAgentId: julesAgent.id,
+      vibeAgentId: vibeAgent.id,
+      requireApproval: true,
+    });
+    await runOrchestrator(ctx3_idempotency as any);
+
+    const issueResAfterIdempotency = await fetch(`${PAPERCLIP_API}/api/issues/${paperclipIssueIdA}`);
+    const issueAfterIdempotency = await issueResAfterIdempotency.json();
+    const childrenResAfter = await fetch(`${PAPERCLIP_API}/api/issues/${paperclipIssueIdA}/children`);
+    const childrenAfter = await childrenResAfter.json();
+
+    if (issueAfterIdempotency.status !== "in_progress") {
+      throw new Error(`Expected status 'in_progress' after idempotent execution, but got '${issueAfterIdempotency.status}'`);
+    }
+    if (childrenBefore.length !== childrenAfter.length) {
+       throw new Error(`Expected children count to be idempotent, but got ${childrenBefore.length} -> ${childrenAfter.length}`);
+    }
+    await log("PHASE 3", "PASS", "Repeat-heartbeat idempotency verified via server state snapshot");
+
     // -------------------------------------------------------------------------
     // Phase 4: Method-Level DAG Concurrency & Disjoint Scheduling
     // -------------------------------------------------------------------------
