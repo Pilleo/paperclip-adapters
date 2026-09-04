@@ -1282,7 +1282,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                      errorFamily: toErrorFamily(classification),
                      errorMessage: sanitizeError(`Jules session failed and exhausted retries: ${summarizeJulesFailure(failureDetails)}`),
                      sessionParams: serializeSession(session),
-                     clearSession: false
+                     clearSession: true
                  };
              }
          }
