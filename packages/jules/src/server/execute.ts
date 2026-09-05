@@ -1752,7 +1752,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // never withdrawn.
       if (hasProviderQuestion) {
         const staleCompletionKey = `jules:no-pr-completion:${taskId}:${session.julesSessionId}`;
-        const interactions = await listPaperclipInteractions(taskId, ctx.authToken, ctx.runId).catch(() => []);
+        const interactions = await listPaperclipInteractions(taskId, ctx.authToken, ctx.runId, 5000).catch(() => []);
         const staleCompletion = interactions.find(
           (interaction) => interaction.kind === "request_confirmation" &&
             interaction.status === "pending" &&
