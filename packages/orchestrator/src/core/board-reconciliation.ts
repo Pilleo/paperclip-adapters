@@ -31,6 +31,14 @@ export function planBoardReconciliation(issues: readonly BoardIssueSnapshot[]): 
   const commands: BoardReconciliationCommand[] = [];
   for (const issue of issues) {
     if (!issue.managed) continue;
+    if (issue.status === "in_progress" && issue.registeredOpenPullRequest && !issue.resumableMonitor) {
+      commands.push({
+        action: "recover_to_review",
+        issueId: issue.id,
+        reason: "managed issue has a registered open pull request and must enter native review",
+      });
+      continue;
+    }
     if (issue.status === "blocked" && issue.resumableMonitor) {
       commands.push({ action: "resume_provider", issueId: issue.id, reason: "managed task has a resumable provider monitor but no live execution" });
     }
