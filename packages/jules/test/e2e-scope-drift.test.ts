@@ -133,7 +133,7 @@ describe("E2E host-plan scope conformity on Jules PRs", () => {
     });
   });
 
-  it("routes scope drift to host review without messaging Jules", async () => {
+  it("hands scope drift to the normal PR review pipeline without messaging Jules", async () => {
     vi.mocked(listPullRequestChangedFiles).mockResolvedValue([
       "enforcer/src/main/kotlin/io/mazewall/enforcer/SandboxDispatcher.kt",
       "README.md",
