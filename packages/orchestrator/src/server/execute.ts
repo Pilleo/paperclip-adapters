@@ -875,17 +875,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       // is repaired instead of being hidden by a lifetime `runOnce` marker.
       const recoveryKey = `jules-open-pr-recovery:${issue.id}:${matchingPr.url}:${issue.updatedAt || "unknown"}:${issue.status}:${issue.assigneeAgentId || "unassigned"}`;
       await lifecycleConvergenceGuard.runOnce(recoveryKey, async () => {
-        const staleChildren = parsedIssues.filter((candidate) =>
-          candidate.parentId === issue.id &&
-          !["done", "cancelled"].includes(candidate.status) &&
-          (candidate.rawIssue["originKind"] === "issue_productivity_review" ||
-            (typeof candidate.rawIssue["description"] === "string" &&
-              (/jules-session-supervisor|jules-question-adjudication/.test(candidate.rawIssue["description"] as string)))),
-        );
-        for (const child of staleChildren) {
-          const closed = await pc.patchIssue(child.id, { status: "done" });
-          if (!closed.ok) await log(`[ORCHESTRATOR] Could not close stale Jules PR child [${child.identifier || child.id}] (${closed.status}): ${closed.text}`);
-        }
+        await retireStaleJulesChildren(issue.id, issue.identifier || issue.id);
         const recovered = await pc.patchIssue(issue.id, { status: "in_review", assigneeAgentId: null });
         if (!recovered.ok) {
           await log(`[ORCHESTRATOR] Could not recover open Jules PR for [${issue.identifier || issue.id}] (${recovered.status}): ${recovered.text}`);
