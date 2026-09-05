@@ -1965,7 +1965,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (terminalProviderState && !hasUnresolvedProviderQuestion &&
           session.pendingInteraction?.type === "agent_adjudication") {
         const staleQuestion = session.pendingInteraction;
-        await completeInternalReviewIssue(staleQuestion.adjudicationIssueId, ctx.authToken, ctx.runId).catch(() => undefined);
+        if (!isNativeAgentAdjudication(staleQuestion) && staleQuestion.adjudicationIssueId) {
+          await completeInternalReviewIssue(staleQuestion.adjudicationIssueId, ctx.authToken, ctx.runId).catch(() => undefined);
+        }
         if (staleQuestion.paperclipInteractionId) {
           await withdrawPaperclipInteraction(
             taskId,
