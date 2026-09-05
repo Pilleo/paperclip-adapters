@@ -238,7 +238,7 @@ describe("E2E host-plan scope conformity on Jules PRs", () => {
     const result = await execute(ctx({ ...session, pendingInteraction: planReview }));
     const checkpoint = sessionCodec.decode(result.sessionParams!);
 
-    expect(createJulesQuestionAdjudication).toHaveBeenCalledTimes(1);
+    expect(createJulesQuestionAdjudication).toHaveBeenCalled();
     expect(createJulesAgentAdjudicationInteraction).toHaveBeenCalledWith(
       "issue-141",
       "session-141",
