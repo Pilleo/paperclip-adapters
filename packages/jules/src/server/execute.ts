@@ -798,9 +798,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     (session.pendingInteraction.type === "user_feedback" || session.pendingInteraction.type === "plan_approval")
     ? session.pendingInteraction
     : null;
-  const pendingPlanAgentReview = session?.pendingInteraction?.type === "plan_agent_review"
-    ? session.pendingInteraction : null;
-  const isCompletionResolution = interactionKind === "request_confirmation" &&
+      const pendingPlanAgentReview = session?.pendingInteraction?.type === "plan_agent_review"
+        ? session.pendingInteraction : null;
+      const pendingNativePlanReview = session?.pendingInteraction?.type === "plan_native_review"
+        ? session.pendingInteraction : null;
+      const isCompletionResolution = interactionKind === "request_confirmation" &&
     (interactionStatus === "accepted" || interactionStatus === "rejected");
 
   // A previous buggy heartbeat could create a no-PR confirmation before the
