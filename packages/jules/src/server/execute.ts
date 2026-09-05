@@ -77,6 +77,7 @@ import {
   PaperclipClientError,
   getPaperclipJson,
   createJulesQuestionAdjudication,
+  findJulesQuestionAdjudication,
   withdrawPaperclipInteraction,
   getPaperclipIssue,
   normalizeInternalReviewIssue,
