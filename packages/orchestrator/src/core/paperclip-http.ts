@@ -233,7 +233,7 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
         triggerDetail: "ping",
         reason,
         forceFreshSession: false,
-        ...(issueId || options?.resumeFromRunId
+        ...(issueId || options?.resumeFromRunId || options?.workerFeedback
           ? {
               payload: {
                 ...(issueId ? { issueId } : {}),
