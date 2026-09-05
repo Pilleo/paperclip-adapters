@@ -283,6 +283,20 @@ export interface JulesAdapterSessionV1 {
         reviewIssueId: string;
         reviewerAgentId: string;
         stage: "vibe" | "strong";
+      createdAt: string;
+    }
+    | {
+        type: "plan_native_review";
+        /** v2 is the executable request_item_verdicts protocol; omitted means legacy v1. */
+        protocolVersion?: 2 | undefined;
+        julesActivityId: JulesActivityId;
+        paperclipInteractionId: string;
+        question: string;
+        planRevisionId: string;
+        planRevisionNumber: number;
+        planDocumentId: string;
+        reviewerAgentId: string;
+        stage: "luna" | "terra";
         createdAt: string;
       }
     | undefined;
