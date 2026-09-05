@@ -61,7 +61,12 @@ export function decideJulesMonitorReconciliation(
   snapshot: JulesMonitorSnapshot,
   now: number,
 ): JulesMonitorAction {
-  if (snapshot.issueStatus !== "blocked" && snapshot.issueStatus !== "todo") return { action: "preserve", reason: "issue is not resumable from its current status" };
+  const invalidAssigneeRepair = (snapshot.issueStatus === "in_progress" || snapshot.issueStatus === "blocked" || snapshot.issueStatus === "todo") &&
+    snapshot.monitorStatus === "cleared" &&
+    snapshot.monitorClearReason === "invalid_assignee" &&
+    snapshot.assigneeIsJules === true;
+  const strandedMonitorRepair = snapshot.issueStatus === "in_progress" && snapshot.monitorDetached === true;
+  if (snapshot.issueStatus !== "blocked" && snapshot.issueStatus !== "todo" && !invalidAssigneeRepair && !strandedMonitorRepair) return { action: "preserve", reason: "issue is not resumable from its current status" };
   if (!snapshot.assigneeIsOrchestrator) return { action: "preserve", reason: "issue is not owned by the orchestrator" };
   if (snapshot.serviceName !== "jules") return { action: "preserve", reason: "monitor is not a Jules monitor" };
   // Native executionPolicy.monitor payloads do not carry the legacy
