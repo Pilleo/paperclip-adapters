@@ -1932,7 +1932,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
               reviewInteractionId = created && typeof created === "object" && typeof (created as Record<string, unknown>)["id"] === "string"
                 ? (created as Record<string, unknown>)["id"] as string
                 : undefined;
-              if (!reviewInteractionId) {
+            if (!reviewInteractionId) {
                 throw new Error("Native review dialog creation returned no interaction id");
               }
               dialogCreated = true;
