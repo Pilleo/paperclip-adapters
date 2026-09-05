@@ -1713,6 +1713,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             ctx.authToken,
             ctx.runId,
             ctx.agent.companyId,
+            deliveredFeedbackActivity.id,
+            session.julesSessionId,
           );
           const recoveredDecision = (await listIssueComments(recoveredChild.id, ctx.authToken, ctx.runId).catch(() => []))
             .filter((comment) => comment.authorAgentId === recoveryReviewerAgentId)
