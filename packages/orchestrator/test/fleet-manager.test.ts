@@ -102,7 +102,12 @@ describe("Orchestrator Managed Fleet Manager", () => {
         adapterType: "jules",
         status: "running", // Misconfigured
         reportsTo: null, // Misconfigured
-        adapterConfig: { pollCadenceSeconds: 0 }, // Misconfigured
+        adapterConfig: {
+          pollCadenceSeconds: 0,
+          planReviewerAgentId: "old-luna",
+          planStrongReviewerAgentId: "old-terra",
+          questionReviewerAgentId: "old-terra",
+        }, // Misconfigured
         runtimeConfig: { heartbeat: { enabled: false } }, // Misconfigured
       },
     ];
