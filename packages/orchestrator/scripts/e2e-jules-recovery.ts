@@ -265,8 +265,64 @@ async function main(): Promise<void> {
     if (!repeatRunId) throw new Error(`Paperclip repeat wake did not return a heartbeat run: ${JSON.stringify(repeatWake)}`);
     await waitForIssueExecution(issueId, repeatRunId, "Repeat orchestrator");
     const repeated = requireObject(await request(`/api/issues/${issueId}`, "GET"), "repeated issue");
-    if (repeated.status !== "in_review" || childrenBefore.length !== childIds.length) throw new Error("Canary recovery was not idempotent");
-    console.log("Jules recovery canary passed: recovery, cleanup, and repeat-heartbeat idempotency verified.");
+    const childrenAfter = await request(`/api/companies/${companyId}/issues?parentId=${encodeURIComponent(issueId)}`, "GET");
+    const interactionsAfter = await request(`/api/issues/${issueId}/interactions`, "GET");
+    const issueAfter = await request(`/api/issues/${issueId}`, "GET");
+    const beforeState = projectRecoveryCanaryState({
+      issue: issueBefore,
+      children: Array.isArray(childrenBefore) ? childrenBefore : [],
+      interactions: Array.isArray(interactionsBefore) ? interactionsBefore : [],
+    });
+    const afterState = projectRecoveryCanaryState({
+      issue: issueAfter,
+      children: Array.isArray(childrenAfter) ? childrenAfter : [],
+      interactions: Array.isArray(interactionsAfter) ? interactionsAfter : [],
+    });
+    if (JSON.stringify(beforeState) !== JSON.stringify(afterState) ||
+        repeated.status !== "in_review") {
+      throw new Error(`Canary recovery was not idempotent: ${JSON.stringify({
+        status: repeated.status,
+        assigneeAgentId: repeated.assigneeAgentId,
+        beforeState,
+        afterState,
+        workProducts: repeated.workProducts ?? repeated.work_products ?? null,
+        executionPolicy: repeated.executionPolicy ?? null,
+        executionState: repeated.executionState ?? null,
+      })}`);
+    }
+
+    // Drive both canonical reviewer stages through their native verdict API.
+    // This is deliberately board-level: it verifies the real external
+    // orchestrator sees the answered card and advances exactly one stage.
+    const firstCards = pendingReviewCards(interactionsAfter);
+    const answeredLunaCard = firstCards.find((card) =>
+      String(card.idempotencyKey || "").endsWith(":luna") &&
+      card.addresseeAgentId === luna.id,
+    );
+    if (!answeredLunaCard) throw new Error("Canary did not create a Luna review card addressed to Luna");
+    await submitReviewVerdict(issueId, String(answeredLunaCard.id), "approve");
+    const lunaWake = requireObject(await request(`/api/agents/${orch.id}/wakeup`, "POST", {
+      source: "on_demand", reason: "e2e_luna_verdict", idempotencyKey: `e2e-jules-recovery:${issueId}:luna-verdict`, payload: {},
+    }), "Luna verdict wake");
+    await waitForIssueExecution(issueId, String(lunaWake.id), "Luna verdict");
+    const afterLuna = await request(`/api/issues/${issueId}/interactions`, "GET");
+    const terraCard = pendingReviewCards(afterLuna).find((card) => String(card.idempotencyKey || "").endsWith(":terra"));
+    if (!terraCard) throw new Error(`Canary did not advance to Terra: ${JSON.stringify(afterLuna)}`);
+    await submitReviewVerdict(issueId, String(terraCard.id), "approve");
+    const terraWake = requireObject(await request(`/api/agents/${orch.id}/wakeup`, "POST", {
+      source: "on_demand", reason: "e2e_terra_verdict", idempotencyKey: `e2e-jules-recovery:${issueId}:terra-verdict`, payload: {},
+    }), "Terra verdict wake");
+    await waitForIssueExecution(issueId, String(terraWake.id), "Terra verdict");
+    const approvals = await request(`/api/companies/${companyId}/approvals`, "GET");
+    const mergeApproval = (Array.isArray(approvals) ? approvals : []).find((approval) =>
+      approval && typeof approval === "object" &&
+      ((approval as Record<string, unknown>).type === "task_merge_approval" || (approval as Record<string, unknown>).type === "request_board_approval"),
+    );
+    if (!mergeApproval) throw new Error(`Canary did not create final merge approval: ${JSON.stringify(approvals)}`);
+    console.log("Jules recovery canary passed: Luna → Terra → merge approval, recovery, cleanup, and idempotency verified.");
+  } catch (error) {
+    operationError = error;
+    throw error;
   } finally {
     if (previousPath === undefined) delete process.env["PATH"];
     else process.env["PATH"] = previousPath;
