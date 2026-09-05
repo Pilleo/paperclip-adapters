@@ -490,8 +490,8 @@ export async function createJulesAgentAdjudicationInteraction(
               id: "response",
               prompt,
               helpText: helpText
-                ? `${helpText.slice(0, 930)}\n\nThe strong reviewer will record its answer here before it is relayed to Jules.`
-                : "The strong reviewer will record its answer here before it is relayed to Jules.",
+                ? `${helpText.slice(0, 800)}\n\nProvide the exact answer for Jules, or the concrete ambiguity requiring human input. Submit this Paperclip form through its native respond endpoint using exactly: answers: [{ questionId: "resolution", optionIds: ["answer"] }, { questionId: "response", optionIds: ["response"], otherText: "..." }]. For escalation, use optionIds: ["escalate"] and put the concrete reason in otherText. Do not use selectedOptionIds, text, an object map, or an issue comment.`
+                : "Provide the exact answer for Jules, or the concrete ambiguity requiring human input. Submit this Paperclip form through its native respond endpoint using exactly: answers: [{ questionId: \"resolution\", optionIds: [\"answer\"] }, { questionId: \"response\", optionIds: [\"response\"], otherText: \"...\" }]. For escalation, use optionIds: [\"escalate\"] and put the concrete reason in otherText. Do not use selectedOptionIds, text, an object map, or an issue comment.",
               selectionMode: "single",
               required: true,
               options: [{ id: "response", label: "Reviewer response", freeText: true }],
