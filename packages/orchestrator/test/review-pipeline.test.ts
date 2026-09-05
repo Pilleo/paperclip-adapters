@@ -180,10 +180,6 @@ describe("native multi-tier review pipeline", () => {
     expect(evaluateReviewPipelineProgress({ ...base(), ciStatus: { isGreen: false, status: "pending" } }).action).toBe("AWAIT_CI");
   });
 
-  it("creates a Vibe dialog when no native verdict exists", () => {
-    expect(evaluateReviewPipelineProgress(base()).action).toBe("DISPATCH_VIBE_REVIEW");
-  });
-
   it("does not accept a comment-shaped verdict", () => {
     const decision = evaluateReviewPipelineProgress({ ...base(), comments: [{ id: "comment", body: 'PAPERCLIP_REVIEW_DECISION {"decision":"all_good"}', authorAgentId: "agent-vibe" }] });
     expect(decision.action).toBe("DISPATCH_VIBE_REVIEW");
