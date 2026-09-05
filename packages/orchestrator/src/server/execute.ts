@@ -46,7 +46,7 @@ import { evaluateAgentHealth, AgentHealthReport } from "../core/agent-health-mon
 import { mergeAuditMarker, synthesizeAuditDigest } from "../core/audit-digest.js";
 import { decidePullRequestReconciliation } from "../core/pull-request-reconciliation.js";
 import { resolveManagedFleet, type FleetAgentRecord } from "../core/managed-workers.js";
-import { MANAGED_FLEET_DEFINITIONS, reconcileManagedFleet } from "../core/fleet-manager.js";
+import { MANAGED_FLEET_DEFINITIONS, canReconcileManagedFleet, reconcileManagedFleet } from "../core/fleet-manager.js";
 import { asArray, createPaperclipHttp, issuePatch } from "../core/paperclip-http.js";
 import {
   liveHeartbeatIssueIds,
