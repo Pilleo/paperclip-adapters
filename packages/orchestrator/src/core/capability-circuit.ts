@@ -11,6 +11,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { isReviewerEligibilityFailure } from "./reviewer-eligibility.js";
 
 export class CapabilityCircuit {
   private readonly denied = new Map<string, { status: number; detail: string }>();
