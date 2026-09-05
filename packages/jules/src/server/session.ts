@@ -250,6 +250,19 @@ export interface JulesAdapterSessionV1 {
         createdAt: string;
       }
     | {
+      type: "agent_adjudication";
+        julesActivityId: JulesActivityId;
+        paperclipInteractionId: string;
+        question: string;
+        reviewerAgentId: string;
+        nativeForm: true;
+        transport?: "direct_parent_form" | "child_form_bridge";
+        reviewerChildIssueId?: string;
+        reviewerInteractionId?: string;
+        adjudicationGeneration?: number;
+        createdAt: string;
+      }
+    | {
         type: "agent_adjudication";
         julesActivityId: JulesActivityId;
         paperclipInteractionId?: string | undefined;
