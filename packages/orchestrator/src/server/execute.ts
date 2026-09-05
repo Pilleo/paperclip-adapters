@@ -952,6 +952,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       assigneeIsOrchestrator: issue.assigneeAgentId === orchestratorId || issue.assigneeAgentId === julesAgentId || managedJulesIds.has(issue.assigneeAgentId || ""),
       serviceName,
       monitorStatus,
+      monitorClearReason,
       timeoutAt,
       hasProviderSession: typeof externalRef === "string" && externalRef.trim().length > 0,
       monitorCanBeReattached: canReattachNativeMonitor,
