@@ -974,6 +974,15 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     }
     if (monitorDecision.action !== "resume_provider") continue;
     const key = `jules-monitor-resume:${issue.id}:${timeoutAt}`;
+    // Paperclip's invalid-assignee cleanup can leave the legacy projection
+    // (`executionState.monitor`) cleared while dropping `executionPolicy`.
+    // That is a recoverable state, but it can persist across several ticks if
+    // a concurrent heartbeat wins the write or the first PATCH fails. A
+    // lifetime guard entry must not turn that state into a permanent stall:
+    // allow the next heartbeat to retry until the native policy is observable.
+    if (monitorStatus === "cleared" && monitorClearReason === "invalid_assignee" && !canReattachNativeMonitor) {
+      lifecycleConvergenceGuard.clear(key);
+    }
     await lifecycleConvergenceGuard.runOnce(key, async () => {
       if (!executionPolicy || !canReattachNativeMonitor || typeof externalRef !== "string") {
         await log(`[ORCHESTRATOR] Refusing Jules monitor reattachment for [${issue.identifier || issue.id}]: native monitor payload is incomplete.`);
