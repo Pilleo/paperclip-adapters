@@ -320,7 +320,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     agentId: string | undefined,
     reason: string,
     issueId?: string,
-    options?: { resumeFromRunId?: string | undefined; recoverStaleExecution?: boolean | undefined },
+    options?: { resumeFromRunId?: string | undefined; recoverStaleExecution?: boolean | undefined; workerFeedback?: WorkerFeedbackEnvelope | undefined; reviewInteractionId?: string | undefined },
   ) => {
     if (!agentId || !managedIds.has(agentId)) return;
     const circuitKey = `managed-wakeup:${agentId}`;
