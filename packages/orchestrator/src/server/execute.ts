@@ -956,6 +956,8 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       timeoutAt,
       hasProviderSession: typeof externalRef === "string" && externalRef.trim().length > 0,
       monitorCanBeReattached: canReattachNativeMonitor,
+      monitorDetached,
+      assigneeIsJules: issue.assigneeAgentId === julesAgentId,
     }, Date.now());
     if (monitorDecision.action === "return_to_todo") {
       const key = `jules-monitor-reclaim:${issue.id}:${timeoutAt}`;
