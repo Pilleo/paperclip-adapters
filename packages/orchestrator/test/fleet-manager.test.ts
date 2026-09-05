@@ -71,6 +71,7 @@ describe("Orchestrator Managed Fleet Manager", () => {
     expect(result.vibeAgentId).toBeDefined();
     expect(result.lunaReviewerAgentId).toBeDefined();
     expect(result.terraReviewerAgentId).toBeDefined();
+    expect(result.terraAdjudicatorAgentId).toBeDefined();
     const luna = createdCalls.find((call) => call.name === "[Orchestrated] Luna Fast Reviewer");
     expect(luna?.adapterType).toBe("codex_local");
     expect(luna?.adapterConfig.model).toBe("gpt-5.6-luna");
