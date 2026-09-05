@@ -81,7 +81,12 @@ describe("Orchestrator Managed Fleet Manager", () => {
     const jules = createdCalls.find((call) => call.name === "[Orchestrated] Jules Async Worker");
     expect(jules?.adapterConfig.planReviewerAgentId).toBe(result.lunaReviewerAgentId);
     expect(jules?.adapterConfig.planStrongReviewerAgentId).toBe(result.terraReviewerAgentId);
-    expect(jules?.adapterConfig.questionReviewerAgentId).toBe(result.terraReviewerAgentId);
+    expect(jules?.adapterConfig.questionReviewerAgentId).toBe(result.terraAdjudicatorAgentId);
+    expect(jules?.adapterConfig.questionAdjudicatorAgentId).toBe(result.terraAdjudicatorAgentId);
+    const adjudicator = createdCalls.find((call) => call.name === "[Orchestrated] Terra Jules Question Adjudicator");
+    expect(adjudicator?.adapterConfig.model).toBe("gpt-5.6-terra");
+    expect(adjudicator?.adapterConfig.permissionMode).toBe("read-only");
+    expect(adjudicator?.instructionsBundle.files["AGENTS.md"]).toContain("Jules Question Adjudicator Role");
   });
 
   it("patches existing Jules to enable timer heartbeats and reportsTo", async () => {
