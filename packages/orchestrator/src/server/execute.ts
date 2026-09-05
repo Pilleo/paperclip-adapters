@@ -817,7 +817,11 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
   const openPrRecoveryIds = new Set<string>();
   if (!ghStatus.error) {
     for (const issue of parsedIssues) {
-      if (!issue.orchestratorManaged || !["blocked", "in_progress"].includes(issue.status)) continue;
+      // A board approval can cause Paperclip to normalize the linked issue to
+      // todo/in_progress and reassign the previous worker. A registered open
+      // Jules PR is authoritative review work in every nonterminal state, so
+      // recovery must not depend on the stale lifecycle projection.
+      if (!issue.orchestratorManaged || !["backlog", "todo", "in_progress", "in_review", "blocked"].includes(issue.status)) continue;
       const rawProducts = issue.rawIssue["workProducts"] ?? issue.rawIssue["work_products"];
       const julesProduct = Array.isArray(rawProducts)
         ? rawProducts.find((product) => {
