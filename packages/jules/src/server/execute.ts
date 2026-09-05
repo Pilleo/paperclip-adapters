@@ -1609,6 +1609,85 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         session.deliveredFeedbackActivityId !== latestProviderQuestion.id,
       );
 
+      // A restarted/changed adapter configuration can restore the provider
+      // session while losing its pendingInteraction pointer. Reconnect that
+      // exact activity to the already-created visible card and strong-review
+      // child before evaluating the state machine. This is identity-based;
+      // no comment or question wording is used for correlation.
+      if (!session.pendingInteraction && (state === "AWAITING_USER_FEEDBACK" ||
+          (state !== "COMPLETED" && state !== "FAILED" && session.deliveredFeedbackActivityId &&
+            !session.deliveredFeedbackInteractionId)) &&
+          (config.questionAdjudicatorAgentId ?? config.questionReviewerAgentId)) {
+        if (!session.julesSessionId) return await yieldHeartbeat(session);
+        const questionReviewerAgentId = config.questionAdjudicatorAgentId ?? config.questionReviewerAgentId;
+        if (!questionReviewerAgentId) return await yieldHeartbeat(session);
+        const visibleInteractions = await listPaperclipInteractions(taskId, ctx.authToken, ctx.runId, 5000).catch(() => []);
+        // The card is the durable identity when a process restart lost the
+        // session pointer. Scan provider activities by idempotency key rather
+        // than assuming the latest activity or a particular provider state.
+        let candidate = [...activities].reverse().find((activity) => {
+          const key = `jules:agent-adjudication:${taskId}:${session!.julesSessionId}:${activity.id}`;
+          return visibleInteractions.some((item) => item.kind === "ask_user_questions" &&
+            item.status === "pending" && item.idempotencyKey === key);
+        });
+        if (!candidate) {
+          const prefix = `jules:agent-adjudication:${taskId}:${session!.julesSessionId}:`;
+          const orphanCard = visibleInteractions.find((item) => item.kind === "ask_user_questions" &&
+            item.status === "pending" && item.idempotencyKey?.startsWith(prefix));
+          const orphanActivityId = orphanCard?.idempotencyKey?.slice(prefix.length);
+          if (orphanActivityId) {
+            candidate = (await listAllActivities(client, session.julesSessionId)).find(
+              (activity) => activity.id === orphanActivityId,
+            );
+          }
+        }
+        const visibleInteraction = candidate
+          ? visibleInteractions.find((item) => item.kind === "ask_user_questions" && item.status === "pending" &&
+              item.idempotencyKey === `jules:agent-adjudication:${taskId}:${session!.julesSessionId}:${candidate.id}`)
+          : undefined;
+        if (visibleInteraction && candidate) {
+          const reviewerChild = await createJulesQuestionAdjudication(
+            taskId,
+            questionReviewerAgentId,
+            extractQuestionText(candidate),
+            ctx.authToken,
+            ctx.runId,
+            ctx.agent.companyId,
+            candidate.id,
+            session.julesSessionId,
+            0,
+            true,
+          );
+          await activateInternalReviewIssue(
+            reviewerChild.id, questionReviewerAgentId, ctx.authToken, ctx.runId,
+          );
+          const reviewerInteraction = await createJulesQuestionReviewInteraction(
+            reviewerChild.id,
+            taskId,
+            session.julesSessionId,
+            candidate.id,
+            extractQuestionText(candidate),
+            questionReviewerAgentId,
+            ctx.authToken,
+            ctx.runId,
+          );
+          session.pendingInteraction = {
+            type: "agent_adjudication",
+            julesActivityId: asJulesActivityId(candidate.id),
+            paperclipInteractionId: visibleInteraction.id,
+            question: extractQuestionText(candidate),
+            reviewerAgentId: questionReviewerAgentId,
+            nativeForm: true,
+            transport: "child_form_bridge",
+            reviewerChildIssueId: reviewerChild.id,
+            reviewerInteractionId: reviewerInteraction.id,
+            createdAt: new Date().toISOString(),
+          };
+          await persistSessionBestEffort(session, ctx.onLog);
+          await ctx.onLog?.("stdout", `[jules] Reconnected native question-review form for activity ${candidate.id}.\n`);
+        }
+      }
+
       // Recover answers relayed by older builds that only left a comment and
       // reviewer child. The exact activity ID proves which provider question
       // was answered; we reconstruct the visible parent interaction from that
