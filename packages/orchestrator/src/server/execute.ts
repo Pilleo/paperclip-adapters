@@ -1012,19 +1012,6 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     const stateRecord = state && typeof state === "object" && !Array.isArray(state)
       ? state as Record<string, unknown>
       : null;
-    const monitor = stateRecord?.["monitor"];
-    const monitorRecord = monitor && typeof monitor === "object" && !Array.isArray(monitor)
-      ? monitor as Record<string, unknown>
-      : (() => {
-          const policy = issue.rawIssue["executionPolicy"];
-          const policyRecord = policy && typeof policy === "object" && !Array.isArray(policy)
-            ? policy as Record<string, unknown>
-            : null;
-          const candidate = policyRecord?.["monitor"];
-          return candidate && typeof candidate === "object" && !Array.isArray(candidate)
-            ? candidate as Record<string, unknown>
-            : null;
-        })();
     const delegation = typeof issue.rawIssue["description"] === "string"
       ? (issue.rawIssue["description"] as string).match(/paperclip-delegation\s+kind=([^\s]+)\s+parent=([^\s]+)\s+revision=([^\s]+)\s+stage=([^\s]+)/i)
       : null;
