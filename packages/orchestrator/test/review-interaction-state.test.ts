@@ -141,6 +141,8 @@ describe("native PR review interaction state", () => {
     const request = buildReviewInteractionRequest({
       issueId: "issue-1", prUrl: "pr-1", headSha: "abc", stage: "terra", reviewerAgentId: "terra-1",
     });
+    expect(request).toMatchObject({ addresseeAgentId: "terra-1", continuationPolicy: "none" });
+    expect(shouldExplicitlyWakeReviewCard(request)).toBe(false);
   });
 
   it("binds the parent issue to the native reviewer participant without assigning it", () => {
