@@ -105,4 +105,33 @@ describe("activity-mirror", () => {
     expect(session.deliveredActivityIds ?? []).not.toContain("question-1");
     expect(session.activityCheckpoint).toBeUndefined();
   });
+
+  it("checkpoints outbound user-message echoes without mirroring them", async () => {
+    addComment.mockReset();
+    addComment.mockResolvedValue(undefined);
+    const client = { getActivities: vi.fn().mockResolvedValue({
+      activities: [
+        {
+          id: "outbound-1",
+          createTime: "2026-08-30T00:05:00.000Z",
+          userMessaged: { userMessage: "Continue with the assigned workflow." },
+        },
+        {
+          id: "agent-1",
+          createTime: "2026-08-30T00:06:00.000Z",
+          agentMessaged: { agentMessage: "I am continuing." },
+        },
+      ],
+    }) } as unknown as JulesClient;
+    const session: JulesAdapterSessionV1 = {
+      version: 1, paperclipIssueId: "issue-1", promptHash: "hash-1", repository: "repo", source: "src",
+      baseBranch: "main", phase: "RUNNING", attempt: 1, failedSessions: [], createdAt: "2026-08-30T00:00:00.000Z",
+    };
+
+    await mirrorNewActivities(client, session, "issue-1", "token", "run-1", vi.fn().mockResolvedValue(undefined));
+
+    expect(addComment).toHaveBeenCalledTimes(1);
+    expect(addComment).toHaveBeenCalledWith("issue-1", "agent-1", expect.any(String), undefined, "token", "run-1");
+    expect(session.deliveredActivityIds).toEqual(["outbound-1", "agent-1"]);
+  });
 });
