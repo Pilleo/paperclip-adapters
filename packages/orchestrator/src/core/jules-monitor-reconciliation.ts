@@ -72,7 +72,7 @@ export function decideJulesMonitorReconciliation(
   // Native executionPolicy.monitor payloads do not carry the legacy
   // `triggered` status. A missing status is valid when the remaining native
   // monitor fields are present; an explicit non-triggered status is not.
-  if (snapshot.monitorStatus !== null && snapshot.monitorStatus !== "triggered") return { action: "preserve", reason: "Jules monitor is not triggered" };
+  if (!invalidAssigneeRepair && !strandedMonitorRepair && snapshot.monitorStatus !== null && snapshot.monitorStatus !== "triggered") return { action: "preserve", reason: "Jules monitor is not triggered" };
   const timeout = snapshot.timeoutAt ? Date.parse(snapshot.timeoutAt) : NaN;
   if (!Number.isFinite(timeout) || now < timeout) return { action: "preserve", reason: "Jules monitor timeout has not elapsed" };
   if (!snapshot.hasProviderSession) return { action: "preserve", reason: "expired Jules monitor has no provider session to resume" };
