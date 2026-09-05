@@ -1755,30 +1755,32 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
       })(),
     });
 
-    if (pipelineDecision.action === "AWAIT_CI") {
-      if (ciCheck.accessProblem) {
-        await log(
-          `[ORCHESTRATOR] 🚨 GITHUB CI VERIFICATION UNAVAILABLE for [${reviewTask.identifier || reviewTask.id}]: ${ciCheck.accessProblem} ` +
-          `The PR may be green, but no review will be dispatched until Paperclip can verify it.`
-        );
-      }
-      await log(
-        `[ORCHESTRATOR] ⏳ [Stage 1 CI Gate] ${pipelineDecision.reason}`
-      );
-      continue;
-    }
-    if (pipelineDecision.action === "AWAIT_REVIEW_CONFIGURATION" || pipelineDecision.action === "AWAIT_REVIEW") {
-      await log(`[ORCHESTRATOR] ⏳ [${pipelineDecision.stage}] ${pipelineDecision.reason}`);
-      continue;
-    }
-
-    const runtimeOwnsReviewerAssignment = issueHasExecutionPolicy(reviewTask.rawIssue);
-    if (runtimeOwnsReviewerAssignment) {
-      if (["DISPATCH_VIBE_REVIEW", "DISPATCH_STRONG_REVIEW", "DISPATCH_LUNA_REVIEW", "DISPATCH_TERRA_REVIEW"].includes(pipelineDecision.action)) {
-        await log(
-          `[ORCHESTRATOR] [${reviewTask.identifier || reviewTask.id}] has executionPolicy; Paperclip runtime owns reviewer assignment while the orchestrator creates the bound review dialog. ${pipelineDecision.reason}`
-        );
-      }
+    switch (pipelineDecision.action) {
+      case "AWAIT_CI":
+        if (ciCheck.accessProblem) {
+          await log(
+            `[ORCHESTRATOR] 🚨 GITHUB CI VERIFICATION UNAVAILABLE for [${reviewTask.identifier || reviewTask.id}]: ${ciCheck.accessProblem} ` +
+            `The PR may be green, but no review will be dispatched until Paperclip can verify it.`
+          );
+        }
+        await log(`[ORCHESTRATOR] ⏳ [Stage 1 CI Gate] ${pipelineDecision.reason}`);
+        continue;
+      case "AWAIT_REVIEW_CONFIGURATION":
+      case "AWAIT_REVIEW":
+      case "AWAIT_OPERATOR_RECOVERY":
+        await log(`[ORCHESTRATOR] ⏳ [${pipelineDecision.stage}] ${pipelineDecision.reason}`);
+        continue;
+      case "DISPATCH_VIBE_REVIEW":
+      case "DISPATCH_STRONG_REVIEW":
+      case "DISPATCH_LUNA_REVIEW":
+      case "DISPATCH_TERRA_REVIEW":
+      case "RECOVER_REVIEW":
+      case "REASSIGN_TO_WORKER":
+      case "RECONCILE_OPERATOR_GATE":
+      case "CREATE_MERGE_APPROVAL":
+      case "AWAIT_OPERATOR_APPROVAL":
+      case "EXECUTE_MERGE":
+        break;
     }
 
     if (["DISPATCH_VIBE_REVIEW", "DISPATCH_STRONG_REVIEW", "DISPATCH_LUNA_REVIEW", "DISPATCH_TERRA_REVIEW"].includes(pipelineDecision.action)) {
