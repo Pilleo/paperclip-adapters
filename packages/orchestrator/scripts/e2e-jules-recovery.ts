@@ -122,9 +122,8 @@ async function main(): Promise<void> {
   }
 
   let companyId = "";
-  let backlogDir = "";
-  let fakeGhDir = "";
-  const previousPath = process.env["PATH"];
+  let cleanupError: unknown;
+  let operationError: unknown;
   try {
     const company = requireObject(await request("/api/companies", "POST", { name: `Jules recovery canary ${Date.now()}` }), "company");
     companyId = String(company.id || "");
