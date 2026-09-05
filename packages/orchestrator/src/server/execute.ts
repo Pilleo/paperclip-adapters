@@ -79,6 +79,7 @@ import { runProjectWorkerPool } from "../core/project-worker-pool.js";
 import { planOrphanReviewRecovery } from "../core/orphan-review-recovery.js";
 import { decideReviewSession } from "../core/review-session-state.js";
 import type { IssueState } from "../core/types.js";
+import { selectStaleJulesReviewChildren } from "../core/stale-review-artifacts.js";
 import { executePaperclipCommand } from "@pilleo/paperclip-adapter-common";
 
 // One orchestrator process can receive overlapping Paperclip heartbeats. Keep
