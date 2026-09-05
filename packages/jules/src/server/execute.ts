@@ -2011,6 +2011,191 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (session.pendingInteraction?.type === "agent_adjudication" &&
           !(terminalProviderState && !hasUnresolvedProviderQuestion)) {
         const pending = session.pendingInteraction;
+        // Native structured form protocol. New sessions use the child bridge;
+        // the direct parent form below remains only for backward-compatible
+        // reads of already answered legacy sessions.
+        if (isNativeAgentAdjudication(pending)) {
+          // Migrate sessions written before the child-form bridge. The old
+          // parent card remains the audit record, but must no longer be used
+          // as Terra's wake target because the parent is owned by Jules.
+          if (pending.transport !== "child_form_bridge") {
+            const reviewerChild = await createJulesQuestionAdjudication(
+              taskId,
+              pending.reviewerAgentId,
+              pending.question,
+              ctx.authToken,
+              ctx.runId,
+              ctx.agent.companyId,
+              pending.julesActivityId,
+              session.julesSessionId,
+              (pending.adjudicationGeneration ?? 0) + 1,
+              true,
+            );
+            const reviewerInteraction = await createJulesQuestionReviewInteraction(
+              reviewerChild.id,
+              taskId,
+              session.julesSessionId!,
+              pending.julesActivityId,
+              pending.question,
+              pending.reviewerAgentId,
+              ctx.authToken,
+              ctx.runId,
+            );
+            await activateInternalReviewIssue(
+              reviewerChild.id, pending.reviewerAgentId, ctx.authToken, ctx.runId,
+            );
+            session.pendingInteraction = {
+              ...pending,
+              transport: "child_form_bridge",
+              reviewerChildIssueId: reviewerChild.id,
+              reviewerInteractionId: reviewerInteraction.id,
+            };
+            await persistSessionBestEffort(session, ctx.onLog);
+            return await yieldHeartbeat(session);
+          }
+          if (pending.transport === "child_form_bridge" && pending.reviewerChildIssueId && pending.reviewerInteractionId) {
+            const childIssue = await getPaperclipIssue(
+              pending.reviewerChildIssueId, ctx.authToken, ctx.runId,
+            ).catch(() => null);
+            const childForm = await getPaperclipInteraction(
+              pending.reviewerChildIssueId, pending.reviewerInteractionId, ctx.authToken, ctx.runId,
+            ).catch(() => null);
+            const childState = classifyNativeQuestionReview(childForm?.status, childForm?.result);
+            const childDecision = childState.state === "answered" && childState.decision !== "malformed"
+              ? childState.decision
+              : null;
+            if (childDecision) {
+              await resolveJulesAgentAdjudicationInteraction(
+                taskId,
+                pending.paperclipInteractionId,
+                childDecision.kind === "ANSWER" ? "answer" : "escalate",
+                childDecision.kind === "ANSWER" ? childDecision.answer : childDecision.reason,
+                ctx.authToken,
+                ctx.runId,
+              );
+              await completeInternalReviewIssue(pending.reviewerChildIssueId, ctx.authToken, ctx.runId).catch(() => undefined);
+              if (childDecision.kind === "ANSWER") {
+                if (session.deliveredFeedbackActivityId !== pending.julesActivityId) {
+                  await client.sendMessage(session.julesSessionId!, { prompt: childDecision.answer });
+                }
+                session.deliveredFeedbackActivityId = pending.julesActivityId;
+                session.pendingInteraction = session.deferredPlanReview;
+                session.deferredPlanReview = undefined;
+                session.phase = "RUNNING";
+                await persistSessionBestEffort(session, ctx.onLog);
+                return await yieldHeartbeat(session);
+              }
+              const attempt = (session.feedbackInteractionAttempt ?? 0) + 1;
+              const interaction = await runCheckpointedMutation({
+                session: session!,
+                key: `jules:user-feedback:${taskId}:${session!.julesSessionId}:${pending.julesActivityId}:${attempt}`,
+                operation: "create_user_feedback_interaction",
+                issueId: taskId,
+                sessionId: session!.julesSessionId,
+                activityId: pending.julesActivityId,
+                persist: () => persistSessionBestEffort(session!, ctx.onLog),
+                run: () => createJulesFeedbackInteraction(
+                  taskId, session!.julesSessionId!, pending.julesActivityId,
+                  `${pending.question}\n\nReviewer escalation: ${childDecision.reason}`,
+                  ctx.authToken, attempt, ctx.runId,
+                ),
+              });
+              session.feedbackInteractionAttempt = attempt;
+              session.pendingInteraction = {
+                type: "user_feedback",
+                julesActivityId: pending.julesActivityId,
+                paperclipInteractionId: interaction.id,
+                question: pending.question,
+                createdAt: new Date().toISOString(),
+              };
+              await persistSessionBestEffort(session, ctx.onLog);
+            }
+            const terminalChild = childIssue?.status === "done" || childIssue?.status === "cancelled";
+            const malformedForm = childState.state === "answered" && childState.decision === "malformed";
+            if (!childDecision && (terminalChild || malformedForm)) {
+              // A reviewer can race the bridge and finish the helper from its
+              // description before the typed form is posted. Never reopen that
+              // terminal task: its prose/comment history is not a decision for
+              // this provider question. Create one bounded fresh generation.
+              const recoveryCount = session.adjudicationRecoveryCount ?? 0;
+              if (recoveryCount < 2 && ctx.agent.companyId && session.julesSessionId) {
+                const generation = (pending.adjudicationGeneration ?? 0) + 1;
+                const replacement = await createJulesQuestionAdjudication(
+                  taskId, pending.reviewerAgentId, pending.question, ctx.authToken,
+                  ctx.runId, ctx.agent.companyId, pending.julesActivityId,
+                  session.julesSessionId, generation, true,
+                );
+                const replacementForm = await createJulesQuestionReviewInteraction(
+                  replacement.id, taskId, session.julesSessionId,
+                  pending.julesActivityId, pending.question, pending.reviewerAgentId,
+                  ctx.authToken, ctx.runId,
+                );
+                await activateInternalReviewIssue(
+                  replacement.id, pending.reviewerAgentId, ctx.authToken, ctx.runId,
+                );
+                session.pendingInteraction = {
+                  ...pending,
+                  reviewerChildIssueId: replacement.id,
+                  reviewerInteractionId: replacementForm.id,
+                  adjudicationGeneration: generation,
+                };
+                session.adjudicationRecoveryCount = recoveryCount + 1;
+                await persistSessionBestEffort(session, ctx.onLog);
+              }
+            }
+            return await yieldHeartbeat(session);
+          }
+          const form = await getPaperclipInteraction(
+            taskId, pending.paperclipInteractionId, ctx.authToken, ctx.runId,
+          ).catch(() => null);
+          const formState = classifyNativeQuestionReview(form?.status, form?.result);
+          const decision = formState.state === "answered" && formState.decision !== "malformed"
+            ? formState.decision
+            : null;
+          if (decision?.kind === "ANSWER") {
+            if (session.deliveredFeedbackActivityId !== pending.julesActivityId) {
+              await client.sendMessage(session.julesSessionId!, { prompt: decision.answer });
+            }
+            session.deliveredFeedbackActivityId = pending.julesActivityId;
+            session.pendingInteraction = session.deferredPlanReview;
+            session.deferredPlanReview = undefined;
+            session.phase = "RUNNING";
+            await persistSessionBestEffort(session, ctx.onLog);
+            return await yieldHeartbeat(session);
+          }
+          if (decision?.kind === "ESCALATE" || formState.state === "answered") {
+            const reason = decision?.kind === "ESCALATE"
+              ? decision.reason
+              : "The reviewer submitted an invalid structured decision; human clarification is required.";
+            const activityId = pending.julesActivityId;
+            const attempt = (session.feedbackInteractionAttempt ?? 0) + 1;
+            const interaction = await runCheckpointedMutation({
+              session: session!,
+              key: `jules:user-feedback:${taskId}:${session!.julesSessionId}:${activityId}:${attempt}`,
+              operation: "create_user_feedback_interaction",
+              issueId: taskId,
+              sessionId: session!.julesSessionId,
+              activityId,
+              persist: () => persistSessionBestEffort(session!, ctx.onLog),
+              run: () => createJulesFeedbackInteraction(
+                taskId, session!.julesSessionId!, activityId,
+                `${pending.question}\n\nReviewer escalation: ${reason}`,
+                ctx.authToken, attempt, ctx.runId,
+              ),
+            });
+            session.feedbackInteractionAttempt = attempt;
+            session.pendingInteraction = {
+              type: "user_feedback", julesActivityId: pending.julesActivityId,
+              paperclipInteractionId: interaction.id, question: pending.question,
+              createdAt: new Date().toISOString(),
+            };
+            await persistSessionBestEffort(session, ctx.onLog);
+          }
+          return await yieldHeartbeat(session);
+        }
+        // Migration-only child protocol. A malformed legacy record must not
+        // fall through into side effects with an unknown child identity.
+        if (isNativeAgentAdjudication(pending)) return await yieldHeartbeat(session);
         // A pre-fix session may contain an adjudication created from plan text
         // while Jules was asking a separate question in the same activity
         // window. Never send that stale answer to Jules. Drop the child and
