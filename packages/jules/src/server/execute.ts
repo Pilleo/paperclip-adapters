@@ -1704,7 +1704,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         : undefined;
       if (deliveredFeedbackActivity && !session.deliveredFeedbackInteractionId) {
         const question = extractQuestionText(deliveredFeedbackActivity);
-        const recoveryReviewerAgentId = config.questionReviewerAgentId;
+        const recoveryReviewerAgentId = config.questionAdjudicatorAgentId ?? config.questionReviewerAgentId;
         if (question && recoveryReviewerAgentId) {
           const recoveredChild = await createJulesQuestionAdjudication(
             taskId,
