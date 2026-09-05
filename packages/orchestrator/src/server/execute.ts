@@ -651,8 +651,8 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
   const enrichedIssues = await Promise.all(scopedIssues.map(async (issue) => {
     const status = String(issue["status"] ?? "").toLowerCase();
     const orchestratorOwnedRecoveryRecord =
-      (status === "todo" || status === "in_progress") &&
-      (issue["assigneeAgentId"] === orchestratorId || managedJulesIds.has(String(issue["assigneeAgentId"] || "")));
+      (status === "backlog" || status === "todo" || status === "in_progress" || status === "blocked") &&
+      (issue["assigneeAgentId"] === orchestratorId || managedIds.has(String(issue["assigneeAgentId"] || "")));
     if (!needsFullIssueRecord(status) && !orchestratorOwnedRecoveryRecord) return issue;
     try {
       return await pc.getIssue<Record<string, unknown>>(String(issue["id"] ?? ""));
