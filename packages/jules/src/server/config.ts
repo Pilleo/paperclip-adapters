@@ -133,6 +133,7 @@ export interface AdapterConfig {
   automationMode: "AUTO_CREATE_PR" | "AUTOMATION_MODE_UNSPECIFIED";
   maxAutomaticRestarts: number;
   questionReviewerAgentId?: string | undefined;
+  questionAdjudicatorAgentId?: string | undefined;
   planReviewerAgentId?: string | undefined;
   planStrongReviewerAgentId?: string | undefined;
   codeReviewerAgentIds?: string[] | undefined;
