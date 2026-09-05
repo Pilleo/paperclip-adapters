@@ -1958,6 +1958,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // reviewer. The only machine-readable input accepted from that agent is
       // the strict JSON protocol in question-adjudication.ts; prose is never
       // classified or auto-answered.
+      await ctx.onLog?.("stdout", `[jules] Question reconciliation checkpoint: pending=${session.pendingInteraction?.type ?? "none"}, native=${session.pendingInteraction?.type === "agent_adjudication" ? isNativeAgentAdjudication(session.pendingInteraction) : false}, terminal=${terminalProviderState}, hasQuestion=${hasUnresolvedProviderQuestion}.\n`);
       // A pre-fix run can leave a question child active after Jules has
       // already completed and produced a PR. Retire both stale ACP children
       // and the visible card, then let the terminal state machine continue.
