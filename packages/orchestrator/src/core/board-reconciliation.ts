@@ -13,6 +13,8 @@ export interface BoardIssueSnapshot {
   /** True when the monitor's due time has elapsed and it is no longer executable. */
   readonly monitorExpired?: boolean;
   readonly nativeReviewInteraction: boolean;
+  /** A registered, open PR exists for this managed issue. */
+  readonly registeredOpenPullRequest: boolean;
   readonly hasPullRequest: boolean;
   readonly parentId: string | null;
   readonly reviewGateKey: string | null;
