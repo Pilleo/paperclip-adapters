@@ -127,6 +127,8 @@ describe("E2E Jules orchestration regression", { timeout: 30_000 }, () => {
     vi.mocked(listPaperclipInteractions).mockResolvedValue([]);
     vi.mocked(scheduleJulesSessionMonitor).mockResolvedValue();
     vi.mocked(moveIssueToBlocked).mockResolvedValue();
+    vi.mocked(createJulesQuestionAdjudication).mockResolvedValue({ id: "question-review-1", status: "todo" } as never);
+    vi.mocked(createJulesQuestionReviewInteraction).mockResolvedValue({ id: "question-form-1", status: "pending" });
     vi.mocked(withdrawPaperclipInteraction).mockResolvedValue();
     vi.mocked(answerJulesAgentAdjudicationInteraction).mockResolvedValue();
     vi.mocked(completeInternalReviewIssue).mockResolvedValue();
