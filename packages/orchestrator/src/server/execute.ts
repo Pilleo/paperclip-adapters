@@ -1959,12 +1959,12 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
             await log(`[ORCHESTRATOR] 🚨 Failed to create native review dialog for [${reviewTask.identifier || reviewTask.id}]: ${String(interactionError)}`);
             continue;
           }
-          // In this Paperclip version, creating an addressed interaction does
-          // not reliably start an ACP run. Explicitly wake the addressee for
-          // both a newly-created and a reused pending card. The verified
-          // Terra assignee/state above makes this wake belong to the current
-          // review stage instead of being cancelled as a stale assignee wake.
-          if (reviewInteractionId) {
+          // Adapter workaround: create the card unaddressed, then explicitly
+          // wake the already-assigned reviewer. Paperclip's automatic
+          // addressed-card wake currently strips interaction context and can
+          // cancel the run as `issue_assignee_changed`. The idempotency fence
+          // makes this one wake safe across repeated heartbeats.
+          if (reviewInteractionId && (dialogCreated || pipelineDecision.action === "RECOVER_REVIEW")) {
             await managedWakeup(
               targetAgentId,
               `Review PR #${matchingPr.number} for ${reviewTask.identifier || reviewTask.id}; respond to native review interaction ${reviewInteractionId}. This is a read-only review; do not modify files.`,
