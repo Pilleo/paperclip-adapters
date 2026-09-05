@@ -144,8 +144,18 @@ describe("E2E host-plan scope conformity on Jules PRs", () => {
     expect(result.exitCode).toBe(0);
     expect(result.clearSession).toBe(false);
     expect(result.resultJson?.scopeConformant).toBe(false);
-    expect(result.summary).toMatch(/requires host review/);
-    expect(result.resultJson).toMatchObject({ issueStatus: "in_review", reviewRequired: true, providerMessageSent: false });
+    expect(result.summary).toMatch(/created a PR/);
+    expect(result.resultJson).toMatchObject({
+      issueStatus: "in_review",
+      scopeConformant: false,
+      providerMessageSent: false,
+    });
+    expect(moveIssueToReview).toHaveBeenCalledWith(
+      "issue-141",
+      "https://github.com/Pilleo/mazewall/pull/400",
+      undefined,
+      "",
+    );
     expect(JulesClient.prototype.sendMessage).not.toHaveBeenCalled();
   });
 
