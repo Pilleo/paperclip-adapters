@@ -271,8 +271,9 @@ export function buildReviewInteractionRequest(identity: ReviewInteractionIdentit
     kind: "request_item_verdicts",
     idempotencyKey: reviewInteractionIdempotencyKey(identity),
     title: `Review pull request ${identity.prUrl}`,
-    continuationPolicy: "wake_assignee",
-    ...(identity.reviewerAgentId ? { addresseeAgentId: identity.reviewerAgentId } : {}),
+    ...(identity.reviewerAgentId
+      ? { addresseeAgentId: identity.reviewerAgentId, continuationPolicy: "none" as const }
+      : { continuationPolicy: "wake_assignee" as const }),
     payload: {
       version: 1,
       prompt: "Review this pull request and choose a disposition.",
