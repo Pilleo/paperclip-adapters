@@ -320,9 +320,13 @@ export async function reconcileManagedFleet(
         (def.key === "jules" && matching.adapterConfig?.["questionReviewerAgentId"] !== mergedConfig["questionReviewerAgentId"]) ||
         (def.key === "jules" && matching.adapterConfig?.["questionAdjudicatorAgentId"] !== mergedConfig["questionAdjudicatorAgentId"]) ||
         (def.key === "luna_reviewer" && matching.adapterConfig?.["cwd"] !== mergedConfig["cwd"]) ||
-        (def.key === "jules" &&
-          (currentHeartbeat?.["enabled"] !== true || currentHeartbeat?.["intervalSec"] !== 300 ||
-            currentHeartbeat?.["wakeOnDemand"] !== true || currentHeartbeat?.["maxConcurrentRuns"] !== 1)) ||
+        (runtimeConfig && (
+          currentHeartbeat?.["enabled"] !== runtimeConfig.heartbeat["enabled"] ||
+          (runtimeConfig.heartbeat["intervalSec"] !== undefined && currentHeartbeat?.["intervalSec"] !== runtimeConfig.heartbeat["intervalSec"]) ||
+          currentHeartbeat?.["wakeOnDemand"] !== runtimeConfig.heartbeat["wakeOnDemand"] ||
+          currentHeartbeat?.["maxConcurrentRuns"] !== runtimeConfig.heartbeat["maxConcurrentRuns"] ||
+          (runtimeConfig.heartbeat["skipTimerWhenNoActionableWork"] !== undefined && currentHeartbeat?.["skipTimerWhenNoActionableWork"] !== runtimeConfig.heartbeat["skipTimerWhenNoActionableWork"])
+        )) ||
         (managerId && matching.reportsTo !== managerId) ||
         matching.metadata?.["managedBy"] !== "paperclip-orchestrator" ||
         matching.metadata?.["workerKey"] !== def.key;
