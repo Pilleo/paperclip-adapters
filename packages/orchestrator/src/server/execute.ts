@@ -490,6 +490,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
         managedJules.adapterConfig?.["planReviewerAgentId"] !== lunaReviewerAgentId ||
         managedJules.adapterConfig?.["planStrongReviewerAgentId"] !== terraReviewerAgentId ||
         managedJules.adapterConfig?.["questionReviewerAgentId"] !== terraReviewerAgentId
+        || managedJules.adapterConfig?.["questionAdjudicatorAgentId"] !== terraAdjudicatorAgentId
       )) {
         const patch = await pc.patchAgent(julesAgentId, {
           adapterConfig: {
