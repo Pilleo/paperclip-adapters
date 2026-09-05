@@ -2402,6 +2402,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                  }
                }
              }
+             // A terminal PR handoff is no longer provider polling work. Clear
+             // only Jules' native monitor before returning; the orchestrator
+             // still owns the independent Paperclip review workflow. Without
+             // this boundary, a monitor left in `triggered` with no
+             // `nextCheckAt` re-runs the completed session on every scheduler
+             // tick and can create/cancel review cards indefinitely.
+             await clearJulesSessionMonitor(taskId, ctx.authToken, ctx.runId).catch(async (error) => {
+               await ctx.onLog?.("stderr", `[jules] Could not clear terminal session monitor: ${sanitizeError(error)}\n`);
+             });
              await runCheckpointedMutation({
                session: session!,
                key: `jules:review:${taskId}:${session!.currentPrUrl}`,
