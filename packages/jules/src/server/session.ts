@@ -154,6 +154,8 @@ export const JulesAdapterSessionV1Schema = z.object({
   relayedReviewCommentIds: z.array(z.string()).optional(),
   /** Stable key for the last PR scope-drift notification sent to Jules. */
   scopeDriftFingerprint: z.string().optional(),
+  /** Last native reviewer rejection delivered to the Jules provider. */
+  workerFeedbackDeliveryId: z.string().optional(),
   activityCheckpoint: z.object({
     createTime: z.string().datetime(),
     id: z.string().min(1),
