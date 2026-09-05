@@ -88,6 +88,7 @@ import {
   clearJulesSessionMonitor,
   type PaperclipInteraction,
 } from "./paperclip-client.js";
+import { evaluateQuestionAdjudicationChild } from "./question-adjudication-state.js";
 import { parseQuestionAdjudication } from "./question-adjudication.js";
 import { createJulesPlanReviewChild } from "./plan-review-client.js";
 import { parsePlanAdjudication } from "./plan-adjudication.js";
