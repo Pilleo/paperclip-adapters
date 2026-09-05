@@ -136,6 +136,7 @@ export interface AdapterConfig {
   questionAdjudicatorAgentId?: string | undefined;
   planReviewerAgentId?: string | undefined;
   planStrongReviewerAgentId?: string | undefined;
+  e2eProviderBaseUrl?: string | undefined;
   codeReviewerAgentIds?: string[] | undefined;
 }
 
