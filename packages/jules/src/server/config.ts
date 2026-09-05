@@ -95,6 +95,8 @@ export const SettingsSchema = z.object({
   invariantsFile: z.string().optional(),
   /** Paperclip agent that adjudicates provider questions before a human is asked. */
   questionReviewerAgentId: z.string().uuid().optional(),
+  /** Dedicated Paperclip ACP agent for Jules question adjudication. Takes precedence over the legacy field. */
+  questionAdjudicatorAgentId: z.string().uuid().optional(),
   /** Paperclip ACP agents used for Jules plan review; no provider API keys are used. */
   planReviewerAgentId: z.string().uuid().optional(),
   planStrongReviewerAgentId: z.string().uuid().optional(),
