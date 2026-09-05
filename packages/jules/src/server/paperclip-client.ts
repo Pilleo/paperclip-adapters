@@ -456,6 +456,7 @@ export async function createJulesAgentAdjudicationInteraction(
   authToken: string | undefined,
   runId?: string,
 ): Promise<PaperclipInteraction> {
+  void reviewerAgentId;
   const idempotencyKey = `jules:agent-adjudication:${issueId}:${sessionId}:${activityId}`;
   const { prompt, helpText } = formatCardPromptAndHelpText(question);
   try {
