@@ -22,4 +22,31 @@ describe("Jules supervisor bridge", () => {
       runs: [run], julesAgentId: "jules-1", now,
     })).toEqual([]);
   });
+
+  it("skips a sessionless scheduled retry and resumes from the newest session-bearing source run", () => {
+    const source = {
+      ...run,
+      id: "source-run",
+      finishedAt: new Date(now - 301_000).toISOString(),
+    };
+    expect(selectJulesSupervisorActions({
+      issues: [{ id: "issue-1", status: "in_progress", assigneeAgentId: "jules-1" }],
+      runs: [
+        {
+          ...source,
+          id: "scheduled-retry",
+          status: "scheduled_retry",
+          sessionIdBefore: null,
+          sessionIdAfter: null,
+          providerSessionId: null,
+          startedAt: null,
+          finishedAt: null,
+          retryNotBefore: new Date(now - 1_000).toISOString(),
+        },
+        source,
+      ],
+      julesAgentId: "jules-1",
+      now,
+    })).toEqual([{ issueId: "issue-1", sessionId: "session-1", resumeFromRunId: "source-run", wake: true }]);
+  });
 });
