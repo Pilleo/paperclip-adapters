@@ -310,6 +310,13 @@ describe("native multi-tier review pipeline", () => {
     expect(evaluateReviewPipelineProgress({ ...params, interactions: [interaction("vibe", "approve"), lunaApproval] }).action).toBe("DISPATCH_TERRA_REVIEW");
   });
 
+  it("does not fall back to the legacy Vibe/Strong lane", () => {
+    expect(evaluateReviewPipelineProgress(base())).toMatchObject({
+      action: "AWAIT_REVIEW_CONFIGURATION",
+      stage: "luna_review",
+    });
+  });
+
   it("does not redispatch an active Luna stage when its native card is pending", () => {
     const params = {
       ...base(),
