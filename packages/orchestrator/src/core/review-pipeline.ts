@@ -453,100 +453,12 @@ export function evaluateReviewPipelineProgress(
     };
   }
 
-  // Native interaction verdicts are authoritative. Comments, prose, and
-  // assignment history cannot approve/reject a PR review stage.
-  const vibeVerdict = vibeReviewerAgentId ? verdictFor("vibe") : { decision: "all_good" as const };
-
-  // 2. Stage 2: Cheap Vibe Fast Review
-  if (vibeReviewerAgentId) {
-    if (vibeVerdict?.decision === "needs_work") {
-      return {
-        stage: "vibe_review",
-        action: "REASSIGN_TO_WORKER",
-        targetStatus: "in_progress",
-        targetAssigneeId: workerAgentId || null,
-        feedbackSummary: vibeVerdict.reason,
-        reason: `Vibe fast review requested changes on [${issue.identifier || issue.id}]. Reassigning back to worker in_progress (skipping strong review).`,
-      };
-    }
-
-    if (vibeVerdict?.decision !== "all_good") {
-      return {
-        stage: "vibe_review",
-        action: "DISPATCH_VIBE_REVIEW",
-        targetAgentId: vibeReviewerAgentId,
-        reason: `CI is green; routing [${issue.identifier || issue.id}] to Vibe for cheap triage & structural sanity review.`,
-      };
-    }
-  }
-
-  // Evaluate Strong Model review verdict (Terra / Grok / Strong Reviewer)
-  const strongVerdict = reviewerAgentId ? verdictFor("strong") : { decision: "all_good" as const };
-
-  // 3. Stage 3: Deep Strong Model Review
-  if (reviewerAgentId) {
-    if (strongVerdict?.decision === "needs_work") {
-      return {
-        stage: "strong_review",
-        action: "REASSIGN_TO_WORKER",
-        targetStatus: "in_progress",
-        targetAssigneeId: workerAgentId || null,
-        feedbackSummary: strongVerdict.reason,
-        reason: `Strong model review requested changes on [${issue.identifier || issue.id}]. Reassigning back to worker in_progress.`,
-      };
-    }
-
-    if (strongVerdict?.decision !== "all_good") {
-      return {
-        stage: "strong_review",
-        action: "DISPATCH_STRONG_REVIEW",
-        targetAgentId: reviewerAgentId,
-        reason: `Vibe triage passed; routing [${issue.identifier || issue.id}] to Strong Reviewer for deep invariant & security audit.`,
-      };
-    }
-  }
-
-  // 4. Stage 4: Operator Final Review & Merge Approval Gate
-  const matchingMergeApproval = findMergeApproval(existingApprovals, issue.id);
-
-  if (!matchingMergeApproval) {
-    return {
-      stage: "operator_approval",
-      action: "CREATE_MERGE_APPROVAL",
-      prNumber,
-      prUrl,
-      vibeSummary: vibeVerdict?.decision === "needs_work" ? vibeVerdict.reason : undefined,
-      strongSummary: strongVerdict?.decision === "needs_work" ? strongVerdict.reason : undefined,
-      reason: `Both Vibe and Strong Reviewer approved [${issue.identifier || issue.id}]. Creating final operator merge approval card.`,
-    };
-  }
-
-  if (matchingMergeApproval.status === "approved") {
-    return {
-      stage: "completed",
-      action: "EXECUTE_MERGE",
-      prNumber,
-      prUrl,
-      reason: `Operator approved final merge for [${issue.identifier || issue.id}] (approval ${matchingMergeApproval.id}). Ready for automated merge.`,
-    };
-  }
-
-  if (matchingMergeApproval.status === "rejected") {
-    return {
-      stage: "operator_approval",
-      action: "REASSIGN_TO_WORKER",
-      targetStatus: "in_progress",
-      targetAssigneeId: workerAgentId || null,
-      feedbackSummary: `Operator rejected merge approval ${matchingMergeApproval.id}`,
-      reason: `Operator rejected merge approval for [${issue.identifier || issue.id}]. Reassigning back to worker.`,
-    };
-  }
-
-  const staleReviewerOwnership = hasStaleReviewerOwnership({
-    assigneeAgentId: issue.rawIssue["assigneeAgentId"] as string | null | undefined,
-    executionPolicy: issue.rawIssue["executionPolicy"],
-    executionState: issue.rawIssue["executionState"],
-  });
+  // Legacy Vibe/Strong configuration is intentionally fail-closed. Mixing it
+  // with the canonical Luna/Terra ladder was the source of duplicate cards
+  // and free-text review activity. New PR reviews must explicitly configure
+  // the typed weak and strong participants above.
+  void vibeReviewerAgentId;
+  void reviewerAgentId;
   return {
     stage: "operator_approval",
     action: staleReviewerOwnership ? "RECONCILE_OPERATOR_GATE" : "AWAIT_OPERATOR_APPROVAL",
