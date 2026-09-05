@@ -64,3 +64,21 @@ Prefer the adapter's native recovery path and the isolated
 ```bash
 ./scripts/fleet/list_agents.sh
 ```
+
+### 5. Reloading an External Adapter Safely
+
+Paperclip loads external adapter packages only at server startup. For an
+adapter change: build the affected workspace, restart Paperclip, verify its
+startup log loaded the package's `dist/index.js`, then trigger or wait for one
+Orchestrator tick. The tick reconciles managed agent configuration. Do not
+wake a reviewer before that reconciliation finishes, otherwise a stale
+`networkScope` or prompt may be exercised.
+
+### 6. Recovering One Failed Native Review Without Spam
+
+First inspect the issue interactions and the addressed reviewer's latest
+heartbeat runs. Only if there is exactly one pending native verdict card and
+no active reviewer run, reuse that card with
+`packages/orchestrator/scripts/recover-native-review.mjs`. The expected outcome
+is the same card becoming `answered`. A new card, a normal issue comment, or a
+second concurrent wake is a recovery failure, not progress.

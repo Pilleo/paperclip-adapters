@@ -49,7 +49,7 @@ All reviewer prompts enforce explicit rejection criteria (`REQUEST_CHANGES`):
 
 ### 5. Fleet Management & Concurrency Controls
 - **Auto-Provisioned Managed Worker Fleet:** Dedicated worker agents (`[Orchestrated] Jules Async Worker`, `[Orchestrated] Vibe Local Worker`, `[Orchestrated] Antigravity Local Worker`, `[Orchestrated] Luna Fast Reviewer`, `[Orchestrated] Terra Strong Reviewer`) with zero polling drift (`pollCadenceSeconds: 0`).
-- **Reviewer identity safety:** Luna/Terra are explicitly managed `codex_local` agents with read-only permissions and sandbox bypass disabled. An unrelated personal Luna agent is never selected. If a local installation denies `agents:create`, reconciliation reports the missing grant instead of weakening this fence.
+- **Reviewer identity safety:** Luna/Terra are explicitly managed `codex_local` agents with read-only permissions. Their temporary adapters-only transport uses the built-in Codex CLI lane with `dangerouslyBypassApprovalsAndSandbox` and no Paperclip `networkScope`. A nested Codex sandbox cannot create its process namespace inside Paperclip Bubblewrap, and Paperclip's allowlist proxy cannot reliably reach its loopback control plane; either wrapper causes `EPERM` or `runtime_transport_error` before the MCP verdict is submitted. The reviewer remains read-only by contract and may resolve only its addressed native verdict card. `extraArgs` stays empty because Codex rejects `--approve-for-me` with the bypass flag. This is a compatibility workaround, not a general sandbox exemption: remove `NATIVE_REVIEW_CONTROL_PLANE_TRANSPORT` when Paperclip provides first-class native verdict submission without nested confinement. An unrelated personal Luna agent is never selected. If a local installation denies `agents:create`, reconciliation reports the missing grant instead of weakening this fence.
 - **Fine-Grained Method-Level DAG & AST Concurrency:** Parses `target_symbols` and `target_files` to enable safe intra-file concurrency when tasks target disjoint AST symbols while locking overlapping functions.
 - **Operator Start-Approval Gate:** Halts execution until explicit 1-click Board Approvals are approved in Paperclip with rich markdown links and symbol inspection.
 - **Task Granularity & Autonomous Splitting Gate:** Detects multi-phase epics or cross-module sprawl and autonomously decomposes them into sequential sub-tasks with dependency links.
@@ -115,3 +115,19 @@ The Jules adapter's `e2eProviderBaseUrl` is similarly restricted to explicit
 `PAPERCLIP_ADAPTER_E2E=1` loopback runs. It exists only to let a disposable
 Paperclip server talk to a local fake Jules API; production always uses the
 public Jules endpoint.
+
+## Live Adapter Reload and Native-Review Recovery
+
+External adapter modules are loaded from their built `dist/` entries when the
+Paperclip server starts. After changing an adapter, build it and restart the
+server; a running dev server does not watch this repository. Confirm the startup
+log names `packages/orchestrator/dist/index.js`, then wait for one orchestrator
+heartbeat to reconcile the managed worker fleet before waking a reviewer.
+
+For a failed native review, inspect the addressed card and reviewer runs first.
+Recover only when exactly one card remains pending and the reviewer has no
+queued/running run. Reuse that card through
+`packages/orchestrator/scripts/recover-native-review.mjs`; do not create a new
+card or post a prose fallback. A successful review must make that same card
+`answered`; a legitimate reject returns work to the implementer and is not a
+transport failure.
