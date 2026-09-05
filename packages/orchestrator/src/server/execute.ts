@@ -1078,7 +1078,10 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
   const boardReviewRecoveryIds = new Set<string>();
   for (const command of planBoardReconciliation(boardSnapshots)) {
     const guardKey = `board-reconciliation:${command.action}:${command.issueId}`;
-    const targetStatus = command.action === "cancel_duplicate_child" ? "cancelled" : "todo";
+    const isReviewRecovery = command.action === "recover_to_review";
+    const targetStatus = command.action === "cancel_duplicate_child"
+      ? "cancelled"
+      : isReviewRecovery ? "in_review" : "todo";
     const snapshot = boardSnapshots.find((candidate) => candidate.id === command.issueId);
     // The Paperclip projection can reopen an issue after the write if a stale
     // heartbeat still owns it. A completed in-process guard must not suppress
