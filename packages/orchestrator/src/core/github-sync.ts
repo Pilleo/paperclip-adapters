@@ -65,9 +65,10 @@ export function registeredPullRequestFromIssue(issue: ParsedIssueMetadata): GitH
 }
 
 /**
- * Detect the only safe terminal-state recovery case: Paperclip says the issue
- * is done, but its Jules-owned PR is still explicitly awaiting review. A
- * merged/closed work product must never be reopened by this recovery path.
+ * Detect the only safe review recovery case: Paperclip says the issue is in a
+ * non-executing board state, but its orchestrator-owned PR is still explicitly
+ * awaiting review. A merged/closed work product must never be reopened by
+ * this recovery path. Human `blocked` issues are excluded by the caller.
  */
 export function hasUnreviewedReadyPullRequest(issue: ParsedIssueMetadata): boolean {
   const rawWorkProducts = issue.rawIssue["workProducts"] ?? issue.rawIssue["work_products"];
