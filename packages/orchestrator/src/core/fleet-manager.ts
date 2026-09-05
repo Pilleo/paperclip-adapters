@@ -315,6 +315,10 @@ export async function reconcileManagedFleet(
         matching.adapterConfig?.["model"] !== mergedConfig["model"] ||
         matching.adapterConfig?.["dangerouslyBypassApprovalsAndSandbox"] !== mergedConfig["dangerouslyBypassApprovalsAndSandbox"] ||
         (def.key === "jules" && matching.adapterConfig?.["planApprovalPolicy"] !== mergedConfig["planApprovalPolicy"]) ||
+        (def.key === "jules" && matching.adapterConfig?.["planReviewerAgentId"] !== mergedConfig["planReviewerAgentId"]) ||
+        (def.key === "jules" && matching.adapterConfig?.["planStrongReviewerAgentId"] !== mergedConfig["planStrongReviewerAgentId"]) ||
+        (def.key === "jules" && matching.adapterConfig?.["questionReviewerAgentId"] !== mergedConfig["questionReviewerAgentId"]) ||
+        (def.key === "jules" && matching.adapterConfig?.["questionAdjudicatorAgentId"] !== mergedConfig["questionAdjudicatorAgentId"]) ||
         (def.key === "luna_reviewer" && matching.adapterConfig?.["cwd"] !== mergedConfig["cwd"]) ||
         (def.key === "jules" &&
           (currentHeartbeat?.["enabled"] !== true || currentHeartbeat?.["intervalSec"] !== 300 ||
