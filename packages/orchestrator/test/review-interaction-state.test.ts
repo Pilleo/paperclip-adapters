@@ -15,6 +15,7 @@ import {
   canPromoteOpenPrToReview,
   hasNativeRejectionForHead,
 } from "../src/core/review-interaction-state.js";
+import { isAuthoritativeJulesMonitor } from "../src/core/jules-monitor-state.js";
 
 describe("native PR review interaction state", () => {
   it("uses a stable stage-and-head identity, not comments or assignment", () => {
