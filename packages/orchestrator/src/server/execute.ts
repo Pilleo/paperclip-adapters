@@ -407,7 +407,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     // be provisioned and the state machine correctly—but permanently—failed
     // closed. Reconciliation is idempotent and restricted to managed names.
     const fleetToken = authToken || process.env["PAPERCLIP_AGENT_TOKEN"] || process.env["PAPERCLIP_API_KEY"];
-    if (fleetToken && config.reconcileFleet !== false) {
+    if (canReconcileManagedFleet(apiUrl, fleetToken, config.reconcileFleet !== false)) {
       const fleetResult = await reconcileManagedFleet(apiUrl, companyId, {
         orchestratorAgentId: orchestratorId,
         authToken: fleetToken,
