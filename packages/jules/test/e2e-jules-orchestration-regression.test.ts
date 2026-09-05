@@ -8,6 +8,8 @@ import {
   answerJulesAgentAdjudicationInteraction,
   completeInternalReviewIssue,
   createJulesAgentAdjudicationInteraction,
+  createJulesQuestionReviewInteraction,
+  activateInternalReviewIssue,
   createJulesQuestionAdjudication,
   createNoPrCompletionInteraction,
   getPaperclipIssue,
