@@ -1969,7 +1969,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
               targetAgentId,
               `Review PR #${matchingPr.number} for ${reviewTask.identifier || reviewTask.id}; respond to native review interaction ${reviewInteractionId}. This is a read-only review; do not modify files.`,
               reviewTask.id,
-              { recoverStaleExecution: true },
+              { recoverStaleExecution: true, reviewInteractionId },
             );
             wokeThisTick.add(`${targetAgentId}:${reviewTask.id}`);
             reviewDispatchedCount++;
