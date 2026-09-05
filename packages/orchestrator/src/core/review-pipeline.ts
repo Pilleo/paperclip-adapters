@@ -304,12 +304,27 @@ export function evaluateReviewPipelineProgress(
       );
     });
   };
-  const activeReviewerOwnsStage = (stage: PrReviewStage, reviewerAgentId: string): boolean => {
-    const expectedIndex = stage === "luna" ? 0 : stage === "terra" ? 1 : null;
-    return executionState?.status === "pending" &&
-      executionState.currentParticipant?.type === "agent" &&
-      executionState.currentParticipant.agentId === reviewerAgentId &&
-      (expectedIndex === null || executionState.currentStageIndex === expectedIndex);
+  const cardFor = (stage: ReviewEpochStage) => {
+    const identity = {
+      issueId: issue.id,
+      prUrl: prUrl || `pr-${prNumber || "unknown"}`,
+      headSha: reviewHeadSha || "unknown",
+      stage,
+    } as const;
+    const prefix = reviewInteractionKeyPrefix(identity);
+    const exactKeys = reviewInteractionIdempotencyKeys(identity);
+    return [...interactions].reverse().find((interaction) =>
+      interaction.kind === "request_item_verdicts" &&
+      (() => {
+        const key = interaction.idempotencyKey || "";
+        return exactKeys.includes(key) || key.startsWith(`${prefix}:attempt:`) || (
+          key.includes(`:${issue.id}:`) &&
+          (reviewHeadSha
+            ? /^pr-review:v\d+:/.test(key) && key.endsWith(`:${reviewHeadSha}:${stage}`)
+            : new RegExp(`:v\\d+:.*:[0-9a-f]{40}:${stage}$`, "i").test(key))
+        );
+      })(),
+    );
   };
   const awaitActiveReview = (stage: "luna" | "terra", reviewerAgentId: string): ReviewPipelineDecision | null => {
     const expectedIndex = stage === "luna" ? 0 : 1;
