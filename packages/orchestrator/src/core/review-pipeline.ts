@@ -418,11 +418,9 @@ export function evaluateReviewPipelineProgress(
     const lunaPipelineDecision = mapEpochDecision("luna", lunaReviewerAgentId, luna);
     if (lunaPipelineDecision) return lunaPipelineDecision;
     if (!terraReviewerAgentId) return { stage: "terra_review", action: "AWAIT_REVIEW_CONFIGURATION", reason: "OpenAI Terra reviewer is not configured; refusing to skip the strong review stage." };
-    const terraVerdict = verdictFor("terra");
-    if (terraVerdict?.decision === "needs_work") return { stage: "terra_review", action: "REASSIGN_TO_WORKER", targetStatus: "in_progress", targetAssigneeId: workerAgentId || null, feedbackSummary: terraVerdict.reason, reason: `Terra review requested changes on [${issue.identifier || issue.id}].` };
-    const terraWait = terraVerdict?.decision === "all_good" ? null : awaitActiveReview("terra", terraReviewerAgentId);
-    if (terraWait) return terraWait;
-    if (terraVerdict?.decision !== "all_good") return { stage: "terra_review", action: "DISPATCH_TERRA_REVIEW", targetAgentId: terraReviewerAgentId, reason: `Luna approved; routing [${issue.identifier || issue.id}] to OpenAI Terra for the strong review.` };
+    const terra = epochDecision("terra", terraReviewerAgentId);
+    const terraPipelineDecision = mapEpochDecision("terra", terraReviewerAgentId, terra);
+    if (terraPipelineDecision) return terraPipelineDecision;
     const mergeApproval = findMergeApproval(existingApprovals, issue.id);
     if (!mergeApproval) {
       return { stage: "operator_approval", action: "CREATE_MERGE_APPROVAL", prNumber, prUrl, reason: `Luna and Terra approved [${issue.identifier || issue.id}]. Creating final operator merge approval card.` };
