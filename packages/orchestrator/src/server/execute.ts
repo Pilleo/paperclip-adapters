@@ -11,6 +11,7 @@ const execFileAsync = promisify(execFile);
 const reconciledOperatorGates = new Set<string>();
 
 import { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import type { WorkerFeedbackEnvelope } from "@pilleo/paperclip-adapter-common";
 import { extractIssueMetadata, resolvePaperclipProject, resolveProjectWorkspace, type PaperclipProjectRecord } from "../core/parser.js";
 import { calculateConflictMatrix, selectNextTasksMultiLane } from "../core/dispatcher.js";
 import { fetchJulesQuota } from "../core/jules-quota.js";
