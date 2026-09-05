@@ -74,7 +74,7 @@ export function decideJulesMonitorReconciliation(
   // monitor fields are present; an explicit non-triggered status is not.
   if (!invalidAssigneeRepair && !strandedMonitorRepair && snapshot.monitorStatus !== null && snapshot.monitorStatus !== "triggered") return { action: "preserve", reason: "Jules monitor is not triggered" };
   const timeout = snapshot.timeoutAt ? Date.parse(snapshot.timeoutAt) : NaN;
-  if (!Number.isFinite(timeout) || now < timeout) return { action: "preserve", reason: "Jules monitor timeout has not elapsed" };
+  if (!invalidAssigneeRepair && !strandedMonitorRepair && (!Number.isFinite(timeout) || now < timeout)) return { action: "preserve", reason: "Jules monitor timeout has not elapsed" };
   if (!snapshot.hasProviderSession) return { action: "preserve", reason: "expired Jules monitor has no provider session to resume" };
   if (snapshot.monitorCanBeReattached === false) {
     return { action: "return_to_todo", issueStatus: "todo", reason: "expired Jules monitor has no verified executable continuation" };
