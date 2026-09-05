@@ -353,7 +353,7 @@ export async function syncBacklogMarkdownToPaperclip(options: BacklogSyncOptions
           const descriptionRes = await fetch(`${options.apiUrl}/api/issues/${existing.id}`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ description: sanitizedDescription }),
+            body: JSON.stringify({ description: sourceDescription }),
           });
           if (descriptionRes.ok) {
             existing["description"] = sanitizedDescription;
