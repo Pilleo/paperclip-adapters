@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evaluateReviewPipelineProgress, hasStaleReviewerOwnership, operatorGateReconciliationPatch, type ReviewPipelineParams } from "../src/core/review-pipeline.js";
+import { classifyReviewPipelineAction, evaluateReviewPipelineProgress, hasStaleReviewerOwnership, operatorGateReconciliationPatch, type ReviewPipelineParams } from "../src/core/review-pipeline.js";
 import { reviewInteractionIdempotencyKey } from "../src/core/review-interaction-state.js";
 import type { ParsedIssueMetadata } from "../src/core/types.js";
 
