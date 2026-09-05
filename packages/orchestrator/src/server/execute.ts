@@ -1532,7 +1532,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
   );
   for (const issue of reviewRecoveryIssues) {
     await log(
-      `[ORCHESTRATOR] Recovering [${issue.identifier || issue.id}] from done: its registered PR is still ready_for_review and has no review verdict.`,
+      `[ORCHESTRATOR] Recovering [${issue.identifier || issue.id}] from ${issue.status}: its registered PR is still ready_for_review and has no review verdict.`,
     );
     try {
       const patch = await pc.patchIssue(issue.id, { status: "in_review", assigneeAgentId: null });
