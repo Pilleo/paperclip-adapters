@@ -7,6 +7,13 @@ import { NATIVE_PR_REVIEW_STAGE_IDS } from "./execution-policy.js";
  */
 export type PrReviewStage = "luna" | "terra" | "vibe" | "strong";
 
+/**
+ * Bump when the native interaction request shape changes. Paperclip reserves
+ * cancelled idempotency keys forever, so reusing an old key with a changed
+ * payload produces a conflict instead of a safe replacement card.
+ */
+export const NATIVE_REVIEW_CARD_PROTOCOL_VERSION = "v13" as const;
+
 export interface ReviewInteractionIdentity {
   readonly issueId: string;
   readonly prUrl: string;
