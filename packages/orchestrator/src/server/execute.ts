@@ -1527,7 +1527,8 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
     }
   }
   const reviewRecoveryIssues = overlayedIssues.filter(
-    (issue) => issue.status === "done" && !mergedIssueIds.has(issue.id) && hasUnreviewedReadyPullRequest(issue),
+    (issue) => ["backlog", "todo", "done"].includes(issue.status) &&
+      issue.orchestratorManaged && !mergedIssueIds.has(issue.id) && hasUnreviewedReadyPullRequest(issue),
   );
   for (const issue of reviewRecoveryIssues) {
     await log(
