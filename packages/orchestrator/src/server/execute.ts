@@ -1912,6 +1912,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
             if (dialogPlan.action === "reuse") {
               reviewInteractionId = dialogPlan.interactionId;
             } else {
+              reviewRequest = buildReviewInteractionRequest(reviewIdentity);
               const createdInteraction = await pc.createInteraction(
                 reviewTask.id,
                 buildReviewInteractionRequest(reviewIdentity),
