@@ -443,8 +443,9 @@ export async function createJulesFeedbackInteraction(
 
 /**
  * Visible parent-thread record for a provider question handled by the strong
- * reviewer lane. Unlike a human feedback card, it never blocks the parent or
- * wakes a human; the adapter resolves it with the reviewer's typed answer.
+ * reviewer lane. It is intentionally not addressed to the reviewer: Jules
+ * remains the parent assignee, while the executable reviewer form lives on a
+ * Terra-owned child created by the adapters-only bridge.
  */
 export async function createJulesAgentAdjudicationInteraction(
   issueId: string,
