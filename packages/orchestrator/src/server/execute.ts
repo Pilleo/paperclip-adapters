@@ -1069,6 +1069,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       resumableMonitor: resumableMonitor || reattachedJulesMonitorIssueIds.has(issue.id),
       monitorExpired: reattachedJulesMonitorIssueIds.has(issue.id) ? false : monitorExpired,
       nativeReviewInteraction,
+      registeredOpenPullRequest,
       hasPullRequest: issue.status === "in_review" && !ghStatus.error && Boolean(ghStatus.openPrs.find((pr) => matchPrToIssue(pr, issue))),
       parentId: issue.parentId || null,
       reviewGateKey,
