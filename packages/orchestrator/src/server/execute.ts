@@ -1075,6 +1075,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       reviewGateKey,
     };
   });
+  const boardReviewRecoveryIds = new Set<string>();
   for (const command of planBoardReconciliation(boardSnapshots)) {
     const guardKey = `board-reconciliation:${command.action}:${command.issueId}`;
     const targetStatus = command.action === "cancel_duplicate_child" ? "cancelled" : "todo";
