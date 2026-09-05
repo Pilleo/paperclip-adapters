@@ -266,7 +266,7 @@ export async function reconcileManagedFleet(
           reportsTo: managerId || null,
           status: "idle", // Idle by default: Only wakes on Orchestrator wakeup calls
           adapterConfig: mergedConfig,
-          ...(def.key === "jules"
+            ...(def.key === "luna_reviewer" || def.key === "terra_reviewer" || def.key === "terra_adjudicator"
             ? {
                 runtimeConfig: {
                   heartbeat: {
