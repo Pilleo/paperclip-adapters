@@ -273,7 +273,7 @@ export interface JulesAdapterSessionV1 {
         createdAt: string;
       }
     | {
-        type: "plan_agent_review";
+      type: "plan_agent_review";
         julesActivityId: JulesActivityId;
         paperclipInteractionId?: string | undefined;
         question: string;
