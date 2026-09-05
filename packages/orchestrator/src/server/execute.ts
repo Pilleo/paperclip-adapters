@@ -1996,6 +1996,45 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
           continue;
         }
         statusOverrides.set(reviewTask.id, "in_progress");
+        const staleReviewCardIds = selectReviewCardsToWithdrawAfterRejection(reviewInteractions, reviewTask.id);
+        if (staleReviewCardIds.length > 0) {
+          await reviewRejectionConvergenceGuard.runOnce(
+            `review-rejection-cleanup:${reviewTask.id}:${reviewHeadSha}`,
+            async () => {
+              for (const interactionId of staleReviewCardIds) {
+                const withdrawn = await pc.withdrawInteraction(
+                  reviewTask.id,
+                  interactionId,
+                  `Superseded by structured ${pipelineDecision.stage} rejection; worker resumed for the same PR head.`,
+                );
+                if (!withdrawn.ok && withdrawn.status !== 404 && withdrawn.status !== 409) {
+                  await log(`[ORCHESTRATOR] Warning: stale review card cleanup failed (${withdrawn.status}): ${withdrawn.text}`);
+                }
+              }
+              return true;
+            },
+          );
+        }
+        const reviewStage = pipelineDecision.stage === "luna_review" ? "luna" :
+          pipelineDecision.stage === "terra_review" ? "terra" :
+            pipelineDecision.stage === "vibe_review" ? "vibe" :
+              pipelineDecision.stage === "strong_review" ? "strong" : "operator_approval";
+        const reviewInteraction = reviewInteractions.find((interaction) =>
+          interaction.kind === "request_item_verdicts" && interaction.status === "answered" &&
+          (interaction.idempotencyKey || "").endsWith(`:${reviewStage}`),
+        );
+        const workerFeedback: WorkerFeedbackEnvelope = {
+          version: 1,
+          kind: "code_review_rejection",
+          deliveryId: `review-feedback:${reviewTask.id}:${reviewHeadSha}:${pipelineDecision.stage}`,
+          issueId: reviewTask.id,
+          reviewInteractionId: reviewInteraction?.id || `review:${reviewTask.id}:${pipelineDecision.stage}:${reviewHeadSha}`,
+          reviewStage,
+          prUrl: matchingPr.url,
+          headSha: reviewHeadSha,
+          reason: pipelineDecision.feedbackSummary || "See the bound native review dialog.",
+          createdAt: new Date().toISOString(),
+        };
         await managedWakeup(
           workerId,
           `Native PR review needs work for [${reviewTask.identifier || reviewTask.id}]: ${pipelineDecision.feedbackSummary || "See the bound review dialog."}`,
