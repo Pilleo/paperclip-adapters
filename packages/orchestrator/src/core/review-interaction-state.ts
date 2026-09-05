@@ -20,6 +20,7 @@ export interface ReviewInteractionIdentity {
   readonly headSha: string;
   readonly stage: PrReviewStage;
   readonly reviewerAgentId?: string | undefined;
+  readonly attempt?: number | undefined;
 }
 
 export interface NativeReviewInteraction {
