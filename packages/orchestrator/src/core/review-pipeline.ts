@@ -74,6 +74,12 @@ export type ReviewPipelineDecision =
     }
   | {
       readonly stage: "luna_review" | "terra_review";
+      readonly action: "RECOVER_REVIEW";
+      readonly targetAgentId: string;
+      readonly reason: string;
+    }
+  | {
+      readonly stage: "luna_review" | "terra_review";
       readonly action: "AWAIT_REVIEW_CONFIGURATION";
       readonly reason: string;
     }
