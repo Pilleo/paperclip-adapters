@@ -1,6 +1,5 @@
 import path from "node:path";
-import { execute } from "../src/server/execute.js";
-import { parseMarkdownFrontmatter } from "../../common/src/index.js";
+import { projectRecoveryCanaryState } from "../src/core/recovery-canary-state.js";
 
 /**
  * Fast, destructive-by-design E2E canary for the Jules open-PR recovery path.
