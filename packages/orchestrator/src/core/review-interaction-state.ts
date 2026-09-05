@@ -182,7 +182,8 @@ export function isReviewInteractionForIssue(idempotencyKey: string | undefined, 
     idempotencyKey?.startsWith(`pr-review:v9:${issueId}:`) ||
     idempotencyKey?.startsWith(`pr-review:v10:${issueId}:`) ||
     idempotencyKey?.startsWith(`pr-review:v11:${issueId}:`) ||
-    idempotencyKey?.startsWith(`pr-review:v12:${issueId}:`),
+    idempotencyKey?.startsWith(`pr-review:v12:${issueId}:`) ||
+    idempotencyKey?.startsWith(`pr-review:v13:${issueId}:`),
   );
 }
 
