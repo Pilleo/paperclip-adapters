@@ -433,6 +433,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ...config,
     planReviewerAgentId: config.planReviewerAgentId ?? (typeof rawAdapterConfig["planReviewerAgentId"] === "string" ? rawAdapterConfig["planReviewerAgentId"] : undefined),
     planStrongReviewerAgentId: config.planStrongReviewerAgentId ?? (typeof rawAdapterConfig["planStrongReviewerAgentId"] === "string" ? rawAdapterConfig["planStrongReviewerAgentId"] : undefined),
+    questionReviewerAgentId: config.questionReviewerAgentId ?? (typeof rawAdapterConfig["questionReviewerAgentId"] === "string" ? rawAdapterConfig["questionReviewerAgentId"] : undefined),
+    questionAdjudicatorAgentId: config.questionAdjudicatorAgentId ?? (typeof rawAdapterConfig["questionAdjudicatorAgentId"] === "string" ? rawAdapterConfig["questionAdjudicatorAgentId"] : undefined),
     codeReviewerAgentIds: config.codeReviewerAgentIds ?? (Array.isArray(rawAdapterConfig["codeReviewerAgentIds"])
       ? rawAdapterConfig["codeReviewerAgentIds"].filter((id): id is string => typeof id === "string")
       : undefined),
