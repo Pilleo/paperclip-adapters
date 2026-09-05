@@ -1749,6 +1749,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
         currentParticipant?: { type?: string; agentId?: string | null } | null;
       } | null | undefined),
       reviewerAgentStatus: (() => {
+        if (containedOrphanReviewerRun) return "idle";
         const reviewerId = (reviewTask.rawIssue["executionState"] as { currentParticipant?: { agentId?: string | null } } | null | undefined)?.currentParticipant?.agentId;
         return reviewerId ? managedAgentStatuses.get(reviewerId) : undefined;
       })(),
