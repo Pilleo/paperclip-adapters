@@ -153,12 +153,24 @@ async function main(): Promise<void> {
       metadata: { managedBy: "paperclip-orchestrator" },
     }), "Vibe agent");
     void vibe;
-    const key = requireObject(await request(`/api/agents/${orch.id}/keys`, "POST", { name: `canary-${Date.now()}` }), "agent key");
-    if (typeof key.token !== "string" || key.token.length < 16) throw new Error("Paperclip did not return a canary agent token");
-
-    backlogDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-jules-recovery-").replace(/\\/g, path.sep));
-    const resolvedDir = path.join(backlogDir, "resolved");
-    fs.mkdirSync(resolvedDir, { recursive: true });
+    // Disposable companies created by the local board may not grant the
+    // orchestrator agents:create capability. Provision the reviewer
+    // identities explicitly so this canary tests review routing, not fleet
+    // authorization policy. Disable their scheduled heartbeats; the canary
+    // asserts card binding and duplicate suppression before a model is woken.
+    const luna = requireObject(await request(`/api/companies/${companyId}/agents`, "POST", {
+      name: "[Orchestrated] Luna Fast Reviewer", role: "qa", adapterType: "codex_local",
+      reportsTo: orch.id, runtimeConfig: { heartbeat: { enabled: false } },
+      metadata: { managedBy: "paperclip-orchestrator", workerKey: "luna_reviewer" },
+    }), "Luna reviewer");
+    const terra = requireObject(await request(`/api/companies/${companyId}/agents`, "POST", {
+      name: "[Orchestrated] Terra Strong Reviewer", role: "qa", adapterType: "codex_local",
+      reportsTo: orch.id, runtimeConfig: { heartbeat: { enabled: false } },
+      metadata: { managedBy: "paperclip-orchestrator", workerKey: "terra_reviewer" },
+    }), "Terra reviewer");
+    await request(`/api/agents/${orch.id}`, "PATCH", {
+      adapterConfig: { reconcileFleet: true, lunaReviewerAgentId: luna.id, terraReviewerAgentId: terra.id },
+    });
     const marker = `e2e-jules-recovery-${Date.now()}`;
     const issueFile = path.join(backlogDir, `${marker}.md`);
     fs.writeFileSync(issueFile, `---
