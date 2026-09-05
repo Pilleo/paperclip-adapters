@@ -133,6 +133,7 @@ export function resolveManagedFleet(
     reviewerAgentId,
     lunaReviewerAgentId,
     terraReviewerAgentId,
+    terraAdjudicatorAgentId,
     managedJulesIds,
   };
 }
