@@ -194,7 +194,7 @@ describe("E2E Jules orchestration regression", { timeout: 30_000 }, () => {
     expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
       type: "agent_adjudication",
       julesActivityId: "activity-question",
-      adjudicationIssueId: "question-review-1",
+      nativeForm: true,
     });
   });
 
