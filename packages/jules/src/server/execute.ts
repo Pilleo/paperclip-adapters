@@ -652,6 +652,98 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
 
+  await ctx.onLog?.("stdout", `[jules] Reconciled session checkpoint: pending=${session?.pendingInteraction?.type ?? "none"}, questionTransport=${session?.pendingInteraction?.type === "agent_adjudication" && "transport" in session.pendingInteraction ? session.pendingInteraction.transport ?? "legacy" : "n/a"}, questionReviewer=${config.questionAdjudicatorAgentId ?? config.questionReviewerAgentId ?? "none"}.\n`);
+
+  // Native reviewer feedback is a typed wake payload, not a human comment or
+  // free-form wake reason. Process it before the normal completed-session
+  // retry path so an existing PR can be revised in place.
+  const wakeRecord = rawContext["paperclipWake"] && typeof rawContext["paperclipWake"] === "object"
+    ? rawContext["paperclipWake"] as Record<string, unknown>
+    : undefined;
+  const payloadRecord = rawContext["payload"] && typeof rawContext["payload"] === "object"
+    ? rawContext["payload"] as Record<string, unknown>
+    : undefined;
+  const wakePayloadRecord = wakeRecord?.["payload"] && typeof wakeRecord["payload"] === "object"
+    ? wakeRecord["payload"] as Record<string, unknown>
+    : undefined;
+  let workerFeedback = parseWorkerFeedback(
+    rawContext["workerFeedback"] ?? payloadRecord?.["workerFeedback"] ??
+    wakeRecord?.["workerFeedback"] ?? wakePayloadRecord?.["workerFeedback"],
+  );
+  // Paperclip's stale-assignment recovery starts Jules directly and therefore
+  // cannot include the orchestrator wake payload. Native review interactions
+  // are authoritative, so recover the same typed envelope from the issue on
+  // this path instead of repeatedly polling a completed session with no action.
+  // Built-in local Paperclip adapters may have no authToken; their local
+  // trusted client is intentionally allowed to read issue interactions.
+  if (!workerFeedback && session?.currentPrUrl) {
+    try {
+      const currentPrDetails = await getPullRequestDetails(session.currentPrUrl);
+      const currentHeadSha = currentPrDetails.headSha;
+      if (!currentHeadSha) throw new Error("GitHub did not provide the current PR head SHA");
+      const interactions = await listPaperclipInteractions(taskId, ctx.authToken, ctx.runId);
+      const rejection = interactions.find((interaction) => {
+        if (interaction.kind !== "request_item_verdicts" || interaction.status !== "answered") return false;
+        const key = interaction.idempotencyKey || "";
+        if (!key.includes(`${session!.currentPrUrl!}:${currentHeadSha}:`)) return false;
+        const result = interaction.result;
+        if (!result || typeof result !== "object") return false;
+        const items = (result as Record<string, unknown>)["items"];
+        if (!Array.isArray(items)) return false;
+        return items.some((item) => item && typeof item === "object" &&
+          (item as Record<string, unknown>)["id"] === "pull_request" &&
+          (item as Record<string, unknown>)["verdict"] === "reject" &&
+          typeof (item as Record<string, unknown>)["reason"] === "string" &&
+          Boolean(String((item as Record<string, unknown>)["reason"]).trim()));
+      });
+      if (rejection) {
+        const result = rejection.result as { items: Array<{ id?: string; reason?: string }> };
+        const item = result.items.find((candidate) => candidate.id === "pull_request");
+        const stageMatch = (rejection.idempotencyKey || "").match(/:(luna|terra|vibe|strong)(?::attempt:\d+)?$/i);
+        const stageValue = stageMatch?.[1]?.toLowerCase();
+        const stage: "luna" | "terra" | "vibe" | "strong" =
+          stageValue === "luna" || stageValue === "terra" || stageValue === "vibe" || stageValue === "strong"
+            ? stageValue
+            : "strong";
+        workerFeedback = {
+          version: 1,
+          kind: "code_review_rejection",
+          deliveryId: `native-review:${rejection.id}:${currentHeadSha}`,
+          issueId: taskId,
+          reviewInteractionId: rejection.id,
+          reviewStage: stage,
+          prUrl: session.currentPrUrl,
+          headSha: currentHeadSha,
+          reason: String(item?.reason || "Native reviewer requested changes."),
+          createdAt: new Date().toISOString(),
+        };
+        await ctx.onLog?.("stdout", `[jules] Recovered native review rejection ${rejection.id} from Paperclip issue state.\n`);
+      }
+    } catch (error) {
+      await ctx.onLog?.("stderr", `[jules] Could not recover native review rejection: ${sanitizeError(error)}\n`);
+    }
+  }
+  if (workerFeedback && session?.julesSessionId) {
+    if (session.workerFeedbackDeliveryId === workerFeedback.deliveryId) {
+      await ctx.onLog?.("stdout", `[jules] Worker feedback ${workerFeedback.deliveryId} was already delivered; skipping duplicate wake.\n`);
+      // The duplicate guard applies only to sendMessage. Do not return here:
+      // scheduled heartbeats still must poll Jules and mirror any subsequent
+      // question, plan, PR, or completion activity from the provider.
+      workerFeedback = null;
+    }
+    if (workerFeedback && session.currentPrUrl && session.currentPrUrl !== workerFeedback.prUrl) {
+      await ctx.onLog?.("stderr", `[jules] Ignoring worker feedback for ${workerFeedback.prUrl}; session is bound to ${session.currentPrUrl}.\n`);
+    } else if (workerFeedback) {
+      await client.sendMessage(session.julesSessionId, { prompt: workerFeedbackPrompt(workerFeedback) });
+      session.workerFeedbackDeliveryId = workerFeedback.deliveryId;
+      session.phase = "RUNNING";
+      session.julesState = "IN_PROGRESS";
+      await persistSessionBestEffort(session, ctx.onLog);
+      await scheduleLiveSessionMonitor(session, true);
+      return createPendingResult(session, true);
+    }
+  }
+
   // A Jules cloud session may finish after Paperclip has reassigned or closed
   // its issue.  Do this ownership fence before any completion/plan mutation:
   // Paperclip's 403 is a correct authorization decision, not a retryable Jules
