@@ -6,6 +6,8 @@ import { sessionCodec } from "../src/server/session.js";
 import { getPullRequestDetails, getPullRequestPatch, listPullRequestChangedFiles } from "../src/server/ci-status.js";
 import {
   createJulesAgentAdjudicationInteraction,
+  createJulesQuestionReviewInteraction,
+  activateInternalReviewIssue,
   createJulesQuestionAdjudication,
   scheduleJulesSessionMonitor,
 } from "../src/server/paperclip-client.js";
