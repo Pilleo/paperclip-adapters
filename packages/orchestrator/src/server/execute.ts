@@ -1677,6 +1677,10 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
       await log(`[ORCHESTRATOR] Ignoring in_review issue [${reviewTask.identifier || reviewTask.id}] without a registered PR.`);
       continue;
     }
+    // Provider-created coordination children are outside the review state
+    // machine. Retire only explicitly marked Jules artifacts before the
+    // native card is reused; generic task children remain untouched.
+    await retireStaleJulesChildren(reviewTask.id, reviewTask.identifier || reviewTask.id);
     const reviewHeadSha = matchingPr.headRefOid || await fetchPullRequestHeadSha(matchingPr.url);
     if (!reviewHeadSha) {
       await log(`[ORCHESTRATOR] Deferring review for [${reviewTask.identifier || reviewTask.id}]: immutable PR head SHA is unavailable.`);
