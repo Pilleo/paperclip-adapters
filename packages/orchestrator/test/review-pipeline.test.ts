@@ -444,7 +444,7 @@ describe("native multi-tier review pipeline", () => {
         currentParticipant: { type: "user", agentId: null },
       },
     };
-    expect(evaluateReviewPipelineProgress(params)).toMatchObject({ action: "AWAIT_REVIEW", stage: "luna_review" });
+    expect(evaluateReviewPipelineProgress(params)).toMatchObject({ action: "AWAIT_OPERATOR_RECOVERY", stage: "luna_review" });
   });
 
   it("fails closed when a required reviewer is not configured", () => {
