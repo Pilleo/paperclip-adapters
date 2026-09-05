@@ -349,7 +349,7 @@ export async function reconcileManagedFleet(
                 ...mergedConfig,
                 ...(def.key === "jules" ? { pollCadenceSeconds: 300 } : { pollCadenceSeconds: 0 }),
               },
-              ...(desiredRuntimeConfig ? { runtimeConfig: desiredRuntimeConfig } : {}),
+              ...(runtimeConfig ? { runtimeConfig } : {}),
               metadata: {
                 ...matching.metadata,
                 managedBy: "paperclip-orchestrator",
