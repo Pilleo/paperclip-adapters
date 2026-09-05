@@ -90,6 +90,16 @@ async function main(): Promise<void> {
   if (!/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(apiUrl)) {
     throw new Error(`Recovery canary accepts only a loopback Paperclip API, got ${apiUrl}`);
   }
+  // The orchestrator is a separate Paperclip process and invokes `gh` there.
+  // A PATH change in this client cannot provide the fixture. CI sets this
+  // marker only in the same server-start step that installs the fixture;
+  // refusing an unmarked server prevents a false-positive/false-negative
+  // canary that creates disposable board data without exercising GitHub.
+  if (process.env["PAPERCLIP_E2E_GH_FIXTURE"] !== "server") {
+    throw new Error(
+      "Recovery canary requires a server-owned GitHub fixture. Start Paperclip with the deterministic gh fixture and set PAPERCLIP_E2E_GH_FIXTURE=server.",
+    );
+  }
   const health = requireObject(await request("/api/health", "GET"), "health");
   if (health.status !== "ok") throw new Error("Paperclip health check failed");
 
