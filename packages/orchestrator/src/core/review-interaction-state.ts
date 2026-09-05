@@ -123,7 +123,38 @@ export function reviewInteractionIdempotencyKey(identity: ReviewInteractionIdent
   // after a card expires or is cancelled. This generation carries the
   // non-superseding review-card contract, plus the explicit structured
   // response instructions needed by ACP agents.
-  return `pr-review:v12:${identity.issueId}:${identity.prUrl}:${identity.headSha}:${identity.stage}`;
+  const base = `pr-review:${NATIVE_REVIEW_CARD_PROTOCOL_VERSION}:${identity.issueId}:${identity.prUrl}:${identity.headSha}:${identity.stage}`;
+  return identity.attempt && identity.attempt > 0 ? `${base}:attempt:${identity.attempt}` : base;
+}
+
+export function reviewInteractionKeyPrefix(identity: ReviewInteractionIdentity): string {
+  return `pr-review:${NATIVE_REVIEW_CARD_PROTOCOL_VERSION}:${identity.issueId}:${identity.prUrl}:${identity.headSha}:${identity.stage}`;
+}
+
+/**
+ * Returns true only for the current native Luna/Terra card protocol. Retry
+ * attempts are part of the same card identity and must remain visible to the
+ * exactly-once fence; suffix checks such as `endsWith(":terra")` lose them.
+ */
+export function isCanonicalReviewCardKey(key: string | undefined): boolean {
+  return Boolean(key && /^pr-review:v13:.*:(?:luna|terra)(?::attempt:[1-9]\d*)?$/.test(key));
+}
+
+/** Select the pending attempt, or the next unused attempt after cancellations. */
+export function selectReviewAttempt(
+  identity: ReviewInteractionIdentity,
+  interactions: readonly Pick<NativeReviewInteraction, "id" | "kind" | "status" | "idempotencyKey">[],
+): number {
+  const prefix = reviewInteractionKeyPrefix(identity);
+  const attempts = interactions
+    .filter((item) => item.idempotencyKey === prefix || item.idempotencyKey?.startsWith(`${prefix}:attempt:`))
+    .map((item) => item.idempotencyKey === prefix ? 0 : Number(item.idempotencyKey?.slice(`${prefix}:attempt:`.length)))
+    .filter((attempt) => Number.isInteger(attempt) && attempt >= 0);
+  const pending = interactions
+    .filter((item) => item.status === "pending" && item.kind === "request_item_verdicts")
+    .map((item) => item.idempotencyKey === prefix ? 0 : Number(item.idempotencyKey?.slice(`${prefix}:attempt:`.length)))
+    .find((attempt) => attempts.includes(attempt) && Number.isInteger(attempt) && attempt >= 0);
+  return pending ?? (attempts.length === 0 ? 0 : Math.max(...attempts) + 1);
 }
 
 /** Current plus immediately previous card generations. Paperclip permanently
