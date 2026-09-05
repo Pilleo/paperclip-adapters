@@ -269,6 +269,7 @@ export interface JulesAdapterSessionV1 {
         question: string;
         adjudicationIssueId: string;
         reviewerAgentId: string;
+        adjudicationGeneration?: number;
         createdAt: string;
       }
     | {
