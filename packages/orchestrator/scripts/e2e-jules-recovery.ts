@@ -33,6 +33,58 @@ function requireObject(value: Json, label: string): Record<string, any> {
   return value;
 }
 
+async function waitForIssueExecution(issueId: string, initialRunId: string, label: string): Promise<void> {
+  let runId = initialRunId;
+  const seenSuccessors = new Set<string>([initialRunId]);
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    const run = requireObject(await request(`/api/heartbeat-runs/${runId}`, "GET"), `${label} heartbeat run`);
+    const status = String(run.status);
+    if (["succeeded", "failed", "cancelled", "timed_out"].includes(status)) {
+      if (status === "succeeded") return;
+      const result = run.resultJson && typeof run.resultJson === "object" ? run.resultJson as Record<string, unknown> : null;
+      const handoffCancellation = status === "cancelled" && result?.["stopReason"] === "issue_assignee_changed";
+      if (handoffCancellation) {
+        // Assignment wakeup is deliberately asynchronous in Paperclip. Give
+        // it a short bounded window to stamp the successor execution lock;
+        // reading once here races the cancellation transaction and falsely
+        // reports a lost worker.
+        let successorRunId = "";
+        for (let handoffAttempt = 0; handoffAttempt < 20; handoffAttempt += 1) {
+          const issue = requireObject(await request(`/api/issues/${issueId}`, "GET"), `${label} handoff issue`);
+          const successor = typeof issue.executionRunId === "string" ? issue.executionRunId : "";
+        if (successor && successor !== runId) {
+          if (seenSuccessors.has(successor)) throw new Error(`${label} execution looped on heartbeat ${successor}`);
+          seenSuccessors.add(successor);
+          successorRunId = successor;
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+        if (successorRunId) {
+          runId = successorRunId;
+          continue;
+        }
+      }
+      throw new Error(`${label} heartbeat failed: ${JSON.stringify({ status, error: run.error, resultJson: run.resultJson })}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(`${label} heartbeat did not finish: ${runId}`);
+}
+
+function pendingReviewCards(value: Json): Record<string, any>[] {
+  return (Array.isArray(value) ? value : []).filter((interaction) =>
+    interaction && typeof interaction === "object" &&
+    interaction.kind === "request_item_verdicts" && interaction.status === "pending",
+  ) as Record<string, any>[];
+}
+
+async function submitReviewVerdict(issueId: string, interactionId: string, verdict: "approve" | "reject", reason?: string): Promise<void> {
+  await request(`/api/issues/${issueId}/interactions/${interactionId}/verdicts`, "POST", {
+    verdicts: [{ id: "pull_request", verdict, ...(reason ? { reason } : {}) }],
+  });
+}
+
 async function main(): Promise<void> {
   if (!apiUrl) throw new Error("PAPERCLIP_TEST_API_URL is required; refusing to run against an implicit board");
   if (!/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(apiUrl)) {
