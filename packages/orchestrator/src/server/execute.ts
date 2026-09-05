@@ -1115,6 +1115,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       // structured adapter log as its audit trail; user-facing comments are
       // reserved for genuine provider/reviewer interactions.
       statusOverrides.set(command.issueId, targetStatus);
+      if (isReviewRecovery) boardReviewRecoveryIds.add(command.issueId);
       await log(`[ORCHESTRATOR] Applied ${command.action} to [${command.issueId}].`);
     });
   }
