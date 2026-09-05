@@ -146,7 +146,7 @@ describe("native PR review interaction state", () => {
   });
 
   it("binds the parent issue to the native reviewer participant without assigning it", () => {
-    expect(buildNativeReviewExecutionState({ status: "idle", monitor: { kind: "external_service" } }, "luna", "luna-1")).toMatchObject({
+    expect(buildNativeReviewExecutionState({ status: "idle", monitor: { kind: "external_service" } }, "luna", "luna-1", "review-key", "card-1")).toMatchObject({
       status: "pending",
       currentStageType: "review",
       currentParticipant: { type: "agent", agentId: "luna-1" },
