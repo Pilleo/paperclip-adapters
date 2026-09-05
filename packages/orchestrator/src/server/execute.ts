@@ -483,7 +483,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     const julesConfigurationDenied = fleetAuthorizationFailures.some(
       (failure) => failure.workerKey === "jules" && failure.capability === "agents:configure"
     );
-    if (julesAgentId && !julesConfigurationDenied && (config.julesPlanApprovalPolicy || lunaReviewerAgentId || terraReviewerAgentId)) {
+    if (julesAgentId && !julesConfigurationDenied && (config.julesPlanApprovalPolicy || lunaReviewerAgentId || terraReviewerAgentId || terraAdjudicatorAgentId)) {
       const managedJules = agents.find((agent) => agent.id === julesAgentId);
       if (managedJules && (
         managedJules.adapterConfig?.["planApprovalPolicy"] !== config.julesPlanApprovalPolicy ||
