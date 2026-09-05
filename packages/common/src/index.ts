@@ -16,3 +16,4 @@ export * from "./fp.js";
 export * from "./domain-brands.js";
 export * from "./paperclip-capabilities.js";
 export * from "./paperclip-command.js";
+export * from "./worker-feedback.js";
