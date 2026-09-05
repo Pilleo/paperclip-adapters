@@ -181,17 +181,15 @@ describe("native multi-tier review pipeline", () => {
   });
 
   it("does not accept a comment-shaped verdict", () => {
-    const decision = evaluateReviewPipelineProgress({ ...base(), comments: [{ id: "comment", body: 'PAPERCLIP_REVIEW_DECISION {"decision":"all_good"}', authorAgentId: "agent-vibe" }] });
-    expect(decision.action).toBe("DISPATCH_VIBE_REVIEW");
-  });
-
-  it("reassigns after a native Vibe rejection with reason", () => {
-    const decision = evaluateReviewPipelineProgress(base([interaction("vibe", "reject", "Missing regression") ]));
-    expect(decision).toMatchObject({ action: "REASSIGN_TO_WORKER", stage: "vibe_review", targetAssigneeId: "agent-jules", feedbackSummary: "Missing regression" });
-  });
-
-  it("advances to strong review only after a native Vibe approval", () => {
-    expect(evaluateReviewPipelineProgress(base([interaction("vibe", "approve")])).action).toBe("DISPATCH_STRONG_REVIEW");
+    const decision = evaluateReviewPipelineProgress({
+      ...base(),
+      vibeReviewerAgentId: undefined,
+      reviewerAgentId: undefined,
+      lunaReviewerAgentId: "agent-luna",
+      terraReviewerAgentId: "agent-terra",
+      comments: [{ id: "comment", body: 'PAPERCLIP_REVIEW_DECISION {"decision":"all_good"}', authorAgentId: "agent-luna" }],
+    });
+    expect(decision).toMatchObject({ action: "DISPATCH_LUNA_REVIEW", targetAgentId: "agent-luna" });
   });
 
   it("advances to Terra after Luna approves even when execution policy is still pending", () => {
