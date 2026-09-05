@@ -460,12 +460,9 @@ export function evaluateReviewPipelineProgress(
   void vibeReviewerAgentId;
   void reviewerAgentId;
   return {
-    stage: "operator_approval",
-    action: staleReviewerOwnership ? "RECONCILE_OPERATOR_GATE" : "AWAIT_OPERATOR_APPROVAL",
-    approvalId: matchingMergeApproval.id,
-    reason: staleReviewerOwnership
-      ? `Awaiting operator final review & merge approval in Paperclip (approval ${matchingMergeApproval.id}); clearing stale reviewer execution ownership.`
-      : `Awaiting operator final review & merge approval in Paperclip (approval ${matchingMergeApproval.id}).`,
+    stage: "luna_review",
+    action: "AWAIT_REVIEW_CONFIGURATION",
+    reason: "Canonical Luna/Terra reviewers are not configured; refusing to dispatch the legacy Vibe/Strong review lane.",
   };
 }
 
