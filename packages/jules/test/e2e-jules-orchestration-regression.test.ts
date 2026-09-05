@@ -48,6 +48,8 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
     answerJulesAgentAdjudicationInteraction: vi.fn(),
     completeInternalReviewIssue: vi.fn(),
     createJulesAgentAdjudicationInteraction: vi.fn(),
+    createJulesQuestionReviewInteraction: vi.fn(),
+    activateInternalReviewIssue: vi.fn().mockResolvedValue(undefined),
     createJulesQuestionAdjudication: vi.fn(),
     createNoPrCompletionInteraction: vi.fn(),
     getPaperclipIssue: vi.fn(),
