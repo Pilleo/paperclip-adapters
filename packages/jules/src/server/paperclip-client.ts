@@ -475,7 +475,7 @@ export async function createJulesAgentAdjudicationInteraction(
           payload: {
             version: 1,
             title: "Jules question — strong review",
-            submitLabel: "Reviewer response",
+            submitLabel: "Submit reviewer decision",
             questions: [{
               id: "reply",
               prompt,
