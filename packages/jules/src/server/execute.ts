@@ -2672,7 +2672,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 });
                 session.planReviewRevisionId = revision.revisionId;
                 session.planReviewOutcome = undefined;
-                session.pendingInteraction = { type: "plan_agent_review", julesActivityId: asJulesActivityId(activityId), question: fullPlan, planDocumentId: revision.documentId, planRevisionId: revision.revisionId, planRevisionNumber: revision.revisionNumber, reviewIssueId: child.id, reviewerAgentId: config.planReviewerAgentId, stage: "vibe", createdAt: new Date().toISOString() };
+            session.pendingInteraction = { type: "plan_native_review", protocolVersion: 2, julesActivityId: asJulesActivityId(activityId), question: fullPlan, planDocumentId: revision.documentId, planRevisionId: revision.revisionId, planRevisionNumber: revision.revisionNumber, paperclipInteractionId: review.id, reviewerAgentId: config.planReviewerAgentId, stage: "luna", createdAt: new Date().toISOString() };
                 await persistSessionBestEffort(session, ctx.onLog);
                 return await yieldHeartbeat(session);
               }
