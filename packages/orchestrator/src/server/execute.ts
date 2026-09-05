@@ -104,6 +104,7 @@ export interface OrchestratorAdapterConfig {
   readonly reviewerAgentId?: string | undefined;
   readonly lunaReviewerAgentId?: string | undefined;
   readonly terraReviewerAgentId?: string | undefined;
+  readonly terraAdjudicatorAgentId?: string | undefined;
   readonly julesPlanApprovalPolicy?: "required" | "trusted_opt_out" | undefined;
   readonly backlogDirectory?: string | undefined;
   readonly resolvedDirectory?: string | undefined;
