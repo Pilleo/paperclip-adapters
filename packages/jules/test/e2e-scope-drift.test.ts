@@ -157,6 +157,10 @@ describe("E2E host-plan scope conformity on Jules PRs", () => {
       "",
     );
     expect(JulesClient.prototype.sendMessage).not.toHaveBeenCalled();
+    expect(executionContext.onLog).toHaveBeenCalledWith(
+      "stderr",
+      expect.stringContaining("Scope Drift Detected"),
+    );
   });
 
   it("does not flag drift when the PR stays inside declared files and symbols", async () => {
