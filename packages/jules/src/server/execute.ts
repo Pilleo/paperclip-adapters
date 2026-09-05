@@ -2850,19 +2850,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             }
 
             case "CONTINUE_POLLING":
-              if (scopeDriftSummary) {
-                return await yieldHeartbeat(session, false, {
-                  summary: `Jules PR ${session.currentPrUrl} requires host review for scope conformity. No message was sent to Jules.`,
-                  resultJson: {
-                    julesSessionId: session.julesSessionId,
-                    prUrl: session.currentPrUrl,
-                    scopeConformant: false,
-                    issueStatus: "in_review",
-                    reviewRequired: true,
-                    providerMessageSent: false,
-                  },
-                });
-              }
               return await yieldHeartbeat(session);
           }
         } catch (error) {
