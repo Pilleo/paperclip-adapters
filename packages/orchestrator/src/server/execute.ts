@@ -392,6 +392,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
   let reviewerAgentId = config.reviewerAgentId;
   let lunaReviewerAgentId = config.lunaReviewerAgentId;
   let terraReviewerAgentId = config.terraReviewerAgentId ?? config.reviewerAgentId;
+  let terraAdjudicatorAgentId = config.terraAdjudicatorAgentId;
   let fleetAuthorizationFailures: Awaited<ReturnType<typeof reconcileManagedFleet>>["authorizationFailures"] = [];
   let agentHealthReport: AgentHealthReport | undefined;
 
