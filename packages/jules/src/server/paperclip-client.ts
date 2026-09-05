@@ -966,6 +966,15 @@ export async function clearJulesSessionMonitor(
       executionPolicy: Object.keys(executionPolicy).length > 0 ? executionPolicy : null,
     }),
   }, runId);
+
+  if (strandedJulesMonitor) {
+    const verified = await getPaperclipIssue(issueId, authToken, runId);
+    const remaining = verified.executionState?.["monitor"];
+    if (remaining && typeof remaining === "object" && !Array.isArray(remaining) &&
+        (remaining as Record<string, unknown>)["serviceName"] === "jules") {
+      throw new PaperclipClientError(null, "Paperclip retained a stranded Jules monitor after compatibility cleanup");
+    }
+  }
 }
 
 export async function createJulesQuestionAdjudication(
