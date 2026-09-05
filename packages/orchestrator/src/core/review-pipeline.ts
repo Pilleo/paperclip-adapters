@@ -89,6 +89,11 @@ export type ReviewPipelineDecision =
       readonly reason: string;
     }
   | {
+      readonly stage: "luna_review" | "terra_review";
+      readonly action: "AWAIT_OPERATOR_RECOVERY";
+      readonly reason: string;
+    }
+  | {
       readonly stage: "operator_approval";
       readonly action: "CREATE_MERGE_APPROVAL";
       readonly prNumber?: number | undefined;
