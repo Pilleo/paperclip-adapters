@@ -21,6 +21,7 @@ export interface ManagedFleetConfig {
   readonly reviewerAgentId?: string | undefined;
   readonly lunaReviewerAgentId?: string | undefined;
   readonly terraReviewerAgentId?: string | undefined;
+  readonly terraAdjudicatorAgentId?: string | undefined;
   /** Managed workers whose reconciliation capability is known to be unavailable. */
   readonly skipWorkerKeys?: readonly ManagedWorkerDefinition["key"][] | undefined;
 }
