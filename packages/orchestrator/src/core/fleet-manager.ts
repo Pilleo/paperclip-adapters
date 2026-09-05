@@ -268,13 +268,9 @@ export async function reconcileManagedFleet(
           adapterConfig: mergedConfig,
             ...(def.key === "luna_reviewer" || def.key === "terra_reviewer" || def.key === "terra_adjudicator"
             ? {
-                runtimeConfig: {
-                  heartbeat: {
-                    enabled: true,
-                    intervalSec: 300,
-                    wakeOnDemand: true,
-                    maxConcurrentRuns: 1,
-                  },
+                instructionsBundle: {
+                  entryFile: "AGENTS.md",
+                  files: { "AGENTS.md": def.key === "terra_adjudicator" ? JULES_ADJUDICATOR_INSTRUCTIONS : NATIVE_REVIEWER_INSTRUCTIONS },
                 },
               }
             : {}),
