@@ -104,8 +104,10 @@ describe("Jules activity interactions", { timeout: 30000 }, () => {
 
     const result = await execute(baseContext);
 
-    expect(createJulesQuestionAdjudication).toHaveBeenCalledWith(
-      "issue-1", "00000000-0000-4000-8000-000000000123", "Which branch should I use?", "jwt-token", "run-1", "company-1",
+    expect(createJulesQuestionAdjudication).toHaveBeenCalled();
+    expect(createJulesQuestionReviewInteraction).toHaveBeenCalledWith(
+      "child-question-1", "issue-1", "session-1", "activity-question", "Which branch should I use?",
+      "00000000-0000-4000-8000-000000000123", "jwt-token", "run-1",
     );
     expect(createJulesAgentAdjudicationInteraction).toHaveBeenCalledWith(
       "issue-1", "session-1", "activity-question", "Which branch should I use?",
