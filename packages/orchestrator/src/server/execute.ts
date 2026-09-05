@@ -639,6 +639,11 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
   const scopedIssues = workspaceProject?.id
     ? issuesList.filter((issue) => issue["projectId"] === workspaceProject.id)
     : [];
+  if (workspaceProject?.id && issuesList.some((issue) => issue["projectId"] !== workspaceProject.id)) {
+    const message = `Project-scoped issue query returned a cross-project issue for ${workspaceProject.id}`;
+    await log(`[ORCHESTRATOR] 🚨 ${message}`);
+    return { exitCode: 1, signal: null, timedOut: false, errorMessage: message, summary: message };
+  }
   // Paperclip's company issue list intentionally omits workProducts. Enrich
   // terminal and active-review issues; otherwise a ready Jules PR becomes
   // invisible immediately after the recovery tick changes `done` to
