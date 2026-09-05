@@ -87,6 +87,7 @@ describe("native PR review interaction state", () => {
     expect(isReviewInteractionForIssue("pr-review:v10:issue-1:pr:sha:luna", "issue-1")).toBe(true);
     expect(isReviewInteractionForIssue("pr-review:v11:issue-1:pr:sha:luna", "issue-1")).toBe(true);
     expect(isReviewInteractionForIssue("pr-review:v12:issue-1:pr:sha:luna", "issue-1")).toBe(true);
+    expect(isReviewInteractionForIssue("pr-review:v13:issue-1:pr:sha:luna", "issue-1")).toBe(true);
     expect(isReviewInteractionForIssue("pr-review:v3:issue-2:pr:sha:luna", "issue-1")).toBe(false);
   });
 
