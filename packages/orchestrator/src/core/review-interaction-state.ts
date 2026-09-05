@@ -119,8 +119,8 @@ export function reviewInteractionIdempotencyKey(identity: ReviewInteractionIdent
   // Paperclip retains idempotency keys after an interaction is withdrawn.
   // Versioning the safe-card protocol lets us retire the old addressed card
   // and create exactly one replacement without weakening idempotency.
-  // v12 is required because Paperclip permanently reserves an idempotency key
-  // after a card expires or is cancelled. This generation also carries the
+  // v13 is required because Paperclip permanently reserves an idempotency key
+  // after a card expires or is cancelled. This generation carries the
   // non-superseding review-card contract, plus the explicit structured
   // response instructions needed by ACP agents.
   return `pr-review:v12:${identity.issueId}:${identity.prUrl}:${identity.headSha}:${identity.stage}`;
