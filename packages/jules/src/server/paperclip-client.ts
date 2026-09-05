@@ -477,7 +477,17 @@ export async function createJulesAgentAdjudicationInteraction(
             title: "Jules question — strong review",
             submitLabel: "Submit reviewer decision",
             questions: [{
-              id: "reply",
+              id: "resolution",
+              prompt: "Choose how to handle Jules' question.",
+              helpText: "Answer only when the task context makes the response clear. Escalate concrete ambiguity to a human.",
+              selectionMode: "single",
+              required: true,
+              options: [
+                { id: "answer", label: "Answer Jules" },
+                { id: "escalate", label: "Escalate to human" },
+              ],
+            }, {
+              id: "response",
               prompt,
               helpText: helpText
                 ? `${helpText.slice(0, 930)}\n\nThe strong reviewer will record its answer here before it is relayed to Jules.`
