@@ -204,21 +204,18 @@ async function main(): Promise<void> {
       }), "child");
       childIds.push(String(child.id));
     }
-    await request(`/api/issues/${issueId}`, "PATCH", { status: "in_progress", assigneeAgentId: jules.id });
-
-    fakeGhDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-gh-canary-"));
-    const fakeGh = path.join(fakeGhDir, "gh");
-    fs.writeFileSync(fakeGh, `#!/bin/sh
-case "$*" in
-  *"pr list"*) printf '%s\\n' '[{"number":991,"title":"${marker}","state":"OPEN","headRefName":"canary","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","baseRefName":"main","mergedAt":null,"url":"${prUrl}","files":[]}]' ;;
-  *"pr checks"*) printf '%s\\n' '[{"state":"SUCCESS","bucket":"pass","name":"canary"}]' ;;
-  *) exit 1 ;;
-esac
-`, "utf8");
-    fs.chmodSync(fakeGh, 0o755);
-    process.env["PATH"] = `${fakeGhDir}${path.delimiter}${previousPath || ""}`;
-
-    await execute(context);
+    const wake = requireObject(await request(`/api/agents/${orch.id}/wakeup`, "POST", {
+      source: "on_demand",
+      reason: "e2e_jules_recovery_canary",
+      idempotencyKey: `e2e-jules-recovery:${issueId}:orchestrator`,
+      // The scheduler heartbeat is company-scoped. Supplying issueId would
+      // make Paperclip bind the run to the issue and then cancel that run as
+      // soon as the scheduler assigns the issue to Jules.
+      payload: {},
+    }), "orchestrator wake");
+    const runId = String(wake.id || "");
+    if (!runId) throw new Error(`Paperclip wake did not return a heartbeat run: ${JSON.stringify(wake)}`);
+    await waitForIssueExecution(issueId, runId, "Orchestrator");
     const recovered = requireObject(await request(`/api/issues/${issueId}`, "GET"), "recovered issue");
     if (recovered.status !== "in_review" || recovered.assigneeAgentId !== null) throw new Error("Canary did not enter native review");
     for (const childId of childIds) {
