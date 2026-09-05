@@ -10,3 +10,4 @@
 | [issue-20260902-214300-add-deduplicated-recovery-and-authentication-incident-teleme](issue-20260902-214300-add-deduplicated-recovery-and-authentication-incident-teleme.md) | Add deduplicated recovery and authentication incident telemetry | high | orchestrator |
 | [issue-20260830-210200-planning-engine-ts-test-discovery](issue-20260830-210200-planning-engine-ts-test-discovery.md) | Host plan synthesizer discovers TypeScript tests next to npm packages | medium | tools |
 | [issue-20260830-210300-e2e-execute-plan-ladder](issue-20260830-210300-e2e-execute-plan-ladder.md) | E2E execute: Mistral first, Luna fallback, Terra Codex, never xAI as Terra | high | testing |
+| [issue-20260902-214239-add-negative-recovery-cases-to-the-paperclip-jules-canary](issue-20260902-214239-add-negative-recovery-cases-to-the-paperclip-jules-canary.md) | Add negative recovery cases to the Paperclip Jules canary | high | testing |
