@@ -1336,7 +1336,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         planRevisionId: pendingProviderInteraction.planRevisionId,
         planRevisionNumber: pendingProviderInteraction.planRevisionNumber,
         planDocumentId: pendingProviderInteraction.planDocumentId,
-        reviewIssueId: child.id,
+        paperclipInteractionId: nativeReview.id,
         reviewerAgentId: config.planReviewerAgentId,
         stage: "vibe",
         createdAt: new Date().toISOString(),
