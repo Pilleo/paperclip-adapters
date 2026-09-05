@@ -1,6 +1,6 @@
 # Mazewall Backlog Index
 
-*Total Active Issues:* 2 | *Total Resolved Issues:* 2
+*Total Active Issues:* 7 | *Total Resolved Issues:* 3
 
 | Issue | Title | Priority | Component |
 |---|---|---|---|
