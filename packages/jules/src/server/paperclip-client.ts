@@ -930,8 +930,36 @@ export async function clearJulesSessionMonitor(
   runId?: string,
 ): Promise<void> {
   const issue = await getPaperclipIssue(issueId, authToken, runId);
-  if (!issue.executionPolicy?.["monitor"]) return;
-  const { monitor: _monitor, ...executionPolicy } = issue.executionPolicy;
+  const policyMonitor = issue.executionPolicy?.["monitor"];
+  const stateMonitor = issue.executionState?.["monitor"];
+  const strandedJulesMonitor = !policyMonitor && stateMonitor &&
+    typeof stateMonitor === "object" && !Array.isArray(stateMonitor) &&
+    (stateMonitor as Record<string, unknown>)["serviceName"] === "jules" &&
+    typeof (stateMonitor as Record<string, unknown>)["externalRef"] === "string";
+  if (!policyMonitor && !strandedJulesMonitor) return;
+
+  let policy: Record<string, unknown> = issue.executionPolicy ?? { ...INTERNAL_REVIEW_EXECUTION_POLICY };
+  if (strandedJulesMonitor) {
+    // Compatibility bridge for Paperclip versions that strip executionPolicy
+    // when a monitor is triggered but leave executionState.monitor behind.
+    // Reintroduce the same Jules monitor, then remove it through the normal
+    // policy transition so Paperclip clears both projections. This is safe to
+    // repeat and must be removed once Paperclip exposes a direct clear API.
+    const monitor = stateMonitor as Record<string, unknown>;
+    policy = executionPolicyWithJulesMonitor(policy, {
+      sessionId: String(monitor["externalRef"]),
+      nextCheckAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+      timeoutAt: typeof monitor["timeoutAt"] === "string"
+        ? monitor["timeoutAt"]
+        : new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    });
+    await paperclipRequest(`/api/issues/${encodeURIComponent(issueId)}`, authToken, {
+      method: "PATCH",
+      body: JSON.stringify({ executionPolicy: policy }),
+    }, runId);
+  }
+
+  const { monitor: _monitor, ...executionPolicy } = policy;
   await paperclipRequest(`/api/issues/${encodeURIComponent(issueId)}`, authToken, {
     method: "PATCH",
     body: JSON.stringify({
