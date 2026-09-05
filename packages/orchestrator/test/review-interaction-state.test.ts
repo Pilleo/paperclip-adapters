@@ -97,6 +97,21 @@ describe("native PR review interaction state", () => {
       .toEqual({ action: "reuse", interactionId: "dialog-1" });
   });
 
+  it("allocates the next idempotency attempt after a cancelled card", () => {
+    const identity = { issueId: "issue-1", prUrl: "pr-1", headSha: "abc", stage: "luna" as const };
+    expect(selectReviewAttempt(identity, [{ id: "old", kind: "request_item_verdicts", status: "cancelled", idempotencyKey: reviewInteractionIdempotencyKey(identity) }])).toBe(1);
+    expect(reviewInteractionIdempotencyKey({ ...identity, attempt: 1 })).toContain(":attempt:1");
+  });
+
+  it("reuses a pending retry attempt instead of allocating another key", () => {
+    const identity = { issueId: "issue-1", prUrl: "pr-1", headSha: "abc", stage: "luna" as const };
+    const attemptOne = reviewInteractionIdempotencyKey({ ...identity, attempt: 1 });
+    expect(planReviewDialog(identity, [{
+      id: "retry-1", kind: "request_item_verdicts", status: "pending",
+      idempotencyKey: attemptOne, continuationPolicy: "wake_assignee",
+    }])).toEqual({ action: "reuse", interactionId: "retry-1" });
+  });
+
   it("reuses only a pending dialog addressed to the configured reviewer", () => {
     const identity = {
       issueId: "issue-1", prUrl: "https://github.com/acme/repo/pull/1", headSha: "abc",
