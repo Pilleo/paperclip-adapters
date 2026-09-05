@@ -927,6 +927,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
         ? monitor as Record<string, unknown>
         : null;
     const monitorStatus = typeof monitorRecord?.["status"] === "string" ? monitorRecord["status"] : null;
+    const monitorClearReason = typeof monitorRecord?.["clearReason"] === "string" ? monitorRecord["clearReason"] : null;
     const timeoutAt = typeof monitorRecord?.["timeoutAt"] === "string" ? monitorRecord["timeoutAt"] : null;
     const serviceName = typeof monitorRecord?.["serviceName"] === "string" ? monitorRecord["serviceName"] : null;
     const externalRef = monitorRecord?.["externalRef"];
