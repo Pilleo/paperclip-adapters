@@ -176,6 +176,15 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
     async listInteractions<T = unknown>(issueId: string): Promise<T> {
       return getJson<T>(`/api/issues/${encodeURIComponent(issueId)}/interactions`);
     },
+    async listRecoveryActions<T = unknown>(issueId: string): Promise<T> {
+      return getJson<T>(`/api/issues/${encodeURIComponent(issueId)}/recovery-actions`);
+    },
+    async createRecoveryAction(issueId: string, payload: Record<string, unknown>) {
+      return sendJson(`/api/issues/${encodeURIComponent(issueId)}/recovery-actions`, "POST", payload);
+    },
+    async resolveRecoveryAction(issueId: string, payload: Record<string, unknown>) {
+      return sendJson(`/api/issues/${encodeURIComponent(issueId)}/recovery-actions/resolve`, "POST", payload);
+    },
     async withdrawInteraction(issueId: string, interactionId: string, reason: string) {
       return sendJson(
         `/api/issues/${encodeURIComponent(issueId)}/interactions/${encodeURIComponent(interactionId)}/withdraw`,
