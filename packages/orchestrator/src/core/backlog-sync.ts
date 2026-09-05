@@ -381,7 +381,7 @@ export async function syncBacklogMarkdownToPaperclip(options: BacklogSyncOptions
         !managedAgents.has(existing.assigneeAgentId) &&
         existing.status !== "done" &&
         existing.status !== "cancelled";
-      if (shouldReclaim) {
+      if (shouldClaim || shouldReclaim) {
         try {
           const reclaimRes = await fetch(`${options.apiUrl}/api/issues/${existing.id}`, {
             method: "PATCH",
