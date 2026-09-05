@@ -130,6 +130,73 @@ export type ReviewPipelineDecision =
       readonly reason: string;
     };
 
+export type ReviewDispatchDecision = Extract<ReviewPipelineDecision, {
+  readonly action: "DISPATCH_VIBE_REVIEW" | "DISPATCH_STRONG_REVIEW" |
+    "DISPATCH_LUNA_REVIEW" | "DISPATCH_TERRA_REVIEW" | "RECOVER_REVIEW";
+}>;
+
+export function isReviewDispatchDecision(decision: ReviewPipelineDecision): decision is ReviewDispatchDecision {
+  switch (decision.action) {
+    case "DISPATCH_VIBE_REVIEW":
+    case "DISPATCH_STRONG_REVIEW":
+    case "DISPATCH_LUNA_REVIEW":
+    case "DISPATCH_TERRA_REVIEW":
+    case "RECOVER_REVIEW":
+      return true;
+    case "AWAIT_CI":
+    case "AWAIT_REVIEW_CONFIGURATION":
+    case "AWAIT_REVIEW":
+    case "AWAIT_OPERATOR_RECOVERY":
+    case "REASSIGN_TO_WORKER":
+    case "RECONCILE_OPERATOR_GATE":
+    case "CREATE_MERGE_APPROVAL":
+    case "AWAIT_OPERATOR_APPROVAL":
+    case "EXECUTE_MERGE":
+      return false;
+  }
+}
+
+export function reviewDispatchStage(decision: ReviewDispatchDecision): PrReviewStage {
+  switch (decision.action) {
+    case "DISPATCH_VIBE_REVIEW":
+      return "vibe";
+    case "DISPATCH_STRONG_REVIEW":
+      return "strong";
+    case "DISPATCH_LUNA_REVIEW":
+      return "luna";
+    case "DISPATCH_TERRA_REVIEW":
+      return "terra";
+    case "RECOVER_REVIEW":
+      return decision.stage === "luna_review" ? "luna" : "terra";
+  }
+}
+
+export type ReviewPipelineActionGroup = "ci" | "wait" | "dispatch" | "mutation";
+
+/** Exhaustive top-level routing classification used by the effectful executor. */
+export function classifyReviewPipelineAction(action: ReviewPipelineDecision["action"]): ReviewPipelineActionGroup {
+  switch (action) {
+    case "AWAIT_CI":
+      return "ci";
+    case "AWAIT_REVIEW_CONFIGURATION":
+    case "AWAIT_REVIEW":
+    case "AWAIT_OPERATOR_RECOVERY":
+    case "AWAIT_OPERATOR_APPROVAL":
+      return "wait";
+    case "DISPATCH_VIBE_REVIEW":
+    case "DISPATCH_STRONG_REVIEW":
+    case "DISPATCH_LUNA_REVIEW":
+    case "DISPATCH_TERRA_REVIEW":
+    case "RECOVER_REVIEW":
+      return "dispatch";
+    case "REASSIGN_TO_WORKER":
+    case "RECONCILE_OPERATOR_GATE":
+    case "CREATE_MERGE_APPROVAL":
+    case "EXECUTE_MERGE":
+      return "mutation";
+  }
+}
+
 function findMergeApproval(
   approvals: readonly PaperclipApprovalSummary[],
   issueId: string,
