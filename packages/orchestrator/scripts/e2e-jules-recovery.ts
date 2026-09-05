@@ -103,6 +103,24 @@ async function main(): Promise<void> {
   const health = requireObject(await request("/api/health", "GET"), "health");
   if (health.status !== "ok") throw new Error("Paperclip health check failed");
 
+  // A clean Paperclip install knows no repository-local external adapters.
+  // Install the built artifacts through the same admin API used in production
+  // before creating canary agents; otherwise this test only exercises builtins.
+  for (const packageDir of ["packages/orchestrator", "packages/jules"]) {
+    await request("/api/adapters/install", "POST", {
+      packageName: path.join(workspacePath, packageDir),
+      isLocalPath: true,
+    });
+  }
+  const installedAdapters = await request("/api/adapters", "GET");
+  const adapterTypes = new Set((Array.isArray(installedAdapters) ? installedAdapters : [])
+    .map((adapter) => adapter && typeof adapter === "object" ? (adapter as Record<string, unknown>).type : undefined));
+  for (const requiredType of ["orchestrator", "jules"]) {
+    if (!adapterTypes.has(requiredType)) {
+      throw new Error(`Clean-server canary did not install external adapter ${requiredType}`);
+    }
+  }
+
   let companyId = "";
   let backlogDir = "";
   let fakeGhDir = "";
