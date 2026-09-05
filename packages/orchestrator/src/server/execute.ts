@@ -932,6 +932,15 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     const serviceName = typeof monitorRecord?.["serviceName"] === "string" ? monitorRecord["serviceName"] : null;
     const externalRef = monitorRecord?.["externalRef"];
     const executionPolicy = executionPolicyRecord;
+    // Compatibility bridge: Paperclip can drop executionPolicy while its
+    // durable projection still says that Jules owns an active monitor. Such
+    // an issue is otherwise invisible to the scheduler because the projected
+    // monitor has no nextCheckAt. Reattach it once from this explicit state;
+    // never infer it from provider prose or a PR alone.
+    const monitorDetached = executionPolicyRecord === null &&
+      serviceName === "jules" &&
+      typeof externalRef === "string" && externalRef.trim().length > 0 &&
+      (monitorStatus === "triggered" || monitorStatus === null);
     const nativePolicyMonitor = executionPolicy?.["monitor"];
     const canReattachNativeMonitor = Boolean(
       nativePolicyMonitor && typeof nativePolicyMonitor === "object" && !Array.isArray(nativePolicyMonitor) &&
