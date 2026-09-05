@@ -990,8 +990,32 @@ export async function createJulesQuestionAdjudication(
   deferExecution = false,
 ): Promise<PaperclipIssue> {
   const fingerprint = createHash("sha256").update(question).digest("hex").slice(0, 24);
-  const marker = `<!-- jules-question-adjudication:${fingerprint} -->`;
-  const lockKey = `${parentIssueId}:${fingerprint}`;
+  const correlation = companyId && activityId
+    ? buildQuestionCorrelation({
+      parentIssueId,
+      companyId,
+      sessionId: sessionId ?? "unknown-session",
+      activityId,
+      reviewerAgentId,
+      question,
+      generation,
+    })
+    : null;
+  const marker = correlation
+    ? questionCorrelationMarker(correlation)
+    : `<!-- jules-question-adjudication:${fingerprint} -->`;
+  const lockKey = `${parentIssueId}:${activityId ?? fingerprint}:${generation}`;
+  const description = `
+${marker}
+You are the strong adjudicator for a Jules provider question. Answer only the quoted operational question. Do not inspect or review the checkout, diff, tests, branches, pull requests, GitHub, or repository files; they may be stale and are not part of this decision. Do not propose code changes or implementation feedback. Use only the parent task's explicit instructions and the quoted provider question. For generic continue/commit/submit questions, return the direct workflow instruction already declared by the parent task. Escalate only when the question requires a concrete product or authorization decision that the parent task does not specify.
+
+Provider question:
+${question}
+
+The Paperclip interaction attached to this issue is the only decision protocol. Submit
+that typed form with either an answer for Jules or an escalation for a human, then
+mark this adjudication task done. Do not post a JSON object, review findings, or
+implementation advice as an issue comment.`;
   const previous = questionAdjudicationLocks.get(lockKey) ?? Promise.resolve();
   const operation = previous.then(async () => {
     if (companyId) {
