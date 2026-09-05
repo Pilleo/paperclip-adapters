@@ -36,6 +36,8 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
     ...mod,
     createIssueComment: vi.fn().mockResolvedValue(undefined),
     createJulesAgentAdjudicationInteraction: vi.fn().mockResolvedValue({ id: "visible-question-1", status: "pending" }),
+    createJulesQuestionReviewInteraction: vi.fn().mockResolvedValue({ id: "question-form-1", status: "pending" }),
+    activateInternalReviewIssue: vi.fn().mockResolvedValue(undefined),
     createJulesQuestionAdjudication: vi.fn().mockResolvedValue({ id: "question-review-1", status: "todo" }),
     listIssueComments: vi.fn().mockResolvedValue([]),
     listPaperclipInteractions: vi.fn().mockResolvedValue([]),
