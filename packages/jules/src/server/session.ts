@@ -98,8 +98,6 @@ export const PendingInteractionSchema = z.discriminatedUnion("type", [
     type: z.literal("completion_confirmation"),
     paperclipInteractionId: z.string().min(1),
     question: z.string(),
-    adjudicationIssueId: z.string().min(1),
-    reviewerAgentId: z.string().min(1),
     createdAt: z.string()
   })
 ]);
