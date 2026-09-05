@@ -856,6 +856,7 @@ export interface PaperclipIssue {
   status: string;
   assigneeAgentId?: string | null;
   executionPolicy?: Record<string, unknown> | null;
+  executionState?: Record<string, unknown> | null;
 }
 
 /**
