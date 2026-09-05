@@ -1915,7 +1915,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
               reviewRequest = buildReviewInteractionRequest(reviewIdentity);
               const createdInteraction = await pc.createInteraction(
                 reviewTask.id,
-                buildReviewInteractionRequest(reviewIdentity),
+                reviewRequest,
               );
               if (!createdInteraction.ok) {
                 throw new Error(`Native review dialog creation failed (${createdInteraction.status}): ${createdInteraction.text}`);
