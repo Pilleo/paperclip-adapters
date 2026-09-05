@@ -147,6 +147,11 @@ describe("Orchestrator Managed Fleet Manager", () => {
       wakeOnDemand: true,
       maxConcurrentRuns: 1,
     });
+    const julesPatch = patchCalls.find((call) => call.url.endsWith("/agents/existing-jules"));
+    expect(julesPatch?.body.adapterConfig.planReviewerAgentId).toBeDefined();
+    expect(julesPatch?.body.adapterConfig.planStrongReviewerAgentId).toBeDefined();
+    expect(julesPatch?.body.adapterConfig.questionAdjudicatorAgentId).toBeDefined();
+    expect(julesPatch?.body.adapterConfig.questionReviewerAgentId).toBe(julesPatch?.body.adapterConfig.questionAdjudicatorAgentId);
   });
 
   it("does not resolve an independent Luna agent as the managed reviewer", async () => {
