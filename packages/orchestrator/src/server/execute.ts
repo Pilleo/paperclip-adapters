@@ -1818,6 +1818,14 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
             headSha: reviewHeadSha,
             stage,
             reviewerAgentId: targetAgentId,
+          };
+          // Cancelled Paperclip interactions retain their idempotency keys
+          // forever. Allocate a monotonic attempt so a cancelled native card
+          // can be replaced without a 409, while a pending card remains
+          // exactly-once and is reused.
+          const reviewIdentity = {
+            ...reviewIdentityBase,
+            attempt: selectReviewAttempt(reviewIdentityBase, reviewInteractions),
           } as const;
           try {
             const nativeReviewPolicy = buildMazewallExecutionPolicy({
