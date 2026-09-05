@@ -391,7 +391,8 @@ beforeAll(() => {
     expect(res.question).toBeUndefined();
     expect(sessionCodec.decode(res.sessionParams!).pendingInteraction).toMatchObject({
       type: 'agent_adjudication',
-      adjudicationIssueId: 'adjudication-1',
+      nativeForm: true,
+      paperclipInteractionId: 'visible-question-1',
     });
   });
 });
