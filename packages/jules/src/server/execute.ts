@@ -2629,7 +2629,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 julesActivityId: asJulesActivityId(activityId),
                 paperclipInteractionId: visibleInteraction.id,
                 question: action.question,
-                adjudicationIssueId: adjudication.id,
                 reviewerAgentId,
                 createdAt: new Date().toISOString(),
               };
