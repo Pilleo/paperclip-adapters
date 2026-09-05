@@ -1,4 +1,4 @@
-import { formatCardPrompt, formatCardSummary, formatCardPromptAndHelpText, SafeCardPrompt, SafeCardSummary } from "./card-prompt.js";
+import { formatCardPrompt, formatCardSummary, formatCardPromptAndHelpText, formatConfirmationDetails, MAX_CONFIRMATION_PROMPT_LENGTH, SafeCardPrompt, SafeCardSummary } from "./card-prompt.js";
 import { createHash } from "node:crypto";
 import { executePaperclipCommand, type PaperclipCommandResponse } from "@pilleo/paperclip-adapter-common";
 import {
