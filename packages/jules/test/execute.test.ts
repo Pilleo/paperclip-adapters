@@ -4,6 +4,7 @@ import { AdapterExecutionContext } from '@paperclipai/adapter-utils';
 import { JulesClient } from '../src/server/jules-client';
 import { sessionCodec } from '../src/server/session';
 import { getPaperclipIssue, moveIssueToReview } from '../src/server/paperclip-client';
+import { getPullRequestDetails } from '../src/server/ci-status';
 
 vi.mock('../src/server/jules-client', async (importOriginal) => {
   const mod = await importOriginal<typeof import('../src/server/jules-client')>();
