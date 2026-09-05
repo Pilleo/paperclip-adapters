@@ -206,8 +206,36 @@ export function reviewVerdictFromInteraction(
   return prVerdict["verdict"] === "reject" && reason ? { decision: "needs_work", reason } : null;
 }
 
-/** Plans a single idempotent dialog effect. Answering wakes the addressed
- * reviewer so it can complete Paperclip's separate execution-policy write. */
+/**
+ * Open/green is not sufficient to promote a Jules PR into review. A native
+ * rejection for the same immutable head means Jules still owns the revision;
+ * a cleared but resumable Jules monitor is likewise worker state, not review
+ * state. This pure gate prevents the open-PR recovery path from racing the
+ * Jules monitor/rejection transition.
+ */
+export function canPromoteOpenPrToReview(input: {
+  readonly ciGreen: boolean;
+  readonly currentHeadRejected: boolean;
+  readonly hasRecoverableJulesMonitor: boolean;
+}): boolean {
+  return input.ciGreen && !input.currentHeadRejected && !input.hasRecoverableJulesMonitor;
+}
+
+export function hasNativeRejectionForHead(
+  interactions: readonly NativeReviewInteraction[],
+  issueId: string,
+  headSha: string,
+): boolean {
+  return interactions.some((interaction) => {
+    const key = interaction.idempotencyKey || "";
+    if (!new RegExp(`^pr-review:v\\d+:${issueId}:.*:${headSha}:(?:luna|terra)(?::attempt:[1-9]\\d*)?$`, "i").test(key)) return false;
+    return reviewVerdictFromInteraction(interaction, interaction.id)?.decision === "needs_work";
+  });
+}
+
+/** Plans a single idempotent dialog effect. The adapter explicitly wakes the
+ * assigned reviewer because Paperclip's addressed-card wake currently drops
+ * interaction context before queued-run validation. */
 export function planReviewDialog(
   identity: ReviewInteractionIdentity,
   interactions: readonly (NativeReviewInteraction & { readonly idempotencyKey?: string | undefined })[],
