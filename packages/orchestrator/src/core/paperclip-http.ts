@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { resilientFetch } from "./resilient-fetch.js";
 import { createUpdateIssuePayload, type UpdateIssuePayload } from "./paperclip-orchestrator-client.js";
 import type { IssueStatus } from "./types.js";
-import { executePaperclipCommand, type PaperclipCommandResponse } from "@pilleo/paperclip-adapter-common";
+import { executePaperclipCommand, type PaperclipCommandResponse, type WorkerFeedbackEnvelope } from "@pilleo/paperclip-adapter-common";
 
 export class OrchestratorPaperclipError extends Error {
   constructor(
