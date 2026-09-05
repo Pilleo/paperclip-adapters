@@ -25,6 +25,7 @@ export interface ReviewInteractionIdentity {
 
 export interface NativeReviewInteraction {
   readonly id: string;
+  readonly idempotencyKey?: string | undefined;
   readonly kind?: string | undefined;
   readonly status?: string | undefined;
   readonly continuationPolicy?: string | undefined;
