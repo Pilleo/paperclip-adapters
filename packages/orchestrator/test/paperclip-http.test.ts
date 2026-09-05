@@ -134,6 +134,40 @@ describe("createPaperclipHttp wakeup", () => {
     expect(headers.get("X-Paperclip-Run-Id")).toBeNull();
   });
 
+  it("uses loopback trusted access for company-level reads without an API key", async () => {
+    const fetchMock = vi.fn(async () => new Response("[]", { status: 200 }));
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const pc = createPaperclipHttp({
+      apiUrl: "http://127.0.0.1:3100",
+      localTrustedBoardWrites: true,
+    });
+    await expect(pc.listProjects("company-1")).resolves.toEqual([]);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(new Headers(init.headers).get("Authorization")).toBeNull();
+  });
+
+  it("requests one authoritative project-scoped issue snapshot with persisted blockers", async () => {
+    const fetchMock = vi.fn(async () => new Response("[]", { status: 200 }));
+    globalThis.fetch = fetchMock as typeof fetch;
+    const pc = createPaperclipHttp({ apiUrl: "http://127.0.0.1:3100", localTrustedBoardWrites: true });
+
+    await pc.listIssues("company-1", { projectId: "project-adapters", includeBlockedBy: true });
+
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://127.0.0.1:3100/api/companies/company-1/issues?limit=1000&projectId=project-adapters&includeBlockedBy=true");
+  });
+
+  it("lists children from the authoritative parent-filtered company route", async () => {
+    const fetchMock = vi.fn(async () => new Response('{"children":[]}', { status: 200 }));
+    globalThis.fetch = fetchMock as typeof fetch;
+    const pc = createPaperclipHttp({ apiUrl: "http://127.0.0.1:3100", localTrustedBoardWrites: true });
+
+    await expect(pc.listChildren("company-1", "parent-834")).resolves.toEqual([]);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://127.0.0.1:3100/api/companies/company-1/issues?limit=1000&parentId=parent-834");
+    expect((fetchMock.mock.calls[0]?.[1] as RequestInit).method).toBe("GET");
+  });
+
   it("adds a deterministic idempotency key to ordinary issue mutations", async () => {
     const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
     globalThis.fetch = fetchMock as typeof fetch;
