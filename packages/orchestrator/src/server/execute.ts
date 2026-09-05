@@ -1852,8 +1852,32 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
               reason: reviewerEligibility.reason,
               circuitKey: reviewCircuitKey,
             });
-            if (!participantPatch.ok) {
-              throw new Error(`Native review participant setup failed (${participantPatch.status}): ${participantPatch.text}`);
+            // Publish the wait as a Paperclip recovery action. Unlike the
+            // adapter executionState projection, this is consumed by
+            // Paperclip's native attention/inbox state and remains visible
+            // while the reviewer is paused. The server upsert is source- and
+            // fingerprint-scoped, so heartbeats are idempotent.
+            try {
+              const recoveryResponse = await pc.listRecoveryActions(reviewTask.id) as { active?: unknown };
+              if (!isSameReviewerUnavailableRecovery(recoveryResponse.active, reviewCircuitKey)) {
+                const recovery = await pc.createRecoveryAction(
+                  reviewTask.id,
+                  reviewerUnavailableRecoveryPayload({
+                    prUrl: matchingPr.url,
+                    headSha: reviewHeadSha,
+                    stage,
+                    reviewerAgentId: targetAgentId,
+                    reviewerStatus: status || "unknown",
+                    reason: reviewerEligibility.reason,
+                    circuitKey: reviewCircuitKey,
+                  }),
+                );
+                if (!recovery.ok) {
+                  await log(`[ORCHESTRATOR] Warning: could not persist reviewer recovery action (${recovery.status}): ${recovery.text}`);
+                }
+              }
+            } catch (recoveryError) {
+              await log(`[ORCHESTRATOR] Warning: failed to publish reviewer recovery action: ${String(recoveryError)}`);
             }
             const dialogPlan = planReviewDialog(reviewIdentity, reviewInteractions);
             for (const stale of reviewInteractions.filter((interaction) =>
