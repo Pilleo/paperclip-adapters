@@ -302,17 +302,7 @@ export async function reconcileManagedFleet(
       resolvedIds[def.key] = matching.id;
 
       // Ensure title, capabilities, heartbeat policy, reportsTo, and status are in sync.
-      const desiredRuntimeConfig =
-        def.key === "jules"
-          ? {
-              heartbeat: {
-                enabled: true,
-                intervalSec: 300,
-                wakeOnDemand: true,
-                maxConcurrentRuns: 1,
-              },
-            }
-          : undefined;
+      const runtimeConfig = desiredRuntimeConfig(def.key);
       const currentHeartbeat = (matching as { runtimeConfig?: Record<string, unknown> }).runtimeConfig?.["heartbeat"] as
         | Record<string, unknown>
         | undefined;
