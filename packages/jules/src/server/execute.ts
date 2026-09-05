@@ -1520,9 +1520,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             };
           }
 
-          const drift = lifecycle.actions.find((action) => action.type === "FLAG_SCOPE_DRIFT");
-          const driftFingerprint = drift && drift.type === "FLAG_SCOPE_DRIFT"
-            ? `${prUrl}\n${drift.summary}`
+          const scopeDriftSummaryForTelemetry = changedFiles.length > 0 && !scope.isConformant
+            ? scope.summaryText
+            : undefined;
+          const driftFingerprint = scopeDriftSummaryForTelemetry
+            ? `${prUrl}\n${scopeDriftSummaryForTelemetry}`
             : undefined;
           if (!driftFingerprint && session.scopeDriftFingerprint) {
             session.scopeDriftFingerprint = undefined;
