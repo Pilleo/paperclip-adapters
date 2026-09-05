@@ -1062,7 +1062,11 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
           ? "vibe_reviewer"
           : issue.assigneeAgentId === orchestratorId ? "orchestrator" : "other",
       executionRunLive: Boolean(issue.executionRunId) || ["queued", "running", "active", "waiting"].includes(String(executionStatus)),
-      resumableMonitor,
+      // The lifecycle pass may have just reattached a native Jules monitor.
+      // Carry that same-tick proof into board reconciliation; otherwise the
+      // stale pre-PATCH projection can immediately recover the open PR into
+      // review and hand the issue back to Jules on the next heartbeat.
+      resumableMonitor: resumableMonitor || reattachedJulesMonitorIssueIds.has(issue.id),
       monitorExpired: reattachedJulesMonitorIssueIds.has(issue.id) ? false : monitorExpired,
       nativeReviewInteraction,
       hasPullRequest: issue.status === "in_review" && !ghStatus.error && Boolean(ghStatus.openPrs.find((pr) => matchPrToIssue(pr, issue))),
