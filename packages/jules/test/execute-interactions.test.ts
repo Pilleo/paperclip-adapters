@@ -91,7 +91,7 @@ describe("Jules activity interactions", { timeout: 30000 }, () => {
     vi.mocked(moveIssueToBlocked).mockResolvedValue();
   });
 
-  it("mirrors a Jules question and assigns an adjudication task to the strong reviewer", async () => {
+  it("mirrors a Jules question into a visible parent card and Terra child form", async () => {
     vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_USER_FEEDBACK" } as never);
     vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({
       activities: [{
