@@ -2599,12 +2599,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                   taskId, session!.julesSessionId!, activityId, action.question, reviewerAgentId, ctx.authToken, ctx.runId,
                 ),
               });
-              const adjudication = await runCheckpointedMutation({
-                session: session!,
-                key: `jules:question-adjudication:${taskId}:${action.question}`,
-                operation: "create_question_adjudication_issue",
-                issueId: taskId,
-                sessionId: session!.julesSessionId,
+              const reviewerChild = await createJulesQuestionAdjudication(
+                taskId,
+                reviewerAgentId,
+                action.question,
+                ctx.authToken,
+                ctx.runId,
+                ctx.agent.companyId,
                 activityId,
                 persist: () => persistSessionBestEffort(session!, ctx.onLog),
                 run: () => createJulesQuestionAdjudication(
