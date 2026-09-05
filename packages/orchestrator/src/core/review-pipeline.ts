@@ -374,6 +374,44 @@ export function evaluateReviewPipelineProgress(
 
   // New reviewer lane is selected whenever configured. It is intentionally
   // separate from the legacy Vibe lane so stale Vibe verdicts cannot approve.
+  const mapEpochDecision = (
+    stage: ReviewEpochStage,
+    reviewerAgentId: string,
+    decision: ReturnType<typeof reduceReviewEpoch>,
+  ): ReviewPipelineDecision | null => {
+    const pipelineStage: "luna_review" | "terra_review" = stage === "luna" ? "luna_review" : "terra_review";
+    switch (decision.action) {
+      case "reassign_worker":
+        return {
+          stage: pipelineStage,
+          action: "REASSIGN_TO_WORKER",
+          targetStatus: "in_progress",
+          targetAssigneeId: workerAgentId || null,
+          feedbackSummary: decision.reason,
+          reason: `${stage === "luna" ? "Luna" : "Terra"} review requested changes on [${issue.identifier || issue.id}].`,
+        };
+      case "escalate":
+        return { stage: pipelineStage, action: "AWAIT_OPERATOR_RECOVERY", reason: decision.reason };
+      case "await_verdict":
+        return { stage: pipelineStage, action: "AWAIT_REVIEW", reason: `Native ${stage === "luna" ? "Luna" : "Terra"} review is awaiting its structured verdict.` };
+      case "create_card":
+        return {
+          stage: pipelineStage,
+          action: stage === "luna" ? "DISPATCH_LUNA_REVIEW" : "DISPATCH_TERRA_REVIEW",
+          targetAgentId: reviewerAgentId,
+          reason: stage === "luna"
+            ? `CI is green; routing [${issue.identifier || issue.id}] to OpenAI Luna for the first review.`
+            : `Luna approved; routing [${issue.identifier || issue.id}] to OpenAI Terra for the strong review.`,
+        };
+      case "wake_once":
+        return { stage: pipelineStage, action: "RECOVER_REVIEW", targetAgentId: reviewerAgentId, reason: `A pending native ${stage === "luna" ? "Luna" : "Terra"} review card has no bound run; issuing its one recovery wake.` };
+      case "advance":
+        return null;
+      default:
+        throw new Error(`Unhandled review epoch decision: ${JSON.stringify(decision)}`);
+    }
+  };
+
   if (lunaReviewerAgentId !== undefined || terraReviewerAgentId !== undefined) {
     if (!lunaReviewerAgentId) return { stage: "luna_review", action: "AWAIT_REVIEW_CONFIGURATION", reason: "OpenAI Luna reviewer is not configured; refusing to skip the weak review stage." };
     const lunaVerdict = verdictFor("luna");
