@@ -319,6 +319,7 @@ export interface JulesAdapterSessionV1 {
   relayedReviewCommentIds?: string[] | undefined;
   /** Prevents identical PR drift observations from replaying provider messages. */
   scopeDriftFingerprint?: string | undefined;
+  workerFeedbackDeliveryId?: string | undefined;
   /** High-water mark for the normalized Jules activity stream. */
   activityCheckpoint?: { createTime: string; id: string } | undefined;
   lastActivityId?: string | undefined;
