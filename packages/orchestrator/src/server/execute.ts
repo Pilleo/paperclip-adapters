@@ -499,6 +499,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
             ...(lunaReviewerAgentId ? { planReviewerAgentId: lunaReviewerAgentId } : {}),
             ...(terraReviewerAgentId ? { planStrongReviewerAgentId: terraReviewerAgentId } : {}),
             ...(terraReviewerAgentId ? { questionReviewerAgentId: terraReviewerAgentId } : {}),
+            ...(terraAdjudicatorAgentId ? { questionAdjudicatorAgentId: terraAdjudicatorAgentId, questionReviewerAgentId: terraAdjudicatorAgentId } : {}),
           },
         });
         if (!patch.ok) {
