@@ -10,6 +10,10 @@ import {
   reviewVerdictFromInteraction,
   shouldWakeAssignedReview,
   selectPrReviewIssues,
+  isCanonicalReviewCardKey,
+  selectReviewCardsToWithdrawAfterRejection,
+  canPromoteOpenPrToReview,
+  hasNativeRejectionForHead,
 } from "../src/core/review-interaction-state.js";
 
 describe("native PR review interaction state", () => {
