@@ -27,6 +27,7 @@ import {
   scheduleJulesSessionMonitor,
   upsertJulesSessionHandle,
   withdrawPaperclipInteraction,
+  isPaperclipChildLimitError,
   paperclipRequestForInternalUse,
 } from "../src/server/paperclip-client";
 
