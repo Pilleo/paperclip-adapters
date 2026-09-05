@@ -2572,7 +2572,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             }
 
             case "CREATE_AGENT_ADJUDICATION": {
-              const reviewerAgentId = config.questionReviewerAgentId;
+              const reviewerAgentId = config.questionAdjudicatorAgentId ?? config.questionReviewerAgentId;
               if (!reviewerAgentId) {
                 throw new Error("questionReviewerAgentId must be configured; provider questions may not bypass the strong-reviewer lane");
               }
