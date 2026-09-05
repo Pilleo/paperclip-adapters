@@ -238,6 +238,8 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
               payload: {
                 ...(issueId ? { issueId } : {}),
                 ...(options?.resumeFromRunId ? { resumeFromRunId: options.resumeFromRunId } : {}),
+                ...(options?.workerFeedback ? { workerFeedback: options.workerFeedback } : {}),
+                ...(options?.reviewInteractionId ? { interactionId: options.reviewInteractionId, interactionKind: "request_item_verdicts" } : {}),
               },
             }
           : {}),
