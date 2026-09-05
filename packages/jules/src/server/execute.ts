@@ -222,7 +222,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // Paperclip's local runner exposes the authoritative heartbeat id through
   // PAPERCLIP_RUN_ID on some wake paths rather than ctx.runId. Normalize it
   // once so every governed write carries the cross-issue attribution header.
-  ctx = { ...ctx, runId: ctx.runId || process.env["PAPERCLIP_RUN_ID"] || "" };
+  const rawRuntime = (ctx.runtime ?? {}) as unknown as Record<string, unknown>;
+  const rawContextForRun = (ctx.context ?? {}) as Record<string, unknown>;
+  const recoveredRunId = [
+    ctx.runId,
+    process.env["PAPERCLIP_RUN_ID"],
+    process.env["PAPERCLIP_HEARTBEAT_RUN_ID"],
+    rawRuntime["runId"],
+    rawContextForRun["runId"],
+    rawContextForRun["heartbeatRunId"],
+  ].find((value): value is string => typeof value === "string" && value.trim().length > 0) ?? "";
+  ctx = { ...ctx, runId: recoveredRunId };
+  await ctx.onLog?.("stdout", `[jules] Paperclip heartbeat attribution: ${recoveredRunId ? "present" : "missing"}\n`);
   if (!ctx.agent || typeof ctx.agent.adapterConfig === 'undefined') {
       throw new Error("Missing adapter config");
   }
