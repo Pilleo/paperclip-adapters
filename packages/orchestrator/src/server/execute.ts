@@ -1024,8 +1024,32 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     // inherit the parent's frontmatter. Their signed delegation marker is the
     // managed-scope proof; generic historical children remain untouched.
     const managed = issue.orchestratorManaged || isDelegatedReviewChild(issue) || Boolean(issue.parentId && lifecycleIssues.some((candidate) => candidate.id === issue.parentId && candidate.orchestratorManaged));
-    const resumableMonitor = monitorRecord?.["serviceName"] === "jules" && typeof monitorRecord["externalRef"] === "string" && Boolean(monitorRecord["externalRef"]);
-    const monitorExpired = Boolean(monitorRecord?.["timeoutAt"] && Number.isFinite(Date.parse(String(monitorRecord["timeoutAt"]))) && Date.now() >= Date.parse(String(monitorRecord["timeoutAt"])));
+    const policy = issue.rawIssue["executionPolicy"];
+    const policyRecord = policy && typeof policy === "object" && !Array.isArray(policy)
+      ? policy as Record<string, unknown>
+      : null;
+    const policyMonitor = policyRecord?.["monitor"];
+    const policyMonitorRecord = policyMonitor && typeof policyMonitor === "object" && !Array.isArray(policyMonitor)
+      ? policyMonitor as Record<string, unknown>
+      : null;
+    const resumableMonitor = isAuthoritativeJulesMonitor(policy);
+    const monitorExpired = Boolean(policyMonitorRecord?.["timeoutAt"] && Number.isFinite(Date.parse(String(policyMonitorRecord["timeoutAt"]))) && Date.now() >= Date.parse(String(policyMonitorRecord["timeoutAt"] as string)));
+    const rawProducts = issue.rawIssue["workProducts"] ?? issue.rawIssue["work_products"];
+    const hasJulesPullRequestProduct = Array.isArray(rawProducts) && rawProducts.some((product) => {
+      if (!product || typeof product !== "object") return false;
+      const candidate = product as Record<string, unknown>;
+      const type = candidate["type"] ?? candidate["kind"];
+      const metadata = candidate["metadata"];
+      return (type === "pull_request" || type === "pull-request") &&
+        typeof candidate["url"] === "string" &&
+        metadata && typeof metadata === "object" && (metadata as Record<string, unknown>)["source"] === "jules";
+    });
+    const registeredPr = hasJulesPullRequestProduct ? registeredPullRequestFromIssue(issue) : undefined;
+    const registeredOpenPullRequest = Boolean(
+      registeredPr && !ghStatus.error && ghStatus.openPrs.some(
+        (pr) => pr.url.replace(/\/$/, "").toLowerCase() === registeredPr.url.replace(/\/$/, "").toLowerCase(),
+      ),
+    );
     return {
       id: issue.id,
       identifier: issue.identifier || issue.id,
