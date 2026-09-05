@@ -51,6 +51,7 @@ export interface ManagedFleetIds {
   readonly reviewerAgentId?: string | undefined;
   readonly lunaReviewerAgentId?: string | undefined;
   readonly terraReviewerAgentId?: string | undefined;
+  readonly terraAdjudicatorAgentId?: string | undefined;
   readonly managedJulesIds: ReadonlySet<string>;
 }
 
