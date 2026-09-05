@@ -326,19 +326,50 @@ export function evaluateReviewPipelineProgress(
       })(),
     );
   };
-  const awaitActiveReview = (stage: "luna" | "terra", reviewerAgentId: string): ReviewPipelineDecision | null => {
-    const expectedIndex = stage === "luna" ? 0 : 1;
-    const humanEscalationOwnsStage = executionState?.status === "pending" &&
-      executionState.currentParticipant?.type === "user" &&
-      executionState.currentStageIndex === expectedIndex;
-    if (!humanEscalationOwnsStage && (!activeReviewerOwnsStage(stage, reviewerAgentId) || !activeStageHasCard(stage))) return null;
-    return {
-      stage: stage === "luna" ? "luna_review" : "terra_review",
-      action: "AWAIT_REVIEW",
-      reason: humanEscalationOwnsStage
-        ? `Review is escalated to the human participant; no agent review may restart for this immutable PR head.`
-        : `A native ${stage} review card already exists for this immutable PR head; waiting for its terminal verdict.`,
-    };
+
+  /** The reducer is the sole owner of card/run/verdict transitions. */
+  const epochDecision = (stage: ReviewEpochStage, reviewerAgentId: string) => {
+    const card = cardFor(stage);
+    const boundRuns = card
+      ? heartbeatRuns.filter((run) => run.issueId === issue.id && run.agentId === reviewerAgentId && run.interactionId === card.id)
+      : [];
+    const failedRun = boundRuns.find((run) => ["failed", "cancelled", "timed_out"].includes(String(run.status).toLowerCase()));
+    const activeRun = boundRuns.find((run) => ["queued", "running"].includes(String(run.status).toLowerCase()));
+    const compatibilityExecutionLease = executionState?.status === "pending" &&
+      executionState.currentParticipant?.type === "agent" &&
+      executionState.currentParticipant.agentId === reviewerAgentId;
+    const finishedRun = boundRuns.find((run) => !activeRun && !failedRun);
+    const verdict = verdictFor(stage);
+    return reduceReviewEpoch({
+      issueId: issue.id,
+      prUrl: prUrl || `pr-${prNumber || "unknown"}`,
+      headSha: reviewHeadSha || "unknown",
+      stage,
+      reviewerAgentId,
+      card: card
+        ? card.status === "answered"
+          ? { state: "answered" as const, id: card.id }
+          : card.status === "pending"
+            ? { state: "pending" as const, id: card.id }
+            : { state: "retired" as const, id: card.id, reason: `Native ${stage} review card ${card.id} is ${card.status || "terminal"}.` }
+        : { state: "missing" as const },
+      reviewerRun: failedRun
+        ? { state: "failed" as const, runId: failedRun.id, reason: `Bound ${stage} reviewer run ${failedRun.id} ended ${failedRun.status}.` }
+        : activeRun || compatibilityExecutionLease
+          ? { state: "active" as const, runId: activeRun?.id ?? "legacy-execution-state" }
+          : finishedRun
+            ? { state: "finished" as const, runId: finishedRun.id }
+            : { state: "missing" as const },
+      recovery: { state: "never_attempted" },
+      verdict: verdict && card
+        ? {
+            cardId: card.id,
+            headSha: reviewHeadSha || "unknown",
+            decision: verdict.decision,
+            ...(verdict.decision === "needs_work" ? { reason: verdict.reason } : {}),
+          }
+        : null,
+    });
   };
 
   // New reviewer lane is selected whenever configured. It is intentionally
