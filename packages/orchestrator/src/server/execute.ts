@@ -1546,7 +1546,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
       await log(`[ORCHESTRATOR] Warning: failed to recover review state: ${msg}`);
     }
   }
-  const reviewRecoveryIds = new Set(reviewRecoveryIssues.map((issue) => issue.id));
+  const reviewRecoveryIds = new Set([...reviewRecoveryIssues.map((issue) => issue.id), ...boardReviewRecoveryIds, ...openPrRecoveryIds]);
   const inReviewIssues = overlayedIssues.filter((i) => {
     if (i.status === "in_review" || reviewRecoveryIds.has(i.id)) return true;
     // Paperclip may transiently normalize a native review handoff to
