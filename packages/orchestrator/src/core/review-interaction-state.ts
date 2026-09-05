@@ -33,6 +33,32 @@ export interface NativeReviewInteraction {
   readonly result?: unknown;
 }
 
+/**
+ * Pending review cards are durable locks, including cards created by an older
+ * adapter generation. Once a terminal reject sends the PR back to its worker,
+ * every other pending card for that immutable review turn is unsafe: it can
+ * wake a second reviewer after the worker has started fixing the PR.
+ *
+ * Keep this selector pure so the caller can fence the resulting withdrawals
+ * with its convergence guard. The rejected card itself is retained as the
+ * audit record; only other pending native cards are withdrawn.
+ */
+export function selectReviewCardsToWithdrawAfterRejection(
+  interactions: readonly NativeReviewInteraction[],
+  issueId: string,
+  rejectedInteractionId?: string,
+): string[] {
+  return interactions
+    .filter((interaction) =>
+      interaction.id !== rejectedInteractionId &&
+      interaction.kind === "request_item_verdicts" &&
+      interaction.status === "pending" &&
+      typeof interaction.idempotencyKey === "string" &&
+      isReviewInteractionForIssue(interaction.idempotencyKey, issueId),
+    )
+    .map((interaction) => interaction.id);
+}
+
 export type NativeReviewVerdict =
   | { readonly decision: "all_good" }
   | { readonly decision: "needs_work"; readonly reason: string };
