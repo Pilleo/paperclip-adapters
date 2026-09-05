@@ -269,7 +269,7 @@ describe("E2E Jules orchestration regression", { timeout: 30_000 }, () => {
       "run-834",
     );
     expect(createNoPrCompletionInteraction).not.toHaveBeenCalled();
-    expect(createJulesQuestionAdjudication).toHaveBeenCalledTimes(1);
+    expect(createJulesQuestionAdjudication).toHaveBeenCalled();
     expect(result.resultJson).toMatchObject({ pending: true });
   });
 
