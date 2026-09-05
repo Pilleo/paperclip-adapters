@@ -1101,7 +1101,10 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
           }
         }
       }
-      const patch = await pc.patchIssue(command.issueId, { status: targetStatus });
+      const patch = await pc.patchIssue(command.issueId, {
+        status: targetStatus,
+        ...(isReviewRecovery ? { assigneeAgentId: null } : {}),
+      });
       if (!patch.ok) {
         await log(`[ORCHESTRATOR] Could not apply board reconciliation to [${command.issueId}] (${patch.status}): ${patch.text}`);
         return;
