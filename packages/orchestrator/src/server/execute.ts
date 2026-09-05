@@ -471,6 +471,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     reviewerAgentId = fleet.reviewerAgentId;
     lunaReviewerAgentId = fleet.lunaReviewerAgentId;
     terraReviewerAgentId = fleet.terraReviewerAgentId;
+    terraAdjudicatorAgentId = fleet.terraAdjudicatorAgentId;
     if (julesAgentId) await log(`[ORCHESTRATOR] Managed Jules agent: ${julesAgentId}`);
     if (vibeAgentId) await log(`[ORCHESTRATOR] Managed Vibe agent: ${vibeAgentId}`);
     if (lunaReviewerAgentId) await log(`[ORCHESTRATOR] Managed Luna reviewer: ${lunaReviewerAgentId}`);
