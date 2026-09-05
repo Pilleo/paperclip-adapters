@@ -153,6 +153,7 @@ describe("native PR review interaction state", () => {
       currentStageId: "4f2f31d2-91b9-4d4b-8c1f-11cf3a9e1a01",
       currentStageIndex: 0,
       reviewRequest: { kind: "pull_request", stage: "luna" },
+      reviewInteractionId: "card-1",
       monitor: { kind: "external_service" },
     });
   });
