@@ -1,7 +1,9 @@
 import { ParsedIssueMetadata, IssueStatus } from "./types.js";
 import { PrCiCheckResult } from "./github-sync.js";
 import { PaperclipApprovalSummary } from "./approvals.js";
-import { reviewInteractionIdempotencyKey, reviewInteractionIdempotencyKeys, reviewVerdictFromInteraction, type PrReviewStage } from "./review-interaction-state.js";
+import type { HeartbeatRunSummary } from "./session-continuation.js";
+import { reviewInteractionIdempotencyKey, reviewInteractionIdempotencyKeys, reviewInteractionKeyPrefix, reviewVerdictFromInteraction, type PrReviewStage } from "./review-interaction-state.js";
+import { reduceReviewEpoch, type ReviewEpochStage } from "./review-epoch.js";
 
 export type ReviewStage =
   | "ci_gate"
