@@ -217,7 +217,37 @@ async function main(): Promise<void> {
     if (!runId) throw new Error(`Paperclip wake did not return a heartbeat run: ${JSON.stringify(wake)}`);
     await waitForIssueExecution(issueId, runId, "Orchestrator");
     const recovered = requireObject(await request(`/api/issues/${issueId}`, "GET"), "recovered issue");
-    if (recovered.status !== "in_review" || recovered.assigneeAgentId !== null) throw new Error("Canary did not enter native review");
+    const recoveredInteractions = await request(`/api/issues/${issueId}/interactions`, "GET");
+    const pendingCards = (Array.isArray(recoveredInteractions) ? recoveredInteractions : [])
+      .filter((interaction) => interaction && typeof interaction === "object" &&
+        interaction.kind === "request_item_verdicts" && interaction.status === "pending");
+    const lunaCard = pendingCards.find((interaction) =>
+      String(interaction.idempotencyKey || "").endsWith(":luna") &&
+      interaction.addresseeAgentId === luna.id &&
+      interaction.continuationPolicy === "none",
+    );
+    if (recovered.status !== "in_review" || recovered.assigneeAgentId !== null || pendingCards.length !== 1 || !lunaCard) {
+      const canaryAgents = await request(`/api/companies/${companyId}/agents`, "GET");
+      const canaryComments = await request(`/api/issues/${issueId}/comments`, "GET");
+      throw new Error(`Canary did not enter native review: ${JSON.stringify({
+        status: recovered.status,
+        assigneeAgentId: recovered.assigneeAgentId,
+        pendingReviewCards: pendingCards.length,
+        pendingCardSummaries: pendingCards.map((card) => ({
+          id: card.id,
+          kind: card.kind,
+          status: card.status,
+          idempotencyKey: card.idempotencyKey,
+          addresseeAgentId: card.addresseeAgentId,
+          continuationPolicy: card.continuationPolicy,
+        })),
+        expectedLunaAgentId: luna.id,
+        executionPolicy: recovered.executionPolicy ?? null,
+        executionState: recovered.executionState ?? null,
+        agents: canaryAgents,
+        comments: canaryComments,
+      })}`);
+    }
     for (const childId of childIds) {
       const child = requireObject(await request(`/api/issues/${childId}`, "GET"), "stale child");
       if (child.status !== "done") throw new Error(`Stale child ${childId} was not closed`);
