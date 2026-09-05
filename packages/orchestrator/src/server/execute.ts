@@ -868,7 +868,12 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
         await log(`[ORCHESTRATOR] Deferring open Jules PR recovery for [${issue.identifier || issue.id}]: CI is ${ci.status}.`);
         continue;
       }
-      const recoveryKey = `jules-open-pr-recovery:${issue.id}:${matchingPr.url}`;
+      // The same PR may need recovery again if Paperclip asynchronously
+      // reprojects the issue after creating an approval. Include the board's
+      // current version/state in the fence: stable `in_review` heartbeats do
+      // not enter this branch, while a later regression gets a fresh key and
+      // is repaired instead of being hidden by a lifetime `runOnce` marker.
+      const recoveryKey = `jules-open-pr-recovery:${issue.id}:${matchingPr.url}:${issue.updatedAt || "unknown"}:${issue.status}:${issue.assigneeAgentId || "unassigned"}`;
       await lifecycleConvergenceGuard.runOnce(recoveryKey, async () => {
         const staleChildren = parsedIssues.filter((candidate) =>
           candidate.parentId === issue.id &&
