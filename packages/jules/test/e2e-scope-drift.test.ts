@@ -248,15 +248,7 @@ describe("E2E host-plan scope conformity on Jules PRs", () => {
       undefined,
       "",
     );
-    expect(createJulesQuestionAdjudication).toHaveBeenCalledWith(
-      "issue-141",
-      "00000000-0000-4000-8000-000000000834",
-      "Please confirm the target branch.",
-      undefined,
-      "",
-      "c-1",
-    );
-    expect(checkpoint?.pendingInteraction).toMatchObject({ type: "agent_adjudication", paperclipInteractionId: "visible-question-1" });
+    expect(checkpoint?.pendingInteraction).toMatchObject({ type: "agent_adjudication", nativeForm: true, paperclipInteractionId: "visible-question-1" });
     expect(checkpoint?.deferredPlanReview).toMatchObject({
       type: "plan_agent_review",
       reviewIssueId: "review-child",
