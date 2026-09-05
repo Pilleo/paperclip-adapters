@@ -1329,7 +1329,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         await withdrawPaperclipInteraction(taskId, pendingProviderInteraction.paperclipInteractionId, "Replaced by native ACP plan-review ladder", ctx.authToken, ctx.runId).catch(() => undefined);
       }
       session.pendingInteraction = {
-        type: "plan_agent_review",
+        type: "plan_native_review",
+        protocolVersion: 2,
         julesActivityId: pendingProviderInteraction.julesActivityId,
         question: pendingProviderInteraction.question,
         planRevisionId: pendingProviderInteraction.planRevisionId,
