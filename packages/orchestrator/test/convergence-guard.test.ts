@@ -54,4 +54,17 @@ describe("ConvergenceGuard", () => {
     await expect(guard.runOnce("merge:issue-1:pr-1", effect)).resolves.toEqual({ auditId: "comment-1" });
     expect(calls).toBe(1);
   });
+
+  it("allows a reconciliation retry after the observed postcondition regresses", async () => {
+    const guard = new ConvergenceGuard();
+    let calls = 0;
+    const effect = async () => ++calls;
+
+    await expect(guard.runOnce("monitor-repair:issue-1", effect)).resolves.toBe(1);
+    // The board still exposes the unrepaired state, so the reconciler clears
+    // the local fence and may safely attempt the native repair again.
+    guard.clear("monitor-repair:issue-1");
+    await expect(guard.runOnce("monitor-repair:issue-1", effect)).resolves.toBe(2);
+    expect(calls).toBe(2);
+  });
 });
