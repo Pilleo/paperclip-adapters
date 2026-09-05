@@ -81,7 +81,10 @@ export const PendingInteractionSchema = z.discriminatedUnion("type", [
     createdAt: z.string(),
   }),
   z.object({
-    type: z.literal("completion_confirmation"),
+    type: z.literal("plan_native_review"),
+    /** v2 is the executable request_item_verdicts protocol; omitted means legacy v1. */
+    protocolVersion: z.literal(2).optional(),
+    julesActivityId: z.string(),
     paperclipInteractionId: z.string().min(1),
     question: z.string(),
     createdAt: z.string()
