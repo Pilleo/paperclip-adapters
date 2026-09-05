@@ -999,7 +999,6 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       }
       statusOverrides.set(issue.id, "in_progress");
       reattachedJulesMonitorIssueIds.add(issue.id);
-      await pc.comment(issue.id, `[Orchestrator] ${monitorDecision.reason}; returning the issue to \`in_progress\` for provider-session continuation.`).catch(() => undefined);
       await log(`[ORCHESTRATOR] Resumed expired Jules monitor for [${issue.identifier || issue.id}].`);
     });
   }
