@@ -65,6 +65,7 @@ export function resolveManagedFleet(
     readonly reviewerAgentId?: string | undefined;
     readonly lunaReviewerAgentId?: string | undefined;
     readonly terraReviewerAgentId?: string | undefined;
+    readonly terraAdjudicatorAgentId?: string | undefined;
   }
 ): ManagedFleetIds {
   const managed = agents.filter((a) => isManagedWorker(a, orchestratorAgentId));
