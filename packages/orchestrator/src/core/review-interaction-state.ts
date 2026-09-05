@@ -162,9 +162,9 @@ export function selectReviewAttempt(
  * evidence during a rolling adapter upgrade. */
 export function reviewInteractionIdempotencyKeys(identity: ReviewInteractionIdentity): string[] {
   const current = reviewInteractionIdempotencyKey(identity);
-  const previous = `pr-review:v11:${identity.issueId}:${identity.prUrl}:${identity.headSha}:${identity.stage}`;
-  const older = `pr-review:v10:${identity.issueId}:${identity.prUrl}:${identity.headSha}:${identity.stage}`;
-  const legacy = `pr-review:v9:${identity.issueId}:${identity.prUrl}:${identity.headSha}:${identity.stage}`;
+  const previous = `pr-review:v12:${identity.issueId}:${identity.prUrl}:${identity.headSha}:${identity.stage}`;
+  const older = `pr-review:v11:${identity.issueId}:${identity.prUrl}:${identity.headSha}:${identity.stage}`;
+  const legacy = `pr-review:v10:${identity.issueId}:${identity.prUrl}:${identity.headSha}:${identity.stage}`;
   return [current, previous, older, legacy];
 }
 
