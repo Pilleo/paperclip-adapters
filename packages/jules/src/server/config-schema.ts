@@ -87,6 +87,13 @@ export const julesConfigSchema: AdapterConfigSchema = {
       hint: "Strong Paperclip agent assigned to adjudicate Jules questions. Humans are asked only when this reviewer returns ESCALATE.",
     },
     {
+      key: "questionAdjudicatorAgentId",
+      label: "Jules question adjudicator agent ID",
+      type: "text",
+      required: false,
+      hint: "Dedicated strong ACP agent for Jules questions. Takes precedence over the legacy provider-question reviewer field.",
+    },
+    {
       key: "planReviewerAgentId",
       label: "Plan fast reviewer agent ID",
       type: "text",
