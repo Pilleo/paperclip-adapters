@@ -2630,6 +2630,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 paperclipInteractionId: visibleInteraction.id,
                 question: action.question,
                 reviewerAgentId,
+                nativeForm: true,
+                transport: "child_form_bridge",
+                reviewerChildIssueId: reviewerChild.id,
+                reviewerInteractionId: reviewerInteraction.id,
                 createdAt: new Date().toISOString(),
               };
               await persistSessionBestEffort(session, ctx.onLog);
