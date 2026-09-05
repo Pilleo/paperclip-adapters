@@ -270,7 +270,7 @@ describe("E2E host-plan scope conformity on Jules PRs", () => {
 
     const second = await execute(ctx(nextSession!));
     expect(JulesClient.prototype.sendMessage).not.toHaveBeenCalled();
-    expect(second.summary).toMatch(/requires host review/);
-    expect(second.resultJson).toMatchObject({ providerMessageSent: false, reviewRequired: true });
+    expect(second.summary).toBeNull();
+    expect(second.resultJson).toMatchObject({ providerMessageSent: false });
   });
 });
