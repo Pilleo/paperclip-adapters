@@ -245,8 +245,9 @@ export function planReviewDialog(
   const pending = interactions.find((interaction) =>
     interaction.kind === "request_item_verdicts" && interaction.status === "pending" &&
     interaction.idempotencyKey === idempotencyKey &&
-    interaction.continuationPolicy === "wake_assignee" &&
-    (identity.reviewerAgentId ? interaction.addresseeAgentId === identity.reviewerAgentId : !interaction.addresseeAgentId),
+    ((interaction.continuationPolicy === "none" && identity.reviewerAgentId === interaction.addresseeAgentId) ||
+      (interaction.continuationPolicy === "wake_assignee" &&
+        (interaction.addresseeAgentId == null || interaction.addresseeAgentId === identity.reviewerAgentId))),
   );
   return pending ? { action: "reuse", interactionId: pending.id } : { action: "create", idempotencyKey };
 }
