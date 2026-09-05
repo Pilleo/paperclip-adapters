@@ -1549,6 +1549,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
   const reviewRecoveryIds = new Set([...reviewRecoveryIssues.map((issue) => issue.id), ...boardReviewRecoveryIds, ...openPrRecoveryIds]);
   const inReviewIssues = overlayedIssues.filter((i) => {
     if (i.status === "in_review" || reviewRecoveryIds.has(i.id)) return true;
+    if (i.orchestratorManaged && i.assigneeAgentId === orchestratorId && isReviewWaitState(i.rawIssue["executionState"])) return true;
     // Paperclip may transiently normalize a native review handoff to
     // in_progress while it releases/reassigns the execution lock. Keep the
     // review state machine alive across that normalization, but only for the
