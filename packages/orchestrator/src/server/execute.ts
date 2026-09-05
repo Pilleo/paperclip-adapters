@@ -61,6 +61,10 @@ import {
   selectJulesSupervisorIssueIdsToClose,
 } from "../core/jules-supervisor.js";
 import { capabilityCircuit } from "../core/capability-circuit.js";
+import { evaluateReviewerEligibility, isReviewerEligibilityFailure } from "../core/reviewer-eligibility.js";
+import { buildReviewWaitState, isReviewWaitState } from "../core/review-wait-state.js";
+import { isSameReviewerUnavailableRecovery, reviewerUnavailableRecoveryPayload } from "../core/review-recovery.js";
+import { canPromoteJulesPrToReview, isAuthoritativeJulesMonitor } from "../core/jules-monitor-state.js";
 import { decideIssueLifecycleReconciliation } from "../core/issue-lifecycle-reconciliation.js";
 import { ConvergenceGuard } from "../core/convergence-guard.js";
 import { planTerminalParentBarrier } from "../core/terminal-parent-barrier.js";
