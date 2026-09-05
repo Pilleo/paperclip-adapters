@@ -1879,14 +1879,22 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
             } catch (recoveryError) {
               await log(`[ORCHESTRATOR] Warning: failed to publish reviewer recovery action: ${String(recoveryError)}`);
             }
-            const dialogPlan = planReviewDialog(reviewIdentity, reviewInteractions);
-            for (const stale of reviewInteractions.filter((interaction) =>
-              interaction.kind === "request_item_verdicts" && interaction.status === "pending" &&
-              isReviewInteractionForIssue(interaction.idempotencyKey, reviewTask.id) &&
-              (interaction.idempotencyKey !== reviewInteractionIdempotencyKey(reviewIdentity) ||
-                interaction.continuationPolicy !== "wake_assignee" || interaction.addresseeAgentId !== targetAgentId),
-            )) {
-              await pc.withdrawInteraction(reviewTask.id, stale.id, "Superseded by a review dialog for the current immutable PR head.");
+            // A circuit marker can predate this wait-state protocol. Reconcile
+            // missing/mismatched durable state once, without reopening the
+            // diagnostic or attempting a reviewer dispatch.
+            // Paperclip owns and rewrites executionState for the active
+            // orchestrator heartbeat (usually back to idle). Do not fight
+            // that projection every minute: status + orchestrator ownership
+            // + null policy are the durable wait-state contract, while the
+            // immutable identity is retained by the circuit marker.
+            const durableWaitOwnership = reviewTask.status === "in_review" &&
+              reviewTask.assigneeAgentId === orchestratorId &&
+              !issueHasExecutionPolicy(reviewTask.rawIssue);
+            if (!durableWaitOwnership) {
+              const waitPatch = await pc.patchIssue(reviewTask.id, nativePrReviewWaitPatch(orchestratorId, waitState));
+              if (!waitPatch.ok) {
+                await log(`[ORCHESTRATOR] Warning: could not persist recoverable review wait state (${waitPatch.status}): ${waitPatch.text}`);
+              }
             }
             if (dialogPlan.action === "reuse") {
               reviewInteractionId = dialogPlan.interactionId;
