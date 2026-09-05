@@ -382,6 +382,7 @@ export async function reconcileManagedFleet(
     reviewerAgentId: resolvedIds["terra_reviewer"],
     lunaReviewerAgentId: resolvedIds["luna_reviewer"],
     terraReviewerAgentId: resolvedIds["terra_reviewer"],
+    terraAdjudicatorAgentId: resolvedIds["terra_adjudicator"],
     provisionedCount,
     updatedCount,
     authorizationFailures,
