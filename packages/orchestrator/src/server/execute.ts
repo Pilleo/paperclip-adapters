@@ -2039,6 +2039,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
           workerId,
           `Native PR review needs work for [${reviewTask.identifier || reviewTask.id}]. Delivering structured feedback to Jules.`,
           reviewTask.id,
+          { workerFeedback },
         );
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
