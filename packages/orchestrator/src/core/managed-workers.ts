@@ -115,6 +115,10 @@ export function resolveManagedFleet(
     configured?.terraReviewerAgentId,
     (a) => (a.metadata?.["workerKey"] === "terra_reviewer" || a.name === "[Orchestrated] Terra Strong Reviewer" || a.name === "[Orchestrated] Code Reviewer") && a.adapterType === "codex_local",
   );
+  const terraAdjudicatorAgentId = pick(
+    configured?.terraAdjudicatorAgentId,
+    (a) => (a.metadata?.["workerKey"] === "terra_adjudicator" || a.name === "[Orchestrated] Terra Jules Question Adjudicator") && a.adapterType === "codex_local",
+  );
 
   const managedJulesIds = new Set(
     managed.filter((a) => isJulesAdapterType(a.adapterType)).map((a) => a.id)
