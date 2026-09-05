@@ -1539,7 +1539,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               await ctx.onLog("stderr", `[jules] ${scopeDriftSummaryForTelemetry}\n`);
             }
             session.scopeDriftFingerprint = driftFingerprint;
-            session.phase = "PR_CREATED";
             await persistSessionBestEffort(session, ctx.onLog);
             // Do not return here. This branch is reached before the Jules
             // activity stream is reconciled; returning used to hide a question
