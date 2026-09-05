@@ -195,6 +195,9 @@ describe("native PR review interaction state", () => {
     expect(request).not.toHaveProperty("addresseeAgentId");
     expect(request.payload.detailsMarkdown).toContain("/interactions/<INTERACTION_ID>/verdicts");
     expect(request.payload.detailsMarkdown).toContain('"verdicts":[{"id":"pull_request","verdict":"approve"}]');
+    expect(request.payload.detailsMarkdown).toContain("Do not PATCH issue status or assignment");
+    expect(request.payload.detailsMarkdown).toContain("do not post a plain issue comment as a fallback");
+    expect(request.payload.detailsMarkdown).not.toContain("status `done`");
   });
 
   it("selects only orchestrator-owned issues with an actual pull request", () => {
