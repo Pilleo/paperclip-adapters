@@ -1540,10 +1540,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             }
             session.scopeDriftFingerprint = driftFingerprint;
             await persistSessionBestEffort(session, ctx.onLog);
-            // Do not return here. This branch is reached before the Jules
-            // activity stream is reconciled; returning used to hide a question
-            // and consume the due Paperclip monitor without re-arming it.
-            scopeDriftSummary = drift.summary;
+            scopeDriftSummary = scopeDriftSummaryForTelemetry;
           }
       }
 
