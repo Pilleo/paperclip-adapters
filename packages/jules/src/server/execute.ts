@@ -1530,14 +1530,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             session.scopeDriftFingerprint = undefined;
             await persistSessionBestEffort(session, ctx.onLog);
           }
-          if (drift && drift.type === "FLAG_SCOPE_DRIFT") {
-            // Scope drift is a host/reviewer finding, not a provider question.
-            // Jules must not be asked to "fix" a PR based on a local comparison:
-            // the PR may intentionally contain commits from another task, and
-            // sending this text reopens an otherwise finished provider session.
-            // Hand the existing PR to Paperclip's review pipeline instead.
-            if (ctx.onLog) {
-              await ctx.onLog("stderr", `[jules] ${drift.summary}\n`);
+          if (scopeDriftSummaryForTelemetry) {
+            // Scope drift is advisory telemetry, not a provider question or a
+            // lifecycle gate. Never send it to Jules or turn it into a task
+            // comment: the PR still follows the ordinary native review path.
+            scopeDriftIsNew = session.scopeDriftFingerprint !== driftFingerprint;
+            if (ctx.onLog && scopeDriftIsNew) {
+              await ctx.onLog("stderr", `[jules] ${scopeDriftSummaryForTelemetry}\n`);
             }
             session.scopeDriftFingerprint = driftFingerprint;
             session.phase = "PR_CREATED";
