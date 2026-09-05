@@ -100,7 +100,6 @@ describe("Jules activity interactions", { timeout: 30000 }, () => {
         agentMessaged: { agentMessage: "Which branch should I use?" },
       }],
     } as never);
-    vi.mocked(createJulesQuestionAdjudication).mockResolvedValue({ id: "adjudication-1", status: "todo" });
     vi.mocked(createJulesAgentAdjudicationInteraction).mockResolvedValue({ id: "visible-question-1", status: "pending" });
 
     const result = await execute(baseContext);
