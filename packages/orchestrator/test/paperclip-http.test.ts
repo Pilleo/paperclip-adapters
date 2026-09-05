@@ -61,6 +61,45 @@ describe("createPaperclipHttp wakeup", () => {
     });
   });
 
+  it("carries native review feedback as structured wake payload", async () => {
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 202 }));
+    globalThis.fetch = fetchMock as typeof fetch;
+    const pc = createPaperclipHttp({ apiUrl: "http://127.0.0.1:3100", authToken: "test-token" });
+    const feedback = {
+      version: 1 as const,
+      kind: "code_review_rejection" as const,
+      deliveryId: "delivery-1",
+      issueId: "issue-955",
+      reviewInteractionId: "interaction-1",
+      reviewStage: "luna" as const,
+      prUrl: "https://github.com/acme/repo/pull/1",
+      headSha: "abc123",
+      reason: "Add the missing regression test.",
+      createdAt: "2026-09-03T00:00:00.000Z",
+    };
+    await pc.wakeup("agent-jules", "review feedback", "issue-955", { workerFeedback: feedback });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(init.body)).payload.workerFeedback).toEqual(feedback);
+    expect(new Headers(init.headers).get("Idempotency-Key")).toContain("delivery-1");
+  });
+
+  it("carries the native review interaction identity in the wake payload", async () => {
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 202 }));
+    globalThis.fetch = fetchMock as typeof fetch;
+    const pc = createPaperclipHttp({ apiUrl: "http://127.0.0.1:3100", authToken: "test-token" });
+
+    await pc.wakeup("agent-terra", "review the native card", "issue-955", {
+      reviewInteractionId: "interaction-955",
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(init.body)).payload).toEqual({
+      issueId: "issue-955",
+      interactionId: "interaction-955",
+      interactionKind: "request_item_verdicts",
+    });
+  });
+
   it("sends a stable idempotency key for a wakeup mutation", async () => {
     const fetchMock = vi.fn(async () => new Response("{}", { status: 202 }));
     globalThis.fetch = fetchMock as typeof fetch;
