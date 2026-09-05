@@ -467,8 +467,10 @@ export async function createJulesAgentAdjudicationInteraction(
           kind: "ask_user_questions",
           idempotencyKey,
           title: "Jules question — strong review",
-          summary: "A strong reviewer is preparing the response for Jules.",
-          continuationPolicy: "none",
+          summary: "A strong reviewer must choose an answer or escalation for Jules.",
+          // The parent stays assigned to Jules. The reviewer wake target is
+          // the Terra-owned child form created by the adapter below.
+          continuationPolicy: "wake_assignee",
           resolverPolicy: "anyone",
           payload: {
             version: 1,
