@@ -16,7 +16,7 @@ dependencies:
   - "issue-20260830-210100-backlog-linter-npm-workspaces"
 
 paperclip_issue_id: "d95dbabb-7644-4e9e-a274-8a2ce307f15f"
-paperclip_identifier: "MAZ-824"
+paperclip_identifier: ""
 ---
 
 **Context:** `synthesizeDeterministicPlan` already guesses `src/main` → `src/test` and `.test.ts` siblings, but it does not look at `packages/<name>/test/*.test.ts` for this monorepo. Host short plans for Jules/orchestrator issues therefore omit the real test files.

@@ -210,3 +210,48 @@ describe("Method-level granularity conflict evaluation", () => {
     expect(matrix.conflictEdges[0]?.reason).toContain("Shared method/symbol targets");
   });
 });
+
+
+describe("Blocker ID normalization", () => {
+  it("normalizes fully qualified paperclip URIs to UUIDs and blocks dependents", () => {
+    const depTask: ParsedIssueMetadata = {
+      id: "123e4567-e89b-12d3-a456-426614174000",
+      identifier: "MAZ-200",
+      title: "Dep task",
+      status: "todo",
+      priority: "high",
+      priorityRank: 3,
+      dependencies: [],
+      targetFiles: [],
+      targetModules: [],
+      targetSymbols: [],
+      hasSideEffects: false,
+      isNonInterfering: false,
+      rawIssue: {},
+    };
+
+    const task: ParsedIssueMetadata = {
+      id: "task-2",
+      title: "Blocked task",
+      status: "todo",
+      priority: "high",
+      priorityRank: 3,
+      dependencies: ["paperclip://task/123e4567-e89b-12d3-a456-426614174000"],
+      targetFiles: [],
+      targetModules: [],
+      targetSymbols: [],
+      hasSideEffects: false,
+      isNonInterfering: false,
+      rawIssue: {},
+    };
+
+    const matrix = calculateConflictMatrix([depTask, task]);
+    expect(matrix.conflictEdges).toHaveLength(1);
+    expect(matrix.conflictEdges[0]?.issueId1).toBe("123e4567-e89b-12d3-a456-426614174000");
+    expect(matrix.conflictEdges[0]?.issueId2).toBe("task-2");
+
+    const selected = selectNextTasks([depTask, task], matrix, { julesCapacity: 2 });
+    expect(selected).toHaveLength(1);
+    expect(selected[0]?.issue.id).toBe("123e4567-e89b-12d3-a456-426614174000");
+  });
+});

@@ -164,7 +164,7 @@ beforeAll(() => {
 
         expect(res.exitCode).toBe(1);
         expect(res.errorCode).toBe('jules_task_failure');
-        expect(res.clearSession).toBe(false);
+        expect(res.clearSession).toBe(true);
   });
 
   it('resumes from RETRY_SCHEDULED by creating new session', async () => {

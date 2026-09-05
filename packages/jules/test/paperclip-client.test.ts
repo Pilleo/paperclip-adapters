@@ -21,12 +21,12 @@ describe("Paperclip issue completion", () => {
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({}) });
     global.fetch = fetchMock as unknown as typeof global.fetch;
 
-    await moveIssueToReview("issue-1", "https://github.com/example/repo/pull/1", "jwt-token");
+    await moveIssueToReview("issue-1", "https://github.com/example/repo/pull/1", "jwt-token", "run-1");
 
     expect(global.fetch).toHaveBeenNthCalledWith(
       1,
       "http://127.0.0.1:3100/api/issues/issue-1/work-products",
-      expect.objectContaining({ method: "GET" }),
+      expect.objectContaining({ method: "GET", headers: expect.objectContaining({ Authorization: 'Bearer jwt-token' }) }),
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
       2,

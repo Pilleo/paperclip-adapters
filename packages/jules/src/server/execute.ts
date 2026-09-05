@@ -67,6 +67,7 @@ import {
   listWorkProducts,
   registerPullRequestWorkProduct,
   PaperclipClientError,
+  cancelPaperclipInteraction,
   getPaperclipJson,
   type PaperclipInteraction,
 } from "./paperclip-client.js";
@@ -632,6 +633,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
         const answer = storedPendingInteraction ? feedbackAnswer(storedPendingInteraction.result) : null;
         if (!answer) {
+          if (storedPendingInteraction && storedPendingInteraction.status !== 'cancelled' && storedPendingInteraction.status !== 'superseded') {
+             try {
+                await cancelPaperclipInteraction(storedPendingInteraction.id, ctx.authToken, ctx.runId);
+             } catch (e) {
+                 return paperclipInteractionFailure(session!, e);
+             }
+          }
+
           const nextAttempt = (session!.feedbackInteractionAttempt ?? 0) + 1;
           const replacement = await createJulesFeedbackInteraction(
             taskId,
@@ -1246,7 +1255,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                  sessionDisplayId: session.julesSessionId || null,
                  summary: `Jules session ${session.julesSessionId} completed, created a PR, and moved the Paperclip issue to review: ${session.currentPrUrl}`,
                  resultJson: { provider: "jules", julesSessionId: session.julesSessionId, prUrl: session.currentPrUrl, issueStatus: "in_review" },
-                  clearSession: false
+                  clearSession: true
              };
          } else if (session.phase === 'FAILED') {
              const failureDetails = julesSession.errorInfo || {};
@@ -1282,7 +1291,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                      errorFamily: toErrorFamily(classification),
                      errorMessage: sanitizeError(`Jules session failed and exhausted retries: ${summarizeJulesFailure(failureDetails)}`),
                      sessionParams: serializeSession(session),
-                     clearSession: false
+                     clearSession: true
                  };
              }
          }

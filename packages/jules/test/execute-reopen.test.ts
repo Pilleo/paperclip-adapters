@@ -77,7 +77,7 @@ describe("terminal Jules sessions", () => {
       authToken: "paperclip-token",
     });
 
-    expect(completed.clearSession).toBe(false);
+    expect(completed.clearSession).toBe(true);
     expect(storedSession).not.toBeNull();
     expect(baseContext.onLog).toHaveBeenCalledWith(
       "stdout",

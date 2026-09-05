@@ -21,7 +21,7 @@ open_questions: false
 exclusive: true
 
 paperclip_issue_id: "8c2894f3-193d-45a9-9f3c-a14484e846a4"
-paperclip_identifier: "MAZ-833"
+paperclip_identifier: ""
 ---
 
 **Context:** Jules plan review mixed up the models. Mistral (Vibe) must be the first cheap reviewer and must not be removed. Luna is only used when Mistral is unavailable. Terra is Codex, not xAI Grok. Grok is a separate xAI adapter.

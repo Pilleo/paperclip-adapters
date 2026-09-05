@@ -16,7 +16,7 @@ dependencies:
   - "issue-20260830-210000-plan-review-mistral-luna-terra-codex"
 
 paperclip_issue_id: "4e5aa72c-783a-4951-a27d-f4dc4114053a"
-paperclip_identifier: "MAZ-825"
+paperclip_identifier: ""
 ---
 
 **Context:** Plan-ladder e2e still needs to prove the live `execute()` path: Mistral is contacted before Luna when both keys exist; Luna runs only if Mistral is missing; Terra is Codex; `GROK_API_KEY` does not auto-approve.
