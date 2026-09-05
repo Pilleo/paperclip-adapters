@@ -43,8 +43,8 @@ describe("Orchestrator Managed Fleet Manager", () => {
       julesPlanApprovalPolicy: "trusted_opt_out",
     });
 
-    expect(result.provisionedCount).toBe(5);
-    expect(createdCalls).toHaveLength(5);
+    expect(result.provisionedCount).toBe(6);
+    expect(createdCalls).toHaveLength(6);
     for (const call of createdCalls) {
       expect(call.adapterConfig.pollCadenceSeconds).toBe(call.adapterType === "jules" ? 300 : 0);
       if (call.adapterType === "jules") {
