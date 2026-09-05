@@ -76,7 +76,12 @@ export function decideJulesMonitorReconciliation(
   const timeout = snapshot.timeoutAt ? Date.parse(snapshot.timeoutAt) : NaN;
   if (!invalidAssigneeRepair && !strandedMonitorRepair && (!Number.isFinite(timeout) || now < timeout)) return { action: "preserve", reason: "Jules monitor timeout has not elapsed" };
   if (!snapshot.hasProviderSession) return { action: "preserve", reason: "expired Jules monitor has no provider session to resume" };
-  if (snapshot.monitorCanBeReattached === false) {
+  // For the invalid-assignee repair path, `executionState.monitor` is the
+  // verified native provider record we are rehydrating into
+  // `executionPolicy.monitor`; requiring an already-existing policy here
+  // would make the repair logically impossible. The strict fallback remains
+  // for ordinary expired monitors whose only evidence is an external id.
+  if (!invalidAssigneeRepair && !strandedMonitorRepair && snapshot.monitorCanBeReattached === false) {
     return { action: "return_to_todo", issueStatus: "todo", reason: "expired Jules monitor has no verified executable continuation" };
   }
   return { action: "resume_provider", issueStatus: "in_progress", reason: "expired Jules monitor has a persisted provider session" };
