@@ -1836,32 +1836,21 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
               status: 422,
               text: `Reviewer ${targetAgentId} is not invokable: ${reviewerEligibility.reason}`,
             });
-            const nativeReviewPolicyWithStableIds = nativeReviewPolicy
-              ? {
-                  ...nativeReviewPolicy,
-                  stages: nativeReviewPolicy.stages.map((reviewStage, index) => ({
-                    ...reviewStage,
-                    id: index === 0 ? NATIVE_PR_REVIEW_STAGE_IDS.luna : NATIVE_PR_REVIEW_STAGE_IDS.terra,
-                  })),
-                }
-              : null;
-            const participantPatch = await pc.patchIssue(reviewTask.id, {
-              // Request the native workflow transition in the same atomic
-              // patch as the policy. Without this, Paperclip correctly
-              // preserves an existing idle executionState and the queued
-              // interaction wake is cancelled as an assignee change.
-              status: "in_review",
-              // Paperclip derives the persisted execution participant from
-              // the issue assignee. Keeping the previous Luna assignee here
-              // silently rewinds the native state to stage 0, even when the
-              // adapter supplied Terra's executionState.
-              assigneeAgentId: targetAgentId,
-              executionPolicy: nativeReviewPolicyWithStableIds,
-              executionState: buildNativeReviewExecutionState(
-                (reviewTask.rawIssue["executionState"] as Record<string, unknown> | null | undefined),
-                stage,
-                targetAgentId,
-              ),
+            if (circuitState === "opened") {
+              await log(
+                `[ORCHESTRATOR] 🚨 Review paused for [${reviewTask.identifier || reviewTask.id}]: ` +
+                `reviewer ${targetAgentId} is unavailable (${status || "unknown"}). ` +
+                `No review card or wake will be retried until the reviewer becomes invokable.`,
+              );
+            }
+            const waitState = buildReviewWaitState({
+              prUrl: matchingPr.url,
+              headSha: reviewHeadSha,
+              stage,
+              reviewerAgentId: targetAgentId,
+              reviewerStatus: status || "unknown",
+              reason: reviewerEligibility.reason,
+              circuitKey: reviewCircuitKey,
             });
             if (!participantPatch.ok) {
               throw new Error(`Native review participant setup failed (${participantPatch.status}): ${participantPatch.text}`);
