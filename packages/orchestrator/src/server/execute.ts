@@ -252,6 +252,54 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       await context.onLog("stdout", msg + "\n").catch(() => {});
     }
   };
+
+  const retireStaleJulesChildren = async (issueId: string, issueLabel: string): Promise<void> => {
+    let children: readonly Record<string, unknown>[];
+    try {
+      children = asArray<Record<string, unknown>>(await pc.listChildren(companyId, issueId));
+    } catch (err: unknown) {
+      await log(`[ORCHESTRATOR] Could not inspect Jules coordination children for [${issueLabel}]: ${String(err)}`);
+      return;
+    }
+    await log(`[ORCHESTRATOR] Jules PR recovery children for [${issueLabel}]: ${children.length} authoritative records.`);
+    for (const childId of selectStaleJulesReviewChildren(issueId, children)) {
+      const closed = await pc.patchIssue(childId, { status: "done" });
+      if (!closed.ok) await log(`[ORCHESTRATOR] Could not close stale Jules PR child [${childId}] (${closed.status}): ${closed.text}`);
+    }
+  };
+
+  // Paperclip may asynchronously normalize an issue when a board approval is
+  // created. A single PATCH can therefore report success while the persisted
+  // projection is still (or becomes again) `in_progress`. Converge on the
+  // review invariant with a bounded read-after-write loop; this is deliberately
+  // local to the approval handoff and never polls indefinitely on a heartbeat.
+  const preservePendingReviewState = async (issueId: string) => {
+    let last: { ok: boolean; status: number; text: string } = {
+      ok: false,
+      status: 0,
+      text: "review state was not verified",
+    };
+    let verified = false;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const patched = await pc.patchIssue(issueId, {
+        status: "in_review",
+        assigneeAgentId: null,
+        executionPolicy: null,
+        executionState: null,
+      });
+      last = patched;
+      if (!patched.ok) return patched;
+      await new Promise<void>((resolve) => setTimeout(resolve, attempt === 0 ? 25 : 75));
+      try {
+        const current = await pc.getIssue<Record<string, unknown>>(issueId);
+        verified = current["status"] === "in_review" && current["assigneeAgentId"] == null;
+      } catch {
+        // A transient detail read is not a reason to abandon the safety
+        // invariant; the next bounded attempt writes and verifies again.
+      }
+    }
+    return verified ? last : { ...last, ok: false, text: "Paperclip did not converge to in_review" };
+  };
   if (explicitProjectId) {
     try {
       const project = await pc.getJson<PaperclipProjectRecord>(`/api/projects/${encodeURIComponent(explicitProjectId)}`);
