@@ -252,8 +252,18 @@ async function main(): Promise<void> {
       const child = requireObject(await request(`/api/issues/${childId}`, "GET"), "stale child");
       if (child.status !== "done") throw new Error(`Stale child ${childId} was not closed`);
     }
-    const childrenBefore = childIds.map((id) => id);
-    await execute(context);
+    const childrenBefore = await request(`/api/companies/${companyId}/issues?parentId=${encodeURIComponent(issueId)}`, "GET");
+    const interactionsBefore = await request(`/api/issues/${issueId}/interactions`, "GET");
+    const issueBefore = await request(`/api/issues/${issueId}`, "GET");
+    const repeatWake = requireObject(await request(`/api/agents/${orch.id}/wakeup`, "POST", {
+      source: "on_demand",
+      reason: "e2e_jules_recovery_canary_repeat",
+      idempotencyKey: `e2e-jules-recovery:${issueId}:orchestrator:repeat`,
+      payload: {},
+    }), "repeat orchestrator wake");
+    const repeatRunId = String(repeatWake.id || "");
+    if (!repeatRunId) throw new Error(`Paperclip repeat wake did not return a heartbeat run: ${JSON.stringify(repeatWake)}`);
+    await waitForIssueExecution(issueId, repeatRunId, "Repeat orchestrator");
     const repeated = requireObject(await request(`/api/issues/${issueId}`, "GET"), "repeated issue");
     if (repeated.status !== "in_review" || childrenBefore.length !== childIds.length) throw new Error("Canary recovery was not idempotent");
     console.log("Jules recovery canary passed: recovery, cleanup, and repeat-heartbeat idempotency verified.");
