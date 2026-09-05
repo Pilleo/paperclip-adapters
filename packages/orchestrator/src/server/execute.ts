@@ -329,7 +329,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       await log(`[ORCHESTRATOR] Skipped managed-worker wakeup: run attribution is missing.`);
       return;
     }
-    const idempotencyKey = `orchestrator:wakeup:${agentId}:${issueId || "company"}:${options?.resumeFromRunId || "current"}`;
+    const idempotencyKey = `orchestrator:wakeup:${agentId}:${issueId || "company"}:${options?.reviewInteractionId || options?.workerFeedback?.deliveryId || options?.resumeFromRunId || "current"}`;
     const result = await executePaperclipCommand(
       {
         key: idempotencyKey,
