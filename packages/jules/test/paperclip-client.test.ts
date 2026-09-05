@@ -277,6 +277,43 @@ describe("Paperclip issue completion", () => {
     expect(JSON.parse(fetchMock.mock.calls[4]![1]!.body as string).executionPolicy).toMatchObject({ stages: [], commentRequired: false, custom: "keep" });
   });
 
+  it("repairs and verifies a triggered Jules monitor whose execution policy was stripped", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: "issue-1",
+          status: "in_progress",
+          executionPolicy: null,
+          executionState: {
+            monitor: { serviceName: "jules", externalRef: "s-1", timeoutAt: "2026-09-01T00:00:00Z" },
+          },
+        }),
+      })
+      .mockResolvedValueOnce({ ok: true, status: 200 })
+      .mockResolvedValueOnce({ ok: true, status: 200 })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ id: "issue-1", executionPolicy: { mode: "normal" }, executionState: { monitor: null } }),
+      });
+    global.fetch = fetchMock as unknown as typeof global.fetch;
+
+    await clearJulesSessionMonitor("issue-1", "jwt-token");
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(JSON.parse(fetchMock.mock.calls[1]![1]!.body as string).executionPolicy.monitor).toMatchObject({
+      serviceName: "jules",
+      externalRef: "s-1",
+    });
+    expect(JSON.parse(fetchMock.mock.calls[2]![1]!.body as string).executionPolicy).toEqual({
+      mode: "normal",
+      stages: [],
+      commentRequired: false,
+    });
+  });
+
   it("recovers an existing feedback interaction after an idempotency conflict", async () => {
     global.fetch = vi.fn()
       .mockResolvedValueOnce({ ok: false, status: 409, text: async () => "duplicate" })
