@@ -1735,6 +1735,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
       prUrl: matchingPr?.url,
       ciStatus: ciCheck,
       interactions: reviewInteractions,
+      heartbeatRuns,
       reviewHeadSha,
       existingApprovals,
       vibeReviewerAgentId,
