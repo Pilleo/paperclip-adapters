@@ -95,9 +95,8 @@ export const PendingInteractionSchema = z.discriminatedUnion("type", [
     createdAt: z.string(),
   }),
   z.object({
-    type: z.literal("agent_adjudication"),
-    julesActivityId: z.string(),
-    paperclipInteractionId: z.string().optional(),
+    type: z.literal("completion_confirmation"),
+    paperclipInteractionId: z.string().min(1),
     question: z.string(),
     adjudicationIssueId: z.string().min(1),
     reviewerAgentId: z.string().min(1),
