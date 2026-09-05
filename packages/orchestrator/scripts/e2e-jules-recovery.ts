@@ -172,35 +172,22 @@ async function main(): Promise<void> {
       adapterConfig: { reconcileFleet: true, lunaReviewerAgentId: luna.id, terraReviewerAgentId: terra.id },
     });
     const marker = `e2e-jules-recovery-${Date.now()}`;
-    const issueFile = path.join(backlogDir, `${marker}.md`);
-    fs.writeFileSync(issueFile, `---
-title: "${marker}"
-severity: "HIGH"
-status: "open"
-orchestrator_managed: true
-priority: high
-component: "e2e"
-target_modules: [":e2e"]
-target_files: ["${marker}.txt"]
-target_symbols: []
-open_questions: false
----
-
-# Jules recovery canary
-`, "utf8");
-
-    const context = {
-      authToken: key.token,
-      agent: { id: orch.id, companyId, name: "Canary Orchestrator", adapterType: "orchestrator", adapterConfig: {} },
-      workspace: { cwd: workspacePath },
-      context: { company: { id: companyId } },
-      config: {
-        apiUrl, backlogDirectory: backlogDir, resolvedDirectory: resolvedDir,
-        requireApproval: false, reconcileFleet: false, maxConcurrentJules: 1, maxConcurrentVibe: 1,
-        julesAgentId: jules.id, vibeAgentId: vibe.id,
-      },
-      onLog: async (_stream: string, chunk: string) => process.stdout.write(chunk),
-    } as any;
+    const issue = requireObject(await request(`/api/companies/${companyId}/issues`, "POST", {
+      title: marker,
+      description: `---\norchestrator_managed: true\nopen_questions: false\ntarget_modules: [":e2e"]\ntarget_files: ["${marker}.txt"]\n---\n\n# Jules recovery canary`,
+      // Do not assign the issue to Jules during fixture creation. Paperclip
+      // immediately starts an assigned issue, which races the orchestrator
+      // wake and makes the canary test the wrong state machine. The real
+      // recovery path starts from an active, unassigned managed issue.
+      // Start at the recovery boundary. A todo issue would correctly stop at
+      // Paperclip's human task-start approval gate and would never exercise
+      // the PR-review recovery state machine this canary targets.
+      status: "in_review",
+      priority: "high",
+      projectId: project.id,
+    }), "canary issue");
+    const issueId = String(issue.id || "");
+    if (!issueId) throw new Error("Paperclip did not return a canary issue id");
 
     await execute(context);
     const frontmatter = parseMarkdownFrontmatter<Record<string, unknown>>(fs.readFileSync(issueFile, "utf8"));
