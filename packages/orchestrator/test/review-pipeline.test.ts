@@ -4,6 +4,18 @@ import { reviewInteractionIdempotencyKey } from "../src/core/review-interaction-
 import type { ParsedIssueMetadata } from "../src/core/types.js";
 
 describe("native multi-tier review pipeline", () => {
+  it.each([
+    ["AWAIT_CI", "ci"],
+    ["AWAIT_REVIEW", "wait"],
+    ["AWAIT_OPERATOR_APPROVAL", "wait"],
+    ["DISPATCH_LUNA_REVIEW", "dispatch"],
+    ["RECOVER_REVIEW", "dispatch"],
+    ["REASSIGN_TO_WORKER", "mutation"],
+    ["CREATE_MERGE_APPROVAL", "mutation"],
+    ["EXECUTE_MERGE", "mutation"],
+  ] as const)("classifies pipeline action %s exhaustively", (action, group) => {
+    expect(classifyReviewPipelineAction(action)).toBe(group);
+  });
   const issue: ParsedIssueMetadata = {
     id: "issue-141", identifier: "MAZ-141", title: "Review target", status: "in_review", priority: "high",
     priorityRank: 1, dependencies: [], targetFiles: [], targetModules: [], targetSymbols: [], hasSideEffects: false,
