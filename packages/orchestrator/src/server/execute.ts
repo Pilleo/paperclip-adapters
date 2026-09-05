@@ -991,7 +991,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
         await log(`[ORCHESTRATOR] Refusing Jules monitor reattachment for [${issue.identifier || issue.id}]: native monitor payload is incomplete.`);
         return;
       }
-      const reattachedPolicy = buildJulesMonitorReattachment(executionPolicy, externalRef, Date.now());
+      const reattachedPolicy = buildJulesMonitorReattachment(executionPolicy ?? { mode: "normal", stages: [] }, externalRef, Date.now());
       const resumed = await pc.patchIssue(issue.id, { status: "in_progress", executionPolicy: reattachedPolicy });
       if (!resumed.ok) {
         await log(`[ORCHESTRATOR] Could not resume expired Jules monitor for [${issue.identifier || issue.id}] (${resumed.status}): ${resumed.text}`);
