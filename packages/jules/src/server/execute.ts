@@ -2668,7 +2668,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                   sessionId: session!.julesSessionId,
                   activityId,
                   persist: () => persistSessionBestEffort(session!, ctx.onLog),
-                  run: () => createJulesPlanReviewChild(taskId, config.planReviewerAgentId!, "vibe", fullPlan, revision.revisionId, ctx.authToken, ctx.runId, ctx.agent.companyId),
+                  run: () => createJulesPlanReviewInteraction(taskId, session!.julesSessionId!, revision, fullPlan, "luna", config.planReviewerAgentId!, ctx.authToken, ctx.runId),
                 });
                 session.planReviewRevisionId = revision.revisionId;
                 session.planReviewOutcome = undefined;
