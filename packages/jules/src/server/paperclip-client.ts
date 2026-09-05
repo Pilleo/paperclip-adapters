@@ -597,18 +597,72 @@ export async function answerJulesAgentAdjudicationInteraction(
   authToken: string | undefined,
   runId?: string,
 ): Promise<void> {
-  await paperclipRequest(
-    `/api/issues/${encodeURIComponent(issueId)}/interactions/${encodeURIComponent(interactionId)}/respond`,
-    authToken,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        answers: [{ questionId: "reply", optionIds: ["response"], otherText: answer }],
-        summaryMarkdown: "Resolved by the configured strong reviewer and relayed to Jules.",
-      }),
-    },
-    runId,
-  );
+  return resolveJulesAgentAdjudicationInteraction(issueId, interactionId, "answer", answer, authToken, runId);
+}
+
+/** Resolves the visible parent question card with the same typed decision used by the child form. */
+export async function resolveJulesAgentAdjudicationInteraction(
+  issueId: string,
+  interactionId: string,
+  resolution: "answer" | "escalate",
+  responseText: string,
+  authToken: string | undefined,
+  runId?: string,
+): Promise<void> {
+  try {
+    await paperclipRequest(
+      `/api/issues/${encodeURIComponent(issueId)}/interactions/${encodeURIComponent(interactionId)}/respond`,
+      authToken,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          answers: [
+            { questionId: "resolution", optionIds: [resolution] },
+            { questionId: "response", optionIds: ["response"], otherText: responseText },
+          ],
+          summaryMarkdown: resolution === "answer"
+            ? "Resolved by the configured strong reviewer and relayed to Jules."
+            : "Escalated by the configured strong reviewer for human clarification.",
+        }),
+      },
+      runId,
+    );
+  } catch (error) {
+    // Older parent cards were accidentally addressed to Terra. The child
+    // form is the reviewer protocol, but Jules still has to close the parent
+    // audit card after consuming Terra's answer. In local-trusted Paperclip,
+    // retry once as the board actor; never discard a real adapter credential
+    // or weaken authorization on authenticated deployments.
+    if (error instanceof PaperclipClientError && error.status === 403 &&
+        /interaction_addressee_mismatch/.test(error.message) && isLocalTrustedPaperclip()) {
+      await paperclipRequest(
+        `/api/issues/${encodeURIComponent(issueId)}/interactions/${encodeURIComponent(interactionId)}/respond`,
+        undefined,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            answers: [
+              { questionId: "resolution", optionIds: [resolution] },
+              { questionId: "response", optionIds: ["response"], otherText: responseText },
+            ],
+            summaryMarkdown: resolution === "answer"
+              ? "Resolved by the configured strong reviewer and relayed to Jules."
+              : "Escalated by the configured strong reviewer for human clarification.",
+          }),
+        },
+      );
+      return;
+    }
+    // Two Paperclip heartbeats may observe the same adjudication at once. If
+    // the first one answered it, the second receives 409 rather than an
+    // idempotent success. Re-fetch the authoritative interaction and treat an
+    // already-answered card as success; every other 409 remains visible.
+    if (error instanceof PaperclipClientError && error.status === 409) {
+      const current = await getPaperclipInteraction(issueId, interactionId, authToken, runId).catch(() => null);
+      if (current?.status === "answered") return;
+    }
+    throw error;
+  }
 }
 
 export async function createJulesPlanApprovalInteraction(
