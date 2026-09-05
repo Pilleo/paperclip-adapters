@@ -1827,10 +1827,14 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
             ...reviewIdentityBase,
             attempt: selectReviewAttempt(reviewIdentityBase, reviewInteractions),
           } as const;
-          try {
-            const nativeReviewPolicy = buildMazewallExecutionPolicy({
-              vibeReviewerAgentId: lunaReviewerAgentId,
-              reviewerAgentId: terraReviewerAgentId,
+          const reviewCircuitKey = `review-card:${companyId}:${reviewTask.id}:${stage}:${reviewHeadSha}:${targetAgentId}`;
+          const reviewerEligibility = evaluateReviewerEligibility(managedAgentStatuses.get(targetAgentId));
+          if (reviewerEligibility.kind === "unavailable") {
+            const status = managedAgentStatuses.get(targetAgentId);
+            const circuitState = capabilityCircuit.record(reviewCircuitKey, {
+              ok: false,
+              status: 422,
+              text: `Reviewer ${targetAgentId} is not invokable: ${reviewerEligibility.reason}`,
             });
             const nativeReviewPolicyWithStableIds = nativeReviewPolicy
               ? {
