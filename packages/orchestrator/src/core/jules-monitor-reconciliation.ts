@@ -13,6 +13,9 @@ export interface JulesMonitorSnapshot {
   readonly hasProviderSession: boolean;
   /** Whether the adapter can prove that a native monitor will be re-established. */
   readonly monitorCanBeReattached?: boolean;
+  /** The native policy was dropped while the projected Jules monitor survived. */
+  readonly monitorDetached?: boolean;
+  readonly assigneeIsJules?: boolean;
 }
 
 const JULES_MONITOR_CADENCE_MS = 5 * 60 * 1000;
