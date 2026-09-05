@@ -59,6 +59,7 @@ import {
   createJulesAgentAdjudicationInteraction,
   createJulesQuestionReviewInteraction,
   answerJulesAgentAdjudicationInteraction,
+  resolveJulesAgentAdjudicationInteraction,
   createJulesPlanApprovalInteraction,
   saveJulesPlanDocument,
   getPaperclipInteraction,
