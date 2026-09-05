@@ -1032,24 +1032,81 @@ implementation advice as an issue comment.`;
       );
       if (existing && typeof existing["id"] === "string") return existing as unknown as PaperclipIssue;
     }
-    const response = await paperclipRequest(
-    `/api/issues/${encodeURIComponent(parentIssueId)}/children`, authToken, {
-      method: "POST",
-      body: JSON.stringify({
-        title: "Adjudicate Jules provider question",
-        description: `${marker}\nYou are the strong reviewer for a provider question. Decide from the parent task and repository context; do not ask the human unless a real decision is missing.\n\nProvider question:\n${question}\n\nFinish by posting exactly one JSON object as an issue comment, with no Markdown fence:\n{\"kind\":\"ANSWER\",\"answer\":\"direct instruction for Jules\"}\nor\n{\"kind\":\"ESCALATE\",\"reason\":\"the concrete decision the human must make\"}\n\nOnly use ESCALATE when the task and codebase do not determine the answer. Then mark this adjudication task done.`,
-        status: "todo",
-        priority: "high",
-        assigneeAgentId: reviewerAgentId,
-        // Jules owns the provider-question gate. A native Paperclip dependency
-        // would block the parent before the adapter can consume the reviewer's
-        // structured answer and would invite generic native recovery prompts.
-        blockParentUntilDone: false,
-        executionPolicy: INTERNAL_REVIEW_EXECUTION_POLICY,
-      }),
-      }, runId,
-    );
-    const created = (await response.json()) as PaperclipIssue;
+    let created: PaperclipIssue;
+    try {
+      const response = await paperclipRequest(
+        `/api/issues/${encodeURIComponent(parentIssueId)}/children`, authToken, {
+        method: "POST",
+        body: JSON.stringify({
+          title: "Adjudicate Jules provider question",
+          description,
+          // Paperclip treats `blocked` as closed for interaction creation.
+          // Backlog accepts interactions but is not eligible for an agent
+          // heartbeat. Keep Terra assigned so Paperclip can surface the
+          // pending form when activation changes the status to todo.
+          status: deferExecution ? "backlog" : "todo",
+          priority: "high",
+          assigneeAgentId: reviewerAgentId,
+          // Jules owns the provider-question gate. A native Paperclip dependency
+          // would block the parent before the adapter can consume the reviewer's
+          // structured answer and would invite generic native recovery prompts.
+          blockParentUntilDone: false,
+          executionPolicy: INTERNAL_REVIEW_EXECUTION_POLICY,
+        }),
+        }, runId,
+      );
+      created = (await response.json()) as PaperclipIssue;
+    } catch (error) {
+      if (!isPaperclipChildLimitError(error) || !companyId) throw error;
+      // Paperclip intentionally caps helper children per parent. Use a fresh
+      // company-level protocol issue when that cap is hit. Reopening a
+      // terminal child would retain its old reviewer comments and could make
+      // a stale answer look like the answer to this new provider question.
+      const raw = await getPaperclipJson<unknown>(
+        `/api/companies/${encodeURIComponent(companyId)}/issues?limit=1000`, authToken, runId,
+      );
+      const allIssues = Array.isArray(raw) ? raw : ((raw as { issues?: unknown[] })?.issues ?? []);
+      const alreadyCreated = allIssues.find((value) => {
+        const issue = value as Record<string, unknown>;
+        return issue["status"] !== "cancelled" && issue["status"] !== "done" &&
+          typeof issue["description"] === "string" &&
+          (issue["description"] as string).includes(marker) &&
+          typeof issue["id"] === "string";
+      });
+      if (alreadyCreated && typeof (alreadyCreated as Record<string, unknown>)["id"] === "string") {
+        created = alreadyCreated as PaperclipIssue;
+      } else {
+        const response = await paperclipRequest(
+          `/api/companies/${encodeURIComponent(companyId)}/issues`, authToken, {
+          method: "POST",
+          body: JSON.stringify({
+            companyId,
+            title: "Adjudicate Jules provider question",
+            description: `${description}\n\nParent issue: ${parentIssueId}`,
+            status: deferExecution ? "backlog" : "todo",
+            priority: "high",
+            assigneeAgentId: reviewerAgentId,
+            blockParentUntilDone: false,
+            executionPolicy: INTERNAL_REVIEW_EXECUTION_POLICY,
+          }),
+          }, runId,
+        );
+        created = (await response.json()) as PaperclipIssue;
+      }
+      /*
+       * The fallback intentionally has no parentId: it is still linked by its
+       * marker and session state, while avoiding Paperclip's per-parent cap.
+       */
+      if (!created.id) throw error;
+      await paperclipRequest(`/api/issues/${encodeURIComponent(created.id)}`, authToken, {
+        method: "PATCH",
+        body: JSON.stringify({
+          assigneeAgentId: reviewerAgentId,
+          blockParentUntilDone: false,
+          executionPolicy: INTERNAL_REVIEW_EXECUTION_POLICY,
+        }),
+      }, runId);
+    }
     // Paperclip versions that inherit the parent's policy on child creation
     // must be explicitly neutralized. This child is an ACP protocol endpoint,
     // not a native execution-review task.
