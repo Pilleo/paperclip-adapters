@@ -205,7 +205,7 @@ export async function reconcileManagedFleet(
   // their provisioning when its own protected configuration is unauthorized.
   const reconciliationOrder = [...MANAGED_FLEET_DEFINITIONS].sort((left, right) => {
     const priority = (key: ManagedWorkerDefinition["key"]) =>
-      key === "luna_reviewer" ? 0 : key === "terra_reviewer" ? 1 : 2;
+      key === "luna_reviewer" ? 0 : key === "terra_reviewer" ? 1 : key === "terra_adjudicator" ? 2 : 3;
     return priority(left.key) - priority(right.key);
   });
 
