@@ -1311,9 +1311,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // checked before the legacy direct-API compatibility reviewer so existing
     // blocked tasks recover without requiring any reviewer API key.
     if (config.planReviewerAgentId && config.planStrongReviewerAgentId) {
-      const child = await createJulesPlanReviewChild(
-        taskId, config.planReviewerAgentId, "vibe", pendingProviderInteraction.question,
-        pendingProviderInteraction.planRevisionId, ctx.authToken, ctx.runId, ctx.agent.companyId,
+      const nativeReview = await createJulesPlanReviewInteraction(
+        taskId,
+        session.julesSessionId!,
+        {
+          documentId: pendingProviderInteraction.planDocumentId,
+          revisionId: pendingProviderInteraction.planRevisionId,
+          revisionNumber: pendingProviderInteraction.planRevisionNumber,
+        },
+        pendingProviderInteraction.question,
+        "luna",
+        config.planReviewerAgentId,
+        ctx.authToken,
+        ctx.runId,
       );
       if (pendingProviderInteraction.paperclipInteractionId) {
         await withdrawPaperclipInteraction(taskId, pendingProviderInteraction.paperclipInteractionId, "Replaced by native ACP plan-review ladder", ctx.authToken, ctx.runId).catch(() => undefined);
