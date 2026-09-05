@@ -80,6 +80,16 @@ describe("board reconciliation planner", () => {
     ]);
   });
 
+  it("recovers an in-progress managed issue with a registered open PR into native review", () => {
+    expect(planBoardReconciliation([parent({ registeredOpenPullRequest: true, resumableMonitor: false })])).toEqual([
+      expect.objectContaining({ action: "recover_to_review", issueId: "parent-836" }),
+    ]);
+  });
+
+  it("does not steal an open PR from a Jules issue with a resumable monitor", () => {
+    expect(planBoardReconciliation([parent({ registeredOpenPullRequest: true, resumableMonitor: true })])).toEqual([]);
+  });
+
   it("returns an in-progress task with an expired monitor to todo", () => {
     expect(planBoardReconciliation([parent({ monitorExpired: true })])).toEqual([
       expect.objectContaining({ action: "return_to_todo", issueId: "parent-836" }),
