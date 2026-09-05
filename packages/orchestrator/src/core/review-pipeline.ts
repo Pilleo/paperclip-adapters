@@ -414,14 +414,9 @@ export function evaluateReviewPipelineProgress(
 
   if (lunaReviewerAgentId !== undefined || terraReviewerAgentId !== undefined) {
     if (!lunaReviewerAgentId) return { stage: "luna_review", action: "AWAIT_REVIEW_CONFIGURATION", reason: "OpenAI Luna reviewer is not configured; refusing to skip the weak review stage." };
-    const lunaVerdict = verdictFor("luna");
-    if (lunaVerdict?.decision === "needs_work") return { stage: "luna_review", action: "REASSIGN_TO_WORKER", targetStatus: "in_progress", targetAssigneeId: workerAgentId || null, feedbackSummary: lunaVerdict.reason, reason: `Luna review requested changes on [${issue.identifier || issue.id}].` };
-    // A terminal native verdict is the transition event. Never wake the
-    // reviewer to ask it to perform Paperclip bookkeeping; the orchestrator
-    // owns the next-stage transition below.
-    const lunaWait = lunaVerdict?.decision === "all_good" ? null : awaitActiveReview("luna", lunaReviewerAgentId);
-    if (lunaWait) return lunaWait;
-    if (lunaVerdict?.decision !== "all_good") return { stage: "luna_review", action: "DISPATCH_LUNA_REVIEW", targetAgentId: lunaReviewerAgentId, reason: `CI is green; routing [${issue.identifier || issue.id}] to OpenAI Luna for the first review.` };
+    const luna = epochDecision("luna", lunaReviewerAgentId);
+    const lunaPipelineDecision = mapEpochDecision("luna", lunaReviewerAgentId, luna);
+    if (lunaPipelineDecision) return lunaPipelineDecision;
     if (!terraReviewerAgentId) return { stage: "terra_review", action: "AWAIT_REVIEW_CONFIGURATION", reason: "OpenAI Terra reviewer is not configured; refusing to skip the strong review stage." };
     const terraVerdict = verdictFor("terra");
     if (terraVerdict?.decision === "needs_work") return { stage: "terra_review", action: "REASSIGN_TO_WORKER", targetStatus: "in_progress", targetAssigneeId: workerAgentId || null, feedbackSummary: terraVerdict.reason, reason: `Terra review requested changes on [${issue.identifier || issue.id}].` };
