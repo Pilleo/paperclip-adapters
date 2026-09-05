@@ -27,6 +27,8 @@ export interface ReviewPipelineParams {
     readonly idempotencyKey?: string | undefined;
     readonly result?: unknown;
   }[] | undefined;
+  /** All recent runs, including terminal runs, used as the durable recovery lease. */
+  readonly heartbeatRuns?: readonly Pick<HeartbeatRunSummary, "id" | "agentId" | "status" | "issueId" | "interactionId">[] | undefined;
   readonly reviewHeadSha?: string | undefined;
   /** Legacy input retained only to prove comments cannot transition review. */
   readonly comments?: readonly unknown[] | undefined;
