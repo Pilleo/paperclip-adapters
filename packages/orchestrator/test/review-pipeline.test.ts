@@ -426,7 +426,7 @@ describe("native multi-tier review pipeline", () => {
           currentParticipant: { type: "agent", agentId: "agent-luna" },
         },
       };
-      expect(evaluateReviewPipelineProgress(params)).toMatchObject({ action: "DISPATCH_LUNA_REVIEW", targetAgentId: "agent-luna" });
+      expect(evaluateReviewPipelineProgress(params)).toMatchObject({ action: "AWAIT_OPERATOR_RECOVERY", stage: "luna_review" });
     }
   });
 
