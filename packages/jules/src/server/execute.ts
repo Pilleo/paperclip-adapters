@@ -2607,11 +2607,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 ctx.runId,
                 ctx.agent.companyId,
                 activityId,
-                persist: () => persistSessionBestEffort(session!, ctx.onLog),
-                run: () => createJulesQuestionAdjudication(
-                  taskId, reviewerAgentId, action.question, ctx.authToken, ctx.runId, ctx.agent.companyId,
-                ),
-              });
+                session.julesSessionId,
+                0,
+                true,
+              );
+              const reviewerInteraction = await createJulesQuestionReviewInteraction(
+                reviewerChild.id,
+                taskId,
+                session.julesSessionId,
+                activityId,
+                action.question,
+                reviewerAgentId,
+                ctx.authToken,
+                ctx.runId,
+              );
+              await activateInternalReviewIssue(
+                reviewerChild.id, reviewerAgentId, ctx.authToken, ctx.runId,
+              );
               session.pendingInteraction = {
                 type: "agent_adjudication",
                 julesActivityId: asJulesActivityId(activityId),
