@@ -37,6 +37,7 @@ describe("board reconciliation planner", () => {
       executionRunLive: false,
       resumableMonitor: false,
       nativeReviewInteraction: true,
+      registeredOpenPullRequest: false,
       hasPullRequest: false,
       parentId: "parent-836",
       reviewGateKey: "jules:session-1:revision-1:vibe",
