@@ -148,6 +148,96 @@ beforeAll(() => {
     expect(res.resultJson?.issueStatus).toBe('in_review');
   });
 
+  it('keeps an unresolved provider question ahead of PR handoff', async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({
+      state: 'AWAITING_USER_FEEDBACK',
+      rawOutputs: [{ pullRequest: { url: 'http://pr/with-question' } }],
+    } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({
+      activities: [{
+        id: 'provider-question-1',
+        createTime: new Date().toISOString(),
+        agentMessaged: { agentMessage: 'Should I proceed with the PR?' },
+      }],
+    } as never);
+
+    const res = await execute({
+      ...baseCtx,
+      agent: {
+        ...baseCtx.agent,
+        adapterConfig: { ...baseCtx.agent.adapterConfig, ciPolicy: 'skip' },
+      },
+      runtime: {
+        ...baseCtx.runtime,
+        sessionParams: sessionCodec.encode({
+          version: 1,
+          paperclipIssueId: 'task-1',
+          promptHash: 'stable-hash',
+          promptHashVersion: 2,
+          repository: 'pilleo/test',
+          source: 'github',
+          baseBranch: 'master',
+          phase: 'RUNNING',
+          sessionId: '123',
+          julesSessionId: '123',
+          attempt: 1,
+          failedSessions: [],
+          createdAt: new Date().toISOString(),
+        } as never),
+      },
+    } as any);
+
+    expect(res.resultJson).toMatchObject({ pending: true });
+    expect(res.resultJson?.issueStatus).not.toBe('in_review');
+    expect(res.clearSession).toBe(false);
+    expect(moveIssueToReview).not.toHaveBeenCalled();
+  });
+
+  it('reconciles the provider question even when PR inspection is unavailable', async () => {
+    vi.mocked(getPullRequestDetails).mockRejectedValueOnce(new Error('GitHub inspection unavailable'));
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({
+      state: 'AWAITING_USER_FEEDBACK',
+      rawOutputs: [{ pullRequest: { url: 'http://pr/with-question' } }],
+    } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({
+      activities: [{
+        id: 'provider-question-before-pr-inspection',
+        createTime: new Date().toISOString(),
+        agentMessaged: { agentMessage: 'Should I proceed with the PR?' },
+      }],
+    } as never);
+
+    const res = await execute({
+      ...baseCtx,
+      agent: {
+        ...baseCtx.agent,
+        adapterConfig: { ...baseCtx.agent.adapterConfig, ciPolicy: 'skip' },
+      },
+      runtime: {
+        ...baseCtx.runtime,
+        sessionParams: sessionCodec.encode({
+          version: 1,
+          paperclipIssueId: 'task-1',
+          promptHash: 'stable-hash',
+          promptHashVersion: 2,
+          repository: 'pilleo/test',
+          source: 'github',
+          baseBranch: 'master',
+          phase: 'RUNNING',
+          sessionId: '123',
+          julesSessionId: '123',
+          attempt: 1,
+          failedSessions: [],
+          createdAt: new Date().toISOString(),
+        } as never),
+      },
+    } as any);
+
+    expect(res.resultJson).toMatchObject({ pending: true });
+    expect(res.clearSession).toBe(false);
+    expect(moveIssueToReview).not.toHaveBeenCalled();
+  });
+
   it('does not let a stale unanswered plan review block a completed PR handoff', async () => {
     (JulesClient.prototype.getSession as any).mockResolvedValue({
       state: 'COMPLETED',
