@@ -1783,8 +1783,8 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
         break;
     }
 
-    if (["DISPATCH_VIBE_REVIEW", "DISPATCH_STRONG_REVIEW", "DISPATCH_LUNA_REVIEW", "DISPATCH_TERRA_REVIEW"].includes(pipelineDecision.action)) {
-      const targetAgentId = "targetAgentId" in pipelineDecision ? pipelineDecision.targetAgentId : undefined;
+    if (isReviewDispatchDecision(pipelineDecision)) {
+      const targetAgentId = pipelineDecision.targetAgentId;
       {
         const stageLabel = pipelineDecision.action === "DISPATCH_LUNA_REVIEW" ? "Stage 2 OpenAI Luna Review" : pipelineDecision.action === "DISPATCH_TERRA_REVIEW" ? "Stage 3 OpenAI Terra Review" : pipelineDecision.action === "DISPATCH_VIBE_REVIEW" ? "Stage 2 Vibe Fast Review" : "Stage 3 Strong Model Review";
         await log(
