@@ -1025,7 +1025,7 @@ implementation advice as an issue comment.`;
       const list = Array.isArray(issues) ? issues : (issues.issues ?? []);
       const existing = list.find((issue) =>
         issue["parentId"] === parentIssueId &&
-        issue["assigneeAgentId"] === reviewerAgentId &&
+        (deferExecution || issue["assigneeAgentId"] === reviewerAgentId) &&
         typeof issue["description"] === "string" &&
         (issue["description"] as string).includes(marker) &&
         issue["status"] !== "cancelled" && issue["status"] !== "done",
