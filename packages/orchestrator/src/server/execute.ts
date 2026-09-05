@@ -124,7 +124,10 @@ export interface OrchestratorAdapterConfig {
 export async function execute(context: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   // Unit tests exercise the project state machine directly with mocked HTTP.
   // Production heartbeats always enumerate the company projects first.
-  if (process.env["NODE_ENV"] === "test") return executeProject(context);
+  // Vitest does not consistently set NODE_ENV across workspace invocations,
+  // but unit fixtures intentionally exercise the project state machine
+  // directly. Production adapter heartbeats still use the company-wide path.
+  if (process.env["NODE_ENV"] === "test" || process.env["VITEST"] === "true") return executeProject(context);
   return executeAllProjects(context);
 }
 
