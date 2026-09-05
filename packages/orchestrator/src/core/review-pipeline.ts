@@ -292,8 +292,17 @@ export function evaluateReviewPipelineProgress(
       headSha: reviewHeadSha || "unknown",
       stage,
     });
-    return interactions.some((interaction) => interaction.idempotencyKey === expectedKey &&
-      (interaction.status === "pending" || interaction.status === "answered"));
+    return interactions.some((interaction) => {
+      if (interaction.status !== "pending" && interaction.status !== "answered") return false;
+      if (interaction.idempotencyKey === expectedKey || interaction.idempotencyKey?.startsWith(`${reviewInteractionKeyPrefix({ issueId: issue.id, prUrl: prUrl || `pr-${prNumber || "unknown"}`, headSha: reviewHeadSha || "unknown", stage })}:attempt:`)) return true;
+      // GitHub head lookup may be temporarily unavailable. A pending card
+      // carrying a real SHA is still the same immutable review identity; do
+      // not redispatch merely because this heartbeat has an `unknown` head.
+      return !reviewHeadSha && Boolean(
+        interaction.idempotencyKey &&
+        new RegExp(`:v(?:9|10|11|12):${issue.id}:.*:[0-9a-f]{40}:${stage}$`, "i").test(interaction.idempotencyKey),
+      );
+    });
   };
   const activeReviewerOwnsStage = (stage: PrReviewStage, reviewerAgentId: string): boolean => {
     const expectedIndex = stage === "luna" ? 0 : stage === "terra" ? 1 : null;
