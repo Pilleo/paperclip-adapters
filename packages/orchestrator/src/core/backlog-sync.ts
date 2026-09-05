@@ -367,6 +367,12 @@ export async function syncBacklogMarkdownToPaperclip(options: BacklogSyncOptions
       const orchestratorManaged =
         String(fields["orchestrator_managed"] ?? "").toLowerCase() === "true";
       const managedAgents = options.managedAgentIds ?? new Set<string>();
+      const shouldClaim =
+        orchestratorManaged &&
+        Boolean(options.orchestratorAgentId) &&
+        !existing.assigneeAgentId &&
+        existing.status !== "done" &&
+        existing.status !== "cancelled";
       const shouldReclaim =
         orchestratorManaged &&
         options.orchestratorAgentId &&
