@@ -1222,6 +1222,24 @@ export async function completeInternalReviewIssue(
   }, runId);
 }
 
+/** Activates a reviewer child only after its typed interaction exists. */
+export async function activateInternalReviewIssue(
+  issueId: string,
+  reviewerAgentId: string,
+  authToken: string | undefined,
+  runId?: string,
+): Promise<void> {
+  await paperclipRequest(`/api/issues/${encodeURIComponent(issueId)}`, authToken, {
+    method: "PATCH",
+    body: JSON.stringify({
+      status: "todo",
+      assigneeAgentId: reviewerAgentId,
+      blockParentUntilDone: false,
+      executionPolicy: INTERNAL_REVIEW_EXECUTION_POLICY,
+    }),
+  }, runId);
+}
+
 export async function listIssueComments(
   issueId: string,
   authToken: string | undefined,
