@@ -190,8 +190,10 @@ describe("E2E host-plan scope conformity on Jules PRs", () => {
       } as never);
 
     const first = await execute(ctx());
-    expect(first.resultJson).toMatchObject({ issueStatus: "in_review", reviewRequired: true });
-    expect(scheduleJulesSessionMonitor).toHaveBeenCalledTimes(1);
+    expect(first.resultJson).toMatchObject({ issueStatus: "in_review" });
+    // A completed PR is handed to the normal review pipeline immediately;
+    // it no longer burns a Jules monitor heartbeat while waiting for a host.
+    expect(scheduleJulesSessionMonitor).toHaveBeenCalledTimes(0);
 
     const second = await execute(ctx(sessionCodec.decode(first.sessionParams)!));
     expect(createJulesQuestionAdjudication).toHaveBeenCalledWith(
