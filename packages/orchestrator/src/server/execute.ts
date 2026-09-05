@@ -1786,10 +1786,19 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
     if (isReviewDispatchDecision(pipelineDecision)) {
       const targetAgentId = pipelineDecision.targetAgentId;
       {
-        const stageLabel = pipelineDecision.action === "DISPATCH_LUNA_REVIEW" ? "Stage 2 OpenAI Luna Review" : pipelineDecision.action === "DISPATCH_TERRA_REVIEW" ? "Stage 3 OpenAI Terra Review" : pipelineDecision.action === "DISPATCH_VIBE_REVIEW" ? "Stage 2 Vibe Fast Review" : "Stage 3 Strong Model Review";
-        await log(
-          `[ORCHESTRATOR] 📋 [${stageLabel}] Routing in_review task [${reviewTask.identifier || reviewTask.id}] "${reviewTask.title}" to ${targetAgentId}`
-        );
+        const stage: PrReviewStage = reviewDispatchStage(pipelineDecision);
+        const reviewCircuitKey = targetAgentId
+          ? `review-card:${companyId}:${reviewTask.id}:${stage}:${reviewHeadSha}:${targetAgentId}`
+          : undefined;
+        // Do not emit a misleading routing line on every heartbeat while the
+        // same reviewer capability is durably unavailable. The first failure
+        // below emits the actionable diagnostic; recovery closes the circuit.
+        if (!reviewCircuitKey || !capabilityCircuit.isOpen(reviewCircuitKey)) {
+          const stageLabel = stage === "luna" ? "Stage 2 OpenAI Luna Review" : stage === "terra" ? "Stage 3 OpenAI Terra Review" : stage === "vibe" ? "Stage 2 Vibe Fast Review" : "Stage 3 Strong Model Review";
+          await log(
+            `[ORCHESTRATOR] 📋 [${stageLabel}] Routing in_review task [${reviewTask.identifier || reviewTask.id}] "${reviewTask.title}" to ${targetAgentId}`
+          );
+        }
 
         try {
           if (!targetAgentId) {
