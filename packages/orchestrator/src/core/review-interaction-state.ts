@@ -91,6 +91,8 @@ export function buildNativeReviewExecutionState(
   previous: Record<string, unknown> | null | undefined,
   stage: PrReviewStage,
   reviewerAgentId: string,
+  reviewRecoveryKey?: string,
+  reviewInteractionId?: string,
 ): Record<string, unknown> {
   const currentStageId = stage === "luna"
     ? NATIVE_PR_REVIEW_STAGE_IDS.luna
