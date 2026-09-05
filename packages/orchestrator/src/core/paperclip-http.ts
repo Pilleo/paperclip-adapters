@@ -243,7 +243,9 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
               },
             }
           : {}),
-      }, options?.idempotencyKey);
+      }, options?.idempotencyKey || (options?.workerFeedback
+        ? `paperclip:wakeup:${agentId}:${options.workerFeedback.deliveryId}`
+        : undefined));
     },
   };
 }
