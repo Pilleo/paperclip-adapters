@@ -263,7 +263,7 @@ export function asArray<T>(raw: unknown): T[] {
   if (Array.isArray(raw)) return raw as T[];
   if (raw && typeof raw === "object") {
     const record = raw as Record<string, unknown>;
-    for (const key of ["agents", "issues", "approvals", "comments", "interactions", "projects", "items"]) {
+    for (const key of ["agents", "issues", "approvals", "comments", "interactions", "projects", "children", "items"]) {
       if (Array.isArray(record[key])) return record[key] as T[];
     }
   }
