@@ -60,6 +60,15 @@ export async function mirrorNewActivities(
   const delivered = new Set(session.deliveredActivityIds ?? []);
   const deliveredThisRun: JulesActivity[] = [];
   for (const activity of selectUndeliveredActivities(activities, session.activityCheckpoint, [...delivered])) {
+    // `sendMessage` is reflected by Jules as a userMessaged activity. It is
+    // our own outbound command, not provider progress and must not be copied
+    // back into the Paperclip issue on the next poll. Checkpoint it so old
+    // outbound prompts do not get reconsidered forever.
+    if (activity.userMessaged) {
+      delivered.add(activity.id);
+      deliveredThisRun.push(activity);
+      continue;
+    }
     if (onLog) {
       const logLine = formatActivityForLog(activity);
       await onLog("stdout", logLine);
