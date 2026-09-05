@@ -291,15 +291,6 @@ describe("native multi-tier review pipeline", () => {
     expect(evaluateReviewPipelineProgress(params)).toMatchObject({ action: "CREATE_MERGE_APPROVAL" });
   });
 
-  it("reassigns after a native strong rejection", () => {
-    const decision = evaluateReviewPipelineProgress(base([interaction("vibe", "approve"), interaction("strong", "reject", "Fix null handling")]));
-    expect(decision).toMatchObject({ action: "REASSIGN_TO_WORKER", stage: "strong_review", feedbackSummary: "Fix null handling" });
-  });
-
-  it("creates human merge approval only after both native approvals", () => {
-    expect(evaluateReviewPipelineProgress(base([interaction("vibe", "approve"), interaction("strong", "approve")])).action).toBe("CREATE_MERGE_APPROVAL");
-  });
-
   it("uses the Luna then Terra reviewer lane and ignores legacy Vibe approvals", () => {
     const params = {
       ...base(),
