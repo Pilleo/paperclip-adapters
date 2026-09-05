@@ -90,6 +90,8 @@ import {
 } from "./paperclip-client.js";
 import { evaluateQuestionAdjudicationChild } from "./question-adjudication-state.js";
 import { parseQuestionAdjudication } from "./question-adjudication.js";
+import { classifyNativeQuestionReview } from "./question-workflow.js";
+import { isNativeAgentAdjudication } from "./session.js";
 import { createJulesPlanReviewChild } from "./plan-review-client.js";
 import { parsePlanAdjudication } from "./plan-adjudication.js";
 import { createTelemetry } from "./telemetry.js";
