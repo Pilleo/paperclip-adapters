@@ -984,6 +984,10 @@ export async function createJulesQuestionAdjudication(
   authToken: string | undefined,
   runId?: string,
   companyId?: string,
+  activityId?: string,
+  sessionId?: string,
+  generation = 0,
+  deferExecution = false,
 ): Promise<PaperclipIssue> {
   const fingerprint = createHash("sha256").update(question).digest("hex").slice(0, 24);
   const marker = `<!-- jules-question-adjudication:${fingerprint} -->`;
