@@ -8,6 +8,7 @@ export interface JulesMonitorSnapshot {
   readonly assigneeIsOrchestrator: boolean;
   readonly serviceName: string | null;
   readonly monitorStatus: string | null;
+  readonly monitorClearReason?: string | null;
   readonly timeoutAt: string | null;
   readonly hasProviderSession: boolean;
   /** Whether the adapter can prove that a native monitor will be re-established. */
