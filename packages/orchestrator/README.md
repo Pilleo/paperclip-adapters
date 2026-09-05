@@ -103,3 +103,15 @@ The lifecycle harness currently contains seven phases. The dedicated recovery
 canary is the required pre-deployment smoke test because it specifically
 verifies recovery of an `in_progress` Jules issue, stale-child cleanup, and
 repeat-heartbeat idempotency.
+
+The recovery canary must run against a Paperclip server whose process was
+started with the deterministic `gh` fixture on its `PATH`; setting a PATH in
+the client shell is insufficient because the orchestrator invokes `gh` in a
+separate adapter process. The server-start environment must also export
+`PAPERCLIP_E2E_GH_FIXTURE=server`. The canary refuses to create test data when
+that marker is absent.
+
+The Jules adapter's `e2eProviderBaseUrl` is similarly restricted to explicit
+`PAPERCLIP_ADAPTER_E2E=1` loopback runs. It exists only to let a disposable
+Paperclip server talk to a local fake Jules API; production always uses the
+public Jules endpoint.
