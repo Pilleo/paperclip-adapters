@@ -88,6 +88,11 @@ import { executePaperclipCommand } from "@pilleo/paperclip-adapter-common";
 // this only protects the read/decide/write window within this adapter process.
 const mergeConvergenceGuard = new ConvergenceGuard();
 const lifecycleConvergenceGuard = new ConvergenceGuard();
+// A stale reviewer card must be withdrawn exactly once after a structured
+// rejection. Without this fence, overlapping heartbeats can repeatedly race
+// the worker transition and leave Terra/legacy cards able to wake reviewers
+// after the PR has returned to Jules.
+const reviewRejectionConvergenceGuard = new ConvergenceGuard();
 const agentIncidentDeduper = new IncidentDeduper();
 
 export interface OrchestratorAdapterConfig {
