@@ -452,7 +452,7 @@ export async function createJulesAgentAdjudicationInteraction(
   sessionId: string,
   activityId: string,
   question: string,
-  _reviewerAgentId: string,
+  reviewerAgentId: string,
   authToken: string | undefined,
   runId?: string,
 ): Promise<PaperclipInteraction> {
