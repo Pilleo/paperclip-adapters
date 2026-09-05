@@ -39,6 +39,65 @@ describe("Jules monitor reconciliation", () => {
     });
   });
 
+  it("repairs an in-progress Jules issue whose monitor was cleared by invalid assignee", () => {
+    expect(decideJulesMonitorReconciliation({
+      ...base,
+      issueStatus: "in_progress",
+      monitorStatus: "cleared",
+      monitorClearReason: "invalid_assignee",
+      assigneeIsJules: true,
+    }, Date.parse("2026-09-02T15:00:00.000Z"))).toEqual({
+      action: "resume_provider",
+      issueStatus: "in_progress",
+      reason: "cleared Jules monitor has a persisted provider session and valid Jules ownership",
+    });
+  });
+
+  it("repairs the cleared monitor even before executionPolicy is present", () => {
+    expect(decideJulesMonitorReconciliation({
+      ...base,
+      issueStatus: "in_progress",
+      monitorStatus: "cleared",
+      monitorClearReason: "invalid_assignee",
+      assigneeIsJules: true,
+      monitorCanBeReattached: false,
+    }, Date.parse("2026-09-02T15:00:00.000Z")).action).toBe("resume_provider");
+  });
+
+  it("repairs the same monitor when Paperclip has already marked the Jules issue blocked", () => {
+    expect(decideJulesMonitorReconciliation({
+      ...base,
+      issueStatus: "blocked",
+      monitorStatus: "cleared",
+      monitorClearReason: "invalid_assignee",
+      assigneeIsJules: true,
+      monitorCanBeReattached: false,
+    }, Date.parse("2026-09-02T15:00:00.000Z")).action).toBe("resume_provider");
+  });
+
+  it("reattaches an active Jules monitor stranded after executionPolicy was stripped", () => {
+    expect(decideJulesMonitorReconciliation({
+      ...base,
+      issueStatus: "in_progress",
+      monitorDetached: true,
+      timeoutAt: "2026-09-05T19:27:11.536Z",
+    }, Date.parse("2026-09-04T01:00:00.000Z"))).toEqual({
+      action: "resume_provider",
+      issueStatus: "in_progress",
+      reason: "stranded Jules monitor has a persisted provider session",
+    });
+  });
+
+  it("does not repair a cleared monitor without proven Jules ownership", () => {
+    expect(decideJulesMonitorReconciliation({
+      ...base,
+      issueStatus: "in_progress",
+      monitorStatus: "cleared",
+      monitorClearReason: "invalid_assignee",
+      assigneeIsJules: false,
+    }, Date.parse("2026-09-02T15:00:00.000Z")).action).toBe("preserve");
+  });
+
   it("never resumes from a provider reference alone when the monitor cannot be reattached", () => {
     expect(decideJulesMonitorReconciliation({ ...base, monitorCanBeReattached: false }, Date.parse("2026-09-02T15:00:00.000Z"))).toEqual({
       action: "return_to_todo",
