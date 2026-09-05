@@ -82,6 +82,8 @@ import {
   getPaperclipIssue,
   normalizeInternalReviewIssue,
   completeInternalReviewIssue,
+  activateInternalReviewIssue,
+  isPaperclipChildLimitError,
   scheduleJulesSessionMonitor,
   type PaperclipInteraction,
 } from "./paperclip-client.js";
