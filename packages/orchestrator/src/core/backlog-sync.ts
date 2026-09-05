@@ -356,7 +356,7 @@ export async function syncBacklogMarkdownToPaperclip(options: BacklogSyncOptions
             body: JSON.stringify({ description: sourceDescription }),
           });
           if (descriptionRes.ok) {
-            existing["description"] = sanitizedDescription;
+            existing["description"] = sourceDescription;
             updatedCount++;
             action = "updated";
           }
