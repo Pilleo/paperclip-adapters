@@ -23,6 +23,7 @@ export interface BoardIssueSnapshot {
 export type BoardReconciliationCommand =
   | { readonly action: "resume_provider"; readonly issueId: string; readonly reason: string }
   | { readonly action: "cancel_duplicate_child"; readonly issueId: string; readonly reason: string }
+  | { readonly action: "recover_to_review"; readonly issueId: string; readonly reason: string }
   | { readonly action: "return_to_todo"; readonly issueId: string; readonly reason: string };
 
 /** Pure, deterministic planner. It produces no Paperclip writes and ignores unowned work. */
