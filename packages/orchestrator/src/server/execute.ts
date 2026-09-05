@@ -1918,6 +1918,14 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
                 reviewRequest,
               );
               if (!createdInteraction.ok) {
+                const circuitState = capabilityCircuit.record(reviewCircuitKey, {
+                  ok: false,
+                  status: createdInteraction.status,
+                  text: createdInteraction.text,
+                });
+                if (isReviewerEligibilityFailure(createdInteraction.status, createdInteraction.text) && circuitState === "already_open") {
+                  continue;
+                }
                 throw new Error(`Native review dialog creation failed (${createdInteraction.status}): ${createdInteraction.text}`);
               }
               const created = createdInteraction.data;
