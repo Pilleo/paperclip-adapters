@@ -2662,8 +2662,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 });
                 const review = await runCheckpointedMutation({
                   session: session!,
-                  key: `jules:plan-review:${taskId}:${revision.revisionId}:vibe`,
-                  operation: "create_plan_review_child",
+                  key: `jules:plan-review:${taskId}:${revision.revisionId}:luna`,
+                  operation: "create_native_plan_review",
                   issueId: taskId,
                   sessionId: session!.julesSessionId,
                   activityId,
