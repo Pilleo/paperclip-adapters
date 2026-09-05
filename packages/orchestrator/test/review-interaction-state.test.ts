@@ -5,6 +5,8 @@ import {
   buildNativeReviewExecutionState,
   planReviewDialog,
   buildReviewInteractionRequest,
+  shouldExplicitlyWakeReviewCard,
+  selectReviewAttempt,
   reviewVerdictFromInteraction,
   shouldWakeAssignedReview,
   selectPrReviewIssues,
