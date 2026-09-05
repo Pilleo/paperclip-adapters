@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { parseYamlFrontmatter, resolveBacklogIssueCandidates } from "../src/core/backlog-sync.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { parseYamlFrontmatter, resolveBacklogIssueCandidates, syncBacklogMarkdownToPaperclip } from "../src/core/backlog-sync.js";
 
 describe("Backlog Sync Parser", () => {
   it("parses YAML frontmatter correctly", () => {
