@@ -40,7 +40,7 @@ export function synthesizeTokenFriendlyReviewPrompt(params: ReviewPromptParams):
     : "ℹ️ Invariant check passed.";
 
   const interactionSection = params.reviewInteractionId
-    ? `\n**Paperclip review dialog:** Resolve the review card with interaction ID \`${params.reviewInteractionId}\`. Use exactly **all good** or **need work**; selecting **need work** requires actionable feedback in the required comment field. Then, as the active execution-policy participant, apply the matching normal issue update (approve with status \`done\` plus a concise comment; request changes with status \`in_progress\` plus the same reason) and re-fetch to confirm the execution stage advanced. Do not use a free-form issue comment as the review disposition.\n`
+    ? `\n**Paperclip review dialog:** Resolve the review card with interaction ID \`${params.reviewInteractionId}\`. Use exactly **all good** or **need work**; selecting **need work** requires actionable feedback in the required comment field. The structured dialog verdict is the only output: do not PATCH the issue, change assignment/status, modify files, create a PR, or post a normal issue comment.\n`
     : "";
 
   return `## 🔍 Code Review Request: [${issue.identifier || issue.id}] ${issue.title}${interactionSection}
