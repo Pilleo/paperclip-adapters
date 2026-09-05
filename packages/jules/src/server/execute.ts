@@ -1338,7 +1338,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         planDocumentId: pendingProviderInteraction.planDocumentId,
         paperclipInteractionId: nativeReview.id,
         reviewerAgentId: config.planReviewerAgentId,
-        stage: "vibe",
+        stage: "luna",
         createdAt: new Date().toISOString(),
       };
       session.planReviewRevisionId = pendingProviderInteraction.planRevisionId;
