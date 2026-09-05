@@ -461,7 +461,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (ctx.onLog) await ctx.onLog("stdout", `${JSON.stringify(record)}\n`);
   });
   const apiKey = requireJulesApiKey(ctx.config);
-  const client = new JulesClient(apiKey, telemetry);
+  const client = new JulesClient(apiKey, telemetry, resolveJulesBaseUrl(ctx.agent.adapterConfig as Record<string, unknown>));
   const scheduleLiveSessionMonitor = async (
     current: JulesAdapterSessionV1,
     initialActivityCheck = false,
