@@ -99,7 +99,8 @@ export const PendingInteractionSchema = z.discriminatedUnion("type", [
     paperclipInteractionId: z.string().min(1),
     question: z.string(),
     createdAt: z.string()
-  })
+  }),
+  z.union([NativeAgentAdjudicationSchema, LegacyAgentAdjudicationSchema])
 ]);
 
 const PlanAgentReviewSchema = z.object({
