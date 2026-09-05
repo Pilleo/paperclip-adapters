@@ -2379,19 +2379,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
              }
 
              if (session.currentPrUrl) {
-               if (scopeDriftSummary) {
-                 return await yieldHeartbeat(session, false, {
-                   summary: `Jules PR ${session.currentPrUrl} requires host review for scope conformity. No message was sent to Jules.`,
-                   resultJson: {
-                     julesSessionId: session.julesSessionId,
-                     prUrl: session.currentPrUrl,
-                     scopeConformant: false,
-                     issueStatus: "in_review",
-                     reviewRequired: true,
-                     providerMessageSent: false,
-                   },
-                 });
-               }
                const skipCi =
                  (ctx.agent.adapterConfig as Record<string, unknown> | undefined)?.["ciPolicy"] === "skip" ||
                  (ctx.config as Record<string, unknown> | undefined)?.["ciPolicy"] === "skip";
