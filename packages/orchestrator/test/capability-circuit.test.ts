@@ -24,6 +24,25 @@ describe("CapabilityCircuit", () => {
     expect(circuit.isOpen("patch:issue-1")).toBe(false);
   });
 
+  it("opens once for a paused reviewer eligibility failure", () => {
+    const circuit = new CapabilityCircuit();
+    const failure = {
+      ok: false,
+      status: 422,
+      text: '{"error":"addresseeAgentId must reference an invokable agent","details":{"reason":"paused"}}',
+    };
+    expect(circuit.record("review-card:issue-1:luna:sha", failure)).toBe("opened");
+    expect(circuit.record("review-card:issue-1:luna:sha", failure)).toBe("already_open");
+    expect(circuit.isOpen("review-card:issue-1:luna:sha")).toBe(true);
+  });
+
+  it("does not classify unrelated validation 422 responses as capability failures", () => {
+    const circuit = new CapabilityCircuit();
+    expect(circuit.record("review-card:issue-1:luna:sha", {
+      ok: false, status: 422, text: "title is required",
+    })).toBe("closed");
+  });
+
   it("persists a denied capability across circuit instances", () => {
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-circuit-"));
     try {
