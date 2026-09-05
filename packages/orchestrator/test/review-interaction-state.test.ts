@@ -18,6 +18,43 @@ import {
 import { isAuthoritativeJulesMonitor } from "../src/core/jules-monitor-state.js";
 
 describe("native PR review interaction state", () => {
+  it("recognizes canonical retry keys while rejecting legacy review stages", () => {
+    expect(isCanonicalReviewCardKey("pr-review:v13:issue-1:pr:sha:luna:attempt:21")).toBe(true);
+    expect(isCanonicalReviewCardKey("pr-review:v13:issue-1:pr:sha:terra")).toBe(true);
+    expect(isCanonicalReviewCardKey("pr-review:v13:issue-1:pr:sha:strong:attempt:21")).toBe(false);
+    expect(isCanonicalReviewCardKey("pr-review:v13:issue-1:pr:sha:luna:attempt:x")).toBe(false);
+  });
+
+  it("does not promote a green PR when the current head is rejected or Jules has a resumable monitor", () => {
+    expect(canPromoteOpenPrToReview({ ciGreen: true, currentHeadRejected: true, hasRecoverableJulesMonitor: false })).toBe(false);
+    expect(canPromoteOpenPrToReview({ ciGreen: true, currentHeadRejected: false, hasRecoverableJulesMonitor: true })).toBe(false);
+    expect(canPromoteOpenPrToReview({ ciGreen: true, currentHeadRejected: false, hasRecoverableJulesMonitor: false })).toBe(true);
+    expect(canPromoteOpenPrToReview({ ciGreen: false, currentHeadRejected: false, hasRecoverableJulesMonitor: false })).toBe(false);
+  });
+
+  it("does not treat an executionState-only monitor projection as Jules ownership", () => {
+    expect(isAuthoritativeJulesMonitor({ monitor: { serviceName: "jules", externalRef: "session-1" } })).toBe(true);
+    expect(isAuthoritativeJulesMonitor(null)).toBe(false);
+  });
+
+  it("finds only structured rejection cards for the current immutable head", () => {
+    expect(hasNativeRejectionForHead([
+      { id: "luna", kind: "request_item_verdicts", status: "answered", idempotencyKey: "pr-review:v13:issue-1:pr:head-a:luna", result: { items: [{ id: "pull_request", verdict: "reject", reason: "Fix it" }] } },
+      { id: "old", kind: "request_item_verdicts", status: "answered", idempotencyKey: "pr-review:v13:issue-1:pr:head-b:luna", result: { items: [{ id: "pull_request", verdict: "reject", reason: "Old" }] } },
+      { id: "comment", kind: "comment", status: "answered", idempotencyKey: "pr-review:v13:issue-1:pr:head-a:terra", result: { items: [{ id: "pull_request", verdict: "reject", reason: "No" }] } },
+    ], "issue-1", "head-a")).toBe(true);
+    expect(hasNativeRejectionForHead([], "issue-1", "head-a")).toBe(false);
+  });
+
+  it("selects every other pending review card after a rejection, including legacy stale cards", () => {
+    expect(selectReviewCardsToWithdrawAfterRejection([
+      { id: "rejected", kind: "request_item_verdicts", status: "answered", idempotencyKey: "pr-review:v13:issue-1:pr:sha:luna" },
+      { id: "stale-terra", kind: "request_item_verdicts", status: "pending", idempotencyKey: "pr-review:v13:issue-1:pr:sha:terra" },
+      { id: "stale-strong", kind: "request_item_verdicts", status: "pending", idempotencyKey: "pr-review:v12:issue-1:pr:sha:strong" },
+      { id: "other-issue", kind: "request_item_verdicts", status: "pending", idempotencyKey: "pr-review:v13:issue-2:pr:sha:terra" },
+      { id: "comment", kind: "comment", status: "pending", idempotencyKey: "pr-review:v13:issue-1:pr:sha:terra" },
+    ], "issue-1", "rejected")).toEqual(["stale-terra", "stale-strong"]);
+  });
   it("uses a stable stage-and-head identity, not comments or assignment", () => {
     expect(reviewInteractionIdempotencyKey({ issueId: "issue-1", prUrl: "https://github.com/acme/repo/pull/1", headSha: "abc", stage: "vibe" }))
       .toBe("pr-review:v12:issue-1:https://github.com/acme/repo/pull/1:abc:vibe");
