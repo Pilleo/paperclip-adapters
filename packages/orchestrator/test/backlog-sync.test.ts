@@ -54,4 +54,65 @@ Body content here.`;
     );
     expect(result.issue?.id).toBe("issue-833");
   });
+
+  it("reconciles the source description and claims an unassigned managed backlog issue", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "backlog-sync-"));
+    const backlog = path.join(root, "docs/internals/backlog/testing");
+    fs.mkdirSync(backlog, { recursive: true });
+    const filePath = path.join(backlog, "issue-test-description.md");
+    const source = `---
+id: "issue-test-description"
+title: "Managed task"
+status: "open"
+priority: high
+orchestrator_managed: true
+target_modules:
+  - "packages/orchestrator"
+paperclip_issue_id: "paperclip-issue"
+paperclip_identifier: "MAZ-999"
+---
+
+Updated source contract.
+`;
+    fs.writeFileSync(filePath, source);
+
+    const originalFetch = globalThis.fetch;
+    const patches: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "PATCH") {
+        patches.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+        return new Response("{}", { status: 200 });
+      }
+      expect(url).toBe("http://paperclip.test/api/companies/company-1/issues?limit=2000");
+      return new Response(JSON.stringify([{
+        id: "paperclip-issue",
+        identifier: "MAZ-999",
+        title: "[issue-test-description] Managed task",
+        description: "old source contract",
+        status: "backlog",
+        assigneeAgentId: null,
+        projectId: "project-1",
+      }]), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const summary = await syncBacklogMarkdownToPaperclip({
+        workspacePath: root,
+        companyId: "company-1",
+        apiUrl: "http://paperclip.test",
+        projectId: "project-1",
+        orchestratorAgentId: "orchestrator-1",
+      });
+
+      expect(summary.updatedCount).toBe(2);
+      expect(patches).toEqual([
+        { description: expect.stringContaining("Updated source contract.") },
+        { status: "backlog", assigneeAgentId: "orchestrator-1" },
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
