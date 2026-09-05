@@ -55,6 +55,13 @@ describe("Orchestrator Managed Fleet Manager", () => {
           wakeOnDemand: true,
           maxConcurrentRuns: 1,
         });
+      } else if (["[Orchestrated] Luna Fast Reviewer", "[Orchestrated] Terra Strong Reviewer", "[Orchestrated] Terra Jules Question Adjudicator"].includes(call.name)) {
+        expect(call.runtimeConfig.heartbeat).toEqual({
+          enabled: false,
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+          skipTimerWhenNoActionableWork: true,
+        });
       }
       expect(call.status).toBe("idle");
       expect(call.reportsTo).toBe("orch-1");
