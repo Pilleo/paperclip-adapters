@@ -96,6 +96,7 @@ import { createJulesPlanReviewChild } from "./plan-review-client.js";
 import { parsePlanAdjudication } from "./plan-adjudication.js";
 import { createTelemetry } from "./telemetry.js";
 import { evaluateJulesIssueOwnership } from "./session-ownership.js";
+import { evaluateIssueScopedRun } from "./issue-scoped-run.js";
 
 const JULES_CONTINUATION_DELAY_MS = 60 * 1000;
 const JULES_INITIAL_ACTIVITY_CHECK_DELAY_MS = 5 * 1000;
