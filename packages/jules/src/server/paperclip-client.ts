@@ -1125,6 +1125,59 @@ implementation advice as an issue comment.`;
   }
 }
 
+/**
+ * Reconnects a recovered Jules session to its existing strong-review child.
+ * The session checkpoint is disposable, so the activity marker is the durable
+ * identity; this lookup never scans comments or guesses from question prose.
+ */
+export async function findJulesQuestionAdjudication(
+  parentIssueId: string,
+  companyId: string,
+  reviewerAgentId: string,
+  sessionId: string,
+  activityId: string,
+  authToken: string | undefined,
+  runId?: string,
+): Promise<PaperclipIssue | null> {
+  const response = await paperclipRequest(
+    `/api/companies/${encodeURIComponent(companyId)}/issues?limit=1000`,
+    authToken,
+    // Paperclip's local API can legitimately take ~2s while the heartbeat
+    // runner is acquiring a database connection. Keep recovery bounded, but
+    // do not make a healthy lookup fail before that normal latency window.
+    { method: "GET", signal: AbortSignal.timeout(5000) },
+    runId,
+  );
+  const raw = await response.json() as unknown;
+  const issues = Array.isArray(raw) ? raw : ((raw as { issues?: unknown[] } | null)?.issues ?? []);
+  const match = issues.find((value) => {
+    if (!value || typeof value !== "object") return false;
+    const issue = value as Record<string, unknown>;
+    if (issue["assigneeAgentId"] !== reviewerAgentId || issue["status"] === "cancelled" ||
+        typeof issue["description"] !== "string") return false;
+    const description = issue["description"] as string;
+    const correlation = parseQuestionCorrelation(description);
+    if (correlation) {
+      // v2 fallback issues intentionally have no parentId; the marker is the
+      // authoritative parent/session/activity identity in that case.
+      return correlation.parentIssueId === parentIssueId && correlation.companyId === companyId &&
+        correlation.sessionId === sessionId && correlation.activityId === activityId &&
+        correlation.reviewerAgentId === reviewerAgentId;
+    }
+    // Older adapter builds emitted only question-hash/activity markers and a
+    // prose parent hint for company-level fallback issues. Read this format
+    // for migration, but never emit it for new children.
+    const legacyActivityMarker = `:${activityId} -->`;
+    const legacyParentHint = `Parent issue: ${parentIssueId}`;
+    return description.includes("jules-question-adjudication:") &&
+      description.includes(legacyActivityMarker) &&
+      (issue["parentId"] === parentIssueId || description.includes(legacyParentHint));
+  });
+  return match && typeof (match as Record<string, unknown>)["id"] === "string"
+    ? match as PaperclipIssue
+    : null;
+}
+
 const questionAdjudicationLocks = new Map<string, Promise<void>>();
 
 export async function getPaperclipIssue(
