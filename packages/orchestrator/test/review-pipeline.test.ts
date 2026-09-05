@@ -334,7 +334,84 @@ describe("native multi-tier review pipeline", () => {
     expect(evaluateReviewPipelineProgress(params)).toMatchObject({ action: "AWAIT_REVIEW", stage: "luna_review" });
   });
 
-  it("replaces an expired or cancelled card with a fresh idempotency generation", () => {
+  it("reuses the stable-card recovery wake after a restart", () => {
+    const identity = { issueId: "issue-141", prUrl: "pr-526", headSha: "unknown", stage: "luna" } as const;
+    const params = {
+      ...base(), vibeReviewerAgentId: undefined, reviewerAgentId: undefined,
+      lunaReviewerAgentId: "agent-luna", terraReviewerAgentId: "agent-terra",
+      interactions: [nativeCard("luna", "pending")],
+      executionState: { status: "idle", reviewRecoveryKey: reviewInteractionIdempotencyKey(identity) },
+    };
+    expect(evaluateReviewPipelineProgress(params)).toMatchObject({ action: "RECOVER_REVIEW", stage: "luna_review", targetAgentId: "agent-luna" });
+  });
+
+  it("reuses stable-card recovery for a replacement attempt", () => {
+    const identity = { issueId: "issue-141", prUrl: "pr-526", headSha: "unknown", stage: "luna" } as const;
+    const params = {
+      ...base(), vibeReviewerAgentId: undefined, reviewerAgentId: undefined,
+      lunaReviewerAgentId: "agent-luna", terraReviewerAgentId: "agent-terra",
+      interactions: [{
+        ...nativeCard("luna", "pending"),
+        idempotencyKey: `${reviewInteractionIdempotencyKey(identity)}:attempt:1`,
+      }],
+      executionState: { status: "idle", reviewRecoveryKey: `${reviewInteractionIdempotencyKey(identity)}:attempt:1` },
+    };
+    expect(evaluateReviewPipelineProgress(params)).toMatchObject({ action: "RECOVER_REVIEW", stage: "luna_review", targetAgentId: "agent-luna" });
+  });
+
+  it("does not redispatch a pending real-SHA card when the head lookup is unavailable", () => {
+    const params = {
+      ...base(), vibeReviewerAgentId: undefined, reviewerAgentId: undefined,
+      lunaReviewerAgentId: "agent-luna", terraReviewerAgentId: "agent-terra",
+      interactions: [{
+        id: "luna-real-sha", kind: "request_item_verdicts", status: "pending",
+        idempotencyKey: `pr-review:v12:${issue.id}:pr-526:9d1b229fa0a9102c25b619b1bc5252f1b4851201:luna`,
+      }],
+      executionState: { status: "pending", currentParticipant: { type: "agent", agentId: "agent-luna" }, currentStageIndex: 0 },
+      reviewHeadSha: undefined,
+    };
+    expect(evaluateReviewPipelineProgress(params)).toMatchObject({ action: "AWAIT_REVIEW", stage: "luna_review" });
+  });
+
+  it("recovers a pending native card after a restart without changing its identity", () => {
+    const params = {
+      ...base(),
+      vibeReviewerAgentId: undefined,
+      reviewerAgentId: undefined,
+      lunaReviewerAgentId: "agent-luna",
+      terraReviewerAgentId: "agent-terra",
+      interactions: [nativeCard("luna", "pending")],
+      executionState: { status: "idle" },
+      comments: [{
+        id: "prose-approval",
+        body: "Completed and approved by review.",
+        authorAgentId: "agent-luna",
+      }],
+    };
+    expect(evaluateReviewPipelineProgress(params)).toMatchObject({ action: "RECOVER_REVIEW", stage: "luna_review", targetAgentId: "agent-luna" });
+  });
+
+  it("escalates a failed bound reviewer run instead of waking it again", () => {
+    const params = {
+      ...base(),
+      vibeReviewerAgentId: undefined,
+      reviewerAgentId: undefined,
+      lunaReviewerAgentId: "agent-luna",
+      terraReviewerAgentId: "agent-terra",
+      interactions: [nativeCard("luna", "pending")],
+      heartbeatRuns: [{
+        id: "run-luna-1",
+        agentId: "agent-luna",
+        status: "failed",
+        issueId: "issue-141",
+        interactionId: "luna-pending",
+      }],
+      executionState: { status: "idle" },
+    };
+    expect(evaluateReviewPipelineProgress(params)).toMatchObject({ action: "AWAIT_OPERATOR_RECOVERY", stage: "luna_review" });
+  });
+
+  it("requires operator recovery for an expired or cancelled card", () => {
     for (const status of ["expired", "cancelled"] as const) {
       const params = {
         ...base(),
