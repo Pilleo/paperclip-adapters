@@ -218,7 +218,13 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
       agentId: string,
       reason: string,
       issueId?: string,
-      options?: { resumeFromRunId?: string | undefined; idempotencyKey?: string | undefined },
+      options?: {
+        resumeFromRunId?: string | undefined;
+        idempotencyKey?: string | undefined;
+        workerFeedback?: WorkerFeedbackEnvelope | undefined;
+        /** Native review cards need their identity in the runtime task context. */
+        reviewInteractionId?: string | undefined;
+      },
     ) {
       // Paperclip wakeAgentSchema ignores top-level issueId. Heartbeat only
       // injects context.paperclipIssue / task when payload.issueId is set.
