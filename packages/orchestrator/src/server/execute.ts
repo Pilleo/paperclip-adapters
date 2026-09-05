@@ -31,8 +31,9 @@ import {
 import { formatOrchestratorDashboardCard } from "../core/telemetry-card.js";
 import { identifyStalledIssues } from "../core/stalled-session-reaper.js";
 import { hasDelegatedReviewChild, hasDelegatedReviewHistory, isDelegatedReviewChild } from "../core/recovery-eligibility.js";
-import { evaluateReviewPipelineProgress, hasStaleReviewerOwnership, operatorGateReconciliationPatch } from "../core/review-pipeline.js";
-import { buildNativeReviewExecutionState, buildReviewInteractionRequest, isReviewInteractionForIssue, planReviewDialog, reviewInteractionIdempotencyKey, reviewInteractionIdempotencyKeys } from "../core/review-interaction-state.js";
+import { evaluateReviewPipelineProgress, hasStaleReviewerOwnership, isReviewDispatchDecision, operatorGateReconciliationPatch, reviewDispatchStage } from "../core/review-pipeline.js";
+import { buildReviewInteractionRequest, hasNativeRejectionForHead, isCanonicalReviewCardKey, isReviewInteractionForIssue, planReviewDialog, reviewInteractionIdempotencyKey, reviewInteractionIdempotencyKeys, selectReviewAttempt, selectReviewCardsToWithdrawAfterRejection, type PrReviewStage } from "../core/review-interaction-state.js";
+import { findReviewCardBinding } from "../core/review-session-state.js";
 import {
   buildMazewallExecutionPolicy,
   NATIVE_PR_REVIEW_STAGE_IDS,
