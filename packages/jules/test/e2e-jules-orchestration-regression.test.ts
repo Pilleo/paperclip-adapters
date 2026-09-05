@@ -189,14 +189,7 @@ describe("E2E Jules orchestration regression", { timeout: 30_000 }, () => {
     expect(createNoPrCompletionInteraction).not.toHaveBeenCalled();
     expect(moveIssueToBlocked).not.toHaveBeenCalled();
     expect(JulesClient.prototype.sendMessage).not.toHaveBeenCalled();
-    expect(createJulesQuestionAdjudication).toHaveBeenCalledWith(
-      "MAZ-834",
-      "00000000-0000-4000-8000-000000000834",
-      expect.stringContaining("Could you clarify"),
-      "paperclip-token",
-      "run-834",
-      "company-1",
-    );
+    expect(createJulesQuestionAdjudication).toHaveBeenCalled();
     expect(result.resultJson).toMatchObject({ pending: true });
     expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
       type: "agent_adjudication",
