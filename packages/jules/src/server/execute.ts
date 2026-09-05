@@ -1779,6 +1779,127 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // heartbeat forever: terminal provider state must continue to the PR
       // handoff / failure path below. Non-terminal sessions still wait for the
       // structured reviewer decision exactly as before.
+      // A pending native plan review remains authoritative even if Jules has
+      // already reported COMPLETED. Older builds could continue the provider
+      // session after creating the card, leaving a terminal session with an
+      // unresolved reviewer gate. Migrate/consume the typed card before the
+      // terminal PR handoff instead of abandoning that visible decision.
+      if (pendingNativePlanReview) {
+        const interactions = await listPaperclipInteractions(taskId, ctx.authToken, ctx.runId).catch(() => []);
+        const interaction = interactions.find((candidate) => candidate.id === pendingNativePlanReview.paperclipInteractionId);
+        if (!interaction) return await yieldHeartbeat(session);
+        const planIdentity = {
+          issueId: taskId,
+          sessionId: session.julesSessionId!,
+          documentId: pendingNativePlanReview.planDocumentId,
+          revisionId: pendingNativePlanReview.planRevisionId,
+          revisionNumber: pendingNativePlanReview.planRevisionNumber,
+          stage: pendingNativePlanReview.stage,
+          reviewerAgentId: pendingNativePlanReview.reviewerAgentId,
+        } as const;
+        const parsedPlanInteraction = parsePlanReviewInteraction(interaction, planIdentity);
+        // An answered native plan card is a durable reviewer decision and must
+        // win over stale provider activity discovered in the same poll.  A
+        // previous question can remain in Jules' terminal activity history;
+        // letting that history gate this branch strands the answered verdict
+        // in Paperclip and never relays it to Jules.  Pending/malformed cards
+        // still wait behind the provider-question lane.
+        const hasAnsweredPlanVerdict = parsedPlanInteraction.kind === "v2" && parsedPlanInteraction.state === "answered" ||
+          parsedPlanInteraction.kind === "legacy" && parsedPlanInteraction.state !== "pending";
+        if (hasUnresolvedProviderQuestion && !hasAnsweredPlanVerdict) return await yieldHeartbeat(session);
+        if (interaction.status === "pending") {
+          // v1 used request_confirmation. Paperclip cannot authorize that card
+          // to run a non-assignee reviewer, so its automatic wake is cancelled
+          // as issue_assignee_changed. Migrate only a still-pending legacy card;
+          // resolved legacy decisions remain authoritative and are never
+          // withdrawn or replayed.
+          if (parsedPlanInteraction.kind === "legacy" && parsedPlanInteraction.state === "pending") {
+            await withdrawPaperclipInteraction(
+              taskId,
+              interaction.id,
+              "Migrating the pending legacy plan review to the v2 typed verdict protocol.",
+              ctx.authToken,
+              ctx.runId,
+            );
+            const migrated = await createJulesPlanReviewInteraction(
+              taskId,
+              session.julesSessionId!,
+              {
+                documentId: pendingNativePlanReview.planDocumentId,
+                revisionId: pendingNativePlanReview.planRevisionId,
+                revisionNumber: pendingNativePlanReview.planRevisionNumber,
+              },
+              pendingNativePlanReview.question,
+              pendingNativePlanReview.stage,
+              pendingNativePlanReview.reviewerAgentId,
+              ctx.authToken,
+              ctx.runId,
+            );
+            session.pendingInteraction = {
+              ...pendingNativePlanReview,
+              protocolVersion: 2,
+              paperclipInteractionId: migrated.id,
+            };
+            await persistSessionBestEffort(session, ctx.onLog);
+          }
+          return await yieldHeartbeat(session);
+        }
+        const verdict = parsedPlanInteraction.kind === "v2" && parsedPlanInteraction.state === "answered"
+          ? parsedPlanInteraction.decision
+            ? parsedPlanInteraction.decision.kind === "approve"
+              ? { decision: "approve" as const }
+              : { decision: "reject" as const, reason: parsedPlanInteraction.decision.reason! }
+            : null
+          : parsedPlanInteraction.kind === "legacy" && parsedPlanInteraction.state !== "pending"
+            ? parsedPlanInteraction.state === "accepted"
+              ? { decision: "approve" as const }
+              : parsedPlanInteraction.reason
+                ? { decision: "reject" as const, reason: parsedPlanInteraction.reason }
+                : null
+            : null;
+        if (!verdict) return await yieldHeartbeat(session);
+        if (verdict.decision === "reject") {
+          await client.sendMessage(session.julesSessionId!, {
+            prompt: `The ${pendingNativePlanReview.stage} plan review found concrete issues. Revise the plan and publish a new plan activity.\n\n${verdict.reason}`,
+          });
+          session.pendingInteraction = undefined;
+          session.planReviewOutcome = "revision_requested";
+          await persistSessionBestEffort(session, ctx.onLog);
+          return await yieldHeartbeat(session);
+        }
+        if (pendingNativePlanReview.stage === "luna" && config.planStrongReviewerAgentId) {
+          const next = await createJulesPlanReviewInteraction(
+            taskId,
+            session.julesSessionId!,
+            { documentId: pendingNativePlanReview.planDocumentId, revisionId: pendingNativePlanReview.planRevisionId, revisionNumber: pendingNativePlanReview.planRevisionNumber },
+            pendingNativePlanReview.question,
+            "terra",
+            config.planStrongReviewerAgentId,
+            ctx.authToken,
+            ctx.runId,
+          );
+          session.pendingInteraction = {
+            ...pendingNativePlanReview,
+            type: "plan_native_review",
+            protocolVersion: 2,
+            paperclipInteractionId: next.id,
+            reviewerAgentId: config.planStrongReviewerAgentId,
+            stage: "terra",
+          };
+          await persistSessionBestEffort(session, ctx.onLog);
+          return await yieldHeartbeat(session);
+        }
+        if (pendingNativePlanReview.stage === "terra") {
+          await client.approvePlan(session.julesSessionId!);
+          session.planApprovedAt = new Date().toISOString();
+          session.planReviewOutcome = "approved";
+          session.pendingInteraction = undefined;
+          await persistSessionBestEffort(session, ctx.onLog);
+          return await yieldHeartbeat(session);
+        }
+        return await yieldHeartbeat(session);
+      }
+
       if (pendingPlanAgentReview && !hasUnresolvedProviderQuestion && !terminalProviderState) {
         const child = await getPaperclipIssue(pendingPlanAgentReview.reviewIssueId, ctx.authToken, ctx.runId).catch(() => null);
         if (child) {
