@@ -637,7 +637,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
              try {
                 await cancelPaperclipInteraction(storedPendingInteraction.id, ctx.authToken, ctx.runId);
              } catch (e) {
-                 // Best effort
+                 return paperclipInteractionFailure(session!, e);
              }
           }
 

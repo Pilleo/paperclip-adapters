@@ -214,7 +214,7 @@ describe("Method-level granularity conflict evaluation", () => {
 describe("Blocker ID normalization", () => {
   it("normalizes fully qualified paperclip URIs to UUIDs and blocks dependents", () => {
     const depTask: ParsedIssueMetadata = {
-      id: "uuid-1234-5678-0000-0000-0000-000000000000",
+      id: "123e4567-e89b-12d3-a456-426614174000",
       identifier: "MAZ-200",
       title: "Dep task",
       status: "todo",
@@ -235,7 +235,7 @@ describe("Blocker ID normalization", () => {
       status: "todo",
       priority: "high",
       priorityRank: 3,
-      dependencies: ["paperclip://task/uuid-1234-5678-0000-0000-0000-000000000000"],
+      dependencies: ["paperclip://task/123e4567-e89b-12d3-a456-426614174000"],
       targetFiles: [],
       targetModules: [],
       targetSymbols: [],
@@ -246,11 +246,11 @@ describe("Blocker ID normalization", () => {
 
     const matrix = calculateConflictMatrix([depTask, task]);
     expect(matrix.conflictEdges).toHaveLength(1);
-    expect(matrix.conflictEdges[0]?.issueId1).toBe("uuid-1234-5678-0000-0000-0000-000000000000");
+    expect(matrix.conflictEdges[0]?.issueId1).toBe("123e4567-e89b-12d3-a456-426614174000");
     expect(matrix.conflictEdges[0]?.issueId2).toBe("task-2");
 
     const selected = selectNextTasks([depTask, task], matrix, { julesCapacity: 2 });
     expect(selected).toHaveLength(1);
-    expect(selected[0]?.issue.id).toBe("uuid-1234-5678-0000-0000-0000-000000000000");
+    expect(selected[0]?.issue.id).toBe("123e4567-e89b-12d3-a456-426614174000");
   });
 });

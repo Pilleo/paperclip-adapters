@@ -21,4 +21,12 @@ describe('cancelPaperclipInteraction', () => {
             })
         );
     });
+
+    it('throws PaperclipClientError on failed cancellation', async () => {
+        const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 500, text: async () => 'Internal Error' });
+        global.fetch = fetchMock as any;
+
+        await expect(cancelPaperclipInteraction('inter-1', 'test-token', 'test-run'))
+            .rejects.toThrow(PaperclipClientError);
+    });
 });
