@@ -240,7 +240,8 @@ export function planReviewDialog(
   identity: ReviewInteractionIdentity,
   interactions: readonly (NativeReviewInteraction & { readonly idempotencyKey?: string | undefined })[],
 ): ReviewDialogPlan {
-  const idempotencyKey = reviewInteractionIdempotencyKey(identity);
+  const attempt = identity.attempt ?? selectReviewAttempt(identity, interactions);
+  const idempotencyKey = reviewInteractionIdempotencyKey({ ...identity, attempt });
   const pending = interactions.find((interaction) =>
     interaction.kind === "request_item_verdicts" && interaction.status === "pending" &&
     interaction.idempotencyKey === idempotencyKey &&
