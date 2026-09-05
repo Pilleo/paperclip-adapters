@@ -2222,10 +2222,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           await normalizeInternalReviewIssue(adjudicationIssue, ctx.authToken, ctx.runId).catch(() => undefined);
         }
         const comments = await listIssueComments(pending.adjudicationIssueId, ctx.authToken, ctx.runId).catch(() => []);
-        const decision = comments
-          .filter((comment) => comment.authorAgentId === pending.reviewerAgentId)
-          .map((comment) => parseQuestionAdjudication(comment.body))
-          .find((candidate) => candidate !== null);
+        const adjudication = evaluateQuestionAdjudicationChild({
+          status: adjudicationIssue?.status,
+          reviewerAgentId: pending.reviewerAgentId,
+          comments,
+        });
+        const decision = adjudication.decision;
         if (decision?.kind === "ANSWER") {
           if (pending.paperclipInteractionId) {
             await answerJulesAgentAdjudicationInteraction(
