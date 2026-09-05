@@ -1,5 +1,5 @@
 export interface ManagedWorkerDefinition {
-  readonly key: "jules" | "vibe" | "luna_reviewer" | "antigravity" | "terra_reviewer";
+  readonly key: "jules" | "vibe" | "luna_reviewer" | "antigravity" | "terra_reviewer" | "terra_adjudicator";
   readonly name: string;
   readonly title: string;
   readonly adapterType: string;
