@@ -57,6 +57,7 @@ import {
   addJulesActivityComment,
   createJulesFeedbackInteraction,
   createJulesAgentAdjudicationInteraction,
+  createJulesQuestionReviewInteraction,
   answerJulesAgentAdjudicationInteraction,
   createJulesPlanApprovalInteraction,
   saveJulesPlanDocument,
