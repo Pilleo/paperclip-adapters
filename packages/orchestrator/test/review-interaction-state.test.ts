@@ -122,8 +122,24 @@ describe("native PR review interaction state", () => {
       continuationPolicy: "wake_assignee", addresseeAgentId: "luna-1",
       idempotencyKey: reviewInteractionIdempotencyKey(identity),
     }])).toEqual({ action: "reuse", interactionId: "dialog-1" });
-    expect(buildReviewInteractionRequest(identity)).toMatchObject({
-      continuationPolicy: "wake_assignee", addresseeAgentId: "luna-1",
+    expect(buildReviewInteractionRequest(identity)).toMatchObject({ continuationPolicy: "none", addresseeAgentId: "luna-1" });
+  });
+
+  it("reuses the adapter workaround card when it is intentionally unaddressed", () => {
+    const identity = {
+      issueId: "issue-1", prUrl: "pr-1", headSha: "abc", stage: "terra" as const,
+      reviewerAgentId: "terra-1",
+    };
+    expect(planReviewDialog(identity, [{
+      id: "unaddressed-card", kind: "request_item_verdicts", status: "pending",
+      continuationPolicy: "wake_assignee", addresseeAgentId: null,
+      idempotencyKey: reviewInteractionIdempotencyKey(identity),
+    }])).toEqual({ action: "reuse", interactionId: "unaddressed-card" });
+  });
+
+  it("builds a visible addressed reviewer card", () => {
+    const request = buildReviewInteractionRequest({
+      issueId: "issue-1", prUrl: "pr-1", headSha: "abc", stage: "terra", reviewerAgentId: "terra-1",
     });
   });
 
