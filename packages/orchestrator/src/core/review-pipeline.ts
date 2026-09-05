@@ -261,7 +261,8 @@ export function evaluateReviewPipelineProgress(
     // answered native card cannot cause an unnecessary second reviewer run.
     const interaction = interactions.find((candidate) => {
       const key = candidate.idempotencyKey || "";
-      const matchesIdentity = exactKeys.includes(key) || (
+      const matchesIdentity = exactKeys.includes(key) ||
+        key.startsWith(`${reviewInteractionKeyPrefix(identity)}:attempt:`) || (
         key.includes(`:${issue.id}:`) &&
         (reviewHeadSha
           ? /^pr-review:v(?:9|10|11|12):/.test(key) && key.endsWith(`:${reviewHeadSha}:${stage}`)
