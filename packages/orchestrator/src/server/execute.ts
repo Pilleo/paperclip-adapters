@@ -76,6 +76,8 @@ import { allocateProjectCapacity } from "../core/project-capacity.js";
 import { isProjectWorkspaceDirectory } from "../core/project-workspaces.js";
 import { IncidentDeduper } from "../core/incident-deduper.js";
 import { runProjectWorkerPool } from "../core/project-worker-pool.js";
+import { planOrphanReviewRecovery } from "../core/orphan-review-recovery.js";
+import { decideReviewSession } from "../core/review-session-state.js";
 import type { IssueState } from "../core/types.js";
 import { executePaperclipCommand } from "@pilleo/paperclip-adapter-common";
 
