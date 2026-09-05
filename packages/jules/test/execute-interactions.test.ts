@@ -262,6 +262,7 @@ describe("Jules activity interactions", { timeout: 30000 }, () => {
     expect(result.exitCode).toBe(0);
   });
 
+
   it("sends a plan rejection reason to Jules so it can regenerate the plan", async () => {
     vi.mocked(getPaperclipInteraction).mockResolvedValue({
       id: "plan-1",

@@ -90,6 +90,7 @@ describe("E2E host-plan scope conformity on Jules PRs", () => {
         },
       },
       config: adapterConfig,
+      runId: "run-1",
       onLog: vi.fn().mockResolvedValue(undefined),
     } as unknown as AdapterExecutionContext;
   }
