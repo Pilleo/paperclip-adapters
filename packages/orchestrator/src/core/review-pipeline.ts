@@ -225,6 +225,7 @@ export function evaluateReviewPipelineProgress(
     prUrl,
     ciStatus,
     interactions = [],
+    heartbeatRuns = [],
     reviewHeadSha,
     existingApprovals,
     vibeReviewerAgentId,
