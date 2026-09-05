@@ -41,7 +41,18 @@ export function selectJulesSupervisorActions(input: {
   const now = input.now ?? Date.now();
   return input.issues.flatMap((issue) => {
     if (issue.assigneeAgentId !== input.julesAgentId || issue.status !== "in_progress") return [];
-    const run = input.runs.find((candidate) => candidate.issueId === issue.id && Boolean(liveSessionId(candidate)));
+    // Paperclip places a scheduled retry ahead of the source run that owns
+    // the provider session. The retry row intentionally has no session id;
+    // using `find` therefore made a due retry look unresumable forever. Pick
+    // the newest session-bearing run, while ignoring sessionless scheduler
+    // projections and preserving the source run id for the explicit wake.
+    const run = input.runs
+      .filter((candidate) => candidate.issueId === issue.id && Boolean(liveSessionId(candidate)))
+      .sort((left, right) => {
+        const leftTime = Date.parse(left.finishedAt ?? left.startedAt ?? "");
+        const rightTime = Date.parse(right.finishedAt ?? right.startedAt ?? "");
+        return rightTime - leftTime;
+      })[0];
     const sessionId = run ? liveSessionId(run) : null;
     if (!run || !sessionId) return [];
     const retryAt = run.retryNotBefore ? Date.parse(run.retryNotBefore) : NaN;
