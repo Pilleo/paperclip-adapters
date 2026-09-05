@@ -2660,7 +2660,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                   persist: () => persistSessionBestEffort(session!, ctx.onLog),
                   run: () => saveJulesPlanDocument(taskId, activityId, fullPlan, ctx.authToken, ctx.runId),
                 });
-                const child = await runCheckpointedMutation({
+                const review = await runCheckpointedMutation({
                   session: session!,
                   key: `jules:plan-review:${taskId}:${revision.revisionId}:vibe`,
                   operation: "create_plan_review_child",
