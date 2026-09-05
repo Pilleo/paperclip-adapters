@@ -125,7 +125,7 @@ async function paperclipRequest(
         headers: {
           "Content-Type": "application/json",
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          ...(runId ? { "X-Paperclip-Run-Id": runId } : {}),
+          ...(effectiveRunId ? { "X-Paperclip-Run-Id": effectiveRunId } : {}),
           ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
           ...init.headers,
         },
