@@ -108,7 +108,7 @@ describe("GitHub PR Sync Module", () => {
     });
   });
 
-  it("recovers only a done issue whose registered PR is explicitly awaiting review", () => {
+  it("recognizes a registered PR explicitly awaiting review", () => {
     const issue = extractIssueMetadata({
       id: "issue-834",
       identifier: "MAZ-834",
