@@ -12,6 +12,7 @@ const parent = (overrides: Partial<BoardIssueSnapshot> = {}): BoardIssueSnapshot
   resumableMonitor: true,
   monitorExpired: false,
   nativeReviewInteraction: false,
+  registeredOpenPullRequest: false,
   hasPullRequest: false,
   parentId: null,
   reviewGateKey: null,
