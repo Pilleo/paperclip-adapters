@@ -84,5 +84,13 @@ export function decideJulesMonitorReconciliation(
   if (!invalidAssigneeRepair && !strandedMonitorRepair && snapshot.monitorCanBeReattached === false) {
     return { action: "return_to_todo", issueStatus: "todo", reason: "expired Jules monitor has no verified executable continuation" };
   }
-  return { action: "resume_provider", issueStatus: "in_progress", reason: "expired Jules monitor has a persisted provider session" };
+  return {
+    action: "resume_provider",
+    issueStatus: "in_progress",
+    reason: strandedMonitorRepair
+      ? "stranded Jules monitor has a persisted provider session"
+      : invalidAssigneeRepair
+      ? "cleared Jules monitor has a persisted provider session and valid Jules ownership"
+      : "expired Jules monitor has a persisted provider session",
+  };
 }
