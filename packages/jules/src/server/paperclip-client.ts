@@ -62,6 +62,15 @@ function paperclipApiBaseUrl(): string {
   return (process.env[PAPERCLIP_API_URL_ENV] ?? "http://127.0.0.1:3100").replace(/\/+$/, "");
 }
 
+function isLocalTrustedPaperclip(): boolean {
+  try {
+    const host = new URL(paperclipApiBaseUrl()).hostname;
+    return host === "127.0.0.1" || host === "localhost" || host === "::1";
+  } catch {
+    return false;
+  }
+}
+
 function requireAuthToken(authToken: string | undefined): string | undefined {
   const token = (typeof authToken === "string" && authToken.trim().length > 0)
     ? authToken.trim()
