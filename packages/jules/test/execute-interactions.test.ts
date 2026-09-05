@@ -6,6 +6,10 @@ import { sessionCodec } from "../src/server/session";
 import {
   addJulesActivityComment,
   createJulesAgentAdjudicationInteraction,
+  createJulesQuestionReviewInteraction,
+  answerJulesAgentAdjudicationInteraction,
+  resolveJulesAgentAdjudicationInteraction,
+  activateInternalReviewIssue,
   createJulesFeedbackInteraction,
   createJulesQuestionAdjudication,
   createJulesPlanApprovalInteraction,
