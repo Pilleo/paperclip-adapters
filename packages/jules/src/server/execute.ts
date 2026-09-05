@@ -1547,29 +1547,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // Mirroring must never prevent terminal detection: a mirror failure used to
       // abort this run before the COMPLETED/FAILED branches could fire, leaving
       // the Paperclip issue blocked forever (MAZ-102 incident, issue #4/#5 class).
-      const deliveredActivityIdsBeforePoll = new Set(session.deliveredActivityIds ?? []);
-      let activities: JulesActivity[] = [];
-      try {
-        // Terminal reconciliation must inspect a bounded window large enough
-        // to contain both the provider's typed completion marker and a final
-        // question. One page can contain the question but omit the marker,
-        // which would make old prose look like a new question.
-        activities = await mirrorNewActivities(
-          client,
-          session,
-          taskId,
-          ctx.authToken,
-          ctx.runId,
-          ctx.onLog,
-          5,
-        );
-      } catch (mirrorError) {
-        await ctx.onLog?.(
-          'stderr',
-          `[jules] activity mirroring failed (terminal detection continues): ${String(mirrorError)}\n`,
-        );
-      }
-
       // Watchdog stall evaluation
       const lastAct = activities.length > 0 && activities[activities.length - 1]
         ? activities[activities.length - 1]
