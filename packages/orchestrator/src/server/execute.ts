@@ -143,7 +143,7 @@ export async function executeAllProjects(
     (context as AdapterExecutionContext & { authToken?: string }).authToken
     || process.env["PAPERCLIP_AGENT_TOKEN"]
     || process.env["PAPERCLIP_API_KEY"];
-  const pc = createPaperclipHttp({ apiUrl, authToken });
+  const pc = createPaperclipHttp({ apiUrl, authToken, localTrustedBoardWrites: true });
   let projects: PaperclipProjectRecord[];
   try {
     const listedProjects = asArray<PaperclipProjectRecord>(await pc.listProjects(companyId));
