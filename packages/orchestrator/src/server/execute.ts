@@ -834,6 +834,35 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       if (!julesProduct) continue;
       const matchingPr = ghStatus.openPrs.find((pr) => matchPrToIssue(pr, issue));
       if (!matchingPr) continue;
+      // Open/green cannot override a structured rejection for this immutable
+      // head, nor can it steal an issue whose Jules monitor is resumable.
+      // Read the authoritative interactions/detail before deciding; the
+      // compact issue list is allowed to omit both fields.
+      let currentHeadRejected = false;
+      let authoritativeExecutionPolicy: unknown = undefined;
+      try {
+        const detail = await pc.getIssue<Record<string, unknown>>(issue.id);
+        const policy = detail["executionPolicy"];
+        const policyRecord = policy && typeof policy === "object" && !Array.isArray(policy) ? policy as Record<string, unknown> : null;
+        authoritativeExecutionPolicy = policyRecord;
+        if (matchingPr.headRefOid) {
+          const rawInteractions = asArray<Record<string, unknown>>(await pc.listInteractions(issue.id));
+          currentHeadRejected = hasNativeRejectionForHead(rawInteractions.map((interaction) => ({
+            id: String(interaction["id"] ?? ""),
+            kind: typeof interaction["kind"] === "string" ? interaction["kind"] : undefined,
+            status: typeof interaction["status"] === "string" ? interaction["status"] : undefined,
+            idempotencyKey: typeof interaction["idempotencyKey"] === "string" ? interaction["idempotencyKey"] : undefined,
+            result: interaction["result"],
+          })), issue.id, matchingPr.headRefOid);
+        }
+      } catch (err: unknown) {
+        await log(`[ORCHESTRATOR] Deferring open Jules PR recovery for [${issue.identifier || issue.id}]: could not verify monitor/review state (${String(err)}).`);
+        continue;
+      }
+      if (!canPromoteJulesPrToReview({ ciGreen: true, currentHeadRejected, executionPolicy: authoritativeExecutionPolicy })) {
+        await log(`[ORCHESTRATOR] Keeping [${issue.identifier || issue.id}] with Jules: current PR head is rejected or its provider monitor is resumable.`);
+        continue;
+      }
       const ci = await checkPrCiIsGreen(matchingPr.number, workspacePath, matchingPr.url);
       if (!ci.isGreen) {
         await log(`[ORCHESTRATOR] Deferring open Jules PR recovery for [${issue.identifier || issue.id}]: CI is ${ci.status}.`);
