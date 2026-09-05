@@ -291,6 +291,11 @@ export function buildReviewInteractionRequest(identity: ReviewInteractionIdentit
   };
 }
 
+/** Only legacy unaddressed cards need an explicit adapter wake. */
+export function shouldExplicitlyWakeReviewCard(request: ReviewInteractionRequest): boolean {
+  return request.addresseeAgentId == null;
+}
+
 /** Prevent internal Jules coordination and non-PR work entering the PR lane. */
 export function selectPrReviewIssues(issues: readonly {
   readonly id: string;
