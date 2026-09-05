@@ -984,7 +984,10 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       lifecycleConvergenceGuard.clear(key);
     }
     await lifecycleConvergenceGuard.runOnce(key, async () => {
-      if (!executionPolicy || !canReattachNativeMonitor || typeof externalRef !== "string") {
+      const invalidAssigneeRepair = (issue.status === "in_progress" || issue.status === "blocked" || issue.status === "todo") &&
+        monitorStatus === "cleared" && monitorClearReason === "invalid_assignee" &&
+        issue.assigneeAgentId === julesAgentId;
+      if ((!executionPolicy && !invalidAssigneeRepair && !monitorDetached) || (!canReattachNativeMonitor && !invalidAssigneeRepair && !monitorDetached) || typeof externalRef !== "string") {
         await log(`[ORCHESTRATOR] Refusing Jules monitor reattachment for [${issue.identifier || issue.id}]: native monitor payload is incomplete.`);
         return;
       }
