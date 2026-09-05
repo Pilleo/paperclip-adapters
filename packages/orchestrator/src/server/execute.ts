@@ -2037,7 +2037,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
         };
         await managedWakeup(
           workerId,
-          `Native PR review needs work for [${reviewTask.identifier || reviewTask.id}]: ${pipelineDecision.feedbackSummary || "See the bound review dialog."}`,
+          `Native PR review needs work for [${reviewTask.identifier || reviewTask.id}]. Delivering structured feedback to Jules.`,
           reviewTask.id,
         );
       } catch (err: unknown) {
