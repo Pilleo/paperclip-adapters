@@ -220,6 +220,23 @@ describe("createPaperclipHttp wakeup", () => {
     expect(fetchMock.mock.calls[1]?.[0]).toBe("http://127.0.0.1:3100/api/issues/issue-834/interactions");
   });
 
+  it("publishes and resolves native recovery actions", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith("/recovery-actions")) return new Response('{"active":null}', { status: 200 });
+      return new Response('{"action":{"id":"recovery-1"}}', { status: 200 });
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+    const pc = createPaperclipHttp({ apiUrl: "http://127.0.0.1:3100", authToken: "test-token" });
+    await pc.listRecoveryActions("issue-955");
+    await pc.createRecoveryAction("issue-955", { kind: "reviewer_unavailable", fingerprint: "stable" });
+    await pc.resolveRecoveryAction("issue-955", { actionId: "recovery-1", outcome: "restored", sourceIssueStatus: "in_review" });
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "http://127.0.0.1:3100/api/issues/issue-955/recovery-actions",
+      "http://127.0.0.1:3100/api/issues/issue-955/recovery-actions",
+      "http://127.0.0.1:3100/api/issues/issue-955/recovery-actions/resolve",
+    ]);
+  });
+
   it("withdraws a stale interaction through its dedicated endpoint", async () => {
     const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
     globalThis.fetch = fetchMock as typeof fetch;
