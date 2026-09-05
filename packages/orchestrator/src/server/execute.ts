@@ -918,10 +918,13 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       ? executionPolicyRaw as Record<string, unknown>
       : null;
     const policyMonitor = executionPolicyRecord?.["monitor"];
-    const monitorRecord = monitor && typeof monitor === "object" && !Array.isArray(monitor)
-      ? monitor as Record<string, unknown>
-      : policyMonitor && typeof policyMonitor === "object" && !Array.isArray(policyMonitor)
-        ? policyMonitor as Record<string, unknown>
+    // Once repaired, executionPolicy.monitor is authoritative. Prefer it over
+    // Paperclip's lossy executionState projection, which may retain the old
+    // cleared/invalid_assignee monitor for several heartbeats.
+    const monitorRecord = policyMonitor && typeof policyMonitor === "object" && !Array.isArray(policyMonitor)
+      ? policyMonitor as Record<string, unknown>
+      : monitor && typeof monitor === "object" && !Array.isArray(monitor)
+        ? monitor as Record<string, unknown>
         : null;
     const monitorStatus = typeof monitorRecord?.["status"] === "string" ? monitorRecord["status"] : null;
     const timeoutAt = typeof monitorRecord?.["timeoutAt"] === "string" ? monitorRecord["timeoutAt"] : null;
