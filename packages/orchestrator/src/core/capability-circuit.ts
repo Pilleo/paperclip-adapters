@@ -68,7 +68,7 @@ export class CapabilityCircuit {
       this.remove(key);
       return "closed";
     }
-    if (result.status !== 401 && result.status !== 403) return "closed";
+    if (!isReviewerEligibilityFailure(result.status, result.text)) return "closed";
     if (this.load(key)) return "already_open";
     const denial = { status: result.status, detail: result.text.slice(0, 300) };
     this.denied.set(key, denial);
