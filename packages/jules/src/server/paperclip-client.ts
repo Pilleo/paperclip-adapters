@@ -512,6 +512,83 @@ export async function createJulesAgentAdjudicationInteraction(
   }
 }
 
+/**
+ * Creates the executable reviewer form on the reviewer-owned child issue.
+ *
+ * Paperclip wakes an addressed agent only when that agent owns the issue being
+ * mutated.  The Jules issue must remain assigned to Jules, so its visible
+ * audit card cannot also be the Terra wake target.  This child form is the
+ * adapters-only compatibility bridge until Paperclip exposes a first-class
+ * cross-assignee interaction target.
+ */
+export async function createJulesQuestionReviewInteraction(
+  childIssueId: string,
+  parentIssueId: string,
+  sessionId: string,
+  activityId: string,
+  question: string,
+  reviewerAgentId: string,
+  authToken: string | undefined,
+  runId?: string,
+): Promise<PaperclipInteraction> {
+  // Paperclip enforces interaction idempotency across more than one issue in
+  // some deployments. Include the protocol child identity so a terminal
+  // child from an earlier recovery generation cannot reject the new child's
+  // otherwise-correct form with a cross-issue 409.
+  const idempotencyKey = `jules:question-review:${childIssueId}:${parentIssueId}:${sessionId}:${activityId}`;
+  const { prompt, helpText } = formatCardPromptAndHelpText(question);
+  try {
+    const response = await paperclipRequest(
+      `/api/issues/${encodeURIComponent(childIssueId)}/interactions`, authToken, {
+        method: "POST",
+        body: JSON.stringify({
+          kind: "ask_user_questions",
+          idempotencyKey,
+          title: "Adjudicate Jules question",
+          summary: "A strong reviewer must choose an answer or escalation for Jules.",
+          addresseeAgentId: reviewerAgentId,
+          continuationPolicy: "wake_assignee",
+          resolverPolicy: "anyone",
+          payload: {
+            version: 1,
+            title: "Adjudicate Jules question",
+            submitLabel: "Submit reviewer decision",
+            questions: [{
+              id: "resolution",
+              prompt: "Choose how to handle Jules' question.",
+              helpText: "Answer only when the task context makes the response clear. Escalate concrete ambiguity to a human.",
+              selectionMode: "single",
+              required: true,
+              options: [
+                { id: "answer", label: "Answer Jules" },
+                { id: "escalate", label: "Escalate to human" },
+              ],
+            }, {
+              id: "response",
+              prompt,
+              helpText: helpText
+                ? `${helpText.slice(0, 800)}\n\nProvide the exact answer for Jules, or the concrete ambiguity requiring human input. Submit this Paperclip form through its native respond endpoint using exactly: answers: [{ questionId: "resolution", optionIds: ["answer"] }, { questionId: "response", optionIds: ["response"], otherText: "..." }]. For escalation, use optionIds: ["escalate"] and put the concrete reason in otherText. Do not use selectedOptionIds, text, an object map, or an issue comment.`
+                : "Provide the exact answer for Jules, or the concrete ambiguity requiring human input. Submit this Paperclip form through its native respond endpoint using exactly: answers: [{ questionId: \"resolution\", optionIds: [\"answer\"] }, { questionId: \"response\", optionIds: [\"response\"], otherText: \"...\" }]. For escalation, use optionIds: [\"escalate\"] and put the concrete reason in otherText. Do not use selectedOptionIds, text, an object map, or an issue comment.",
+              selectionMode: "single",
+              required: true,
+              options: [{ id: "response", label: "Reviewer response", freeText: true }],
+            }],
+          },
+        }),
+      },
+      runId,
+    );
+    return interactionFromResponse(await response.json(), response.status);
+  } catch (error) {
+    if (error instanceof PaperclipClientError && (error.status === 409 || error.status === 422 || error.status === 400)) {
+      const existing = await listPaperclipInteractions(childIssueId, authToken, runId).catch(() => []);
+      const match = existing.find((interaction) => interaction.idempotencyKey === idempotencyKey);
+      if (match) return match;
+    }
+    throw error;
+  }
+}
+
 /** Record the strong reviewer's answer in the visible provider-question card. */
 export async function answerJulesAgentAdjudicationInteraction(
   issueId: string,
