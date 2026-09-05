@@ -71,9 +71,8 @@ export interface ReviewInteractionRequest {
   readonly kind: "request_item_verdicts";
   readonly idempotencyKey: string;
   readonly title: string;
-  /** The addressed reviewer is woken after answering so it can finish the
-   * required execution-policy transition. */
-  readonly continuationPolicy: "wake_assignee";
+  /** Addressed cards are Paperclip's native review dispatch primitive. */
+  readonly continuationPolicy: "none" | "wake_assignee";
   readonly addresseeAgentId?: string | undefined;
   readonly payload: {
     readonly version: 1;
