@@ -138,6 +138,11 @@ async function main(): Promise<void> {
 
     const orch = requireObject(await request(`/api/companies/${companyId}/agents`, "POST", {
       name: "Canary Orchestrator", role: "general", adapterType: "orchestrator",
+      // The real server runner supplies this adapter configuration as the
+      // heartbeat context. Enable fleet reconciliation so the canary fails
+      // loudly if the canonical Luna/Terra reviewer identities cannot be
+      // provisioned, rather than silently producing no review card.
+      adapterConfig: { reconcileFleet: true },
     }), "orchestrator agent");
     const jules = requireObject(await request(`/api/companies/${companyId}/agents`, "POST", {
       name: "Canary Jules", role: "general", adapterType: "jules", reportsTo: orch.id,
