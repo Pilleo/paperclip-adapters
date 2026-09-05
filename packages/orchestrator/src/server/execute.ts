@@ -1896,6 +1896,19 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
                 await log(`[ORCHESTRATOR] Warning: could not persist recoverable review wait state (${waitPatch.status}): ${waitPatch.text}`);
               }
             }
+            continue;
+          }
+          // A successful health observation is the explicit probe that closes
+          // a durable paused-reviewer circuit after the agent recovers.
+          capabilityCircuit.record(reviewCircuitKey, { ok: true, status: 200, text: "reviewer invokable" });
+          try {
+            const dialogPlan = planReviewDialog(reviewIdentity, reviewInteractions);
+            // The native card is the only review lock. Do not patch
+            // executionPolicy/currentParticipant here: Paperclip can launch a
+            // second unbound reviewer run from that projection, which was the
+            // source of MAZ-955's duplicate free-text comments and quota burn.
+            // Do not withdraw another stage's card during a heartbeat either;
+            // stale-card cleanup must be an explicit migration operation.
             if (dialogPlan.action === "reuse") {
               reviewInteractionId = dialogPlan.interactionId;
             } else {
