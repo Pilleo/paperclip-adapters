@@ -1936,6 +1936,24 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
                 throw new Error("Native review dialog creation returned no interaction id");
               }
               dialogCreated = true;
+              reviewDispatchedCount++;
+            }
+            try {
+              const recoveryResponse = await pc.listRecoveryActions(reviewTask.id) as { active?: Record<string, unknown> | null };
+              const active = recoveryResponse.active;
+              if (active?.["kind"] === "reviewer_unavailable" && active["fingerprint"] === reviewCircuitKey) {
+                const resolved = await pc.resolveRecoveryAction(reviewTask.id, {
+                  actionId: active["id"],
+                  outcome: "restored",
+                  sourceIssueStatus: "in_review",
+                  resolutionNote: `Reviewer ${targetAgentId} is invokable again; native ${stage} review dispatch restored.`,
+                });
+                if (!resolved.ok) {
+                  await log(`[ORCHESTRATOR] Warning: could not resolve reviewer recovery action (${resolved.status}): ${resolved.text}`);
+                }
+              }
+            } catch (recoveryError) {
+              await log(`[ORCHESTRATOR] Warning: failed to resolve reviewer recovery action: ${String(recoveryError)}`);
             }
           } catch (interactionError) {
             await log(`[ORCHESTRATOR] 🚨 Failed to create native review dialog for [${reviewTask.identifier || reviewTask.id}]: ${String(interactionError)}`);
