@@ -48,7 +48,11 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
 
   async function request(path: string, init: RequestInit = {}): Promise<Response> {
     const isMutation = (init.method || "GET").toUpperCase() !== "GET";
-    const token = localTrustedBoardWrites && isMutation ? "" : requireToken(options.authToken);
+    // Paperclip's loopback `local_trusted` actor is intentionally credential
+    // free for built-in adapters. Apply it to the complete company-level
+    // control-plane exchange, not only mutations; otherwise the first project
+    // GET fails before the trusted mutation path can even be reached.
+    const token = localTrustedBoardWrites ? "" : requireToken(options.authToken);
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
