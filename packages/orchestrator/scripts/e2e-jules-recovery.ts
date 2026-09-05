@@ -324,11 +324,19 @@ async function main(): Promise<void> {
     operationError = error;
     throw error;
   } finally {
-    if (previousPath === undefined) delete process.env["PATH"];
-    else process.env["PATH"] = previousPath;
-    if (fakeGhDir) fs.rmSync(fakeGhDir, { recursive: true, force: true });
-    if (backlogDir) fs.rmSync(backlogDir, { recursive: true, force: true });
-    if (companyId) await request(`/api/companies/${companyId}`, "DELETE").catch(() => null);
+    if (companyId) {
+      try {
+        await request(`/api/companies/${companyId}`, "DELETE");
+      } catch (error) {
+        cleanupError = error;
+      }
+    }
+    if (cleanupError && !operationError) {
+      throw new Error(`Canary cleanup failed; disposable company ${companyId} may remain: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
+    }
+    if (cleanupError && operationError) {
+      console.error(`Canary cleanup also failed; disposable company ${companyId} may remain: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
+    }
   }
 }
 
