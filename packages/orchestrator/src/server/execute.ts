@@ -414,6 +414,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
         julesPlanApprovalPolicy: config.julesPlanApprovalPolicy,
         lunaReviewerAgentId,
         terraReviewerAgentId,
+        terraAdjudicatorAgentId,
         vibeReviewerAgentId,
         reviewerAgentId,
         skipWorkerKeys: MANAGED_FLEET_DEFINITIONS
