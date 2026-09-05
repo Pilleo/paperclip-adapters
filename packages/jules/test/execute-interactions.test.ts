@@ -114,7 +114,7 @@ describe("Jules activity interactions", { timeout: 30000 }, () => {
       "00000000-0000-4000-8000-000000000123", "jwt-token", "run-1",
     );
     expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
-      type: "agent_adjudication", adjudicationIssueId: "adjudication-1", paperclipInteractionId: "visible-question-1", julesActivityId: "activity-question",
+      type: "agent_adjudication", nativeForm: true, transport: "child_form_bridge", paperclipInteractionId: "visible-question-1", reviewerChildIssueId: "child-question-1", reviewerInteractionId: "child-form-1", julesActivityId: "activity-question",
     });
   });
 
