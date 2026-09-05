@@ -1482,6 +1482,50 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
   }
 
   const inProgressIssues = overlayedIssues.filter((i) => i.status === "in_progress");
+
+  // A rejection can race with the host transition that returns the issue to
+  // Jules. In that window the issue is no longer part of `inReviewIssues`, so
+  // cleanup performed only in the review branch would never see a stale
+  // Terra/strong card. For a Jules-owned implementation issue, every pending
+  // PR-review interaction is orphaned and must be withdrawn before the next
+  // worker heartbeat. This is deliberately limited to orchestrated issues
+  // assigned to the managed worker and uses the pure selector to avoid
+  // touching questions or unrelated interactions.
+  for (const issue of inProgressIssues.filter((candidate) =>
+    candidate.orchestratorManaged && candidate.assigneeAgentId === julesAgentId,
+  )) {
+    try {
+      const interactions = asArray<Record<string, unknown>>(await pc.listInteractions(issue.id));
+      const staleCardIds = selectReviewCardsToWithdrawAfterRejection(
+        interactions.map((interaction) => ({
+          id: String(interaction["id"] || ""),
+          kind: typeof interaction["kind"] === "string" ? interaction["kind"] : undefined,
+          status: typeof interaction["status"] === "string" ? interaction["status"] : undefined,
+          idempotencyKey: typeof interaction["idempotencyKey"] === "string" ? interaction["idempotencyKey"] : undefined,
+        })),
+        issue.id,
+      );
+      if (staleCardIds.length === 0) continue;
+      await reviewRejectionConvergenceGuard.runOnce(
+        `orphaned-review-cleanup:${issue.id}`,
+        async () => {
+          for (const interactionId of staleCardIds) {
+            const withdrawn = await pc.withdrawInteraction(
+              issue.id,
+              interactionId,
+              "Orphaned PR-review card: issue is back in worker in_progress after review rejection.",
+            );
+            if (!withdrawn.ok && withdrawn.status !== 404 && withdrawn.status !== 409) {
+              await log(`[ORCHESTRATOR] Warning: orphaned review card cleanup failed (${withdrawn.status}): ${withdrawn.text}`);
+            }
+          }
+          return true;
+        },
+      );
+    } catch (err: unknown) {
+      await log(`[ORCHESTRATOR] Warning: failed to contain orphaned review cards for ${issue.identifier || issue.id}: ${String(err)}`);
+    }
+  }
   const reviewRecoveryIssues = overlayedIssues.filter(
     (issue) => issue.status === "done" && !mergedIssueIds.has(issue.id) && hasUnreviewedReadyPullRequest(issue),
   );
