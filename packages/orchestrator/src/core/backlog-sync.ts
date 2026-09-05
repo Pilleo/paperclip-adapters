@@ -344,8 +344,11 @@ export async function syncBacklogMarkdownToPaperclip(options: BacklogSyncOptions
       } catch {}
     } else {
       let action: SyncIssueResult["action"] = "unchanged";
-      const sanitizedDescription = stripPaperclipIdentityMetadata(String(existing["description"] ?? ""));
-      if (sanitizedDescription !== String(existing["description"] ?? "")) {
+      // The Markdown file is the source of truth. Reconcile the complete
+      // sanitized source so Paperclip cannot retain stale task contracts.
+      const sourceDescription = stripPaperclipIdentityMetadata(content);
+      const existingDescription = String(existing["description"] ?? "");
+      if (sourceDescription !== existingDescription) {
         try {
           const descriptionRes = await fetch(`${options.apiUrl}/api/issues/${existing.id}`, {
             method: "PATCH",
