@@ -57,7 +57,7 @@ describe("native PR review interaction state", () => {
   });
   it("uses a stable stage-and-head identity, not comments or assignment", () => {
     expect(reviewInteractionIdempotencyKey({ issueId: "issue-1", prUrl: "https://github.com/acme/repo/pull/1", headSha: "abc", stage: "vibe" }))
-      .toBe("pr-review:v12:issue-1:https://github.com/acme/repo/pull/1:abc:vibe");
+      .toBe("pr-review:v13:issue-1:https://github.com/acme/repo/pull/1:abc:vibe");
   });
 
   it("accepts only the bound item's native verdict and requires a rejection reason", () => {
