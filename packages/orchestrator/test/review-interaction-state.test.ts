@@ -75,7 +75,7 @@ describe("native PR review interaction state", () => {
     }, "interaction-1")).toBeNull();
   });
 
-  it("recognizes migrated v2 through v12 review cards for stale cleanup", () => {
+  it("recognizes migrated v2 through v13 review cards for stale cleanup", () => {
     expect(isReviewInteractionForIssue("pr-review:v2:issue-1:pr:sha:vibe", "issue-1")).toBe(true);
     expect(isReviewInteractionForIssue("pr-review:v3:issue-1:pr:sha:luna", "issue-1")).toBe(true);
     expect(isReviewInteractionForIssue("pr-review:v4:issue-1:pr:sha:luna", "issue-1")).toBe(true);
