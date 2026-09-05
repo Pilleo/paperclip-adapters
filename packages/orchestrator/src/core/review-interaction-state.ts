@@ -109,6 +109,8 @@ export function buildNativeReviewExecutionState(
     currentParticipant: { type: "agent", agentId: reviewerAgentId },
     lastDecisionOutcome: null,
     reviewRequest: { kind: "pull_request", stage },
+    ...(reviewRecoveryKey ? { reviewRecoveryKey } : {}),
+    ...(reviewInteractionId ? { reviewInteractionId } : {}),
     completedStageIds: stage === "terra" ? [NATIVE_PR_REVIEW_STAGE_IDS.luna] : [],
   };
 }
