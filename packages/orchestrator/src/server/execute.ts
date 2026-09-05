@@ -1811,8 +1811,8 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
           }
           let reviewInteractionId: string | undefined;
           let dialogCreated = false;
-          const stage = pipelineDecision.action === "DISPATCH_LUNA_REVIEW" ? "luna" : pipelineDecision.action === "DISPATCH_TERRA_REVIEW" ? "terra" : pipelineDecision.action === "DISPATCH_VIBE_REVIEW" ? "vibe" : "strong";
-          const reviewIdentity = {
+          let reviewRequest: ReturnType<typeof buildReviewInteractionRequest> | undefined;
+          const reviewIdentityBase = {
             issueId: reviewTask.id,
             prUrl: matchingPr.url,
             headSha: reviewHeadSha,
