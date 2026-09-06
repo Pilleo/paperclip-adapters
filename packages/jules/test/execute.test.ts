@@ -168,9 +168,8 @@ describe('execute', () => {
     expect(res.resultJson?.issueStatus).toBe('done');
   });
 
-  it.skip('creates a Paperclip feedback interaction when Jules awaits feedback', async () => {
-    (JulesClient.prototype.getSession as any).mockResolvedValueOnce({ state: 'IN_PROGRESS' }).mockResolvedValueOnce({ state: 'IN_PROGRESS' }).mockResolvedValue({ state: 'AWAITING_USER_FEEDBACK' });
-    vi.mocked(getPullRequestDetails).mockResolvedValue({ state: "OPEN", merged: false, ciStatus: "success", mergeableStatus: "mergeable" });
+  it('creates a Paperclip feedback interaction when Jules awaits feedback', async () => {
+    (JulesClient.prototype.getSession as any).mockResolvedValue({ state: 'AWAITING_USER_FEEDBACK' });
     global.fetch = vi.fn().mockImplementation(async (url, init) => {
       const method = init?.method || "GET";
       if (String(url).includes("/interactions") && method === "GET") {
@@ -190,6 +189,7 @@ describe('execute', () => {
       return { ok: true, status: 200, json: async () => ({}) };
     });
 
+    vi.mocked(getPullRequestDetails).mockResolvedValue({ state: "OPEN", merged: false, ciStatus: "success", mergeableStatus: "mergeable" });
     const checkpoint = await execute(baseCtx);
     const checkpoint2 = await execute({
       ...baseCtx,
@@ -202,7 +202,7 @@ describe('execute', () => {
       authToken: 'jwt-token',
     } as any);
     expect(res.exitCode).toBe(0);
-    console.log(res); expect(res.resultJson?.issueStatus).toBe('in_progress');
+    expect(res.resultJson?.issueStatus).toBe('in_progress');
     expect(res.resultJson?.interactionId).toBe('feedback-1');
     expect(res.question).toBeUndefined();
     expect(sessionCodec.decode(res.sessionParams!).pendingInteraction).toMatchObject({
