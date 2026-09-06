@@ -211,7 +211,6 @@ describe("Method-level granularity conflict evaluation", () => {
   });
 });
 
-
 describe("Blocker ID normalization", () => {
   it("normalizes fully qualified paperclip URIs to UUIDs and blocks dependents", () => {
     const depTask: ParsedIssueMetadata = {

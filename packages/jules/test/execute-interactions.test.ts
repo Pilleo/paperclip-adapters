@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { withdrawPaperclipInteraction, afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { execute } from "../src/server/execute";
 import { JulesClient } from "../src/server/jules-client";
@@ -7,9 +7,8 @@ import {
   addJulesActivityComment,
   createJulesFeedbackInteraction,
   createJulesPlanApprovalInteraction,
-  getPaperclipInteraction,
+  getPaperclipInteraction, withdrawPaperclipInteraction,
   moveIssueToBlocked,
-  cancelPaperclipInteraction,
 } from "../src/server/paperclip-client";
 
 vi.mock("../src/server/jules-client", async (importOriginal) => {
@@ -31,7 +30,7 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
     createJulesPlanApprovalInteraction: vi.fn(),
     getPaperclipInteraction: vi.fn(),
     moveIssueToBlocked: vi.fn(),
-    cancelPaperclipInteraction: vi.fn(),
+    withdrawPaperclipInteraction: vi.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -223,7 +222,7 @@ describe("Jules activity interactions", { timeout: 30000 }, () => {
     expect(JulesClient.prototype.approvePlan).toHaveBeenCalledWith("session-1");
   });
 
-  it("cancels a malformed active interaction before creating a new one", async () => {
+  it("withdraws a malformed active interaction before creating a new one", async () => {
     vi.mocked(getPaperclipInteraction).mockResolvedValue({
       id: "malformed-1",
       kind: "ask_user_questions",
@@ -257,11 +256,10 @@ describe("Jules activity interactions", { timeout: 30000 }, () => {
       },
     } as AdapterExecutionContext);
 
-    expect(cancelPaperclipInteraction).toHaveBeenCalledWith("malformed-1", "jwt-token", "run-1");
+    expect(withdrawPaperclipInteraction).toHaveBeenCalledWith("issue-1", "malformed-1", expect.any(String), "jwt-token", "run-1");
     expect(createJulesFeedbackInteraction).toHaveBeenCalled();
     expect(result.exitCode).toBe(0);
   });
-
 
   it("sends a plan rejection reason to Jules so it can regenerate the plan", async () => {
     vi.mocked(getPaperclipInteraction).mockResolvedValue({

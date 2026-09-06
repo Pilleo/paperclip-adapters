@@ -51,7 +51,7 @@ import {
 import { evaluateJulesStartGate } from "./start-gate.js";
 import {
   listIssueComments,
-  createNoPrCompletionInteraction,
+  createNoPrCompletionInteraction, withdrawPaperclipInteraction,
   addJulesActivityComment,
   createJulesFeedbackInteraction,
   createJulesPlanApprovalInteraction,
@@ -67,7 +67,6 @@ import {
   listWorkProducts,
   registerPullRequestWorkProduct,
   PaperclipClientError,
-  cancelPaperclipInteraction,
   getPaperclipJson,
   type PaperclipInteraction,
 } from "./paperclip-client.js";
@@ -634,11 +633,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         const answer = storedPendingInteraction ? feedbackAnswer(storedPendingInteraction.result) : null;
         if (!answer) {
           if (storedPendingInteraction && storedPendingInteraction.status !== 'cancelled' && storedPendingInteraction.status !== 'superseded') {
-             try {
-                await cancelPaperclipInteraction(storedPendingInteraction.id, ctx.authToken, ctx.runId);
-             } catch (e) {
-                 return paperclipInteractionFailure(session!, e);
-             }
+             // Withdraw via typed client
+             await withdrawPaperclipInteraction(taskId, storedPendingInteraction.id, "Withdrawn to replace malformed or stale card", ctx.authToken, ctx.runId);
           }
 
           const nextAttempt = (session!.feedbackInteractionAttempt ?? 0) + 1;
