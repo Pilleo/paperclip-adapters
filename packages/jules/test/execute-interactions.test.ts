@@ -33,6 +33,21 @@ vi.mock("../src/server/jules-client", async (importOriginal) => {
   return { ...mod, JulesClient: MockedJulesClient };
 });
 
+vi.mock("../src/server/ci-status", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("../src/server/ci-status")>();
+  return {
+    ...mod,
+    getPullRequestDetails: vi.fn().mockResolvedValue({
+      merged: false,
+      ciStatus: "pending",
+      headSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      mergeableStatus: "mergeable",
+    }),
+    listPullRequestChangedFiles: vi.fn().mockResolvedValue([]),
+    getPullRequestPatch: vi.fn().mockResolvedValue(""),
+  };
+});
+
 vi.mock("../src/server/paperclip-client", async (importOriginal) => {
   const mod = await importOriginal<typeof import("../src/server/paperclip-client")>();
   return {

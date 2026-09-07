@@ -27,7 +27,7 @@ importers:
   packages/antigravity:
     dependencies:
       '@pilleo/paperclip-adapter-common':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../common
       picocolors:
         specifier: ^1.1.1
@@ -74,7 +74,7 @@ importers:
   packages/jules:
     dependencies:
       '@pilleo/paperclip-adapter-common':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../common
       picocolors:
         specifier: ^1.1.1
@@ -102,7 +102,7 @@ importers:
   packages/orchestrator:
     dependencies:
       '@pilleo/paperclip-adapter-common':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../common
       zod:
         specifier: ^3.24.0
@@ -127,7 +127,7 @@ importers:
         specifier: 2026.831.1
         version: 2026.831.1
       '@pilleo/paperclip-adapter-common':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../common
       dotenv:
         specifier: ^16.4.7
@@ -149,7 +149,7 @@ importers:
   packages/vibe:
     dependencies:
       '@pilleo/paperclip-adapter-common':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../common
       picocolors:
         specifier: ^1.1.1

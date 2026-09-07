@@ -16,6 +16,7 @@ function findGitDir(startDir?: string): string | undefined {
 }
 
 export function discoverLocalGitRepository(cwd?: string): string | undefined {
+  if (cwd && !fs.existsSync(cwd)) return undefined;
   const targetCwd = findGitDir(cwd) || cwd || process.cwd();
   try {
     const remoteUrl = execSync("git config --get remote.origin.url", {
@@ -32,6 +33,7 @@ export function discoverLocalGitRepository(cwd?: string): string | undefined {
 }
 
 export function discoverLocalGitDefaultBranch(cwd?: string): string | undefined {
+  if (cwd && !fs.existsSync(cwd)) return undefined;
   const targetCwd = findGitDir(cwd) || cwd || process.cwd();
   try {
     // 1. Try origin/HEAD symbolic ref

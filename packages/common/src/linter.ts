@@ -205,7 +205,7 @@ export function lintBacklogMarkdown(
   }
   if (targetModules.length === 0 && (status === "open" || status === "in_progress")) {
     errors.push(
-      "'target_modules' must contain at least one Gradle module (e.g. [':enforcer']) or npm workspace (e.g. ['packages/jules'])",
+      "'target_modules' must contain at least one Gradle module (e.g. [':enforcer']), npm workspace (e.g. ['packages/jules']), or @pilleo/paperclip-*",
     );
   } else {
     for (const mod of targetModules) {
