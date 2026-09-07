@@ -29,6 +29,9 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
   const mod = await importOriginal<typeof import("../src/server/paperclip-client.js")>();
   return {
     ...mod,
+    // These are offline execute tests. The durable monitor contract is tested
+    // by paperclip-client.test.ts and the heartbeat failure path separately.
+    scheduleJulesSessionMonitor: vi.fn().mockResolvedValue(undefined),
     createJulesPlanApprovalInteraction: vi.fn().mockResolvedValue({
       id: "inter-plan-1",
       planRevision: { documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1 },
@@ -159,17 +162,17 @@ describe("E2E plan review ladder (static → Mistral → Luna → Terra/Codex �
     vi.mocked(JulesClient.prototype.approvePlan).mockResolvedValue({ id: "act-approved" });
   });
 
-  it("does not call Terra/Codex when Vibe/Luna still sees gaps (TBD, no work-package answers)", async () => {
+  it("passes cheap-review gaps to Terra/Codex before human escalation", async () => {
     await presentPlan([{ title: "Look into the issue and figure out cache design later (TBD)" }]);
     const result = await execute(
       ctx({
         context: { task: { id: "issue-141", title: "Mystery", description: "Do something vague." } },
       }),
     );
-    expect(terraSpy).not.toHaveBeenCalled();
-    expect(JulesClient.prototype.approvePlan).not.toHaveBeenCalled();
-    expect(createJulesPlanApprovalInteraction).toHaveBeenCalled();
-    expect(result.summary).toMatch(/operator/);
+    expect(terraSpy).toHaveBeenCalledTimes(1);
+    expect(JulesClient.prototype.approvePlan).toHaveBeenCalledWith("session-141");
+    expect(createJulesPlanApprovalInteraction).not.toHaveBeenCalled();
+    expect(result.exitCode).toBe(0);
   });
 
   it("does not call Terra/Codex on static invariant failures", async () => {
@@ -198,7 +201,7 @@ describe("E2E plan review ladder (static → Mistral → Luna → Terra/Codex �
     expect(result.exitCode).toBe(0);
   });
 
-  it("skips Terra/Codex when the cheap Vibe/Luna reviewer reports issues", async () => {
+  it("passes cheap reviewer findings to Terra/Codex", async () => {
     await presentPlan([
       { title: "Modify SandboxDispatcher.kt to add bounded cache" },
       { title: "Add unit tests in SandboxDispatcherTest.kt and run ./gradlew test" },
@@ -212,10 +215,10 @@ describe("E2E plan review ladder (static → Mistral → Luna → Terra/Codex �
       questions: ["How is the mutex ordered around poolCache?"],
     }));
     const result = await execute(ctx());
-    expect(terraSpy).not.toHaveBeenCalled();
-    expect(JulesClient.prototype.approvePlan).not.toHaveBeenCalled();
-    expect(createJulesPlanApprovalInteraction).toHaveBeenCalled();
-    expect(result.summary).toMatch(/operator/);
+    expect(terraSpy).toHaveBeenCalledTimes(1);
+    expect(JulesClient.prototype.approvePlan).toHaveBeenCalledWith("session-141");
+    expect(createJulesPlanApprovalInteraction).not.toHaveBeenCalled();
+    expect(result.exitCode).toBe(0);
   });
 
   it("pages the operator when Vibe/Luna is clean but Terra/Codex is not configured", async () => {
@@ -230,7 +233,7 @@ describe("E2E plan review ladder (static → Mistral → Luna → Terra/Codex �
     expect(result.summary).toMatch(/operator/);
   });
 
-  it("still does not auto-approve when planApprovalPolicy is required, even after Terra/Codex", async () => {
+  it("auto-approves when planApprovalPolicy is required and Terra/Codex is confident", async () => {
     await presentPlan([
       { title: "Modify SandboxDispatcher.kt to add bounded cache" },
       { title: "Add unit tests in SandboxDispatcherTest.kt and run ./gradlew test" },
@@ -248,8 +251,8 @@ describe("E2E plan review ladder (static → Mistral → Luna → Terra/Codex �
       }),
     );
     expect(terraSpy).toHaveBeenCalled();
-    expect(JulesClient.prototype.approvePlan).not.toHaveBeenCalled();
-    expect(createJulesPlanApprovalInteraction).toHaveBeenCalled();
+    expect(JulesClient.prototype.approvePlan).toHaveBeenCalledWith("session-141");
+    expect(createJulesPlanApprovalInteraction).not.toHaveBeenCalled();
     expect(result.exitCode).toBe(0);
   });
 });

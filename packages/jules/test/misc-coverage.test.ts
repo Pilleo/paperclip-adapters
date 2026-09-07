@@ -7,6 +7,16 @@ import { handleJulesState } from '../src/server/state-machine';
 import { JulesClient } from '../src/server/jules-client';
 import { classifyFailure } from '../src/server/failure-classifier';
 
+vi.mock('../src/server/paperclip-client', async (importOriginal) => {
+    const mod = await importOriginal<typeof import('../src/server/paperclip-client')>();
+    return {
+        ...mod,
+        // This test exercises abort handling; monitor persistence has its own
+        // contract tests and must not call the live local Paperclip server.
+        scheduleJulesSessionMonitor: vi.fn().mockResolvedValue(undefined),
+    };
+});
+
 vi.mock('../src/server/jules-client');
 vi.mock('../src/server/failure-classifier', async (importOriginal) => {
     const mod = await importOriginal<typeof import('../src/server/failure-classifier')>();

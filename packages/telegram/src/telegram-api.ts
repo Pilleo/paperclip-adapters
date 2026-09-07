@@ -59,7 +59,15 @@ export class TelegramBotClient {
   }
 
   async sendMessage(options: SendMessageOptions): Promise<TelegramMessage> {
-    const res = await this.postJson<TelegramMessage>("sendMessage", options);
+    let res = await this.postJson<TelegramMessage>("sendMessage", options);
+    // Approval cards contain operator- and provider-authored text. Legacy
+    // Markdown is fragile for arbitrary titles, URLs, and descriptions. A
+    // parse failure means Telegram did not create a message, so retry once as
+    // plain text while preserving the inline keyboard.
+    if (!res.ok && res.description?.toLowerCase().includes("can't parse entities") && options.parse_mode) {
+      const { parse_mode: _parseMode, ...plainTextOptions } = options;
+      res = await this.postJson<TelegramMessage>("sendMessage", plainTextOptions);
+    }
     if (!res.ok || !res.result) {
       throw new Error(`Telegram sendMessage failed: ${res.description || "Unknown error"}`);
     }

@@ -13,6 +13,9 @@ export const VibeConfigSchema = z.object({
   promptTemplate: z.string().optional(),
   timeoutSec: z.number().int().positive().optional().default(300),
   env: z.record(z.string(), z.string()).optional().default({}),
+  filesystemScope: z.enum(["workspace"]).optional(),
+  networkScope: z.enum(["deny", "allowlist"]).optional(),
+  networkAllowlist: z.array(z.string()).optional().default(["api.mistral.ai"]),
 });
 
 export type VibeConfig = z.infer<typeof VibeConfigSchema>;
@@ -40,6 +43,23 @@ export const vibeAdapterConfigSchema: AdapterConfigSchema = {
       options: [
         { label: "Approve All (Headless)", value: "approve-all" },
         { label: "Approve Reads Only", value: "approve-reads" },
+      ],
+    },
+    {
+      key: "filesystemScope",
+      label: "Filesystem Scope",
+      type: "select",
+      required: false,
+      options: [{ label: "Workspace (sandboxed)", value: "workspace" }],
+    },
+    {
+      key: "networkScope",
+      label: "Network Scope",
+      type: "select",
+      required: false,
+      options: [
+        { label: "Allowlisted", value: "allowlist" },
+        { label: "Deny", value: "deny" },
       ],
     },
   ],

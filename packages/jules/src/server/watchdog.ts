@@ -76,10 +76,13 @@ export function evaluateSessionWatchdog(
 
   const currentNudgeCount = ((session as { watchdogNudgeCount?: number }).watchdogNudgeCount || 0) + 1;
 
+  // A heartbeat is a poll/reconciliation event, not a provider conversation.
+  // Sending synthetic prose here can overwrite a real Jules question or plan
+  // approval request. Keep the stall diagnosis for logs/telemetry, but let the
+  // durable monitor schedule the next poll without fabricating a message.
   return {
-    shouldNudge: true,
+    shouldNudge: false,
     reason: `Session stalled in ${session.julesState || session.phase} for ${Math.round(idleDurationMs / 60000)} minutes`,
-    nudgeMessage: "Status check: please continue executing the plan and report progress.",
-    nudgeCount: currentNudgeCount
+    nudgeCount: currentNudgeCount,
   };
 }

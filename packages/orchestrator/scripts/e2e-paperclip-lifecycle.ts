@@ -11,8 +11,10 @@ import {
 import { buildPrompt } from "../../jules/src/server/prompt-builder.js";
 import { buildClarifierAutonomousPrompt } from "../src/core/clarifier.js";
 
-const PAPERCLIP_API = process.env["PAPERCLIP_API_URL"] || "http://127.0.0.1:3100";
-const WORKSPACE_PATH = process.env["WORKSPACE_PATH"] || "/home/leanid/Documents/code/java/jseccomp";
+// This harness creates and deletes a company. Requiring a dedicated endpoint
+// prevents a normal developer invocation from mutating the live local board.
+const PAPERCLIP_API = process.env["PAPERCLIP_TEST_API_URL"];
+const WORKSPACE_PATH = process.env["WORKSPACE_PATH"] || process.cwd();
 
 async function log(step: string, status: "RUNNING" | "PASS" | "FAIL", msg?: string) {
   const icon = status === "PASS" ? "✅" : status === "FAIL" ? "❌" : "⏳";
@@ -29,6 +31,7 @@ async function createAdapterContext(
 ) {
   const logs: string[] = [];
   return {
+    authToken: process.env["PAPERCLIP_E2E_AGENT_TOKEN"],
     agent: {
       id: agentId,
       companyId,
@@ -48,6 +51,10 @@ async function createAdapterContext(
       requireApproval: true,
       maxConcurrentJules: 15,
       maxConcurrentVibe: 2,
+      // The lifecycle harness creates only the workers it needs. Fleet
+      // provisioning is a separate production concern and would make this
+      // isolated test depend on agents:create permissions.
+      reconcileFleet: false,
       ...config,
     },
     onLog: async (stream: string, chunk: string) => {
@@ -58,11 +65,15 @@ async function createAdapterContext(
 }
 
 async function main() {
+  if (!PAPERCLIP_API) {
+    throw new Error("PAPERCLIP_TEST_API_URL is required; refuse to run destructive E2E work against the default board");
+  }
   console.log("\n================================================================================");
-  console.log("  🔬 Paperclip Deep End-to-End Orchestration & Planning Test Suite");
+  console.log("  🔬 Paperclip Jules recovery canary");
   console.log("================================================================================\n");
 
   let testCompanyId = "";
+  let testProjectId = "";
   let tempBacklogDir = "";
   let tempResolvedDir = "";
 
@@ -87,6 +98,21 @@ async function main() {
     testCompanyId = company.id;
     await log("PHASE 1", "PASS", `Created isolated company (ID: ${testCompanyId})`);
 
+    const createProjectRes = await fetch(`${PAPERCLIP_API}/api/companies/${testCompanyId}/projects`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: `E2E Workspace ${Date.now()}`,
+        description: "Disposable workspace for the Paperclip adapter E2E harness",
+        workspace: { name: "E2E local workspace", sourceType: "local_path", cwd: WORKSPACE_PATH, isPrimary: true },
+      }),
+    });
+    if (!createProjectRes.ok) throw new Error(`Failed to create isolated E2E project (${createProjectRes.status})`);
+    const testProject = await createProjectRes.json() as { id?: unknown };
+    if (typeof testProject.id !== "string") throw new Error("Paperclip did not return the isolated E2E project id");
+    testProjectId = testProject.id;
+    await log("PHASE 1", "PASS", `Created isolated project with workspace (ID: ${testProjectId})`);
+
     // Register test agents
     const createOrchRes = await fetch(`${PAPERCLIP_API}/api/companies/${testCompanyId}/agents`, {
       method: "POST",
@@ -98,16 +124,31 @@ async function main() {
     const createJulesRes = await fetch(`${PAPERCLIP_API}/api/companies/${testCompanyId}/agents`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: "E2E Async Developer", role: "general", adapterType: "jules" }),
+      body: JSON.stringify({ name: "E2E Async Developer", role: "general", adapterType: "jules", reportsTo: orchAgent.id, metadata: { managedBy: "paperclip-orchestrator" } }),
     });
     const julesAgent = await createJulesRes.json();
 
     const createVibeRes = await fetch(`${PAPERCLIP_API}/api/companies/${testCompanyId}/agents`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: "E2E Vibe Developer", role: "general", adapterType: "vibe" }),
+      body: JSON.stringify({ name: "E2E Vibe Developer", role: "general", adapterType: "vibe", reportsTo: orchAgent.id, metadata: { managedBy: "paperclip-orchestrator" } }),
     });
     const vibeAgent = await createVibeRes.json();
+
+    // Real Paperclip heartbeats carry an agent JWT. Mint a disposable key for
+    // the isolated orchestrator instead of weakening production auth checks or
+    // borrowing a developer credential.
+    const createTestKeyRes = await fetch(`${PAPERCLIP_API}/api/agents/${orchAgent.id}/keys`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: `e2e-${Date.now()}` }),
+    });
+    if (!createTestKeyRes.ok) throw new Error(`Failed to create disposable E2E agent key (${createTestKeyRes.status})`);
+    const testKey = await createTestKeyRes.json() as { token?: unknown };
+    if (typeof testKey.token !== "string" || testKey.token.length < 16) {
+      throw new Error("Paperclip did not return the disposable E2E agent token");
+    }
+    process.env["PAPERCLIP_E2E_AGENT_TOKEN"] = testKey.token;
 
     await log("PHASE 1", "PASS", `Registered isolated agents: Orch, Jules, and Vibe`);
 
@@ -125,7 +166,9 @@ async function main() {
 title: "E2E Test: Support ARM64 BPF Downcall Compilation"
 severity: "HIGH"
 status: "open"
+orchestrator_managed: true
 priority: high
+has_side_effects: false
 component: "enforcer"
 target_modules: [":enforcer"]
 target_files: ["enforcer/src/main/kotlin/io/mazewall/seccomp/PureJavaBpfEngine.kt"]
@@ -214,10 +257,12 @@ open_questions: false
 title: "E2E Test: Support X86 BPF Downcall Compilation"
 severity: "HIGH"
 status: "open"
+orchestrator_managed: true
 priority: high
+has_side_effects: false
 component: "enforcer"
 target_modules: [":enforcer"]
-target_files: ["enforcer/src/main/kotlin/io/mazewall/seccomp/PureJavaBpfEngine.kt"]
+target_files: ["enforcer/src/main/kotlin/io/mazewall/seccomp/BpfNativeCache.kt"]
 target_symbols: ["PureJavaBpfEngine#setNoNewPrivs"]
 open_questions: false
 ---
@@ -234,7 +279,9 @@ open_questions: false
 title: "E2E Test: Conflicting Install Filter Refactor"
 severity: "HIGH"
 status: "open"
+orchestrator_managed: true
 priority: high
+has_side_effects: false
 component: "enforcer"
 target_modules: [":enforcer"]
 target_files: ["enforcer/src/main/kotlin/io/mazewall/seccomp/PureJavaBpfEngine.kt"]
@@ -298,8 +345,8 @@ open_questions: false
       }
     );
 
-    if (!julesPrompt.includes("installFilter (Method)") || !julesPrompt.includes("Codanna in Sandbox")) {
-      throw new Error("Jules prompt missing Codanna AST signatures or in-sandbox navigation instructions");
+    if (!julesPrompt.includes("installFilter") || !julesPrompt.includes("Implementation plan") || !julesPrompt.includes(paperclipIssueIdA)) {
+      throw new Error("Jules prompt missing the task target, implementation plan, or Paperclip identity");
     }
     await log("PHASE 5", "PASS", "Jules prompt synthesized with exact Codanna type signature, AST outline, and sandbox guidelines");
 
@@ -384,15 +431,138 @@ paperclip_issue_id: "${idClarify}"
     }
     await log("PHASE 6", "PASS", "Autonomous Clarifier resolved open questions from code and moved task to ready state");
 
+    // -------------------------------------------------------------------------
+    // Phase 7: Native Open Jules PR Recovery Canary
+    // -------------------------------------------------------------------------
+    // This is deliberately a real Paperclip/API + adapter heartbeat test. The
+    // GitHub CLI is replaced only inside a temporary directory so the canary
+    // can prove PR correlation, CI gating, stale-child cleanup, and heartbeat
+    // idempotency without opening a real Jules session or mutating GitHub.
+    await log("PHASE 7", "RUNNING", "Testing native recovery of a blocked Jules issue with an open green PR...");
+    const canaryMarker = `e2e-open-jules-pr-recovery-${Date.now()}`;
+    const canaryIssueFile = path.join(tempBacklogDir, `${canaryMarker}.md`);
+    fs.writeFileSync(canaryIssueFile, `---
+title: "${canaryMarker}"
+severity: "HIGH"
+status: "open"
+orchestrator_managed: true
+priority: high
+component: "e2e"
+target_modules: [":e2e"]
+target_files: ["${canaryMarker}.txt"]
+target_symbols: []
+open_questions: false
+---
+
+# E2E open Jules PR recovery canary
+This issue is created and owned by the isolated E2E company.
+`, "utf8");
+
+    const canaryContext = await createAdapterContext(orchAgent.id, testCompanyId, tempBacklogDir, tempResolvedDir, {
+      julesAgentId: julesAgent.id,
+      vibeAgentId: vibeAgent.id,
+    });
+    await runOrchestrator(canaryContext as any);
+    const canaryFrontmatter = parseMarkdownFrontmatter<Record<string, unknown>>(fs.readFileSync(canaryIssueFile, "utf8"));
+    const canaryIssueId = String(canaryFrontmatter.frontmatter["paperclip_issue_id"] || "");
+    if (!canaryIssueId) throw new Error("Canary issue was not imported into Paperclip");
+
+    const canaryPrUrl = "https://github.com/e2e/paperclip-canary/pull/991";
+    const jsonRequest = async (url: string, method: string, body?: unknown): Promise<any> => {
+      const response = await fetch(url, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+      const text = await response.text();
+      let value: any = null;
+      try { value = text ? JSON.parse(text) : null; } catch { value = text; }
+      if (!response.ok) throw new Error(`${method} ${url} failed (${response.status}): ${text.slice(0, 500)}`);
+      return value;
+    };
+
+    await jsonRequest(`${PAPERCLIP_API}/api/issues/${canaryIssueId}/work-products`, "POST", {
+      type: "pull_request",
+      provider: "github",
+      title: "Jules canary pull request",
+      url: canaryPrUrl,
+      externalId: canaryPrUrl,
+      status: "ready_for_review",
+      isPrimary: true,
+      metadata: { source: "jules" },
+    });
+    const staleChildIds: string[] = [];
+    for (const childDescription of ["jules-session-supervisor canary", "jules-question-adjudication canary"]) {
+      const child = await jsonRequest(`${PAPERCLIP_API}/api/issues/${canaryIssueId}/children`, "POST", {
+        title: `${canaryMarker} stale review child`,
+        description: childDescription,
+        status: "todo",
+        priority: "medium",
+      });
+      staleChildIds.push(String(child.id));
+    }
+    await jsonRequest(`${PAPERCLIP_API}/api/issues/${canaryIssueId}`, "PATCH", {
+      status: "in_progress",
+      assigneeAgentId: julesAgent.id,
+    });
+
+    const fakeGhDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-e2e-gh-"));
+    const fakeGhPath = path.join(fakeGhDir, "gh");
+    const previousPath = process.env["PATH"];
+    fs.writeFileSync(fakeGhPath, `#!/bin/sh
+case "$*" in
+  *"pr list"*) printf '%s\\n' '[{"number":991,"title":"${canaryMarker}","state":"OPEN","headRefName":"canary","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","baseRefName":"main","mergedAt":null,"url":"${canaryPrUrl}","files":[]}]' ;;
+  *"pr checks"*) printf '%s\\n' '[{"state":"SUCCESS","bucket":"pass","name":"canary"}]' ;;
+  *) exit 1 ;;
+esac
+`, "utf8");
+    fs.chmodSync(fakeGhPath, 0o755);
+    process.env["PATH"] = `${fakeGhDir}${path.delimiter}${previousPath || ""}`;
+    try {
+      await runOrchestrator(canaryContext as any);
+      const recovered = await jsonRequest(`${PAPERCLIP_API}/api/issues/${canaryIssueId}`, "GET");
+      if (recovered.status !== "in_review" || recovered.assigneeAgentId !== null) {
+        throw new Error(`Canary source issue was not recovered into native review: ${JSON.stringify({ status: recovered.status, assigneeAgentId: recovered.assigneeAgentId })}`);
+      }
+      for (const childId of staleChildIds) {
+        const child = await jsonRequest(`${PAPERCLIP_API}/api/issues/${childId}`, "GET");
+        if (child.status !== "done") throw new Error(`Canary stale child ${childId} remained ${child.status}`);
+      }
+      const firstComments = await jsonRequest(`${PAPERCLIP_API}/api/issues/${canaryIssueId}/comments`, "GET");
+      await runOrchestrator(canaryContext as any);
+      const repeated = await jsonRequest(`${PAPERCLIP_API}/api/issues/${canaryIssueId}`, "GET");
+      const secondComments = await jsonRequest(`${PAPERCLIP_API}/api/issues/${canaryIssueId}/comments`, "GET");
+      if (repeated.status !== "in_review" || secondComments.length !== firstComments.length) {
+        throw new Error("Canary recovery was not idempotent across heartbeats");
+      }
+      await log("PHASE 7", "PASS", "Blocked Jules issue recovered once, stale children closed, and repeat heartbeat was idempotent");
+    } finally {
+      if (previousPath === undefined) delete process.env["PATH"];
+      else process.env["PATH"] = previousPath;
+      fs.rmSync(fakeGhDir, { recursive: true, force: true });
+    }
+
     console.log("\n================================================================================");
-    console.log("  🎉 ALL 6 DEEP E2E LIFECYCLE PHASES PASSED WITH ZERO SHORTCUTS!");
+    console.log("  🎉 ALL 7 DEEP E2E LIFECYCLE PHASES PASSED WITH ZERO SHORTCUTS!");
     console.log("================================================================================\n");
   } finally {
     // -------------------------------------------------------------------------
     // Teardown: Clean up isolated test company and temporary directory
     // -------------------------------------------------------------------------
+    delete process.env["PAPERCLIP_E2E_AGENT_TOKEN"];
     if (testCompanyId) {
-      await fetch(`${PAPERCLIP_API}/api/companies/${testCompanyId}`, { method: "DELETE" }).catch(() => {});
+      try {
+        const response = await fetch(`${PAPERCLIP_API}/api/companies/${testCompanyId}`, { method: "DELETE" });
+        if (!response.ok) {
+          throw new Error(`company deletion returned HTTP ${response.status}`);
+        }
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException)?.code;
+        if (code === "EPERM" || code === "EACCES") {
+          throw new Error(`company deletion failed with ${code}`);
+        }
+        throw error;
+      }
     }
     if (tempBacklogDir && fs.existsSync(tempBacklogDir)) {
       fs.rmSync(tempBacklogDir, { recursive: true, force: true });
@@ -401,6 +571,6 @@ paperclip_issue_id: "${idClarify}"
 }
 
 main().catch((err) => {
-  console.error("❌ Deep E2E Lifecycle Test failed:", err);
+  console.error("❌ Paperclip Jules recovery canary failed:", err);
   process.exit(1);
 });

@@ -25,6 +25,7 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
     listIssueComments: vi.fn().mockResolvedValue([]),
     getPaperclipInteraction: vi.fn(),
     readJulesSessionHandle: vi.fn(),
+    scheduleJulesSessionMonitor: vi.fn().mockResolvedValue(undefined),
     upsertJulesSessionHandle: vi.fn().mockResolvedValue(undefined),
   };
 });
@@ -103,6 +104,6 @@ describe("Paperclip issue session handle restore", () => {
     expect(JulesClient.prototype.createSession).not.toHaveBeenCalled();
     expect(result.clearSession).toBe(false);
     expect(result.sessionDisplayId).toBe("2024763132299585220");
-    expect(result.summary).toMatch(/2024763132299585220/);
+    expect(result.summary).toBeUndefined();
   });
 });

@@ -1,0 +1,12 @@
+[Unit]
+Description=Reconcile completed Jules PRs into Paperclip review
+After=paperclipai.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/leanid/Documents/code/java/paperclip-adapters
+Environment=PATH=/home/leanid/.local/bin:/home/leanid/.local/share/mise/installs/node/24.19.0/bin:/usr/local/bin:/usr/bin:/bin
+Environment=COMPANY_ID=8f4ef932-d769-43b2-981a-d273ed715162
+ExecStart=/home/leanid/.local/share/mise/installs/node/24.19.0/bin/node /home/leanid/Documents/code/java/paperclip-adapters/scripts/fleet/reconcile_jules_prs.mjs
+TimeoutStartSec=90
+UMask=0077

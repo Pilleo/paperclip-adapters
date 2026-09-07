@@ -14,12 +14,31 @@ export type IssueStatus =
   | "cancelled"
   | "blocked";
 
+export type IssueState = IssueStatus | "unknown";
+
+const ISSUE_STATUSES: ReadonlySet<string> = new Set<IssueStatus>([
+  "backlog",
+  "todo",
+  "in_progress",
+  "in_review",
+  "done",
+  "cancelled",
+  "blocked",
+]);
+
+export function normalizeIssueStatus(raw: unknown): IssueState {
+  if (typeof raw !== "string") return "unknown";
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === "resolved") return "done";
+  return ISSUE_STATUSES.has(normalized) ? normalized as IssueStatus : "unknown";
+}
+
 export interface ParsedIssueMetadata {
   readonly id: string;
   readonly identifier?: string | null | undefined;
   readonly issueNumber?: number | null | undefined;
   readonly title: string;
-  readonly status: IssueStatus | string;
+  readonly status: IssueState;
   readonly priority: TaskPriority;
   readonly priorityRank: number;
   readonly dependencies: readonly string[];
@@ -36,7 +55,13 @@ export interface ParsedIssueMetadata {
   readonly projectId?: string | null | undefined;
   readonly isNonInterfering: boolean;
   readonly openQuestions: boolean;
+  /** True when the task is owned by this orchestrator's imported backlog. */
+  readonly orchestratorManaged: boolean;
   readonly assigneeAgentId?: string | null | undefined;
+  /** Native Paperclip parent relationship, when this is a child issue. */
+  readonly parentId?: string | null | undefined;
+  /** Stable marker identifies children whose state is owned by a reviewer ladder. */
+  readonly isDelegatedReviewChild?: boolean;
   readonly updatedAt?: string | null | undefined;
   readonly executionRunId?: string | null | undefined;
   readonly rawIssue: Readonly<Record<string, unknown>>;
@@ -68,6 +93,8 @@ export interface MultiLaneOptions {
   readonly vibeCapacity?: number | undefined;
   readonly maxToSelect?: number | undefined;
   readonly extraLockedFiles?: ReadonlySet<string> | undefined;
+  /** Already-approved starts outrank merely pending resource contenders. */
+  readonly preferredIssueIds?: ReadonlySet<string> | undefined;
 }
 
 export interface JulesQuotaStatus {
@@ -87,6 +114,8 @@ export interface GitHubPullRequest {
   readonly title: string;
   readonly state: "OPEN" | "CLOSED" | "MERGED";
   readonly headRefName: string;
+  /** Immutable Git commit identity used to invalidate prior review verdicts. */
+  readonly headRefOid?: string | undefined;
   readonly baseRefName: string;
   readonly mergedAt: string | null;
   readonly url: string;

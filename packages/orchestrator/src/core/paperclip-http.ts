@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { resilientFetch } from "./resilient-fetch.js";
 import { createUpdateIssuePayload, type UpdateIssuePayload } from "./paperclip-orchestrator-client.js";
 import type { IssueStatus } from "./types.js";
+import { executePaperclipCommand, type PaperclipCommandResponse } from "@pilleo/paperclip-adapter-common";
 
 export class OrchestratorPaperclipError extends Error {
   constructor(
@@ -16,6 +18,18 @@ export interface PaperclipHttpOptions {
   readonly apiUrl: string;
   readonly authToken?: string | undefined;
   readonly runId?: string | undefined;
+  /**
+   * Company-level orchestrator heartbeats have no source issueId, so
+   * Paperclip's cross-issue write guard rejects their agent JWT mutations.
+   * In local-trusted mode only, use the implicit board actor for mutations.
+   */
+  readonly localTrustedBoardWrites?: boolean | undefined;
+}
+
+export interface IssueListOptions {
+  readonly projectId?: string | undefined;
+  readonly includeBlockedBy?: boolean | undefined;
+  readonly parentId?: string | undefined;
 }
 
 function apiBase(apiUrl: string): string {
@@ -36,13 +50,19 @@ function requireToken(authToken?: string): string {
 
 export function createPaperclipHttp(options: PaperclipHttpOptions) {
   const base = apiBase(options.apiUrl);
+  const localTrustedBoardWrites = options.localTrustedBoardWrites === true && /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(base);
 
   async function request(path: string, init: RequestInit = {}): Promise<Response> {
-    const token = requireToken(options.authToken);
+    const isMutation = (init.method || "GET").toUpperCase() !== "GET";
+    // Paperclip's loopback `local_trusted` actor is intentionally credential
+    // free for built-in adapters. Apply it to the complete company-level
+    // control-plane exchange, not only mutations; otherwise the first project
+    // GET fails before the trusted mutation path can even be reached.
+    const token = localTrustedBoardWrites ? "" : requireToken(options.authToken);
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-      ...(options.runId ? { "X-Paperclip-Run-Id": options.runId } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(token && options.runId ? { "X-Paperclip-Run-Id": options.runId } : {}),
       ...((init.headers as Record<string, string> | undefined) || {}),
     };
     const response = await resilientFetch(`${base}${path}`, { ...init, headers });
@@ -67,18 +87,59 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
 
   async function sendJson(
     path: string,
-    method: "POST" | "PATCH",
-    body: unknown
-  ): Promise<{ ok: boolean; status: number; text: string }> {
-    const response = await request(path, {
-      method,
-      body: JSON.stringify(body),
-    });
-    const text = await readError(response);
-    if (response.status === 409) {
-      throw new OrchestratorPaperclipError(409, `Conflict on ${method} ${path}: ${text}`);
-    }
-    return { ok: response.ok, status: response.status, text };
+    method: "POST" | "PATCH" | "DELETE",
+    body: unknown,
+    idempotencyKey?: string,
+  ): Promise<{ ok: boolean; status: number; text: string; data?: unknown }> {
+    const key = idempotencyKey || explicitIdempotencyKey(body) || derivedIdempotencyKey(method, path, body);
+    const commandResponse = await executePaperclipCommand(
+      {
+        key,
+        issueId: issueIdFromPath(path),
+        action: commandAction(method, path),
+        payload: body,
+      },
+      async () => {
+        const response = await request(path, {
+          method,
+          body: JSON.stringify(body),
+          headers: { "Idempotency-Key": key },
+        });
+        const rawText = await response.text().catch(() => "");
+        const text = rawText.trim().slice(0, 500);
+        if (response.status === 409) {
+          throw new OrchestratorPaperclipError(409, `Conflict on ${method} ${path}: ${text}`);
+        }
+        let data: unknown;
+        try { data = rawText ? JSON.parse(rawText) : undefined; } catch { /* plain-text responses remain diagnostic text */ }
+        return { ok: response.ok, status: response.status, text, ...(data !== undefined ? { data } : {}) } satisfies PaperclipCommandResponse;
+      },
+    );
+    return { ok: commandResponse.ok, status: commandResponse.status, text: commandResponse.text ?? "", ...(commandResponse.data !== undefined ? { data: commandResponse.data } : {}) };
+  }
+
+  function explicitIdempotencyKey(body: unknown): string | undefined {
+    if (!body || typeof body !== "object" || Array.isArray(body)) return undefined;
+    const value = (body as Record<string, unknown>)["idempotencyKey"];
+    return typeof value === "string" && value.trim() ? value.trim() : undefined;
+  }
+
+  function derivedIdempotencyKey(method: string, path: string, body: unknown): string {
+    const digest = createHash("sha256").update(JSON.stringify(body) ?? "null").digest("hex").slice(0, 24);
+    return `paperclip:${method}:${path}:${digest}`;
+  }
+
+  function issueIdFromPath(path: string): string {
+    const match = path.match(/\/api\/issues\/([^/]+)/);
+    return match?.[1] || "company";
+  }
+
+  function commandAction(method: "POST" | "PATCH" | "DELETE", path: string): "comment" | "interaction" | "status" | "assignment" | "wakeup" {
+    if (path.endsWith("/wakeup")) return "wakeup";
+    if (path.includes("/interactions")) return "interaction";
+    if (path.includes("/comments")) return "comment";
+    if (path.includes("/agents/")) return "assignment";
+    return method === "PATCH" ? "status" : "interaction";
   }
 
   return {
@@ -87,8 +148,25 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
     async listAgents<T = unknown>(companyId: string): Promise<T> {
       return getJson<T>(`/api/companies/${encodeURIComponent(companyId)}/agents`);
     },
-    async listIssues<T = unknown>(companyId: string): Promise<T> {
-      return getJson<T>(`/api/companies/${encodeURIComponent(companyId)}/issues?limit=1000`);
+    async listIssues<T = unknown>(companyId: string, listOptions: IssueListOptions = {}): Promise<T> {
+      const query = new URLSearchParams({ limit: "1000" });
+      if (listOptions.projectId) query.set("projectId", listOptions.projectId);
+      if (listOptions.includeBlockedBy) query.set("includeBlockedBy", "true");
+      if (listOptions.parentId) query.set("parentId", listOptions.parentId);
+      return getJson<T>(`/api/companies/${encodeURIComponent(companyId)}/issues?${query.toString()}`);
+    },
+    /** Children are authoritative even when Paperclip omitted their projectId. */
+    async listChildren<T = unknown>(companyId: string, parentIssueId: string): Promise<T> {
+      const raw = await getJson<unknown>(`/api/companies/${encodeURIComponent(companyId)}/issues?limit=1000&parentId=${encodeURIComponent(parentIssueId)}`);
+      if (Array.isArray(raw)) return raw as T;
+      if (raw && typeof raw === "object" && Array.isArray((raw as Record<string, unknown>)["children"])) {
+        return (raw as Record<string, unknown>)["children"] as T;
+      }
+      return raw as T;
+    },
+    /** Fetch the enriched issue representation; list responses omit work products. */
+    async getIssue<T = unknown>(issueId: string): Promise<T> {
+      return getJson<T>(`/api/issues/${encodeURIComponent(issueId)}`);
     },
     async listProjects<T = unknown>(companyId: string): Promise<T> {
       return getJson<T>(`/api/companies/${encodeURIComponent(companyId)}/projects`);
@@ -102,8 +180,39 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
     async patchIssue(issueId: string, payload: UpdateIssuePayload | Record<string, unknown>) {
       return sendJson(`/api/issues/${encodeURIComponent(issueId)}`, "PATCH", payload);
     },
+    async patchWorkProduct(workProductId: string, payload: Record<string, unknown>) {
+      return sendJson(`/api/work-products/${encodeURIComponent(workProductId)}`, "PATCH", payload);
+    },
+    async patchAgent(agentId: string, payload: Record<string, unknown>) {
+      return sendJson(`/api/agents/${encodeURIComponent(agentId)}`, "PATCH", payload);
+    },
     async comment(issueId: string, body: string) {
       return sendJson(`/api/issues/${encodeURIComponent(issueId)}/comments`, "POST", { body });
+    },
+    async createInteraction(issueId: string, payload: object) {
+      return sendJson(`/api/issues/${encodeURIComponent(issueId)}/interactions`, "POST", payload);
+    },
+    async listInteractions<T = unknown>(issueId: string): Promise<T> {
+      return getJson<T>(`/api/issues/${encodeURIComponent(issueId)}/interactions`);
+    },
+    async listRecoveryActions<T = unknown>(issueId: string): Promise<T> {
+      return getJson<T>(`/api/issues/${encodeURIComponent(issueId)}/recovery-actions`);
+    },
+    async createRecoveryAction(issueId: string, payload: Record<string, unknown>) {
+      return sendJson(`/api/issues/${encodeURIComponent(issueId)}/recovery-actions`, "POST", payload);
+    },
+    async resolveRecoveryAction(issueId: string, payload: Record<string, unknown>) {
+      return sendJson(`/api/issues/${encodeURIComponent(issueId)}/recovery-actions/resolve`, "POST", payload);
+    },
+    async withdrawInteraction(issueId: string, interactionId: string, reason: string) {
+      return sendJson(
+        `/api/issues/${encodeURIComponent(issueId)}/interactions/${encodeURIComponent(interactionId)}/withdraw`,
+        "POST",
+        { reason },
+      );
+    },
+    async createChildIssue(parentIssueId: string, payload: Record<string, unknown>) {
+      return sendJson(`/api/issues/${encodeURIComponent(parentIssueId)}/children`, "POST", payload);
     },
     async createApproval(companyId: string, payload: Record<string, unknown>) {
       return sendJson(`/api/companies/${encodeURIComponent(companyId)}/approvals`, "POST", payload);
@@ -121,16 +230,43 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
         throw err;
       }
     },
-    async wakeup(agentId: string, reason: string, issueId?: string) {
+    async cancelHeartbeatRun(runId: string, reason = "Cancelled stale delegated execution") {
+      return sendJson(`/api/heartbeat-runs/${encodeURIComponent(runId)}/cancel`, "POST", { reason });
+    },
+    async wakeup(
+      agentId: string,
+      reason: string,
+      issueId?: string,
+      options?: {
+        resumeFromRunId?: string | undefined;
+        idempotencyKey?: string | undefined;
+        /** Native review cards need their identity in the runtime task context. */
+        reviewInteractionId?: string | undefined;
+        /** Reviewers must not reuse a stale session whose prompt predates the card. */
+        forceFreshSession?: boolean | undefined;
+      },
+    ) {
       // Paperclip wakeAgentSchema ignores top-level issueId. Heartbeat only
       // injects context.paperclipIssue / task when payload.issueId is set.
       return sendJson(`/api/agents/${encodeURIComponent(agentId)}/wakeup`, "POST", {
         source: "on_demand",
         triggerDetail: "ping",
         reason,
-        forceFreshSession: false,
-        ...(issueId ? { payload: { issueId } } : {}),
-      });
+        // A reviewer session contains the previous task prompt and may be
+        // reused by Paperclip. Review-card wakes are protocol-bound and must
+        // receive a fresh prompt, otherwise the model can act on a cancelled
+        // historical card even though the wake carries a new interaction id.
+        forceFreshSession: options?.forceFreshSession === true || options?.reviewInteractionId !== undefined,
+        ...(issueId || options?.resumeFromRunId
+          ? {
+              payload: {
+                ...(issueId ? { issueId } : {}),
+                ...(options?.resumeFromRunId ? { resumeFromRunId: options.resumeFromRunId } : {}),
+                ...(options?.reviewInteractionId ? { interactionId: options.reviewInteractionId, interactionKind: "request_item_verdicts" } : {}),
+              },
+            }
+          : {}),
+      }, options?.idempotencyKey);
     },
   };
 }
@@ -148,7 +284,7 @@ export function asArray<T>(raw: unknown): T[] {
   if (Array.isArray(raw)) return raw as T[];
   if (raw && typeof raw === "object") {
     const record = raw as Record<string, unknown>;
-    for (const key of ["agents", "issues", "approvals", "comments", "projects", "items"]) {
+    for (const key of ["agents", "issues", "approvals", "comments", "interactions", "projects", "children", "items"]) {
       if (Array.isArray(record[key])) return record[key] as T[];
     }
   }

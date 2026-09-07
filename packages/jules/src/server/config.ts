@@ -2,6 +2,7 @@ import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { JULES_PROVIDER_POLL_CADENCE_SECONDS } from "@pilleo/paperclip-adapter-common";
 
 function findGitDir(startDir?: string): string | undefined {
   let cur = startDir ? path.resolve(startDir) : process.cwd();
@@ -14,7 +15,19 @@ function findGitDir(startDir?: string): string | undefined {
   return undefined;
 }
 
+function workspaceGitEnvironment(): NodeJS.ProcessEnv {
+  // Paperclip can launch an adapter from a process that inherited Git's
+  // repository-routing variables. Those variables override `cwd` and can
+  // make discovery inspect the host checkout instead of the project workspace.
+  const environment = { ...process.env };
+  delete environment["GIT_DIR"];
+  delete environment["GIT_WORK_TREE"];
+  delete environment["GIT_COMMON_DIR"];
+  return environment;
+}
+
 export function discoverLocalGitRepository(cwd?: string): string | undefined {
+  if (cwd && !fs.existsSync(cwd)) return undefined;
   const targetCwd = findGitDir(cwd) || cwd || process.cwd();
   try {
     const remoteUrl = execSync("git config --get remote.origin.url", {
@@ -22,6 +35,7 @@ export function discoverLocalGitRepository(cwd?: string): string | undefined {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 3000,
+      env: workspaceGitEnvironment(),
     }).trim();
     if (remoteUrl) return remoteUrl;
   } catch {
@@ -31,6 +45,7 @@ export function discoverLocalGitRepository(cwd?: string): string | undefined {
 }
 
 export function discoverLocalGitDefaultBranch(cwd?: string): string | undefined {
+  if (cwd && !fs.existsSync(cwd)) return undefined;
   const targetCwd = findGitDir(cwd) || cwd || process.cwd();
   try {
     // 1. Try origin/HEAD symbolic ref
@@ -39,6 +54,7 @@ export function discoverLocalGitDefaultBranch(cwd?: string): string | undefined 
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 3000,
+      env: workspaceGitEnvironment(),
     }).trim();
     if (ref) return ref.replace(/^origin\//, "");
   } catch {
@@ -51,6 +67,7 @@ export function discoverLocalGitDefaultBranch(cwd?: string): string | undefined 
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 3000,
+      env: workspaceGitEnvironment(),
     }).trim();
     if (branch && branch !== "HEAD") return branch;
   } catch {
@@ -79,7 +96,7 @@ export const SettingsSchema = z.object({
   workspacePath: z.string().trim().min(1).optional(),
   planApprovalPolicy: z.enum(["required", "trusted_opt_out"]).optional(),
   prPolicy: z.enum(["auto", "always", "never"]).optional(),
-  pollCadenceSeconds: z.number().optional().transform(v => (v !== undefined && v > 0 ? Math.max(30, Math.min(3600, Math.round(v))) : 300)),
+  pollCadenceSeconds: z.number().optional().transform(v => (v !== undefined && v > 0 ? Math.max(30, Math.min(3600, Math.round(v))) : JULES_PROVIDER_POLL_CADENCE_SECONDS)),
   requestTimeoutSeconds: z.number().optional().transform(v => (v !== undefined && v > 0 ? Math.max(5, Math.min(600, Math.round(v))) : 120)),
   retryBudget: z.number().int().min(0).max(10).optional(),
   sessionDeadlineMinutes: z.number().optional().transform(v => (v !== undefined && v > 0 ? Math.max(15, Math.min(10080, Math.round(v))) : 2880)),
@@ -93,6 +110,20 @@ export const SettingsSchema = z.object({
   heartbeatPollWindowSeconds: z.number().min(30).max(10_800).optional(),
   maxSessionAgeHours: z.number().min(1).optional(),
   invariantsFile: z.string().optional(),
+  /** Paperclip agent that adjudicates provider questions before a human is asked. */
+  questionReviewerAgentId: z.string().uuid().optional(),
+  /** Dedicated Paperclip ACP agent for Jules question adjudication. Takes precedence over the legacy field. */
+  questionAdjudicatorAgentId: z.string().uuid().optional(),
+  /** Paperclip ACP agents used for Jules plan review; no provider API keys are used. */
+  planReviewerAgentId: z.string().uuid().optional(),
+  planStrongReviewerAgentId: z.string().uuid().optional(),
+  /** Accept the UI's comma-separated text field as well as API arrays. */
+  codeReviewerAgentIds: z.preprocess(
+    value => typeof value === "string"
+      ? value.split(",").map(id => id.trim()).filter(Boolean)
+      : value,
+    z.array(z.string().uuid()).optional(),
+  ),
 }).passthrough();
 
 export const AdapterConfigSchema = SettingsSchema;
@@ -118,12 +149,18 @@ export interface AdapterConfig {
   requirePlanApproval: boolean;
   automationMode: "AUTO_CREATE_PR" | "AUTOMATION_MODE_UNSPECIFIED";
   maxAutomaticRestarts: number;
+  questionReviewerAgentId?: string | undefined;
+  questionAdjudicatorAgentId?: string | undefined;
+  planReviewerAgentId?: string | undefined;
+  planStrongReviewerAgentId?: string | undefined;
+  e2eProviderBaseUrl?: string | undefined;
+  codeReviewerAgentIds?: string[] | undefined;
 }
 
 export const SAFE_DEFAULTS: Omit<AdapterConfig, "repository" | "source" | "baseBranch" | "requirePlanApproval"> = {
   planApprovalPolicy: "required",
   prPolicy: "auto",
-  pollCadenceSeconds: 300,
+  pollCadenceSeconds: JULES_PROVIDER_POLL_CADENCE_SECONDS,
   requestTimeoutSeconds: 120,
   retryBudget: 3,
   sessionDeadlineMinutes: 2880,
@@ -139,6 +176,35 @@ export function requireJulesApiKey(config: Record<string, unknown>): string {
     throw new Error("JULES_API_KEY did not resolve (secret_ref binding missing or empty in env.JULES_API_KEY)");
   }
   return key.trim();
+}
+
+/**
+ * Resolve the provider endpoint. Production always uses Jules' public API;
+ * the loopback override exists solely for the disposable server E2E harness.
+ */
+export function resolveJulesBaseUrl(
+  config: Record<string, unknown>,
+  environment: Record<string, string | undefined> = process.env,
+): string {
+  const candidate = config["e2eProviderBaseUrl"];
+  if (candidate === undefined || candidate === null || candidate === "") {
+    return "https://jules.googleapis.com/v1alpha";
+  }
+  if (environment["PAPERCLIP_ADAPTER_E2E"] !== "1") {
+    throw new Error("e2eProviderBaseUrl requires PAPERCLIP_ADAPTER_E2E=1");
+  }
+  if (typeof candidate !== "string") throw new Error("e2eProviderBaseUrl must be a URL");
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    throw new Error("e2eProviderBaseUrl must be a loopback URL");
+  }
+  const loopback = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "[::1]";
+  if (!loopback || !["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error("e2eProviderBaseUrl must be a loopback URL");
+  }
+  return candidate.replace(/\/+$/, "");
 }
 
 function sourceRepository(source?: string): string | undefined {

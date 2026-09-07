@@ -7,6 +7,10 @@ export interface AuditDigestParams {
   readonly durationMs?: number | undefined;
 }
 
+export function mergeAuditMarker(params: Pick<AuditDigestParams, "issue" | "pr">): string {
+  return `<!-- orchestrator:merge-audit:${params.issue.id}:pr-${params.pr.number}:${params.pr.mergedAt || "unknown"} -->`;
+}
+
 /**
  * Synthesizes a permanent, structured audit digest for completed tasks.
  */
@@ -32,7 +36,8 @@ export function synthesizeAuditDigest(params: AuditDigestParams): string {
     ? ` | **Execution Latency:** ${Math.round(durationMs / 1000)}s`
     : "";
 
-  return `### 🏁 Execution Audit Digest: [${issue.identifier || issue.id}] ${issue.title}
+  return `${mergeAuditMarker({ issue, pr })}
+### 🏁 Execution Audit Digest: [${issue.identifier || issue.id}] ${issue.title}
 
 | Attribute | Details |
 |---|---|

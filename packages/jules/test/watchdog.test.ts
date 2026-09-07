@@ -28,13 +28,14 @@ describe("watchdog", () => {
     expect(evalResult.shouldNudge).toBe(false);
   });
 
-  it("triggers nudge when session has been silent for > 15 min in IN_PROGRESS", () => {
+  it("reports a stall without sending a synthetic provider message", () => {
     const now = Date.now();
     const lastActivity = new Date(now - 20 * 60 * 1000).toISOString();
 
     const evalResult = evaluateSessionWatchdog(baseSession, lastActivity, now);
-    expect(evalResult.shouldNudge).toBe(true);
-    expect(evalResult.nudgeMessage).toContain("Status check");
+    expect(evalResult.shouldNudge).toBe(false);
+    expect(evalResult.nudgeMessage).toBeUndefined();
+    expect(evalResult.reason).toContain("stalled");
     expect(evalResult.nudgeCount).toBe(1);
   });
 

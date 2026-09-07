@@ -19,7 +19,7 @@ export function completionInteractionResult(
       julesSessionId: session.julesSessionId,
       julesState: session.julesState ?? session.phase,
       issueStatus,
-      interactionId: session.pendingInteraction?.paperclipInteractionId,
+      interactionId: session.pendingInteraction && "paperclipInteractionId" in session.pendingInteraction ? session.pendingInteraction.paperclipInteractionId : undefined,
       completedWithoutPr: true,
     },
     clearSession,
@@ -42,7 +42,8 @@ export function createPendingResult(
       provider: "jules",
       julesSessionId: session.julesSessionId,
       julesState: session.julesState ?? session.phase,
-      interactionId: session.pendingInteraction?.paperclipInteractionId,
+      interactionId: session.pendingInteraction && "paperclipInteractionId" in session.pendingInteraction ? session.pendingInteraction.paperclipInteractionId : undefined,
+      planPending: session.phase === "WAITING_FOR_PLAN_APPROVAL" && !session.planApprovedAt,
       nextRunDelayMs,
     },
   };

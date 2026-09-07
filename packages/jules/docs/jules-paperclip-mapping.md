@@ -36,8 +36,25 @@ stateDiagram-v2
     FAILED --> BLOCKED: Retries Exhausted
     IN_PROGRESS --> COMPLETED: Task Finished
     COMPLETED --> REVIEW: PR Created + CI Green
-    COMPLETED --> DONE: No PR + Operator Confirms
+COMPLETED --> DONE: No PR + Operator Confirms
 ```
+
+### Immutable PR-head and monitor compatibility rules
+
+Native review decisions are scoped to the immutable GitHub PR head SHA, not
+just the PR URL. A rejection for an older commit is historical evidence and
+must not be relayed to Jules or prevent a newer commit from entering review.
+The adapter records feedback delivery by interaction and head SHA, so a
+heartbeat can safely repeat without sending duplicate provider messages.
+
+Some Paperclip versions strip `executionPolicy.monitor` when a monitor is
+triggered while leaving a `jules` monitor in `executionState`. Until Paperclip
+provides a direct clear operation for that projection, the adapter uses a
+documented compatibility bridge: restore a short-lived equivalent Jules
+monitor, remove it through the normal policy transition, and re-read the issue
+to verify that the projection was cleared. This bridge is deliberately limited
+to Jules monitors and should be removed once the upstream clear behavior is
+available.
 
 ---
 
@@ -45,8 +62,9 @@ stateDiagram-v2
 
 1. **Watchdog Stall Detection (`src/server/watchdog.ts`):**
    - Detects when an active session in `IN_PROGRESS` emits no activities for $> 15$ minutes.
-   - Automatically sends `sendMessage("Status check: please continue executing the plan and report progress.")` to wake the container reasoning loop.
-   - Enforces a 15-minute cooldown between nudges.
+   - Records the stall and relies on the durable Paperclip monitor for the next poll.
+   - It deliberately sends no synthetic provider message: a heartbeat must not
+     overwrite or obscure a real Jules question, plan, or completion event.
 
 2. **In-Place Failure Recovery (`src/server/failure-recovery.ts`):**
    - Automatically recovers from `FAILED` state via `sendMessage("retry")` without creating new sessions or discarding git workspace state (up to 2 in-place attempts).

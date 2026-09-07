@@ -17,6 +17,10 @@ A suite of modular, zero-dependency bash scripts for operating, triaging, and in
 | [`list_approvals.sh`](list_approvals.sh) | Lists pending task start authorizations and Stage 4 merge approval cards. | `./scripts/fleet/list_approvals.sh pending` |
 | [`list_agents.sh`](list_agents.sh) | Lists all fleet agents, roles, error reasons, and chain of command health. | `./scripts/fleet/list_agents.sh` |
 | [`run_telegram_companion.sh`](run_telegram_companion.sh) | Starts the interactive Telegram bot companion for live cards and push alerts. | `./scripts/fleet/run_telegram_companion.sh` |
+| [`diagnostics.sh`](diagnostics.sh) | Read-only service, Jules heartbeat, marked-child, and capability-incident summary. | `./scripts/fleet/diagnostics.sh` |
+| [`reconcile_stale_children.sh`](reconcile_stale_children.sh) | Finds stale Jules supervisor/adjudication children; dry-run by default. | `./scripts/fleet/reconcile_stale_children.sh --apply` |
+| [`reconcile_jules_prs.mjs`](reconcile_jules_prs.mjs) | Manual emergency convergence of verified ready Jules PRs into review; closes false productivity blockers. | `node scripts/fleet/reconcile_jules_prs.mjs --dry-run --json` |
+| [`install_jules_pr_reconciler_timer.sh`](install_jules_pr_reconciler_timer.sh) | Installs the deprecated compatibility timer; normal recovery is now performed by the orchestrator heartbeat. | Use only for documented emergency rollback/recovery testing. |
 
 ---
 
@@ -28,6 +32,14 @@ All scripts source [`common.sh`](common.sh) and respect standard environment var
 export PAPERCLIP_API_URL="http://127.0.0.1:3100"
 export COMPANY_ID="8f4ef932-d769-43b2-981a-d273ed715162" # mazewall
 ```
+
+The Jules PR reconciler intentionally uses the authenticated board CLI context,
+not an adapter token. It only advances an issue when its Jules-linked GitHub PR
+is open, mergeable, non-draft, and all reported checks completed successfully.
+The timer is disabled in the supported deployment because running both the
+adapter heartbeat and the compatibility bridge can duplicate recovery actions.
+Prefer the adapter's native recovery path and the isolated
+`test:e2e:jules-recovery` canary.
 
 ---
 
@@ -52,3 +64,26 @@ export COMPANY_ID="8f4ef932-d769-43b2-981a-d273ed715162" # mazewall
 ```bash
 ./scripts/fleet/list_agents.sh
 ```
+
+### 5. Reloading an External Adapter Safely
+
+Paperclip loads external adapter packages only at server startup. For an
+adapter change: build the affected workspace, restart Paperclip, verify its
+startup log loaded the package's `dist/index.js`, then trigger or wait for one
+Orchestrator tick. The tick reconciles managed agent configuration. Do not
+wake a reviewer before that reconciliation finishes, otherwise a stale
+`networkScope` or prompt may be exercised.
+
+### 6. Recovering One Failed Native Review Without Spam
+
+First inspect the issue interactions and the addressed reviewer's latest
+heartbeat runs. Only if there is exactly one pending native verdict card and
+no active reviewer run, reuse that card with
+`packages/orchestrator/scripts/recover-native-review.mjs`. The expected outcome
+is the same card becoming `answered`. A new card, a normal issue comment, or a
+second concurrent wake is a recovery failure, not progress.
+
+If the reviewer reports `missing_runtime_context`, treat the terminal run as a
+transport failure, not a review decision. The orchestrator reuses the same
+pending card once with its terminal-run idempotency key. Do not reassign the
+issue to Jules or write a prose fallback while that card remains pending.

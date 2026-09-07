@@ -83,4 +83,14 @@ target_symbols: ["SandboxDispatcher#getOrCreate"]
       hashPromptIdentity({ ...ctx, description: 'changed task' }, config),
     );
   });
+
+  it('does not expose backlog sync identity metadata to Jules', () => {
+    const prompt = buildPrompt({
+      ...ctx,
+      description: `---\npaperclip_issue_id: old-issue\npaperclip_identifier: MAZ-823\ntitle: "Fix bug"\n---\nKeep this requirement.`,
+    }, config);
+    expect(prompt).not.toContain('old-issue');
+    expect(prompt).not.toContain('MAZ-823');
+    expect(prompt).toContain('Keep this requirement.');
+  });
 });

@@ -16,8 +16,8 @@ importers:
         version: 3.25.76
     devDependencies:
       '@paperclipai/adapter-utils':
-        specifier: 2026.722.0
-        version: 2026.722.0
+        specifier: 2026.831.1
+        version: 2026.831.1
       '@types/node':
         specifier: 22.0.0
         version: 22.0.0
@@ -241,8 +241,9 @@ packages:
     cpu: [x64]
     os: [linux]
 
-  '@paperclipai/adapter-utils@2026.722.0':
-    resolution: {integrity: sha512-ovgcau6R1zR+qLDPX5pc19R0YMPDl5fsvOCuwvQvKFy804R4iSKEcJcVMZL7DUEm8kEB9q427mVr4uBosCx0iw==}
+  '@paperclipai/adapter-utils@2026.831.1':
+    resolution: {integrity: sha512-sWuochCKxzkNH41NHIsdmKT8GUMxYTEgJAyrUMnSnNd7x8gKCjt7N3IQ634ZNGsPG65dx6h8lOG4zKhhTemPJg==}
+    engines: {node: '>=24.11.0'}
     bundledDependencies:
       - acpx
 
@@ -963,7 +964,7 @@ snapshots:
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
     optional: true
 
-  '@paperclipai/adapter-utils@2026.722.0':
+  '@paperclipai/adapter-utils@2026.831.1':
     dependencies:
       picocolors: 1.1.1
 

@@ -4,6 +4,15 @@ import { JulesClient } from '../src/server/jules-client';
 import { sessionCodec } from '../src/server/session';
 
 vi.mock('../src/server/jules-client');
+vi.mock('../src/server/paperclip-client', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('../src/server/paperclip-client')>();
+  return {
+    ...mod,
+    listPaperclipInteractions: vi.fn().mockResolvedValue([]),
+    listIssueComments: vi.fn().mockResolvedValue([]),
+    scheduleJulesSessionMonitor: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
   describe('Required Edge Cases Tests', () => {
     beforeEach(() => {
@@ -55,7 +64,7 @@ vi.mock('../src/server/jules-client');
          runId: 'r'
        } as any;
 
-       (JulesClient.prototype.getSession as any).mockResolvedValueOnce({ id: '123', name: 'sessions/123', state: 'NEW_UNSEEN_STATE' });
+       (JulesClient.prototype.getSession as any).mockResolvedValue({ id: '123', name: 'sessions/123', state: 'NEW_UNSEEN_STATE' });
 
        const abortCtrl = new AbortController();
        setTimeout(() => abortCtrl.abort(), 10);

@@ -6,7 +6,7 @@ describe("typed Jules settings", () => {
     const settings = validateConfig({ repository: "https://github.com/acme/widgets.git", baseBranch: "main" });
     expect(settings).toMatchObject({
       repository: "acme/widgets", source: "sources/github/acme/widgets", baseBranch: "main",
-      requirePlanApproval: true, automationMode: "AUTO_CREATE_PR", pollCadenceSeconds: 300,
+      requirePlanApproval: true, automationMode: "AUTO_CREATE_PR", pollCadenceSeconds: 900,
       requestTimeoutSeconds: 120, retryBudget: 3, sessionDeadlineMinutes: 2880, progressVerbosity: "normal",
     });
   });
@@ -16,7 +16,7 @@ describe("typed Jules settings", () => {
       { repository: "acme/widgets", baseBranch: "develop", retryBudget: 2, progressVerbosity: "quiet" },
       { issueOverride: { baseBranch: "release", retryBudget: 7 } },
     );
-    expect(settings).toMatchObject({ baseBranch: "release", retryBudget: 7, progressVerbosity: "quiet", pollCadenceSeconds: 300 });
+    expect(settings).toMatchObject({ baseBranch: "release", retryBudget: 7, progressVerbosity: "quiet", pollCadenceSeconds: 900 });
   });
 
   it("derives repository and base branch from Paperclip workspace metadata", () => {
@@ -35,7 +35,7 @@ describe("typed Jules settings", () => {
 
   it("validates bounds and never assumes master", () => {
     expect(() => validateConfig({ repository: "acme/widgets" })).toThrow("could not be derived");
-    const res = validateConfig({ repository: "acme/widgets", baseBranch: "main", pollCadenceSeconds: 0 }); expect(res.pollCadenceSeconds).toBe(300);
+    const res = validateConfig({ repository: "acme/widgets", baseBranch: "main", pollCadenceSeconds: 0 }); expect(res.pollCadenceSeconds).toBe(900);
   });
 
   it("uses no-PR mode without a remote and validates forced PR compatibility", () => {

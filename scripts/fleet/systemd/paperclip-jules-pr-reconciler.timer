@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Jules PR reconciliation every two minutes
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=2min
+Persistent=true
+Unit=paperclip-jules-pr-reconciler.service
+
+[Install]
+WantedBy=timers.target

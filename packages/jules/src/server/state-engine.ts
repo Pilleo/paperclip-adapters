@@ -1,6 +1,7 @@
-import { JulesAdapterSessionV1 } from "./session.js";
+import { JulesAdapterSessionV1, JulesSessionState } from "./session.js";
 import { IssueStatus, IssueDisposition } from "./disposition.js";
 import { evaluateSessionWatchdog } from "./watchdog.js";
+import { evaluateCompletionTransition } from "./transition-guards.js";
 
 export type JulesTaskPhase =
   | "INITIALIZING"
@@ -15,7 +16,7 @@ export type JulesTaskPhase =
   | "FAILED";
 
 export interface JulesLifecycleSignals {
-  readonly julesState: string;
+  readonly julesState: JulesSessionState;
   readonly prUrl?: string | undefined;
   readonly prDetails?: { readonly isMerged: boolean; readonly mergeableStatus?: string } | undefined;
   readonly ciStatus?: "success" | "pending" | "failed" | "unknown" | null | undefined;
@@ -25,8 +26,6 @@ export interface JulesLifecycleSignals {
   readonly nowMs?: number | undefined;
   readonly planMarkdown?: string | undefined;
   readonly userQuestion?: string | undefined;
-  readonly scopeConformant?: boolean | undefined;
-  readonly scopeSummary?: string | undefined;
 }
 
 export type LifecycleAction =
@@ -37,7 +36,6 @@ export type LifecycleAction =
   | { readonly type: "CREATE_REVIEW_CARD"; readonly prUrl: string }
   | { readonly type: "NUDGE_WATCHDOG"; readonly message: string }
   | { readonly type: "RESET_PAUSED_SESSION" }
-  | { readonly type: "FLAG_SCOPE_DRIFT"; readonly summary: string };
 
 export interface JulesLifecyclePlan {
   readonly phase: JulesTaskPhase;
@@ -65,6 +63,21 @@ export function evaluateJulesLifecycleState(
 
   // 1. PR Merged -> Terminal success
   if (signals.prDetails?.isMerged) {
+    const completion = evaluateCompletionTransition({
+      providerState: signals.julesState,
+      prMerged: true,
+      mutationPending: false,
+    });
+    if (!completion.allowed) {
+      return {
+        phase: "CODING",
+        issueTransition: null,
+        actions: [],
+        shouldDeleteSession: false,
+        shouldExitRun: false,
+        exitCode: 0,
+      };
+    }
     return {
       phase: "COMPLETED_AND_MERGED",
       issueTransition: {
@@ -124,22 +137,8 @@ export function evaluateJulesLifecycleState(
     };
   }
 
-  // 4. PR exists but drifted from the host plan contract
-  if (signals.prUrl && signals.scopeConformant === false) {
-    return {
-      phase: "CODING",
-      issueTransition: {
-        targetStatus: "in_progress",
-        comment: signals.scopeSummary,
-      },
-      actions: [{ type: "FLAG_SCOPE_DRIFT", summary: signals.scopeSummary || "Scope drift vs declared plan." }],
-      shouldDeleteSession: false,
-      shouldExitRun: true,
-      exitCode: 0,
-    };
-  }
-
-  // 5. PR Open with Green CI -> In Review
+  // 4. PR Open with Green CI -> In Review. Scope conformity is deliberately
+  // absent from lifecycle signals: it is advisory telemetry, never a gate.
   if (signals.prUrl && signals.ciStatus === "success") {
     const existingReviewCard = signals.existingInteractions?.find(
       (i) => i.kind === "request_confirmation" && i.status === "pending"

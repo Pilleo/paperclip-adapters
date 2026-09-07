@@ -69,7 +69,7 @@ describe("plan review ladder", () => {
     expect(verdict.stage).toBe("terra_codex");
   });
 
-  it("does not call Terra/Codex when cheap review still sees gaps", async () => {
+  it("passes cheap-review gaps to Terra/Codex for adjudication", async () => {
     let terraCalled = false;
     const verdict = await evaluatePlanClarity("1. maybe later\n2. TBD", {
       terraGrokReviewer: async () => {
@@ -77,10 +77,9 @@ describe("plan review ladder", () => {
         return terraApprove();
       },
     });
-    expect(terraCalled).toBe(false);
-    expect(verdict.action).toBe("ESCALATE_TO_OPERATOR");
-    expect(verdict.stage).toBe("human");
-    expect(verdict.reviewSummary).toMatch(/Cheap review|Terra\/Codex was not called/);
+    expect(terraCalled).toBe(true);
+    expect(verdict.action).toBe("AUTO_APPROVE");
+    expect(verdict.stage).toBe("terra_codex");
   });
 
   it("fills lazy file/test questions from the work package before Vibe/Luna", () => {
@@ -121,7 +120,7 @@ describe("plan review ladder", () => {
     expect(verdict.stage).toBe("human");
   });
 
-  it("uses live Mistral HTTP first and skips Terra when that reviewer finds issues", async () => {
+  it("uses live Mistral HTTP first and lets Terra adjudicate its findings", async () => {
     const fetchMock = vi.fn(async () =>
       new Response(JSON.stringify({
         choices: [{ message: { content: JSON.stringify({ approve: false, findings: ["Missing lock order"], questions: ["How is the mutex ordered?"], summary: "Gaps" }) } }],
@@ -147,9 +146,9 @@ describe("plan review ladder", () => {
       expect(fetchMock).toHaveBeenCalled();
       const url = String(fetchMock.mock.calls[0]?.[0] ?? "");
       expect(url).toContain("mistral.ai");
-      expect(terraCalled).toBe(false);
-      expect(verdict.stage).toBe("human");
-      expect(verdict.action).toBe("ESCALATE_TO_OPERATOR");
+      expect(terraCalled).toBe(true);
+      expect(verdict.stage).toBe("terra_codex");
+      expect(verdict.action).toBe("AUTO_APPROVE");
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -249,13 +248,13 @@ describe("plan review ladder", () => {
 
   it.each([
     {
-      desc: "static TBD gaps never reach Terra",
+      desc: "ambiguous cheap-review gaps reach Terra for adjudication",
       plan: "1. maybe later\n2. TBD",
       host: false,
       terra: true,
-      action: "ESCALATE_TO_OPERATOR",
-      stage: "human",
-      terraCalled: false,
+      action: "AUTO_APPROVE",
+      stage: "terra_codex",
+      terraCalled: true,
     },
     {
       desc: "invariants never reach Terra",

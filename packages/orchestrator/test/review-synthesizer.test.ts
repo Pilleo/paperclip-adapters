@@ -37,7 +37,8 @@ describe("Token-Friendly Review Synthesizer", () => {
     expect(prompt).toContain("Project Invariants:** Clean");
     expect(prompt).toContain("Token-Efficient Review Guidelines");
     expect(prompt).toContain("codanna retrieve describe");
-    expect(prompt).toContain("APPROVE / REQUEST_CHANGES");
+    expect(prompt).toContain("all good");
+    expect(prompt).toContain("need work");
   });
 
   it("handles invariant violation warnings in prompt", () => {
@@ -59,5 +60,18 @@ describe("Token-Friendly Review Synthesizer", () => {
 
     expect(prompt).toContain("⚠️ **Project Invariants Flagged:**");
     expect(prompt).toContain("[CRITICAL] NO_SILENT_EPERM_BYPASS: Silent bypass detected");
+  });
+
+  it("makes the native verdict the only reviewer side effect", () => {
+    const prompt = synthesizeTokenFriendlyReviewPrompt({
+      issue: sampleIssue,
+      prUrl: "https://github.com/Pilleo/mazewall/pull/44",
+      reviewInteractionId: "card-955",
+    });
+    expect(prompt).toContain("structured dialog verdict is the only output");
+    expect(prompt).toContain("do not PATCH the issue");
+    expect(prompt).toContain("post a normal issue comment");
+    expect(prompt).not.toContain("active execution-policy participant");
+    expect(prompt).not.toContain("status `done`");
   });
 });

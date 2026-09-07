@@ -24,10 +24,10 @@
     "./ui-parser": "./ui-parser.cjs"
   },
   "peerDependencies": {
-    "@paperclipai/adapter-utils": "2026.722.0"
+    "@paperclipai/adapter-utils": "2026.831.1"
   },
   "devDependencies": {
-    "@paperclipai/adapter-utils": "2026.722.0",
+    "@paperclipai/adapter-utils": "2026.831.1",
     "@types/node": "^22.0.0",
     "typescript": "^5.7.3",
     "vitest": "^3.0.0",
@@ -35,7 +35,7 @@
   },
   "dependencies": {
     "zod": "^3.24.0",
-    "@pilleo/paperclip-adapter-common": "workspace:*"
+    "@pilleo/paperclip-adapter-common": "workspace:^"
   },
   "engines": {
     "node": ">=22"

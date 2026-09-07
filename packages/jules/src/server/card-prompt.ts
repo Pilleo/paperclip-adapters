@@ -12,7 +12,13 @@ export type SafeCardSummary = string & { readonly [SafeCardSummaryBrand]: true }
 
 export const MAX_CARD_PROMPT_LENGTH = 490;
 export const MAX_CARD_HELP_TEXT_LENGTH = 900;
+export const MAX_CARD_HELP_TEXT_SCHEMA_LENGTH = 1_000;
 export const MAX_CARD_SUMMARY_LENGTH = 190;
+// Paperclip's request_confirmation schema allows 1000 prompt characters and
+// 20000 detailsMarkdown characters. Keep a margin so future wrapper text or
+// validation changes cannot turn a valid card into a 400 response.
+export const MAX_CONFIRMATION_PROMPT_LENGTH = 900;
+export const MAX_CONFIRMATION_DETAILS_LENGTH = 19_900;
 
 /**
  * Split a long question cleanly between prompt (<=490 chars) and helpText (<=990 chars)
@@ -47,6 +53,21 @@ export function formatCardPromptAndHelpText(raw: string): { prompt: SafeCardProm
   };
 }
 
+/** Compose untrusted provider context with required protocol instructions. */
+export function appendCardHelpText(providerContext: string | undefined, instructions: string): string {
+  const suffix = instructions.trim().slice(0, MAX_CARD_HELP_TEXT_SCHEMA_LENGTH);
+  const context = (providerContext ?? "").trim();
+  if (!context) return suffix;
+  const separator = "\n\n";
+  const contextBudget = Math.max(0, MAX_CARD_HELP_TEXT_SCHEMA_LENGTH - suffix.length - separator.length);
+  const boundedContext = context.length <= contextBudget
+    ? context
+    : contextBudget >= 3
+      ? `${context.slice(0, contextBudget - 3)}...`
+      : context.slice(0, contextBudget);
+  return `${boundedContext}${separator}${suffix}`.slice(0, MAX_CARD_HELP_TEXT_SCHEMA_LENGTH);
+}
+
 /**
  * Pure function to format a question/prompt safely within Paperclip card limits.
  * Truncates cleanly with ellipsis if length exceeds maxLen.
@@ -74,4 +95,22 @@ export function formatCardSummary(raw: string, maxLen = MAX_CARD_SUMMARY_LENGTH)
     return trimmed as SafeCardSummary;
   }
   return `${trimmed.slice(0, maxLen - 3)}...` as SafeCardSummary;
+}
+
+/**
+ * Builds the visible body for a plan-review confirmation. The plan document
+ * target remains authoritative; this bounded copy makes the interaction
+ * self-contained for addressed reviewers without overflowing Paperclip.
+ */
+export function formatConfirmationDetails(
+  planMarkdown: string,
+  revisionNumber: number,
+): string {
+  const header = `Review target: plan revision ${revisionNumber}`;
+  const body = (planMarkdown ?? "").trim();
+  const details = `${header}\n\n${body}`;
+  if (details.length <= MAX_CONFIRMATION_DETAILS_LENGTH) return details;
+  const notice = "\n\n[Plan details truncated; review the linked immutable plan document for the complete revision.]";
+  const available = Math.max(0, MAX_CONFIRMATION_DETAILS_LENGTH - notice.length);
+  return `${details.slice(0, available)}${notice}`;
 }

@@ -3,6 +3,84 @@ import { extractIssueMetadata } from "../src/core/parser.js";
 import { calculateConflictMatrix, selectNextTasks, selectNextTasksMultiLane } from "../src/core/dispatcher.js";
 
 describe("Deterministic Orchestrator Dispatcher Engine", () => {
+  it.each([
+    ["backlog", false],
+    ["in_progress", false],
+    ["in_review", false],
+    ["blocked", false],
+    ["done", true],
+    ["cancelled", true],
+  ] as const)("treats persisted Paperclip blockers as authoritative when the blocker is %s", (blockerStatus, shouldDispatch) => {
+    const blocker = extractIssueMetadata({
+      id: "root-issue",
+      identifier: "MAZ-985",
+      title: "Root work",
+      status: blockerStatus,
+      description: "---\norchestrator_managed: true\n---",
+    });
+    const approvedDependent = extractIssueMetadata({
+      id: "dependent-issue",
+      identifier: "MAZ-986",
+      title: "Already approved dependent work",
+      status: "backlog",
+      // This is the server-native relationship that exists even when a
+      // Markdown dependency was written before the upstream MAZ identifier
+      // was known. Approval authorizes future work; it cannot bypass this.
+      blockedBy: [{ id: "root-issue", identifier: "MAZ-985", status: blockerStatus }],
+      description: "---\norchestrator_managed: true\n---",
+    });
+
+    const matrix = calculateConflictMatrix([blocker, approvedDependent]);
+    const selections = selectNextTasksMultiLane([blocker, approvedDependent], matrix, {
+      julesAgentId: "jules",
+      julesCapacity: 1,
+      maxToSelect: 1,
+    });
+
+    expect(selections.some((selection) => selection.issue.id === "dependent-issue")).toBe(shouldDispatch);
+  });
+
+  it("keeps persisted blocker IDs alongside Markdown dependency references", () => {
+    const parsed = extractIssueMetadata({
+      id: "dependent-issue",
+      title: "Dependent work",
+      status: "backlog",
+      blockedBy: [{ id: "root-issue", identifier: "MAZ-985", status: "in_progress" }],
+      description: "---\ndependencies: [\"external-contract\"]\n---",
+    });
+
+    expect(parsed.dependencies).toEqual(["external-contract", "root-issue"]);
+  });
+
+  it("lets an approved root outrank non-running resource contenders", () => {
+    const approvedRoot = extractIssueMetadata({
+      id: "root-issue",
+      identifier: "MAZ-985",
+      title: "Approved root",
+      status: "backlog",
+      priority: "high",
+      description: "---\norchestrator_managed: true\ntarget_modules: [packages/orchestrator]\n---",
+    });
+    const pendingContender = extractIssueMetadata({
+      id: "contender-issue",
+      identifier: "MAZ-953",
+      title: "Pending contender",
+      status: "backlog",
+      priority: "high",
+      description: "---\norchestrator_managed: true\ntarget_modules: [packages/orchestrator]\n---",
+    });
+
+    const matrix = calculateConflictMatrix([pendingContender, approvedRoot]);
+    const selections = selectNextTasksMultiLane([pendingContender, approvedRoot], matrix, {
+      julesAgentId: "jules",
+      julesCapacity: 1,
+      maxToSelect: 1,
+      preferredIssueIds: new Set(["root-issue"]),
+    });
+
+    expect(selections.map((selection) => selection.issue.id)).toEqual(["root-issue"]);
+  });
+
   it("extracts YAML frontmatter metadata and handles multiline lists", () => {
     const rawIssue = {
       id: "issue-1",
@@ -136,6 +214,23 @@ describe("Multi-Lane Concurrency & Jules Quota Selection", () => {
 });
 
 describe("Method-level granularity conflict evaluation", () => {
+  it("selects no task when the project has no remaining lane capacity", () => {
+    const task = extractIssueMetadata({
+      id: "no-slot",
+      title: "No slot",
+      status: "todo",
+      description: "---\npriority: low\n---",
+    });
+    const selections = selectNextTasksMultiLane([task], calculateConflictMatrix([task]), {
+      julesAgentId: "jules",
+      vibeAgentId: "vibe",
+      julesCapacity: 0,
+      vibeCapacity: 0,
+      maxToSelect: 0,
+    });
+    expect(selections).toEqual([]);
+  });
+
   it("allows concurrent scheduling for disjoint method targets in the same file", () => {
     const taskA: ParsedIssueMetadata = {
       id: "task-a",

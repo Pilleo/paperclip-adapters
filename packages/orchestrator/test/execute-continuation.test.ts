@@ -32,9 +32,9 @@ describe("orchestrator live session continuation", () => {
     else process.env["PAPERCLIP_API_KEY"] = originalKey;
   });
 
-  it("wakes managed Jules with payload.issueId when a live session is due to poll", async () => {
+  it("requests an issue-scoped managed Jules continuation when the poll is due", async () => {
     const wakeupBodies: unknown[] = [];
-    const finishedAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const finishedAt = new Date(Date.now() - 16 * 60 * 1000).toISOString();
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
       const href = String(url);
       const method = (init?.method || "GET").toUpperCase();
@@ -75,6 +75,22 @@ describe("orchestrator live session continuation", () => {
           { status: 200 }
         );
       }
+      if (href.includes("/projects")) {
+        return new Response(JSON.stringify([
+          { id: "project-1", name: "paperclip-adapters", primaryWorkspace: { cwd: process.cwd() } },
+        ]), { status: 200 });
+      }
+      if (method === "GET" && href.endsWith("/api/issues/issue-821")) {
+        return new Response(JSON.stringify({
+          id: "issue-821",
+          identifier: "MAZ-821",
+          title: "PROBE: Jules reattach ping",
+          status: "in_progress",
+          projectId: "project-1",
+          assigneeAgentId: "jules-orch",
+          updatedAt: finishedAt,
+        }), { status: 200 });
+      }
       if (href.includes("/issues")) {
         return new Response(
           JSON.stringify([
@@ -83,6 +99,7 @@ describe("orchestrator live session continuation", () => {
               identifier: "MAZ-821",
               title: "PROBE: Jules reattach ping",
               status: "in_progress",
+              projectId: "project-1",
               assigneeAgentId: "jules-orch",
               updatedAt: finishedAt,
             },
@@ -102,16 +119,16 @@ describe("orchestrator live session continuation", () => {
 
     const result = await execute(ctx());
     expect(result.exitCode).toBe(0);
-    expect(wakeupBodies).toEqual([
-      {
-        source: "on_demand",
-        triggerDetail: "ping",
-        reason: "Continue live jules session 2024763132299585220",
-        forceFreshSession: false,
-        payload: { issueId: "issue-821" },
-      },
-    ]);
-    expect(String(result.summary)).toContain("continued 1 live sessions");
+    expect(wakeupBodies).toEqual([{
+      source: "on_demand",
+      triggerDetail: "ping",
+      reason: "Poll supervised Jules session 2024763132299585220",
+      forceFreshSession: false,
+      payload: { issueId: "issue-821", resumeFromRunId: "hb-1" },
+    }]);
+    // The Jules adapter performed the explicit resume wake first, so the
+    // generic continuation pass correctly finds no second session to wake.
+    expect(String(result.summary)).toContain("continued 0 live sessions");
   });
 
   it("does not wake when retryNotBefore is still in the future", async () => {
@@ -156,6 +173,11 @@ describe("orchestrator live session continuation", () => {
           { status: 200 }
         );
       }
+      if (href.includes("/projects")) {
+        return new Response(JSON.stringify([
+          { id: "project-1", name: "paperclip-adapters", primaryWorkspace: { cwd: process.cwd() } },
+        ]), { status: 200 });
+      }
       if (href.includes("/issues")) {
         return new Response(
           JSON.stringify([
@@ -163,6 +185,7 @@ describe("orchestrator live session continuation", () => {
               id: "issue-821",
               title: "ping",
               status: "in_progress",
+              projectId: "project-1",
               assigneeAgentId: "jules-orch",
               updatedAt: finishedAt,
             },
@@ -178,5 +201,69 @@ describe("orchestrator live session continuation", () => {
     expect(result.exitCode).toBe(0);
     expect(wakeupUrls).toEqual([]);
     expect(String(result.summary)).toContain("continued 0 live sessions");
+  });
+
+  it("reattaches an expired native Jules monitor without creating a provider session", async () => {
+    const patches: Array<Record<string, unknown>> = [];
+    const expired = new Date(Date.now() - 60_000).toISOString();
+    const issue = {
+      id: "issue-836",
+      identifier: "MAZ-836",
+      title: "native monitor canary",
+      status: "blocked",
+      projectId: "project-1",
+      assigneeAgentId: "jules-orch",
+      updatedAt: expired,
+      executionPolicy: {
+        mode: "normal",
+        stages: [],
+        monitor: {
+          nextCheckAt: expired,
+          timeoutAt: expired,
+          serviceName: "jules",
+          externalRef: "jules-session-836",
+        },
+      },
+    };
+    globalThis.fetch = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      const method = (init?.method || "GET").toUpperCase();
+      if (method === "PATCH" && href.includes("/api/issues/issue-836")) {
+        const body = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+        patches.push(body);
+        Object.assign(issue, body);
+        return new Response("{}", { status: 200 });
+      }
+      if (href.includes("/heartbeat-runs")) return new Response("[]", { status: 200 });
+      if (href.endsWith("/agents") || href.includes("/agents?")) {
+        return new Response(JSON.stringify([{
+          id: "jules-orch",
+          name: "[Orchestrated] Jules Async Worker",
+          adapterType: "jules",
+          status: "idle",
+          reportsTo: "orch-1",
+          metadata: { managedBy: "paperclip-orchestrator", workerKey: "jules" },
+        }]), { status: 200 });
+      }
+      if (href.includes("/projects")) return new Response(JSON.stringify([
+        { id: "project-1", name: "paperclip-adapters", primaryWorkspace: { cwd: process.cwd() } },
+      ]), { status: 200 });
+      if (method === "GET" && href.endsWith("/api/issues/issue-836")) return new Response(JSON.stringify(issue), { status: 200 });
+      if (href.includes("/issues")) return new Response(JSON.stringify([issue]), { status: 200 });
+      if (href.includes("/approvals")) return new Response("[]", { status: 200 });
+      return new Response("[]", { status: 200 });
+    }) as typeof fetch;
+
+    const result = await execute(ctx());
+    expect(result.exitCode).toBe(0);
+    expect(patches).toHaveLength(1);
+    expect(patches[0]).toMatchObject({ status: "in_progress" });
+    const monitor = (patches[0]?.executionPolicy as Record<string, unknown>)?.monitor as Record<string, unknown>;
+    expect(monitor).toMatchObject({ serviceName: "jules", externalRef: "jules-session-836" });
+    expect(Date.parse(String(monitor.nextCheckAt))).toBeGreaterThan(Date.now());
+    expect(String(result.summary)).toContain("0 new dev tasks dispatched");
+
+    await execute(ctx());
+    expect(patches).toHaveLength(1);
   });
 });

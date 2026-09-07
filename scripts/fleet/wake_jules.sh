@@ -18,7 +18,7 @@ REASON="${1:-process_jules_sessions}"
 echo "🚀 Waking up Jules Async Worker (${JULES_WORKER_AGENT_ID})..."
 RESPONSE=$(curl -s -X POST "${PAPERCLIP_API_URL}/api/agents/${JULES_WORKER_AGENT_ID}/wakeup" \
   -H "Content-Type: application/json" \
-  -d "{\"reason\": \"${REASON}\"}")
+  -d "{\"reason\": \"${REASON}\", \"payload\": {\"issueId\": \"${ISSUE_ID:-}\"}}")
 
 if command -v jq &>/dev/null; then
   echo "${RESPONSE}" | jq '.'

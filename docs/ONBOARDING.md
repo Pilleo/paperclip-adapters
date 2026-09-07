@@ -141,3 +141,17 @@ When an agent opens a Pull Request on GitHub, it must strictly pass through 4 va
 
 ### Q: An agent is in `error` status. How do I fix it?
 **A:** Run `pnpm fleet:agents` to inspect `errorReason`. After resolving the issue (e.g. invalid API token), wake up the agent via `pnpm fleet:jules` or `pnpm fleet:reviewer` to clear the error status.
+
+### Q: Why did a reviewer still run old code after I built the adapter?
+**A:** Paperclip loads external adapter `dist/` modules at server startup. Build
+the affected package, restart Paperclip, confirm the startup log identifies the
+adapter's `dist/index.js`, then allow an Orchestrator heartbeat to reconcile
+managed reviewer configuration. Do not wake a reviewer while it still has an
+active run from the old configuration.
+
+### Q: A native review card is pending after a reviewer crash. Can I retry it?
+**A:** Yes, but only after confirming the card is the sole pending card for that
+stage and the addressed reviewer has no queued or running heartbeat. Reuse the
+same card through the native recovery helper; never create a replacement card
+or leave a normal comment as a decision. The next successful reviewer run must
+resolve the original card to `answered`.

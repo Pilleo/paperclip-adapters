@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateConfig, requireJulesApiKey, AdapterConfigSchema } from '../src/server/config';
+import { validateConfig, requireJulesApiKey, AdapterConfigSchema, resolveJulesBaseUrl } from '../src/server/config';
 import { julesConfigSchema } from '../src/server/config-schema';
 
 describe('Config', () => {
@@ -58,4 +58,23 @@ describe('Config', () => {
     expect(result.pollIntervalSeconds).toBe(45);
     expect(result.heartbeatPollWindowSeconds).toBe(120);
   });
+
+  it('rejects an injected Jules endpoint unless E2E mode is explicit', () => {
+    expect(() => resolveJulesBaseUrl({ e2eProviderBaseUrl: 'http://127.0.0.1:4321/v1alpha' }, {}))
+      .toThrow('PAPERCLIP_ADAPTER_E2E=1');
+  });
+
+  it.each([
+    'http://127.0.0.1:4321/v1alpha',
+    'http://localhost:4321/v1alpha',
+  ])('accepts loopback E2E endpoint %s', (baseUrl) => {
+    expect(resolveJulesBaseUrl({ e2eProviderBaseUrl: baseUrl }, { PAPERCLIP_ADAPTER_E2E: '1' }))
+      .toBe(baseUrl);
+  });
+
+  it.each(['https://example.com/v1alpha', 'file:///tmp/jules', 'not-a-url'])
+    ('rejects non-loopback E2E endpoint %s', (baseUrl) => {
+      expect(() => resolveJulesBaseUrl({ e2eProviderBaseUrl: baseUrl }, { PAPERCLIP_ADAPTER_E2E: '1' }))
+        .toThrow('loopback');
+    });
 });

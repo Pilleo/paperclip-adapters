@@ -7,8 +7,18 @@ export * from "./skills-materializer.js";
 export * from "./planning-engine.js";
 export * from "./scope-conformity.js";
 export * from "./local-agent-tools.js";
+export * from "./review-decision.js";
+export * from "./identity-metadata.js";
 
 export * from "./code-investigation.js";
 
 export * from "./fp.js";
 export * from "./domain-brands.js";
+export * from "./paperclip-capabilities.js";
+export * from "./paperclip-command.js";
+export * from "./worker-feedback.js";
+export * from "./review-handoff-state.js";
+export * from "./structured-decision.js";
+export * from "./decision-ladder.js";
+export * from "./structured-decision-dispatch.js";
+export * from "./jules-polling.js";

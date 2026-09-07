@@ -7,3 +7,9 @@ dist-packages/
 *.tgz
 .env
 .env.*
+!.env.example
+
+# Local credentials and agent runtime state; these may contain API keys and transcripts.
+.ENV
+.vibe/
+data/

@@ -5,6 +5,7 @@ export interface ContinuationIssue {
   readonly identifier?: string | null | undefined;
   readonly status: string;
   readonly assigneeAgentId?: string | null | undefined;
+  readonly orchestratorManaged?: boolean | undefined;
 }
 
 export interface ContinuationWorker {
@@ -24,6 +25,11 @@ export interface HeartbeatRunSummary {
   readonly issueId: string | null;
   readonly retryNotBefore: string | null;
   readonly providerSessionId: string | null;
+  /** Native Paperclip review binding, when the heartbeat was launched by a card. */
+  readonly interactionId: string | null;
+  readonly interactionKind: string | null;
+  readonly reviewStage: string | null;
+  readonly reviewHeadSha: string | null;
 }
 
 export type ContinuationDecision =
@@ -33,7 +39,10 @@ export type ContinuationDecision =
 const CONTINUABLE_ISSUE_STATUSES = new Set(["in_progress", "in_review"]);
 const BUSY_AGENT_STATUSES = new Set(["running", "queued", "busy"]);
 const BUSY_RUN_STATUSES = new Set(["running", "queued", "claimed"]);
-const CONTINUABLE_ADAPTERS = new Set(["jules", "vibe", "antigravity"]);
+// Jules uses Paperclip issue monitors for durable continuation. Waking it from
+// this generic scan races the monitor's atomic due claim and can duplicate a
+// provider message. Other adapters retain the legacy continuation behavior.
+const CONTINUABLE_ADAPTERS = new Set(["vibe", "antigravity"]);
 
 function nonEmpty(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -64,6 +73,10 @@ export function parseHeartbeatRun(raw: Record<string, unknown>): HeartbeatRunSum
     issueId: nonEmpty(contextRecord["issueId"]) ?? nonEmpty(resultRecord["issueId"]),
     retryNotBefore: nonEmpty(resultRecord["retryNotBefore"]) ?? nonEmpty(raw["retryNotBefore"]),
     providerSessionId: nonEmpty(resultRecord["julesSessionId"]) ?? nonEmpty(resultRecord["sessionId"]),
+    interactionId: nonEmpty(contextRecord["interactionId"]) ?? nonEmpty(resultRecord["interactionId"]),
+    interactionKind: nonEmpty(contextRecord["interactionKind"]) ?? nonEmpty(resultRecord["interactionKind"]),
+    reviewStage: nonEmpty(contextRecord["reviewStage"]) ?? nonEmpty(resultRecord["reviewStage"]),
+    reviewHeadSha: nonEmpty(contextRecord["reviewHeadSha"]) ?? nonEmpty(resultRecord["reviewHeadSha"]),
   };
 }
 

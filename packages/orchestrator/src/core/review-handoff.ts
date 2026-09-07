@@ -1,4 +1,5 @@
 import { ParsedIssueMetadata, IssueStatus } from "./types.js";
+import { parseReviewDecisionComment } from "./review-decision.js";
 
 export type ReviewVerdictType = "APPROVE" | "REQUEST_CHANGES" | "COMMENT" | "PENDING";
 
@@ -43,45 +44,24 @@ export function evaluateReviewVerdict(
       continue;
     }
 
-    const isReviewerComment =
-      (reviewerAgentId && comment.authorAgentId === reviewerAgentId) ||
-      comment.body.includes("Code Review Verdict") ||
-      comment.body.includes("🎯 Recommendation") ||
-      comment.body.includes("Recommendation:**");
-
-    if (!isReviewerComment) continue;
-
-    const bodyUpper = comment.body.toUpperCase();
-
-    // Check for REQUEST_CHANGES
-    if (
-      bodyUpper.includes("REQUEST_CHANGES") ||
-      bodyUpper.includes("REQUEST CHANGES") ||
-      bodyUpper.includes("CHANGES_REQUESTED") ||
-      bodyUpper.includes("BLOCKING")
-    ) {
+    const machineDecision = parseReviewDecisionComment(comment.body);
+    if (machineDecision?.decision === "needs_work") {
       return {
         verdict: "REQUEST_CHANGES",
         reviewCommentId: comment.id,
-        feedbackSummary: comment.body.slice(0, 300),
+        feedbackSummary: machineDecision.comment,
       };
     }
-
-    // Check for APPROVE
-    if (
-      bodyUpper.includes("RECOMMENDATION:** APPROVE") ||
-      bodyUpper.includes("RECOMMENDATION: APPROVE") ||
-      bodyUpper.includes("VERDICT: **APPROVE**") ||
-      bodyUpper.includes("VERDICT: APPROVE") ||
-      bodyUpper.includes('"VERDICT": "APPROVE"') ||
-      bodyUpper.includes("SEVERITY: CLEAN")
-    ) {
+    if (machineDecision?.decision === "all_good") {
       return {
         verdict: "APPROVE",
         reviewCommentId: comment.id,
-        feedbackSummary: comment.body.slice(0, 300),
+        feedbackSummary: machineDecision.comment || "Reviewer found no blocking issues.",
       };
     }
+
+    // Do not interpret review prose. Only the shared machine decision is a
+    // state transition; all other comments remain pending.
   }
 
   return { verdict: "PENDING" };

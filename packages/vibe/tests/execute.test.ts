@@ -47,7 +47,10 @@ describe("Vibe Adapter Execution", () => {
 
     const env = captured.config?.["env"] as Record<string, unknown>;
     expect(env["VIBE_BYPASS_TOOL_PERMISSIONS"]).toBeUndefined();
+    // Vibe supports `thinking`, but ACPX 2026.722 maps thinkingEffort to the
+    // unsupported generic `effort` option. It must not be passed through.
     expect(captured.config?.["thinkingEffort"]).toBeUndefined();
+    expect(captured.config?.["effort"]).toBeUndefined();
     expect(captured.config?.["timeoutSec"]).toBe(12);
   });
 
@@ -61,5 +64,39 @@ describe("Vibe Adapter Execution", () => {
     expect(String(captured.context?.["paperclipTaskMarkdown"])).toContain("codanna retrieve describe");
     expect(String(captured.context?.["paperclipTaskMarkdown"])).toContain("Fix the leak.");
     expect(String(captured.config?.["promptTemplate"] ?? "")).not.toContain("Jules");
+  });
+
+  it("gives the read-only review identity the authoritative issue id and review directive", async () => {
+    await execute({
+      agent: { id: "vibe-review", companyId: "c-1", name: "Vibe Fast Reviewer", adapterType: "vibe" },
+      context: { paperclipIssue: { id: "issue-42" }, paperclipTaskMarkdown: "Original implementation task." },
+      config: { serverCommand: "vibe-acp", permissionMode: "read-only" },
+    } as unknown as AdapterExecutionContext);
+
+    const env = captured.config?.["env"] as Record<string, unknown>;
+    expect(env["PAPERCLIP_TASK_ID"]).toBe("issue-42");
+    expect(env["PAPERCLIP_REVIEW_MODE"]).toBe("true");
+    expect(env["VIBE_BYPASS_TOOL_PERMISSIONS"]).toBeUndefined();
+    expect(captured.config?.["agentCommand"]).toBe("vibe-acp");
+    const markdown = String(captured.context?.["paperclipTaskMarkdown"]);
+    expect(markdown).toContain("Execution role: pull-request reviewer");
+    expect(markdown).toContain("review dialog");
+    expect(markdown).toContain("Do not post a review disposition in an issue comment");
+  });
+
+  it("uses the plan-review contract for delegated Jules review children", async () => {
+    await execute({
+      agent: { id: "vibe-review", companyId: "c-1", name: "Vibe Fast Reviewer", adapterType: "vibe" },
+      context: {
+        paperclipIssue: { id: "issue-43" },
+        paperclipTaskMarkdown: "<!-- paperclip-delegation kind=jules-plan-review stage=vibe -->\nReview this plan.",
+      },
+      config: { serverCommand: "vibe-acp", permissionMode: "read-only" },
+    } as unknown as AdapterExecutionContext);
+
+    const markdown = String(captured.context?.["paperclipTaskMarkdown"]);
+    expect(markdown).toContain("Execution role: Jules plan reviewer");
+    expect(markdown).not.toContain("Execution role: pull-request reviewer");
+    expect(markdown).not.toContain("PAPERCLIP_REVIEW_DECISION {\"decision\"");
   });
 });

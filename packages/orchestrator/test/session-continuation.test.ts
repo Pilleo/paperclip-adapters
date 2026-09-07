@@ -44,7 +44,7 @@ describe("session continuation", () => {
     expect(parsed.retryNotBefore).toBe("2026-08-30T15:05:00.000Z");
   });
 
-  it("wakes a managed idle Jules worker when the live session cadence has elapsed", () => {
+  it("does not wake Jules: native issue monitors own its continuation", () => {
     const decision = evaluateSessionContinuation({
       issue: { id: "issue-821", status: "in_progress", assigneeAgentId: "jules-1" },
       worker: { id: "jules-1", status: "idle", adapterType: "jules" },
@@ -52,15 +52,10 @@ describe("session continuation", () => {
       now,
       managedWorkerIds: managed,
     });
-    expect(decision).toEqual({
-      action: "WAKE",
-      agentId: "jules-1",
-      issueId: "issue-821",
-      reason: "Continue live jules session 2024763132299585220",
-    });
+    expect(decision.action).toBe("SKIP");
   });
 
-  it("does not create a session when there is no live provider id", () => {
+  it("does not select Jules even when no provider id is present", () => {
     const decision = evaluateSessionContinuation({
       issue: { id: "issue-821", status: "in_progress", assigneeAgentId: "jules-1" },
       worker: { id: "jules-1", status: "idle", adapterType: "jules" },
@@ -69,12 +64,10 @@ describe("session continuation", () => {
       managedWorkerIds: managed,
     });
     expect(decision.action).toBe("SKIP");
-    if (decision.action === "SKIP") {
-      expect(decision.reason).toMatch(/no live provider session/i);
-    }
+    if (decision.action === "SKIP") expect(decision.reason).toMatch(/jules is not polled/i);
   });
 
-  it("honors retryNotBefore", () => {
+  it("does not select Jules even when retryNotBefore has elapsed", () => {
     const decision = evaluateSessionContinuation({
       issue: { id: "issue-821", status: "in_progress", assigneeAgentId: "jules-1" },
       worker: { id: "jules-1", status: "idle", adapterType: "jules" },
@@ -83,9 +76,7 @@ describe("session continuation", () => {
       managedWorkerIds: managed,
     });
     expect(decision.action).toBe("SKIP");
-    if (decision.action === "SKIP") {
-      expect(decision.reason).toMatch(/retryNotBefore/);
-    }
+    if (decision.action === "SKIP") expect(decision.reason).toMatch(/jules is not polled/i);
   });
 
   it("does not wake a worker that is already running", () => {
@@ -133,8 +124,7 @@ describe("session continuation", () => {
       ],
       now,
     });
-    expect(wakes).toHaveLength(1);
-    expect(wakes[0]?.issueId).toBe("issue-a");
+    expect(wakes).toHaveLength(0);
   });
 
   it.each([
@@ -143,7 +133,7 @@ describe("session continuation", () => {
       workerStatus: "idle",
       issueStatus: "in_progress",
       run: { sessionIdAfter: "s1", retryNotBefore: null as string | null, finishedAtOffsetMs: DEFAULT_CONTINUATION_CADENCE_MS + 1000 },
-      expectAction: "WAKE",
+      expectAction: "SKIP",
     },
     {
       desc: "running worker skipped",

@@ -38,6 +38,22 @@ export const JulesSourcesResponseSchema = z.object({
 
 export type JulesSource = z.infer<typeof JulesSourceSchema>;
 
+/** `owner/repo` from a Jules source name or githubRepo payload. */
+export function ownerRepoFromJulesSource(source: JulesSource | string | null | undefined): string | null {
+  if (!source) return null;
+  if (typeof source === "string") {
+    const match = source.trim().match(/sources\/github\/([^/]+)\/([^/]+)/i);
+    if (match?.[1] && match[2]) return `${match[1]}/${match[2]}`.toLowerCase();
+    const bare = source.trim().match(/^([^/\s]+)\/([^/#\s]+)$/);
+    if (bare?.[1] && bare[2]) return `${bare[1]}/${bare[2]}`.toLowerCase();
+    return null;
+  }
+  const owner = source.githubRepo?.owner;
+  const repo = source.githubRepo?.repo;
+  if (owner && repo) return `${owner}/${repo}`.toLowerCase();
+  return ownerRepoFromJulesSource(source.name);
+}
+
 export class JulesClientError extends Error {
   constructor(public status: number, message: string, public readonly retryAfterMs: number | null = null) {
     super(message);
@@ -182,15 +198,17 @@ export function toJulesFailure(errorInfo: unknown): JulesFailure {
 }
 
 export class JulesClient {
-  private baseUrl = 'https://jules.googleapis.com/v1alpha';
+  private readonly baseUrl: string;
 
   constructor(
     private apiKey: string,
     private telemetry?: (event: "api_request", sessionId: string | null, fields: Record<string, unknown>) => void | Promise<void>,
+    baseUrl = 'https://jules.googleapis.com/v1alpha',
   ) {
     if (!apiKey) {
       throw new Error("Jules API key is required");
     }
+    this.baseUrl = baseUrl.replace(/\/+$/, "");
   }
 
   private async fetchApi(path: string, options: RequestInit = {}) {
@@ -286,6 +304,20 @@ export class JulesClient {
     };
   }
 
+  /** Jules source names are catalog entries, not raw GitHub URLs. 404 on createSession usually means this lookup failed. */
+  async resolveGithubSourceName(repository: string): Promise<string | undefined> {
+    const want = repository.trim().toLowerCase();
+    let pageToken: string | undefined;
+    for (let i = 0; i < 20; i++) {
+      const page = await this.listSources(100, pageToken);
+      const hit = page.sources.find((source) => ownerRepoFromJulesSource(source) === want);
+      if (hit?.name) return hit.name;
+      if (!page.nextPageToken) break;
+      pageToken = page.nextPageToken;
+    }
+    return undefined;
+  }
+
   async createSession(request: CreateSessionRequest): Promise<JulesSession> {
     const payload = JulesCreateSessionRequestSchema.parse(request);
     const data = await this.fetchApi('/sessions', {
@@ -321,6 +353,7 @@ export class JulesClient {
     if (pageToken) searchParams.set("pageToken", pageToken);
     const rawData = (await this.fetchApi(
       `/sessions/${encodeURIComponent(sessionId)}/activities?${searchParams.toString()}`,
+      { signal: AbortSignal.timeout(8_000) },
     )) as Record<string, unknown>;
 
     const rawActivities = Array.isArray(rawData?.["activities"]) ? rawData["activities"] : [];

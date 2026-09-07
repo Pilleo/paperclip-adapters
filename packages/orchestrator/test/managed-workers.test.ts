@@ -31,4 +31,37 @@ describe("managed worker ownership fence", () => {
     expect(fleet.julesAgentId).toBe("jules-orch");
     expect(fleet.managedIds.has("jules-indie")).toBe(false);
   });
+
+  it("prefers a capable managed reviewer over a stale configured legacy id", () => {
+    const legacy = {
+      id: "luna-legacy",
+      name: "[Orchestrated] Luna Fast Reviewer",
+      adapterType: "codex_local",
+      reportsTo: orchestratorId,
+      metadata: { managedBy: "paperclip-orchestrator", workerKey: "luna_reviewer" },
+    };
+    const replacement = {
+      id: "luna-capable",
+      name: "[Orchestrated] Luna Fast Reviewer [v10]",
+      adapterType: "codex_local",
+      reportsTo: orchestratorId,
+      metadata: {
+        managedBy: "paperclip-orchestrator",
+        workerKey: "luna_reviewer",
+        structuredDecisionCapability: {
+          version: 1,
+          transports: ["mcp_tool"],
+          decisionKinds: ["pull_request_review"],
+        },
+      },
+    };
+
+    const fleet = resolveManagedFleet(
+      [managedJules, legacy, replacement],
+      orchestratorId,
+      { lunaReviewerAgentId: legacy.id },
+    );
+
+    expect(fleet.lunaReviewerAgentId).toBe(replacement.id);
+  });
 });

@@ -1,10 +1,13 @@
 import { describe, it, expect } from "vitest";
 import {
   evaluateInteractionAction,
+  extractPlanReviewVerdict,
   extractFeedbackAnswer,
   recordFeedbackRelayed,
   recordPlanApprovalRelayed,
+  isPlanApprovalRequired,
   determinePaperclipIssueStatus,
+  fingerprintPlanSteps,
 } from "../src/server/interaction-engine.js";
 import { JulesAdapterSessionV1 } from "../src/server/session.js";
 import { PaperclipInteraction } from "../src/server/paperclip-client.js";
@@ -24,6 +27,20 @@ const baseSession: JulesAdapterSessionV1 = {
 };
 
 describe("interaction-engine pure reducer", () => {
+  it.each([
+    [{ outcome: "resolved", complete: true, items: [{ id: "plan", verdict: "approve" }] }, { decision: "approve" }],
+    [{ outcome: "resolved", complete: true, items: [{ id: "plan", verdict: "reject", reason: "Clarify rollback." }] }, { decision: "reject", reason: "Clarify rollback." }],
+  ] as const)("extracts typed plan verdicts without reading comments", (result, expected) => {
+    expect(extractPlanReviewVerdict({ id: "plan-card", kind: "request_item_verdicts", status: "answered", result })).toEqual(expected);
+  });
+
+  it("does not treat an incomplete typed result as a plan decision", () => {
+    expect(extractPlanReviewVerdict({
+      id: "plan-card", kind: "request_item_verdicts", status: "answered",
+      result: { outcome: "resolved", complete: false, items: [{ id: "plan", verdict: "approve" }] },
+    })).toBeNull();
+  });
+
   it("extracts feedback answer from result payload correctly", () => {
     expect(extractFeedbackAnswer(null)).toBeNull();
     expect(extractFeedbackAnswer({})).toBeNull();
@@ -35,13 +52,43 @@ describe("interaction-engine pure reducer", () => {
   });
 
   describe("AWAITING_USER_FEEDBACK transitions", () => {
-    it("returns CREATE_FEEDBACK_CARD when no existing interaction exists", () => {
+    it("delegates a provider question to the strong-reviewer lane", () => {
       const action = evaluateInteractionAction(baseSession, "AWAITING_USER_FEEDBACK", [], "What is next?");
-      expect(action.type).toBe("CREATE_FEEDBACK_CARD");
-      if (action.type === "CREATE_FEEDBACK_CARD") {
+      expect(action.type).toBe("CREATE_AGENT_ADJUDICATION");
+      if (action.type === "CREATE_AGENT_ADJUDICATION") {
         expect(action.question).toBe("What is next?");
-        expect(action.attempt).toBe(1);
       }
+    });
+
+    it("does not reopen a question whose Jules activity was already answered", () => {
+      const action = evaluateInteractionAction(
+        { ...baseSession, deliveredFeedbackActivityId: "activity-1" },
+        "AWAITING_USER_FEEDBACK",
+        [],
+        "Anything else?",
+        "activity-1",
+      );
+      expect(action.type).toBe("CONTINUE_POLLING");
+    });
+
+    it("does not let a stale agent-adjudication form hide a newer Jules question", () => {
+      const staleReviewerRecord: PaperclipInteraction = {
+        id: "old-reviewer-form",
+        kind: "ask_user_questions",
+        status: "pending",
+        idempotencyKey: "jules:agent-adjudication:MAZ-834:session-1:old-question",
+      };
+      const action = evaluateInteractionAction(
+        baseSession,
+        "AWAITING_USER_FEEDBACK",
+        [staleReviewerRecord],
+        "Am I clear to finalize these changes?",
+        "new-question",
+      );
+      expect(action).toEqual({
+        type: "CREATE_AGENT_ADJUDICATION",
+        question: "Am I clear to finalize these changes?",
+      });
     });
 
     it("returns WAIT_FOR_HUMAN when an unanswered pending interaction exists", () => {
@@ -82,7 +129,7 @@ describe("interaction-engine pure reducer", () => {
       }
     });
 
-    it("creates a fresh card when previous interaction was already answered and delivered", () => {
+    it("delegates a new question when previous feedback was already delivered", () => {
       const answeredOld: PaperclipInteraction = {
         id: "inter-old-1",
         kind: "ask_user_questions",
@@ -94,14 +141,62 @@ describe("interaction-engine pure reducer", () => {
         deliveredFeedbackInteractionId: "inter-old-1",
       };
       const action = evaluateInteractionAction(sessionWithDelivered, "AWAITING_USER_FEEDBACK", [answeredOld], "Second question from Jules?");
-      expect(action.type).toBe("CREATE_FEEDBACK_CARD");
-      if (action.type === "CREATE_FEEDBACK_CARD") {
+      expect(action.type).toBe("CREATE_AGENT_ADJUDICATION");
+      if (action.type === "CREATE_AGENT_ADJUDICATION") {
         expect(action.question).toBe("Second question from Jules?");
       }
     });
   });
 
   describe("AWAITING_PLAN_APPROVAL transitions", () => {
+    it("fingerprints typed plan steps deterministically and ignores ordering", () => {
+      expect(fingerprintPlanSteps([
+        { index: 2, title: " Run tests ", description: "Verify" },
+        { index: 1, title: "Implement", description: "Code" },
+      ])).toBe(fingerprintPlanSteps([
+        { index: 1, title: "Implement", description: "Code" },
+        { index: 2, title: "Run tests", description: "Verify" },
+      ]));
+      expect(fingerprintPlanSteps([{ index: 1, title: "Other" }])).not.toBe(
+        fingerprintPlanSteps([{ index: 1, title: "Implement" }]),
+      );
+    });
+
+    it.each([
+      { activityId: "plan-1", approvedActivityId: "plan-1", approvedAt: "now", expected: false },
+      { activityId: "plan-2", approvedActivityId: "plan-1", approvedAt: "now", expected: true },
+      { activityId: "plan-1", approvedActivityId: undefined, approvedAt: undefined, expected: true },
+      { activityId: "plan-1", approvedActivityId: undefined, approvedAt: "legacy", expected: false },
+      { activityId: undefined, approvedActivityId: "plan-1", expected: false },
+    ])("requires approval only for a new provider plan activity", ({ activityId, approvedActivityId, approvedAt, expected }) => {
+      expect(isPlanApprovalRequired({
+        requirePlanApproval: true,
+        planActivityId: activityId,
+        planApprovedAt: approvedAt,
+        planApprovedActivityId: approvedActivityId,
+      })).toBe(expected);
+    });
+
+    it("does not reopen an exact plan fingerprint after rejection", () => {
+      expect(isPlanApprovalRequired({
+        requirePlanApproval: true,
+        planActivityId: "new-activity",
+        planFingerprint: "same-plan",
+        supersededPlanFingerprint: "same-plan",
+      })).toBe(false);
+      expect(isPlanApprovalRequired({
+        requirePlanApproval: true,
+        planActivityId: "new-activity",
+        planFingerprint: "changed-plan",
+        supersededPlanFingerprint: "same-plan",
+      })).toBe(true);
+    });
+
+    it("does not infer a plan gate from provider prose while state is active", () => {
+      const action = evaluateInteractionAction(baseSession, "IN_PROGRESS", [], "Jules Implementation Plan\nStep 1");
+      expect(action.type).toBe("CONTINUE_POLLING");
+    });
+
     it("returns CREATE_PLAN_CARD when no plan card exists", () => {
       const action = evaluateInteractionAction(baseSession, "AWAITING_PLAN_APPROVAL", [], "Step 1: Code");
       expect(action.type).toBe("CREATE_PLAN_CARD");
@@ -175,9 +270,10 @@ describe("interaction-engine pure reducer", () => {
       expect(baseSession.deliveredFeedbackInteractionId).toBeUndefined();
     });
 
-    it("recordPlanApprovalRelayed immutably sets planApprovedAt and transitions to RUNNING", () => {
-      const updated = recordPlanApprovalRelayed(baseSession);
+    it("recordPlanApprovalRelayed binds approval to the exact provider plan activity", () => {
+      const updated = recordPlanApprovalRelayed(baseSession, "plan-activity-1");
       expect(updated.planApprovedAt).toBeDefined();
+      expect(updated.planApprovedActivityId).toBe("plan-activity-1");
       expect(updated.phase).toBe("RUNNING");
       expect(updated.pendingInteraction).toBeUndefined();
     });

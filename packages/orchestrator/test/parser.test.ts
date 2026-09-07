@@ -4,6 +4,7 @@ import {
   parsePriorityRank,
   parseYamlList,
   resolvePaperclipProject,
+  resolveProjectWorkspace,
   type PaperclipProjectRecord,
 } from "../src/core/parser.js";
 
@@ -152,6 +153,16 @@ component: "tools"
       expect(meta.projectSlug).toBe("paperclip-adapters");
       expect(meta.projectId).toBe("should-not-hide-slug");
     });
+
+    it("recognizes orchestrator-owned imported tasks", () => {
+      const meta = extractIssueMetadata({
+        id: "issue-owned",
+        title: "Imported task",
+        status: "backlog",
+        description: "---\norchestrator_managed: true\n---\nBody",
+      });
+      expect(meta.orchestratorManaged).toBe(true);
+    });
   });
 });
 
@@ -223,5 +234,40 @@ describe("resolvePaperclipProject from workspace folder", () => {
       frontmatterProject,
     });
     expect(resolved?.id).toBe(expectedId);
+  });
+});
+
+describe("resolveProjectWorkspace from issue project", () => {
+  it("resolves the primary project workspace without consulting an adapter cwd", () => {
+    expect(resolveProjectWorkspace({
+      projectId: adapters.id,
+      projects: catalog,
+    })).toEqual({
+      ok: true,
+      project: adapters,
+      workspacePath: "/home/leanid/Documents/code/java/paperclip-adapters",
+    });
+  });
+
+  it.each([
+    { name: "missing project id", projectId: undefined, projects: catalog, reason: "missing-project" },
+    { name: "unknown project id", projectId: "missing", projects: catalog, reason: "unknown-project" },
+    {
+      name: "project without a local workspace",
+      projectId: julesStandalone.id,
+      projects: catalog,
+      reason: "missing-workspace",
+    },
+  ])("fails closed for $name", ({ projectId, projects, reason }) => {
+    expect(resolveProjectWorkspace({ projectId, projects })).toMatchObject({ ok: false, reason });
+  });
+
+  it("does not select a project by folder, remote, or project name", () => {
+    expect(resolveProjectWorkspace({
+      projectId: undefined,
+      workspacePath: "/home/leanid/Documents/code/java/paperclip-adapters",
+      gitRemoteUrl: "https://github.com/Pilleo/paperclip-adapters.git",
+      projects: catalog,
+    })).toMatchObject({ ok: false, reason: "missing-project" });
   });
 });

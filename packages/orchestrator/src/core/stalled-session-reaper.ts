@@ -5,6 +5,8 @@ export interface StalledSessionReaperOptions {
   readonly julesThresholdMs?: number; // managed Jules only (default 48 hours)
   readonly managedAgentIds?: ReadonlySet<string>;
   readonly managedJulesIds?: ReadonlySet<string>;
+  /** Recovery must be opt-in for special state machines, never inferred from age. */
+  readonly skipIssue?: (issue: ParsedIssueMetadata) => boolean;
   readonly now?: () => number;
 }
 
@@ -34,6 +36,7 @@ export function identifyStalledIssues(
 
   for (const issue of issues) {
     if (issue.status !== "in_progress") continue;
+    if (options.skipIssue?.(issue)) continue;
     if (activeExecutionIssueIds.has(issue.id)) continue;
 
     const assignee = issue.assigneeAgentId;

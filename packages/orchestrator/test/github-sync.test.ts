@@ -1,9 +1,51 @@
 import { describe, it, expect } from "vitest";
-import { matchPrToIssue, processRawPullRequests } from "../src/core/github-sync.js";
+import { buildGitHubPullRequestListArgs, describeGitHubAccessProblem, hasUnreviewedReadyPullRequest, matchPrToIssue, processRawPullRequests, registeredPullRequestFromIssue } from "../src/core/github-sync.js";
 import { extractIssueMetadata } from "../src/core/parser.js";
 import { GitHubPullRequest } from "../src/core/types.js";
 
 describe("GitHub PR Sync Module", () => {
+  it("prefers the primary Jules PR over an older placeholder work product", () => {
+    const issue = extractIssueMetadata({
+      id: "issue-1", identifier: "MAZ-1", title: "Task", status: "in_review",
+      workProducts: [
+        { type: "pull_request", url: "https://github.com/example/repo/pull/1", isPrimary: true },
+        { type: "pull_request", url: "https://github.com/Pilleo/paperclip-adapters/pull/5", isPrimary: true, metadata: { source: "jules" } },
+      ],
+    });
+    expect(registeredPullRequestFromIssue(issue)?.url).toBe("https://github.com/Pilleo/paperclip-adapters/pull/5");
+  });
+
+  it("prefers the adapter-canonical Jules PR over a stale primary that also claims Jules provenance", () => {
+    const issue = extractIssueMetadata({
+      id: "issue-985", identifier: "MAZ-985", title: "Task", status: "in_review",
+      workProducts: [
+        { type: "pull_request", url: "https://github.com/example/repo/pull/1", isPrimary: true, metadata: { source: "jules" } },
+        { type: "pull_request", url: "https://github.com/Pilleo/paperclip-adapters/pull/5", isPrimary: false, metadata: { source: "jules", producer: "paperclip-jules-adapter", schemaVersion: 1 } },
+      ],
+    });
+    expect(registeredPullRequestFromIssue(issue)?.url).toBe("https://github.com/Pilleo/paperclip-adapters/pull/5");
+  });
+
+  it("uses an explicit repository when building gh discovery arguments", () => {
+    expect(buildGitHubPullRequestListArgs("Pilleo/paperclip-adapters", 50)).toEqual([
+      "pr", "list", "--repo", "Pilleo/paperclip-adapters", "--state", "all", "--limit", "50",
+      "--json", "number,title,state,headRefName,headRefOid,baseRefName,mergedAt,url,files",
+    ]);
+  });
+
+  it("makes authentication and rate-limit failures human-actionable", () => {
+    expect(describeGitHubAccessProblem(401, "rest")).toContain("authentication was rejected");
+    expect(describeGitHubAccessProblem(403, "rest")).toContain("authenticate the Paperclip service");
+    expect(describeGitHubAccessProblem(408, "gh")).toContain("timed out");
+  });
+
+  it("retains the immutable PR head SHA for review-card invalidation", () => {
+    expect(processRawPullRequests([{
+      number: 1, title: "Review", state: "OPEN", headRefName: "feature", headRefOid: "abc123",
+      baseRefName: "main", mergedAt: null, url: "https://github.com/acme/repo/pull/1",
+    }]).openPrs[0]?.headRefOid).toBe("abc123");
+  });
+
   it("matches PR to issue by UUID in title", () => {
     const pr: GitHubPullRequest = {
       number: 521,
@@ -46,6 +88,82 @@ describe("GitHub PR Sync Module", () => {
     });
 
     expect(matchPrToIssue(pr, issue)).toBe(true);
+  });
+
+  it("matches a registered Paperclip pull-request work product exactly", () => {
+    const pr: GitHubPullRequest = {
+      number: 3,
+      title: "Adapters linter fixes",
+      state: "OPEN",
+      headRefName: "jules/final",
+      baseRefName: "master",
+      mergedAt: null,
+      url: "https://github.com/Pilleo/paperclip-adapters/pull/3",
+      files: [],
+    };
+
+    const issue = extractIssueMetadata({
+      id: "873f5b3d-0ab7-441f-8da3-8beb4b56b3c7",
+      identifier: "MAZ-834",
+      title: "Planning linter",
+      status: "in_review",
+      workProducts: [{
+        type: "pull_request",
+        url: pr.url,
+        status: "ready_for_review",
+      }],
+    });
+
+    expect(matchPrToIssue(pr, issue)).toBe(true);
+  });
+
+  it("extracts a reviewable PR when gh is unavailable", () => {
+    const issue = extractIssueMetadata({
+      id: "issue-834",
+      identifier: "MAZ-834",
+      title: "Planning linter",
+      status: "in_review",
+      workProducts: [{
+        type: "pull_request",
+        url: "https://github.com/Pilleo/paperclip-adapters/pull/3",
+        status: "ready_for_review",
+      }],
+    });
+
+    expect(registeredPullRequestFromIssue(issue)).toMatchObject({
+      number: 3,
+      url: "https://github.com/Pilleo/paperclip-adapters/pull/3",
+      state: "OPEN",
+    });
+  });
+
+  it("recognizes a registered PR explicitly awaiting review", () => {
+    const issue = extractIssueMetadata({
+      id: "issue-834",
+      identifier: "MAZ-834",
+      title: "Planning linter",
+      status: "done",
+      workProducts: [{
+        type: "pull_request",
+        url: "https://github.com/Pilleo/paperclip-adapters/pull/3",
+        status: "ready_for_review",
+        reviewState: "none",
+      }],
+    });
+    expect(hasUnreviewedReadyPullRequest(issue)).toBe(true);
+    const mergedIssue = extractIssueMetadata({
+      id: "issue-834",
+      identifier: "MAZ-834",
+      title: "Planning linter",
+      status: "done",
+      workProducts: [{
+        type: "pull_request",
+        url: "https://github.com/Pilleo/paperclip-adapters/pull/3",
+        status: "merged",
+        reviewState: "none",
+      }],
+    });
+    expect(hasUnreviewedReadyPullRequest(mergedIssue)).toBe(false);
   });
 
   describe.each([

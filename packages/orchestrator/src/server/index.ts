@@ -10,17 +10,29 @@ import { execute } from "./execute.js";
 export { execute };
 
 export const OrchestratorConfigSchema = z.object({
+  maxConcurrentProjects: z.number().int().min(1).default(2),
   maxConcurrentJules: z.number().int().min(1).default(15),
   maxConcurrentVibe: z.number().int().min(1).default(1),
   julesAgentId: z.string().optional(),
   vibeAgentId: z.string().optional(),
+  vibeReviewerAgentId: z.string().optional(),
   reviewerAgentId: z.string().optional(),
-  workspacePath: z.string().optional(),
+  lunaReviewerAgentId: z.string().optional(),
+  terraReviewerAgentId: z.string().optional(),
+  julesPlanApprovalPolicy: z.enum(["required", "trusted_opt_out"]).default("required"),
   apiUrl: z.string().optional(),
 });
 
 export const orchestratorAdapterConfigSchema: AdapterConfigSchema = {
   fields: [
+    {
+      key: "maxConcurrentProjects",
+      label: "Max Concurrent Projects",
+      type: "number",
+      required: false,
+      default: 2,
+      hint: "Maximum project state machines running concurrently in one company heartbeat (default: 2)",
+    },
     {
       key: "maxConcurrentJules",
       label: "Max Concurrent Jules Sessions",
@@ -52,18 +64,44 @@ export const orchestratorAdapterConfigSchema: AdapterConfigSchema = {
       hint: "Optional override for the [Orchestrated] Vibe worker. Independent Vibe agents are never selected.",
     },
     {
+      key: "lunaReviewerAgentId",
+      label: "OpenAI Luna Reviewer Agent ID",
+      type: "text",
+      required: false,
+      hint: "Optional override for the managed read-only OpenAI Luna first reviewer.",
+    },
+    {
+      key: "terraReviewerAgentId",
+      label: "OpenAI Terra Reviewer Agent ID",
+      type: "text",
+      required: false,
+      hint: "Optional override for the managed read-only OpenAI Terra strong reviewer.",
+    },
+    {
+      key: "vibeReviewerAgentId",
+      label: "Vibe Reviewer Agent ID",
+      type: "text",
+      required: false,
+      hint: "Deprecated compatibility setting; use OpenAI Luna Reviewer Agent ID.",
+    },
+    {
       key: "reviewerAgentId",
       label: "Reviewer Agent ID",
       type: "text",
       required: false,
-      hint: "Auto-detects Security/Reviewer agent if left blank",
+      hint: "Deprecated compatibility setting; use OpenAI Terra Reviewer Agent ID.",
     },
     {
-      key: "workspacePath",
-      label: "Workspace Path",
-      type: "text",
+      key: "julesPlanApprovalPolicy",
+      label: "Jules Plan Approval Policy",
+      type: "select",
       required: false,
-      hint: "Absolute path to the repository workspace (defaults to process cwd / Paperclip workspace)",
+      default: "required",
+      options: [
+        { value: "required", label: "Strong review + operator approval" },
+        { value: "trusted_opt_out", label: "Strong review + automatic approval" },
+      ],
+      hint: "The orchestrator selects the managed Jules plan gate. A configured strong reviewer always runs first.",
     },
   ],
 };
@@ -81,6 +119,8 @@ Executes an in-process, deterministic scheduling control plane on each heartbeat
 - **Vibe-Backed Clarification:** Automatically routes tasks with \`open_questions: true\` to Vibe to conduct task interviews before Jules begins execution.
 - **DAG Conflict Matrix:** Prevents race conditions by locking active in-flight files and enforcing explicit issue dependencies.
 - **Live Jules Quota:** Real-time quota integration against Google Jules API rate limits (15 concurrent, 100/day).
+- **Project-Owned Workspaces:** Each company project is processed independently; its configured workspace is the only checkout used for that project's tasks, PRs, locks, and backlog.
+- **Fail-Closed Scoping:** Issues without a valid project workspace are skipped and reported instead of falling back to the adapter process directory.
 `;
 
 export async function testEnvironment(
@@ -121,8 +161,5 @@ export function createServerAdapter(): ServerAdapterModule {
 
 export default createServerAdapter;
 
-export * from "../core/qa-firewall.js";
-
-export * from "../core/strong-model-reviewer.js";
 
 export * from "../core/cost-tracker.js";

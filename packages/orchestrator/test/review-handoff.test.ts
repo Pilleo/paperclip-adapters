@@ -31,7 +31,7 @@ describe("Review Handoff & Reassignment Engine", () => {
       },
       {
         id: "c-2",
-        body: "## 🛑 Automated Code Review Verdict: **REQUEST_CHANGES**\n- Violation: Unbounded cache growth detected.",
+        body: 'PAPERCLIP_REVIEW_DECISION {"decision":"needs_work","comment":"Unbounded cache growth detected."}',
         authorAgentId: "reviewer-123",
         createdAt: "2026-08-30T10:05:00Z",
       },
@@ -46,7 +46,7 @@ describe("Review Handoff & Reassignment Engine", () => {
     const comments = [
       {
         id: "c-1",
-        body: "### 📝 Response Format\n- **🎯 Recommendation:** APPROVE\n- **💡 Findings:** All tests pass cleanly.",
+        body: 'PAPERCLIP_REVIEW_DECISION {"decision":"all_good","comment":"All tests pass cleanly."}',
         authorAgentId: "reviewer-123",
         createdAt: "2026-08-30T10:05:00Z",
       },

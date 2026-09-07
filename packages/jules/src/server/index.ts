@@ -51,7 +51,7 @@ To run Jules successfully, ensure the following 3 requirements are met:
 | **Base Branch** | Target branch for PR creation | Auto-detected (e.g. \`master\`) |
 | **Automation Mode** | \`AUTO_CREATE_PR\` | \`AUTO_CREATE_PR\` |
 | **Plan Approval Policy** | \`required\` (requires human sign-off) or \`trusted_opt_out\` | \`trusted_opt_out\` |
-| **Poll Cadence** | Checkpoint polling frequency (seconds) | \`300\` (5 minutes) |
+| **Poll Cadence** | Checkpoint polling frequency (seconds) | \`900\` (15 minutes) |
 
 ---
 

@@ -68,7 +68,10 @@ export async function checkPrMergeability(
     const { stdout } = await execFileAsync(
       "gh",
       ["pr", "view", String(prNumber), "--json", "mergeable,mergeStateStatus,headRefName,baseRefName"],
-      { cwd }
+      // gh may wait indefinitely for an expired device/login flow. Merge
+      // safety is advisory for review dispatch, so bound it and treat a
+      // timeout as UNKNOWN instead of wedging the orchestrator heartbeat.
+      { cwd, timeout: 8_000 }
     );
 
     const parsed = JSON.parse(stdout) as Record<string, unknown>;

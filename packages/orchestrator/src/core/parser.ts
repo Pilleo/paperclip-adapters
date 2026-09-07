@@ -1,5 +1,6 @@
 import path from "node:path";
 import { ParsedIssueMetadata, TaskPriority } from "./types.js";
+import { normalizeIssueStatus } from "./types.js";
 
 /**
  * Pure parsing functions for task metadata.
@@ -69,6 +70,7 @@ export function extractIssueMetadata(issue: {
   let needsKernel = false;
   let exclusive = false;
   let openQuestions = false;
+  let orchestratorManaged = false;
   const verifyCheap: string[] = [];
 
   // 1. Extract YAML frontmatter
@@ -126,6 +128,8 @@ export function extractIssueMetadata(issue: {
           exclusive = parseYamlBool(value, false);
         } else if (key === "open_questions" || key === "openquestions") {
           openQuestions = parseYamlBool(value, false);
+        } else if (key === "orchestrator_managed" || key === "orchestratormanaged") {
+          orchestratorManaged = parseYamlBool(value, false);
         } else if (key === "verify_cheap" || key === "verifycheap") {
           if (value) verifyCheap.push(...parseYamlList(value));
         }
@@ -163,6 +167,31 @@ export function extractIssueMetadata(issue: {
     }
   }
 
+  // Paperclip's first-class blocker edge is authoritative scheduling state.
+  // Backlog Markdown may be imported before an upstream issue has an MAZ
+  // identifier, so a textual dependency alone cannot safely represent the
+  // relationship. Normalize the server IDs into the same dependency set used
+  // by the pure dispatcher: an approved start gate authorizes future work but
+  // never bypasses an unresolved persisted blocker.
+  const rawBlockedBy = issue["blockedBy"];
+  if (Array.isArray(rawBlockedBy)) {
+    for (const blocker of rawBlockedBy) {
+      if (typeof blocker === "string" && blocker.trim()) {
+        dependencies.push(blocker.trim());
+        continue;
+      }
+      if (!blocker || typeof blocker !== "object" || Array.isArray(blocker)) continue;
+      const blockerId = (blocker as Record<string, unknown>)["id"];
+      if (typeof blockerId === "string" && blockerId.trim()) dependencies.push(blockerId.trim());
+    }
+  }
+  const rawBlockedByIds = issue["blockedByIssueIds"];
+  if (Array.isArray(rawBlockedByIds)) {
+    for (const blockerId of rawBlockedByIds) {
+      if (typeof blockerId === "string" && blockerId.trim()) dependencies.push(blockerId.trim());
+    }
+  }
+
   const { priority, rank } = parsePriorityRank(priorityStr);
   const idOrIdent = (identifier || id).toLowerCase();
   const isNonInterfering =
@@ -174,16 +203,25 @@ export function extractIssueMetadata(issue: {
   if (!openQuestions && /open_questions\s*:\s*true/i.test(desc)) {
     openQuestions = true;
   }
+  if (!orchestratorManaged && /orchestrator_managed\s*:\s*true/i.test(desc)) {
+    orchestratorManaged = true;
+  }
 
   const executionRunIdRaw = (issue as Record<string, unknown>)["executionRunId"];
   const executionRunId = typeof executionRunIdRaw === "string" && executionRunIdRaw.length > 0 ? executionRunIdRaw : null;
+  const parentIdRaw = (issue as Record<string, unknown>)["parentId"];
+  const parentId = typeof parentIdRaw === "string" && parentIdRaw.length > 0 ? parentIdRaw : null;
+  // These markers are adapter protocol records, never ordinary PR-review
+  // tasks. Parent linkage was absent on some historical Paperclip child rows,
+  // so marker identity is authoritative for safe exclusion.
+  const isDelegatedReviewChild = /<!-- jules-(?:plan-review|question-adjudication):/.test(desc);
 
   return Object.freeze({
     id,
     identifier: identifier ?? null,
     issueNumber: issue.issueNumber ?? null,
     title: issue.title,
-    status: issue.status,
+    status: normalizeIssueStatus(issue.status),
     priority,
     priorityRank: rank,
     dependencies: Object.freeze([...new Set(dependencies)]),
@@ -200,9 +238,12 @@ export function extractIssueMetadata(issue: {
     projectId: typeof issue["projectId"] === "string" ? (issue["projectId"] as string) : null,
     isNonInterfering,
     openQuestions,
+    orchestratorManaged,
     assigneeAgentId: issue.assigneeAgentId ?? null,
     updatedAt: typeof (issue as Record<string, unknown>)["updatedAt"] === "string" ? ((issue as Record<string, unknown>)["updatedAt"] as string) : null,
     executionRunId,
+    parentId,
+    isDelegatedReviewChild,
     rawIssue: Object.freeze({ ...issue }),
   });
 }
@@ -224,6 +265,42 @@ export interface PaperclipProjectRecord {
       }
     | null
     | undefined;
+}
+
+export type ProjectWorkspaceResolution =
+  | { readonly ok: true; readonly project: PaperclipProjectRecord; readonly workspacePath: string }
+  | { readonly ok: false; readonly reason: "missing-project" | "unknown-project" | "missing-workspace"; readonly projectId?: string | undefined };
+
+/**
+ * Resolve the checkout from the issue-owned Paperclip project.
+ *
+ * This deliberately ignores the orchestrator process cwd and git remote. A
+ * company heartbeat may service several repositories, so cwd-based inference
+ * can silently run a task in the wrong repository.
+ */
+export function resolveProjectWorkspace(params: {
+  readonly projectId?: string | null | undefined;
+  readonly projects: readonly PaperclipProjectRecord[];
+  /** @deprecated Legacy hints are accepted only to prove they are ignored. */
+  readonly workspacePath?: string | undefined;
+  /** @deprecated Legacy hints are accepted only to prove they are ignored. */
+  readonly gitRemoteUrl?: string | null | undefined;
+}): ProjectWorkspaceResolution {
+  const projectId = typeof params.projectId === "string" ? params.projectId.trim() : "";
+  if (!projectId) return { ok: false, reason: "missing-project" };
+
+  const project = params.projects.find((candidate) => candidate.id === projectId);
+  if (!project) return { ok: false, reason: "unknown-project", projectId };
+
+  const workspacePath = [
+    project.primaryWorkspace?.cwd,
+    project.codebase?.cwd,
+    project.codebase?.effectiveLocalFolder,
+    project.codebase?.localFolder,
+  ].find((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0);
+  if (!workspacePath) return { ok: false, reason: "missing-workspace", projectId };
+
+  return { ok: true, project, workspacePath: path.resolve(workspacePath.trim()) };
 }
 
 /** owner/repo from a GitHub URL, SSH remote, or already-canonical slug. */

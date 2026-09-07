@@ -4,6 +4,15 @@ import { AdapterExecutionContext } from '@paperclipai/adapter-utils';
 import { sessionCodec } from '../src/server/session';
 import { JulesClient } from '../src/server/jules-client';
 
+vi.mock('../src/server/ci-status', () => ({
+  getPullRequestCiStatus: vi.fn().mockResolvedValue('success'),
+  getPullRequestDetails: vi.fn().mockResolvedValue({
+    state: 'OPEN', merged: false, ciStatus: 'success', mergeableStatus: 'mergeable',
+  }),
+  getPullRequestPatch: vi.fn().mockResolvedValue(''),
+  listPullRequestChangedFiles: vi.fn().mockResolvedValue([]),
+}));
+
 vi.mock('../src/server/jules-client', async (importOriginal) => {
   const mod = await importOriginal<typeof import('../src/server/jules-client')>();
   const MockedJulesClient = vi.fn();
@@ -26,6 +35,7 @@ beforeAll(() => {
   });
 
   describe('Full Paperclip Continuation Lifecycle Integration', () => {
+    let fetchMock: ReturnType<typeof vi.fn>;
     const baseCtx: AdapterExecutionContext = {
         agent: {
             id: '1', companyId: '1', name: 'agent', adapterType: 'jules',
@@ -47,6 +57,13 @@ beforeAll(() => {
 
     beforeEach(() => {
         vi.clearAllMocks();
+        fetchMock = vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          text: async () => '',
+          json: async () => ({ executionPolicy: { monitor: { serviceName: 'jules', nextCheckAt: new Date(Date.now() + 30_000).toISOString() } } }),
+        });
+        global.fetch = fetchMock;
     });
 
     it('Lifecycle: Multi-heartbeat Continuation Integration', async () => {
@@ -67,10 +84,7 @@ beforeAll(() => {
            });
         });
 
-        const abortCtrl1 = new AbortController();
-        setTimeout(() => abortCtrl1.abort(), 10);
-
-        let res = await execute({ ...baseCtx, abortSignal: abortCtrl1.signal } as any);
+        let res = await execute({ ...baseCtx } as any);
         expect(res.exitCode).toBe(0);
         // pending checkpoint has exitCode 0
         let session = sessionCodec.decode(res.sessionParams!);
@@ -81,13 +95,9 @@ beforeAll(() => {
         // Heartbeat 2: Host retains session Params, we resume safely
         step = 2;
 
-        const abortCtrl2 = new AbortController();
-        setTimeout(() => abortCtrl2.abort(), 10);
-
         res = await execute({
             ...baseCtx,
-            runtime: { ...baseCtx.runtime, sessionParams: res.sessionParams },
-            abortSignal: abortCtrl2.signal
+            runtime: { ...baseCtx.runtime, sessionParams: res.sessionParams }
         } as any);
 
         expect(res.exitCode).toBe(0);
@@ -101,13 +111,9 @@ beforeAll(() => {
         // sessionId-only parameters before a later heartbeat.
         step = 2;
         const canonicalResume = { sessionId: '123' };
-        const abortCtrlCanonical = new AbortController();
-        setTimeout(() => abortCtrlCanonical.abort(), 10);
-
         res = await execute({
             ...baseCtx,
             runtime: { ...baseCtx.runtime, sessionParams: canonicalResume },
-            abortSignal: abortCtrlCanonical.signal
         } as any);
 
         session = sessionCodec.decode(res.sessionParams!);
@@ -119,22 +125,24 @@ beforeAll(() => {
         // Heartbeat 3: Completes and blocks requiring PR review
         step = 3;
 
-        const abortCtrl3 = new AbortController();
-        setTimeout(() => abortCtrl3.abort(), 10);
-
         const ctx3 = {
             ...baseCtx,
             runtime: { ...baseCtx.runtime, sessionParams: res.sessionParams },
-            abortSignal: abortCtrl3.signal,
             authToken: 'jwt-token'
         } as any;
-        global.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
         res = await execute(ctx3);
 
         expect(res.exitCode).toBe(0);
         expect(res.summary || "").toContain('moved the Paperclip issue to review');
         expect(res.clearSession).toBe(false);
         expect(createdCount).toBe(1);
-    });
+
+        const monitorClears = fetchMock.mock.calls.filter(([, init]) => {
+            if (!init || typeof init !== 'object' || (init as RequestInit).method !== 'PATCH') return false;
+            const body = JSON.parse(String((init as RequestInit).body ?? '{}')) as { executionPolicy?: { monitor?: unknown } | null };
+            return body.executionPolicy === null || !body.executionPolicy?.monitor;
+        });
+        expect(monitorClears.length).toBeGreaterThan(0);
+    }, 15000);
 
 });

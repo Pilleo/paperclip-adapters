@@ -71,4 +71,61 @@ describe("process-lost reattach", () => {
     expect(result.clearSession).toBe(false);
     expect(result.sessionDisplayId).toBe("session-live");
   });
+
+  it("does not reattach a live Jules session that is on a different GitHub repo", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({
+      id: "session-wrong-repo",
+      state: "IN_PROGRESS",
+      source: "sources/github/paperclipai/paperclip",
+    } as never);
+    vi.mocked(JulesClient.prototype.createSession).mockResolvedValue({
+      id: "session-adapters",
+      name: "sessions/session-adapters",
+      url: "https://jules.google.com/session/session-adapters",
+    } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [] } as never);
+
+    const sessionParams = sessionCodec.encode({
+      version: 1,
+      paperclipIssueId: "issue-824",
+      promptHash: "hash",
+      promptHashVersion: 2,
+      repository: "paperclipai/paperclip",
+      source: "sources/github/paperclipai/paperclip",
+      baseBranch: "master",
+      phase: "RUNNING",
+      sessionId: "session-wrong-repo",
+      julesSessionId: "session-wrong-repo",
+      attempt: 1,
+      failedSessions: [],
+      createdAt: "2026-08-30T00:00:00.000Z",
+    } as never);
+
+    const result = await execute({
+      agent: {
+        id: "jules-1",
+        companyId: "c-1",
+        name: "Jules",
+        adapterType: "jules",
+        adapterConfig: {
+          repository: "Pilleo/paperclip-adapters",
+          source: "sources/github/Pilleo/paperclip-adapters",
+          baseBranch: "master",
+        },
+      },
+      config: { env: { JULES_API_KEY: "test-key" } },
+      context: { task: { id: "issue-824", title: "Host plan TS tests" } },
+      runtime: { sessionId: null, sessionParams, sessionDisplayId: "session-wrong-repo" },
+      runId: "run-mismatch",
+      authToken: "token",
+      onLog: vi.fn(),
+    } as never);
+
+    expect(JulesClient.prototype.createSession).toHaveBeenCalled();
+    const created = vi.mocked(JulesClient.prototype.createSession).mock.calls[0]?.[0] as {
+      sourceContext?: { source?: string };
+    };
+    expect(created?.sourceContext?.source).toContain("Pilleo/paperclip-adapters");
+    expect(result.sessionDisplayId).toBe("session-adapters");
+  });
 });
