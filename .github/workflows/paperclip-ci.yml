@@ -42,6 +42,12 @@ jobs:
       - name: Run Full Test Matrix (399+ unit tests)
         run: pnpm -r test
 
+      - name: Install pinned Paperclip control plane
+        if: matrix.node-version == '24.x'
+        # Keep package download outside the server health budget. A cold npx
+        # cache can take over a minute and otherwise looks like a boot failure.
+        run: npm install --global paperclipai@2026.831.1
+
       - name: Start disposable Paperclip server
         # Adapter packages support Node 22, but the pinned Paperclip control
         # plane requires Node >=24.11 and deliberately refuses to boot on 22.
@@ -76,9 +82,9 @@ jobs:
           # Pin the control-plane version used by the adapter contract test.
           # Floating latest made upstream releases silently change the canary
           # semantics before this repository had deliberately adopted them.
-          PATH="${RUNNER_TEMP}/paperclip-e2e-bin:${PATH}" nohup setsid npx -y paperclipai@2026.831.1 onboard --config "$PAPERCLIP_HOME/config.json" --data-dir "$PAPERCLIP_HOME" --bind loopback --yes --no-install-service >"${RUNNER_TEMP}/paperclip-canary.log" 2>&1 </dev/null &
+          PATH="${RUNNER_TEMP}/paperclip-e2e-bin:${PATH}" nohup setsid paperclipai onboard --config "$PAPERCLIP_HOME/config.json" --data-dir "$PAPERCLIP_HOME" --bind loopback --yes --no-install-service >"${RUNNER_TEMP}/paperclip-canary.log" 2>&1 </dev/null &
           echo $! >"${RUNNER_TEMP}/paperclip-canary.pid"
-          for attempt in {1..60}; do
+          for attempt in {1..120}; do
             if curl --fail --silent http://127.0.0.1:3100/api/health >/dev/null; then
               exit 0
             fi
