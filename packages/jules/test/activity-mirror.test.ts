@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { listAllActivities, mirrorNewActivities } from "../src/server/activity-mirror.js";
+import { activityScanPageLimit, listAllActivities, mirrorNewActivities } from "../src/server/activity-mirror.js";
 import { JulesClient } from "../src/server/jules-client.js";
 import { JulesAdapterSessionV1 } from "../src/server/session.js";
 
@@ -7,6 +7,21 @@ const addComment = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 vi.mock("../src/server/paperclip-client.js", () => ({ addJulesActivityComment: addComment }));
 
 describe("activity-mirror", () => {
+  it("uses one recent activity page while a Jules question already has an adjudication owner", () => {
+    const session = {
+      pendingInteraction: {
+        type: "agent_adjudication",
+        julesActivityId: "question-1",
+      },
+    } as JulesAdapterSessionV1;
+
+    expect(activityScanPageLimit(session)).toBe(1);
+  });
+
+  it("keeps the deep bounded scan when no provider question is already owned", () => {
+    expect(activityScanPageLimit({} as JulesAdapterSessionV1)).toBe(20);
+  });
+
   it("paginates and retrieves all activities", async () => {
     const client = {
       getActivities: vi.fn()
@@ -42,6 +57,48 @@ describe("activity-mirror", () => {
 
     expect(res).toHaveLength(2);
     expect(client.getActivities).toHaveBeenCalledTimes(2);
+  });
+
+  it("scans beyond five pages so an unresolved provider question is not hidden by later churn", async () => {
+    const pages = Array.from({ length: 6 }, (_, index) => ({
+      activities: index === 0
+        ? [{ id: "later-plan", createTime: "2026-08-30T00:10:00.000Z" }]
+        : index === 5
+          ? [{ id: "question-1", createTime: "2026-08-30T00:05:00.000Z", agentMessaged: { agentMessage: "How should I proceed?" } }]
+          : [{ id: `activity-${index}`, createTime: `2026-08-30T00:0${index + 1}:00.000Z` }],
+      ...(index < 5 ? { nextPageToken: `page-${index + 1}` } : {}),
+    }));
+    const client = {
+      getActivities: vi.fn().mockImplementation(async (_session: string, token?: string) => {
+        const page = token ? Number(token.replace("page-", "")) : 0;
+        return pages[page];
+      }),
+    } as unknown as JulesClient;
+
+    const res = await listAllActivities(client, "session-1");
+
+    expect(res.map((activity) => activity.id)).toContain("question-1");
+    expect(client.getActivities).toHaveBeenCalledTimes(6);
+  });
+
+  it("requests the provider maximum page size so recent feedback is reachable before the bounded scan ends", async () => {
+    const client = {
+      getActivities: vi.fn().mockImplementation(async (_session: string, token?: string, pageSize?: number) => {
+        const page = token ? Number(token.replace("page-", "")) : 0;
+        const pagesRequired = pageSize === 100 ? 13 : 21;
+        return {
+          activities: page === pagesRequired - 1
+            ? [{ id: "latest-question", createTime: "2026-09-06T20:17:18.249Z", agentMessaged: { agentMessage: "Which monitor API clears terminal state?" } }]
+            : [{ id: `activity-${page}`, createTime: "2026-09-06T20:00:00.000Z" }],
+          nextPageToken: page + 1 < pagesRequired ? `page-${page + 1}` : undefined,
+        };
+      }),
+    } as unknown as JulesClient;
+
+    const activities = await listAllActivities(client, "session-1");
+
+    expect(activities.map((activity) => activity.id)).toContain("latest-question");
+    expect(client.getActivities).toHaveBeenCalledWith("session-1", undefined, 100);
   });
 
   it("stops when pagination tokens change but the returned page does not", async () => {

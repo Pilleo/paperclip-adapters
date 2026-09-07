@@ -36,8 +36,25 @@ stateDiagram-v2
     FAILED --> BLOCKED: Retries Exhausted
     IN_PROGRESS --> COMPLETED: Task Finished
     COMPLETED --> REVIEW: PR Created + CI Green
-    COMPLETED --> DONE: No PR + Operator Confirms
+COMPLETED --> DONE: No PR + Operator Confirms
 ```
+
+### Immutable PR-head and monitor compatibility rules
+
+Native review decisions are scoped to the immutable GitHub PR head SHA, not
+just the PR URL. A rejection for an older commit is historical evidence and
+must not be relayed to Jules or prevent a newer commit from entering review.
+The adapter records feedback delivery by interaction and head SHA, so a
+heartbeat can safely repeat without sending duplicate provider messages.
+
+Some Paperclip versions strip `executionPolicy.monitor` when a monitor is
+triggered while leaving a `jules` monitor in `executionState`. Until Paperclip
+provides a direct clear operation for that projection, the adapter uses a
+documented compatibility bridge: restore a short-lived equivalent Jules
+monitor, remove it through the normal policy transition, and re-read the issue
+to verify that the projection was cleared. This bridge is deliberately limited
+to Jules monitors and should be removed once the upstream clear behavior is
+available.
 
 ---
 

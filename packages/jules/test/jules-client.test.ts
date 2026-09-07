@@ -62,6 +62,24 @@ beforeAll(() => {
     expect(result.id).toEqual('123');
   });
 
+  it('uses an explicitly injected provider endpoint for isolated E2E tests', async () => {
+    const isolated = new JulesClient(apiKey, undefined, 'http://127.0.0.1:4321/v1alpha');
+    (global.fetch as any).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ name: 'sessions/isolated' }),
+    });
+
+    await isolated.createSession({
+      prompt: 'isolated test',
+      sourceContext: { source: 'sources/test' },
+    });
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://127.0.0.1:4321/v1alpha/sessions',
+      expect.anything(),
+    );
+  });
+
   it('throws JulesClientError on non-ok response', async () => {
     (global.fetch as any)
       .mockResolvedValueOnce({

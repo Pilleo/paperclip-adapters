@@ -3,7 +3,13 @@ import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { execute } from "../src/server/execute";
 import { JulesClient } from "../src/server/jules-client";
 import { sessionCodec } from "../src/server/session";
-import { listPaperclipInteractions, scheduleJulesSessionMonitor } from "../src/server/paperclip-client";
+import {
+  clearJulesSessionMonitor,
+  hasFutureJulesSessionMonitor,
+  listPaperclipInteractions,
+  moveIssueToReview,
+  scheduleJulesSessionMonitor,
+} from "../src/server/paperclip-client";
 
 vi.mock("../src/server/jules-client", async (importOriginal) => {
   const mod = await importOriginal<typeof import("../src/server/jules-client")>();
@@ -24,7 +30,18 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
     listPaperclipInteractions: vi.fn().mockResolvedValue([]),
     listIssueComments: vi.fn().mockResolvedValue([]),
     getPaperclipInteraction: vi.fn(),
+    createJulesPlanApprovalInteraction: vi.fn().mockResolvedValue({
+      id: "plan-approval-card",
+      planRevision: {
+        documentId: "plan-document-1",
+        revisionId: "plan-revision-1",
+        revisionNumber: 1,
+      },
+    }),
+    clearJulesSessionMonitor: vi.fn().mockResolvedValue(undefined),
+    moveIssueToReview: vi.fn().mockResolvedValue(undefined),
     scheduleJulesSessionMonitor: vi.fn().mockResolvedValue(),
+    hasFutureJulesSessionMonitor: vi.fn().mockResolvedValue(false),
   };
 });
 
@@ -103,6 +120,59 @@ describe("heartbeat yield vs session deadline", () => {
     expect(retryAt).toBeLessThan(before + 90_000);
   });
 
+  it("defers an advisory review wake to an already scheduled monitor", async () => {
+    vi.mocked(hasFutureJulesSessionMonitor).mockResolvedValueOnce(true);
+
+    const result = await execute({
+      ...ctx(),
+      context: {
+        task: { id: "issue-yield", title: "Ping" },
+        wakeSource: "on_demand",
+        wakeReason: "Native PR review needs work for [MAZ-985]. Jules will reconcile the bound structured verdict.",
+      },
+    } as AdapterExecutionContext);
+
+    expect(hasFutureJulesSessionMonitor).toHaveBeenCalledWith(
+      "issue-yield", "session-live", "token", "run-yield",
+    );
+    expect(JulesClient.prototype.getSession).not.toHaveBeenCalled();
+    expect(result.exitCode).toBe(0);
+    expect(result.clearSession).toBe(false);
+    expect(result.resultJson).toMatchObject({ skipped: true, reason: "future_jules_monitor" });
+  });
+
+  it("drops a stale completed PR checkpoint when the remote session is awaiting plan approval", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({
+      id: "session-live",
+      state: "AWAITING_PLAN_APPROVAL",
+      // Jules retains historical outputs after a rejected PR. A nonterminal
+      // provider state is authoritative; this old output must not recreate a
+      // PR handoff after reconciliation has discarded its stale checkpoint.
+      rawOutputs: [{ pullRequest: { url: "https://github.com/owner/repo/pull/1" } }],
+    } as never);
+    const result = await execute({
+      ...ctx(),
+      runtime: {
+        sessionId: "session-live",
+        sessionParams: sessionCodec.encode({
+          ...session, phase: "COMPLETED", julesState: "COMPLETED",
+          currentPrUrl: "https://github.com/owner/repo/pull/1",
+          currentPrHeadSha: "deadbeef", prRegisteredOnBoard: true,
+        } as never),
+      },
+    });
+
+    const decoded = sessionCodec.decode(result.sessionParams!);
+    expect(decoded?.julesState).toBe("AWAITING_PLAN_APPROVAL");
+    expect(decoded?.currentPrUrl).toBeUndefined();
+    expect(decoded?.currentPrHeadSha).toBeUndefined();
+    expect(decoded?.prRegisteredOnBoard).toBeUndefined();
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode).toBeUndefined();
+    expect(moveIssueToReview).not.toHaveBeenCalled();
+    expect(clearJulesSessionMonitor).not.toHaveBeenCalled();
+  });
+
   it("keeps a persisted Jules session resumable when monitor scheduling is unavailable", async () => {
     vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({
       id: "session-live",
@@ -113,8 +183,10 @@ describe("heartbeat yield vs session deadline", () => {
 
     const result = await execute({ ...ctx(), onLog });
 
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode).toBe(1);
     expect(result.clearSession).toBe(false);
+    expect(result.errorCode).toBe("paperclip_monitor_schedule_failed");
+    expect(result.errorFamily).toBe("transient_upstream");
     expect(sessionCodec.decode(result.sessionParams!)?.julesSessionId).toBe("session-live");
     expect(onLog).toHaveBeenCalledWith(
       "stderr",

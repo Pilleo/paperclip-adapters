@@ -9,10 +9,21 @@ const run = {
 };
 
 describe("Jules supervisor bridge", () => {
-  it("returns the source run for an explicit, session-preserving resume", () => {
+  it("does not bypass the 15-minute Jules polling cadence", () => {
     expect(selectJulesSupervisorActions({
       issues: [{ id: "issue-1", status: "in_progress", assigneeAgentId: "jules-1" }],
       runs: [run], julesAgentId: "jules-1", now,
+    })).toEqual([{ issueId: "issue-1", sessionId: "session-1", resumeFromRunId: "run-1", wake: false }]);
+  });
+
+  it("returns the source run for an explicit session-preserving resume after 15 minutes", () => {
+    const dueRun = {
+      ...run,
+      finishedAt: new Date(now - 900_001).toISOString(),
+    };
+    expect(selectJulesSupervisorActions({
+      issues: [{ id: "issue-1", status: "in_progress", assigneeAgentId: "jules-1" }],
+      runs: [dueRun], julesAgentId: "jules-1", now,
     })).toEqual([{ issueId: "issue-1", sessionId: "session-1", resumeFromRunId: "run-1", wake: true }]);
   });
 
@@ -27,7 +38,7 @@ describe("Jules supervisor bridge", () => {
     const source = {
       ...run,
       id: "source-run",
-      finishedAt: new Date(now - 301_000).toISOString(),
+      finishedAt: new Date(now - 900_001).toISOString(),
     };
     expect(selectJulesSupervisorActions({
       issues: [{ id: "issue-1", status: "in_progress", assigneeAgentId: "jules-1" }],

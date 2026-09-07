@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { CapabilityCircuit } from "../src/core/capability-circuit.js";
+import { CapabilityCircuit, fleetCapabilityCircuitKey } from "../src/core/capability-circuit.js";
 
 describe("CapabilityCircuit", () => {
   it("opens once for an authorization denial and stays open until an explicit successful probe", () => {
@@ -57,5 +57,12 @@ describe("CapabilityCircuit", () => {
     } finally {
       fs.rmSync(stateDir, { recursive: true, force: true });
     }
+  });
+
+  it("deduplicates fleet denials only within one Paperclip process generation", () => {
+    expect(fleetCapabilityCircuitKey("company", "configure", "luna_reviewer", 100))
+      .toBe(fleetCapabilityCircuitKey("company", "configure", "luna_reviewer", 100));
+    expect(fleetCapabilityCircuitKey("company", "configure", "luna_reviewer", 100))
+      .not.toBe(fleetCapabilityCircuitKey("company", "configure", "luna_reviewer", 101));
   });
 });

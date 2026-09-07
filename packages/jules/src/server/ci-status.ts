@@ -20,6 +20,8 @@ export interface PullRequestDetails {
   merged: boolean;
   ciStatus: CiCheckStatus;
   mergeableStatus?: MergeableStatus;
+  /** Immutable GitHub head used to fence review decisions to one revision. */
+  headSha?: string;
 }
 
 export function evaluateChecks(checks: CheckItem[]): CiCheckStatus {
@@ -78,11 +80,12 @@ export async function getPullRequestDetails(
 ): Promise<PullRequestDetails> {
   let prState: PullRequestState = "UNKNOWN";
   let isMerged = false;
+  let prHeadSha: string | undefined;
 
   // 1. Check PR State via gh CLI
   try {
     const { stdout } = await execAsync(
-      `gh pr view "${prUrl}" --json state,mergedAt,mergeable,mergeStateStatus`,
+      `gh pr view "${prUrl}" --json state,mergedAt,mergeable,mergeStateStatus,headRefOid`,
       { cwd: cwd || process.cwd(), timeout: 3_000 },
     );
     const parsed = JSON.parse(stdout.trim());
@@ -91,14 +94,19 @@ export async function getPullRequestDetails(
       isMerged = prState === "MERGED" || Boolean(parsed.mergedAt);
       const mergeable = String(parsed.mergeable || "").toUpperCase();
       const mergeableStatus: MergeableStatus = mergeable === "CONFLICTING" ? "conflicting" : mergeable === "MERGEABLE" ? "mergeable" : "unknown";
+      const headSha = typeof parsed.headRefOid === "string" && parsed.headRefOid.trim()
+        ? parsed.headRefOid.trim()
+        : undefined;
       if (isMerged) {
         return {
           state: "MERGED",
           merged: true,
           ciStatus: "success",
           mergeableStatus: "mergeable",
+          ...(headSha ? { headSha } : {}),
         };
       }
+      prHeadSha = headSha;
     }
   } catch {
     // Fall back to checks or REST API
@@ -117,6 +125,7 @@ export async function getPullRequestDetails(
         merged: isMerged,
         ciStatus: evaluateChecks(parsed),
         mergeableStatus: (typeof (parsed as any).mergeableStatus === "string" ? (parsed as any).mergeableStatus : undefined),
+        ...(prHeadSha ? { headSha: prHeadSha } : {}),
       };
     }
   } catch {
@@ -143,6 +152,7 @@ export async function getPullRequestDetails(
             state: prData?.merged ? "MERGED" : "CLOSED",
             merged: Boolean(prData?.merged),
             ciStatus: "success",
+            ...(typeof prData?.head?.sha === "string" ? { headSha: prData.head.sha } : {}),
           };
         }
         const headSha = prData?.head?.sha;
@@ -155,7 +165,7 @@ export async function getPullRequestDetails(
             const checkData: any = await checkRunsRes.json();
             const checkRuns = checkData?.check_runs || [];
             if (checkRuns.length === 0) {
-              return { state: "OPEN", merged: false, ciStatus: "pending" };
+              return { state: "OPEN", merged: false, ciStatus: "pending", headSha };
             }
             const items: CheckItem[] = checkRuns.map((cr: any) => ({
               name: cr.name,
@@ -166,6 +176,7 @@ export async function getPullRequestDetails(
               state: "OPEN",
               merged: false,
               ciStatus: evaluateChecks(items),
+              headSha,
             };
           }
         }

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { JulesSessionId, PaperclipId, JulesActivityId, PrUrl, asJulesSessionId, asPaperclipId, asJulesActivityId, asPrUrl } from "./brands.js";
 import { AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { MutationCheckpointSchema, MutationCheckpoint } from "./mutation-checkpoint.js";
+import type { ProviderContinuation } from "./provider-continuation.js";
 
 export const JULES_SESSION_STATES = [
   "QUEUED",
@@ -49,7 +50,41 @@ export const FailedSessionSchema = z.object({
   prUrl: z.string().optional()
 });
 
-export const PendingInteractionSchema = z.discriminatedUnion("type", [
+const NativeAgentAdjudicationSchema = z.object({
+  type: z.literal("agent_adjudication"),
+  julesActivityId: z.string(),
+  paperclipInteractionId: z.string().min(1),
+  question: z.string(),
+  reviewerAgentId: z.string().min(1),
+  nativeForm: z.literal(true),
+  transport: z.enum(["direct_parent_form", "child_form_bridge"]).optional(),
+  reviewerChildIssueId: z.string().min(1).optional(),
+  reviewerInteractionId: z.string().min(1).optional(),
+  adjudicationGeneration: z.number().int().min(0).max(10).optional(),
+  createdAt: z.string(),
+});
+
+const LegacyAgentAdjudicationSchema = z.object({
+  type: z.literal("agent_adjudication"),
+  julesActivityId: z.string(),
+  paperclipInteractionId: z.string().optional(),
+  question: z.string(),
+  adjudicationIssueId: z.string().min(1),
+  reviewerAgentId: z.string().min(1),
+  adjudicationGeneration: z.number().int().min(0).max(10).optional(),
+  createdAt: z.string(),
+});
+
+export type NativeAgentAdjudication = z.infer<typeof NativeAgentAdjudicationSchema>;
+export type LegacyAgentAdjudication = z.infer<typeof LegacyAgentAdjudicationSchema>;
+
+export function isNativeAgentAdjudication(value: unknown): value is NativeAgentAdjudication {
+  return Boolean(value && typeof value === "object" &&
+    (value as { type?: unknown }).type === "agent_adjudication" &&
+    (value as { nativeForm?: unknown }).nativeForm === true);
+}
+
+export const PendingInteractionSchema = z.union([
   z.object({
     type: z.literal("user_feedback"),
     julesActivityId: z.string(),
@@ -135,6 +170,8 @@ export const JulesAdapterSessionV1Schema = z.object({
   attempt: z.number().int().min(1),
   failedSessions: z.array(FailedSessionSchema),
   currentPrUrl: z.string().optional(),
+  /** Immutable GitHub head observed when Jules handed this PR to review. */
+  currentPrHeadSha: z.string().min(1).optional(),
   prRegisteredOnBoard: z.boolean().optional(),
   pendingInteraction: PendingInteractionSchema.optional(),
   /** Internal plan review temporarily suspended while Jules asks a question. */
@@ -144,9 +181,25 @@ export const JulesAdapterSessionV1Schema = z.object({
   relayNextAnswerToJules: z.boolean().optional(),
   /** Set after approvePlan is relayed successfully; prevents double-approve on resume. */
   planApprovedAt: z.string().optional(),
+  /** Exact Jules planGenerated activity approved by the provider. */
+  planApprovedActivityId: z.string().min(1).optional(),
   planReviewRevisionId: z.string().optional(),
-  planReviewOutcome: z.enum(["approved", "revision_requested", "human_escalation", "superseded_terminal"]).optional(),
+  /** Bounded suffix used only when restoring an adapter-withdrawn plan card. */
+  planReviewRecoveryAttempt: z.number().int().min(0).max(3).optional(),
+  planReviewOutcome: z.enum(["approved", "revision_requested", "human_escalation", "superseded_terminal", "superseded_provider_question", "superseded_pr_rejection"]).optional(),
+  /** Exact plan activity withdrawn because a newer provider question took priority. */
+  supersededPlanActivityId: z.string().min(1).optional(),
+  /** Typed plan fingerprint suppressed after a reviewer rejection. */
+  supersededPlanFingerprint: z.string().min(1).optional(),
+  /** Provider question retained across the preemption heartbeat handoff. */
+  unresolvedProviderQuestionActivityId: z.string().min(1).optional(),
   feedbackInteractionAttempt: z.number().int().min(0).optional(),
+  /** Number of times an adjudication child was requeued after invalid terminal output. */
+  adjudicationRecoveryCount: z.number().int().min(0).max(2).optional(),
+  /** One-time migration repair for legacy child activation races that expired the typed form. */
+  adjudicationBridgeRepairAttempt: z.number().int().min(0).max(1).optional(),
+  /** One-time migration repair when an old native bridge lost its visible parent card. */
+  missingParentBridgeRepairAttempt: z.number().int().min(0).max(1).optional(),
   deliveredFeedbackInteractionId: z.string().optional(),
   /** Jules activity ID whose reply was sent; prevents stale remote state reopening it. */
   deliveredFeedbackActivityId: z.string().optional(),
@@ -156,6 +209,19 @@ export const JulesAdapterSessionV1Schema = z.object({
   scopeDriftFingerprint: z.string().optional(),
   /** Last native reviewer rejection delivered to the Jules provider. */
   workerFeedbackDeliveryId: z.string().optional(),
+  providerContinuation: z.discriminatedUnion("state", [
+    z.object({
+      deliveryId: z.string().min(1),
+      state: z.literal("sent_awaiting_provider"),
+      sentAt: z.string().datetime(),
+    }),
+    z.object({
+      deliveryId: z.string().min(1),
+      state: z.literal("provider_acknowledged"),
+      sentAt: z.string().datetime(),
+      acknowledgedActivityId: z.string().min(1),
+    }),
+  ]).optional(),
   activityCheckpoint: z.object({
     createTime: z.string().datetime(),
     id: z.string().min(1),
@@ -190,6 +256,14 @@ export const JulesAdapterSessionV1Schema = z.object({
       message: "Active Jules sessions require equal sessionId and julesSessionId"
     });
   }
+
+  if (session.planApprovedAt && session.pendingInteraction?.type === "plan_approval") {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["pendingInteraction"],
+      message: "A plan approval interaction cannot remain pending after plan approval",
+    });
+  }
 });
 
 export interface JulesAdapterSessionV1 {
@@ -215,14 +289,24 @@ export interface JulesAdapterSessionV1 {
     prUrl?: string | undefined;
   }>;
   currentPrUrl?: PrUrl | undefined;
+  currentPrHeadSha?: string | undefined;
   prRegisteredOnBoard?: boolean | undefined;
   /** Monotonic key suffix used when a feedback card must be re-opened. */
   feedbackInteractionAttempt?: number | undefined;
+  adjudicationRecoveryCount?: number | undefined;
+  adjudicationBridgeRepairAttempt?: number | undefined;
+  missingParentBridgeRepairAttempt?: number | undefined;
   deliveredFeedbackInteractionId?: string | undefined;
   deliveredFeedbackActivityId?: string | undefined;
   planApprovedAt?: string;
+  /** Exact Jules planGenerated activity approved by the provider. */
+  planApprovedActivityId?: string | undefined;
   planReviewRevisionId?: string | undefined;
-  planReviewOutcome?: "approved" | "revision_requested" | "human_escalation" | "superseded_terminal" | undefined;
+  planReviewRecoveryAttempt?: number | undefined;
+  planReviewOutcome?: "approved" | "revision_requested" | "human_escalation" | "superseded_terminal" | "superseded_provider_question" | "superseded_pr_rejection" | undefined;
+  supersededPlanActivityId?: string | undefined;
+  supersededPlanFingerprint?: string | undefined;
+  unresolvedProviderQuestionActivityId?: string | undefined;
   standingChannelId?: string | undefined;
   relayNextAnswerToJules?: boolean | undefined;
   pendingInteraction?:
@@ -320,6 +404,7 @@ export interface JulesAdapterSessionV1 {
   /** Prevents identical PR drift observations from replaying provider messages. */
   scopeDriftFingerprint?: string | undefined;
   workerFeedbackDeliveryId?: string | undefined;
+  providerContinuation?: ProviderContinuation | undefined;
   /** High-water mark for the normalized Jules activity stream. */
   activityCheckpoint?: { createTime: string; id: string } | undefined;
   lastActivityId?: string | undefined;

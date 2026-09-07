@@ -304,7 +304,7 @@ export function evaluateReviewPipelineProgress(
       );
     });
   };
-  const cardFor = (stage: ReviewEpochStage) => {
+  const cardFor = (stage: PrReviewStage) => {
     const identity = {
       issueId: issue.id,
       prUrl: prUrl || `pr-${prNumber || "unknown"}`,
@@ -328,7 +328,7 @@ export function evaluateReviewPipelineProgress(
   };
 
   /** The reducer is the sole owner of card/run/verdict transitions. */
-  const epochDecision = (stage: ReviewEpochStage, reviewerAgentId: string) => {
+  const epochDecision = (stage: PrReviewStage, reviewerAgentId: string) => {
     const card = cardFor(stage);
     const boundRuns = card
       ? heartbeatRuns.filter((run) => run.issueId === issue.id && run.agentId === reviewerAgentId && run.interactionId === card.id)
@@ -345,6 +345,7 @@ export function evaluateReviewPipelineProgress(
       prUrl: prUrl || `pr-${prNumber || "unknown"}`,
       headSha: reviewHeadSha || "unknown",
       stage,
+      nextStage: stage === "luna" ? "terra" : null,
       reviewerAgentId,
       card: card
         ? card.status === "answered"
@@ -360,7 +361,9 @@ export function evaluateReviewPipelineProgress(
           : finishedRun
             ? { state: "finished" as const, runId: finishedRun.id }
             : { state: "missing" as const },
-      recovery: { state: "never_attempted" },
+      recovery: executionState?.status === "pending" && executionState.currentParticipant?.type === "user"
+        ? { state: "leased" as const }
+        : { state: "never_attempted" as const },
       verdict: verdict && card
         ? {
             cardId: card.id,
@@ -406,6 +409,7 @@ export function evaluateReviewPipelineProgress(
       case "wake_once":
         return { stage: pipelineStage, action: "RECOVER_REVIEW", targetAgentId: reviewerAgentId, reason: `A pending native ${stage === "luna" ? "Luna" : "Terra"} review card has no bound run; issuing its one recovery wake.` };
       case "advance":
+      case "complete":
         return null;
       default:
         throw new Error(`Unhandled review epoch decision: ${JSON.stringify(decision)}`);

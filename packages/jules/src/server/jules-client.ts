@@ -198,15 +198,17 @@ export function toJulesFailure(errorInfo: unknown): JulesFailure {
 }
 
 export class JulesClient {
-  private baseUrl = 'https://jules.googleapis.com/v1alpha';
+  private readonly baseUrl: string;
 
   constructor(
     private apiKey: string,
     private telemetry?: (event: "api_request", sessionId: string | null, fields: Record<string, unknown>) => void | Promise<void>,
+    baseUrl = 'https://jules.googleapis.com/v1alpha',
   ) {
     if (!apiKey) {
       throw new Error("Jules API key is required");
     }
+    this.baseUrl = baseUrl.replace(/\/+$/, "");
   }
 
   private async fetchApi(path: string, options: RequestInit = {}) {

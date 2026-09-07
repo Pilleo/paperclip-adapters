@@ -34,7 +34,7 @@ describe("orchestrator live session continuation", () => {
 
   it("requests an issue-scoped managed Jules continuation when the poll is due", async () => {
     const wakeupBodies: unknown[] = [];
-    const finishedAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const finishedAt = new Date(Date.now() - 16 * 60 * 1000).toISOString();
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
       const href = String(url);
       const method = (init?.method || "GET").toUpperCase();

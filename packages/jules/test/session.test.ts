@@ -60,4 +60,16 @@ beforeAll(() => {
     expect(normalizeJulesState('future-provider-state')).toBe('UNKNOWN');
     expect(normalizeJulesState(undefined)).toBe('UNKNOWN');
   });
+
+  it.each([
+    ["plan approval after approval", {
+      pendingInteraction: { type: "plan_approval", julesActivityId: "a", question: "q", planDocumentId: "d", planRevisionId: "r", planRevisionNumber: 1, createdAt: new Date().toISOString() },
+      planApprovedAt: new Date().toISOString(),
+    }],
+    ["adjudication without reviewer", {
+      pendingInteraction: { type: "agent_adjudication", julesActivityId: "a", question: "q", adjudicationIssueId: "child", reviewerAgentId: "", createdAt: new Date().toISOString() },
+    }],
+  ])('rejects impossible pending interaction state: %s', (_label, extra) => {
+    expect(sessionCodec.decode({ ...validSession, ...extra })).toBeNull();
+  });
 });

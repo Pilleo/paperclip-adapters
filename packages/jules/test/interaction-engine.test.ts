@@ -1,10 +1,13 @@
 import { describe, it, expect } from "vitest";
 import {
   evaluateInteractionAction,
+  extractPlanReviewVerdict,
   extractFeedbackAnswer,
   recordFeedbackRelayed,
   recordPlanApprovalRelayed,
+  isPlanApprovalRequired,
   determinePaperclipIssueStatus,
+  fingerprintPlanSteps,
 } from "../src/server/interaction-engine.js";
 import { JulesAdapterSessionV1 } from "../src/server/session.js";
 import { PaperclipInteraction } from "../src/server/paperclip-client.js";
@@ -24,6 +27,20 @@ const baseSession: JulesAdapterSessionV1 = {
 };
 
 describe("interaction-engine pure reducer", () => {
+  it.each([
+    [{ outcome: "resolved", complete: true, items: [{ id: "plan", verdict: "approve" }] }, { decision: "approve" }],
+    [{ outcome: "resolved", complete: true, items: [{ id: "plan", verdict: "reject", reason: "Clarify rollback." }] }, { decision: "reject", reason: "Clarify rollback." }],
+  ] as const)("extracts typed plan verdicts without reading comments", (result, expected) => {
+    expect(extractPlanReviewVerdict({ id: "plan-card", kind: "request_item_verdicts", status: "answered", result })).toEqual(expected);
+  });
+
+  it("does not treat an incomplete typed result as a plan decision", () => {
+    expect(extractPlanReviewVerdict({
+      id: "plan-card", kind: "request_item_verdicts", status: "answered",
+      result: { outcome: "resolved", complete: false, items: [{ id: "plan", verdict: "approve" }] },
+    })).toBeNull();
+  });
+
   it("extracts feedback answer from result payload correctly", () => {
     expect(extractFeedbackAnswer(null)).toBeNull();
     expect(extractFeedbackAnswer({})).toBeNull();
@@ -132,6 +149,49 @@ describe("interaction-engine pure reducer", () => {
   });
 
   describe("AWAITING_PLAN_APPROVAL transitions", () => {
+    it("fingerprints typed plan steps deterministically and ignores ordering", () => {
+      expect(fingerprintPlanSteps([
+        { index: 2, title: " Run tests ", description: "Verify" },
+        { index: 1, title: "Implement", description: "Code" },
+      ])).toBe(fingerprintPlanSteps([
+        { index: 1, title: "Implement", description: "Code" },
+        { index: 2, title: "Run tests", description: "Verify" },
+      ]));
+      expect(fingerprintPlanSteps([{ index: 1, title: "Other" }])).not.toBe(
+        fingerprintPlanSteps([{ index: 1, title: "Implement" }]),
+      );
+    });
+
+    it.each([
+      { activityId: "plan-1", approvedActivityId: "plan-1", approvedAt: "now", expected: false },
+      { activityId: "plan-2", approvedActivityId: "plan-1", approvedAt: "now", expected: true },
+      { activityId: "plan-1", approvedActivityId: undefined, approvedAt: undefined, expected: true },
+      { activityId: "plan-1", approvedActivityId: undefined, approvedAt: "legacy", expected: false },
+      { activityId: undefined, approvedActivityId: "plan-1", expected: false },
+    ])("requires approval only for a new provider plan activity", ({ activityId, approvedActivityId, approvedAt, expected }) => {
+      expect(isPlanApprovalRequired({
+        requirePlanApproval: true,
+        planActivityId: activityId,
+        planApprovedAt: approvedAt,
+        planApprovedActivityId: approvedActivityId,
+      })).toBe(expected);
+    });
+
+    it("does not reopen an exact plan fingerprint after rejection", () => {
+      expect(isPlanApprovalRequired({
+        requirePlanApproval: true,
+        planActivityId: "new-activity",
+        planFingerprint: "same-plan",
+        supersededPlanFingerprint: "same-plan",
+      })).toBe(false);
+      expect(isPlanApprovalRequired({
+        requirePlanApproval: true,
+        planActivityId: "new-activity",
+        planFingerprint: "changed-plan",
+        supersededPlanFingerprint: "same-plan",
+      })).toBe(true);
+    });
+
     it("does not infer a plan gate from provider prose while state is active", () => {
       const action = evaluateInteractionAction(baseSession, "IN_PROGRESS", [], "Jules Implementation Plan\nStep 1");
       expect(action.type).toBe("CONTINUE_POLLING");
@@ -210,9 +270,10 @@ describe("interaction-engine pure reducer", () => {
       expect(baseSession.deliveredFeedbackInteractionId).toBeUndefined();
     });
 
-    it("recordPlanApprovalRelayed immutably sets planApprovedAt and transitions to RUNNING", () => {
-      const updated = recordPlanApprovalRelayed(baseSession);
+    it("recordPlanApprovalRelayed binds approval to the exact provider plan activity", () => {
+      const updated = recordPlanApprovalRelayed(baseSession, "plan-activity-1");
       expect(updated.planApprovedAt).toBeDefined();
+      expect(updated.planApprovedActivityId).toBe("plan-activity-1");
       expect(updated.phase).toBe("RUNNING");
       expect(updated.pendingInteraction).toBeUndefined();
     });

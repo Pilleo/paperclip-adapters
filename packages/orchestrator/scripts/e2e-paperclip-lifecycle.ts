@@ -69,7 +69,7 @@ async function main() {
     throw new Error("PAPERCLIP_TEST_API_URL is required; refuse to run destructive E2E work against the default board");
   }
   console.log("\n================================================================================");
-  console.log("  🔬 Paperclip Deep End-to-End Orchestration & Planning Test Suite");
+  console.log("  🔬 Paperclip Jules recovery canary");
   console.log("================================================================================\n");
 
   let testCompanyId = "";
@@ -551,7 +551,18 @@ esac
     // -------------------------------------------------------------------------
     delete process.env["PAPERCLIP_E2E_AGENT_TOKEN"];
     if (testCompanyId) {
-      await fetch(`${PAPERCLIP_API}/api/companies/${testCompanyId}`, { method: "DELETE" }).catch(() => {});
+      try {
+        const response = await fetch(`${PAPERCLIP_API}/api/companies/${testCompanyId}`, { method: "DELETE" });
+        if (!response.ok) {
+          throw new Error(`company deletion returned HTTP ${response.status}`);
+        }
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException)?.code;
+        if (code === "EPERM" || code === "EACCES") {
+          throw new Error(`company deletion failed with ${code}`);
+        }
+        throw error;
+      }
     }
     if (tempBacklogDir && fs.existsSync(tempBacklogDir)) {
       fs.rmSync(tempBacklogDir, { recursive: true, force: true });
@@ -560,6 +571,6 @@ esac
 }
 
 main().catch((err) => {
-  console.error("❌ Deep E2E Lifecycle Test failed:", err);
+  console.error("❌ Paperclip Jules recovery canary failed:", err);
   process.exit(1);
 });

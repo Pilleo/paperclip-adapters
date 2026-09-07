@@ -1,4 +1,4 @@
-import { formatCardPrompt, formatCardSummary, formatCardPromptAndHelpText, formatConfirmationDetails, MAX_CONFIRMATION_PROMPT_LENGTH, SafeCardPrompt, SafeCardSummary } from "./card-prompt.js";
+import { appendCardHelpText, formatCardPrompt, formatCardSummary, formatCardPromptAndHelpText, formatConfirmationDetails, MAX_CONFIRMATION_PROMPT_LENGTH, SafeCardPrompt, SafeCardSummary } from "./card-prompt.js";
 import { createHash } from "node:crypto";
 import { executePaperclipCommand, type PaperclipCommandResponse } from "@pilleo/paperclip-adapter-common";
 import {
@@ -6,8 +6,17 @@ import {
   extractJulesSessionIdFromComments,
   formatJulesSessionHandleBody,
   JULES_SESSION_DOCUMENT_KEY,
+  parseJulesSessionHandle,
+  type JulesSessionHandle,
 } from "./jules-session-handle.js";
+import {
+  buildQuestionCorrelation,
+  parseQuestionCorrelation,
+  questionCorrelationMarker,
+} from "./question-correlation.js";
+import { planReviewIdempotencyKey } from "./plan-review-protocol.js";
 const PAPERCLIP_API_URL_ENV = "PAPERCLIP_API_URL";
+const JULES_REVIEWER_RESPONSE_HELP = 'Provide the exact answer for Jules, or the concrete ambiguity requiring human input. Submit this Paperclip form through its native respond endpoint using exactly: answers: [{ questionId: "resolution", optionIds: ["answer"] }, { questionId: "response", optionIds: ["response"], otherText: "..." }]. For escalation, use optionIds: ["escalate"] and put the concrete reason in otherText. Do not use selectedOptionIds, text, an object map, or an issue comment.';
 
 export class PaperclipClientError extends Error {
   constructor(public readonly status: number | null, message: string) {
@@ -16,13 +25,43 @@ export class PaperclipClientError extends Error {
   }
 }
 
+/** Paperclip rejects helper creation after the per-parent safety cap. */
+export function isPaperclipChildLimitError(error: unknown): boolean {
+  return error instanceof PaperclipClientError && error.status === 422 &&
+    /maximum\s+25\s+child\s+issues/i.test(error.message);
+}
+
 export interface PaperclipInteraction {
   id: string;
   status: string;
   kind?: string;
   result?: unknown;
+  /** Preserve the typed interaction contract for protocol/state-machine validation. */
+  payload?: unknown;
+  addresseeAgentId?: string;
   target?: unknown;
   idempotencyKey?: string;
+}
+
+/**
+ * A response write is idempotent once Paperclip has made the interaction
+ * terminal.  In particular, recovery can withdraw a visible audit card at
+ * the same time that the reviewer-child run consumes its typed decision.
+ * The child decision is still safe to relay to Jules, so the stale audit
+ * mutation must converge instead of failing the provider heartbeat.
+ */
+function isTerminalInteractionStatus(status: string | undefined): boolean {
+  switch (status) {
+    case "answered":
+    case "cancelled":
+    case "expired":
+      return true;
+    case "pending":
+    case undefined:
+      return false;
+    default:
+      return false;
+  }
 }
 
 export interface PlanRevision {
@@ -103,6 +142,10 @@ async function paperclipRequest(
   init: RequestInit,
   runId?: string,
 ): Promise<Response> {
+  // Some Paperclip resume paths omit the field on the adapter context but
+  // still export it to the process. Keep the attribution header at the last
+  // boundary so every governed mutation remains auditable.
+  const effectiveRunId = runId || process.env["PAPERCLIP_RUN_ID"] || process.env["PAPERCLIP_HEARTBEAT_RUN_ID"];
   const token = requireAuthToken(authToken);
   const method = (init.method ?? "GET").toUpperCase();
   const isMutation = method !== "GET" && method !== "HEAD";
@@ -173,7 +216,7 @@ export async function listWorkProducts(
   issueId: string,
   authToken: string | undefined,
   runId?: string,
-): Promise<Array<{ url?: string }>> {
+): Promise<Array<{ id?: string; url?: string; isPrimary?: boolean; metadata?: Record<string, unknown> }>> {
   const response = await paperclipRequest(
     `/api/issues/${encodeURIComponent(issueId)}/work-products`,
     authToken,
@@ -187,7 +230,14 @@ export async function listWorkProducts(
             (w): w is Record<string, unknown> =>
                 typeof w === "object" && w !== null && typeof (w as Record<string, unknown>)["url"] === "string",
         )
-        .map((w) => ({ url: w["url"] as string }))
+        .map((w) => ({
+          ...(typeof w["id"] === "string" ? { id: w["id"] } : {}),
+          url: w["url"] as string,
+          ...(typeof w["isPrimary"] === "boolean" ? { isPrimary: w["isPrimary"] } : {}),
+          ...(w["metadata"] && typeof w["metadata"] === "object" && !Array.isArray(w["metadata"])
+            ? { metadata: w["metadata"] as Record<string, unknown> }
+            : {}),
+        }))
     : [];
 }
 
@@ -202,6 +252,7 @@ export async function upsertJulesSessionHandle(
   sessionUrl: string | null | undefined,
   authToken: string | undefined,
   runId?: string,
+  pr?: { readonly prUrl?: string | null; readonly headSha?: string | null },
 ): Promise<void> {
   let baseRevisionId: string | null = null;
   try {
@@ -225,7 +276,7 @@ export async function upsertJulesSessionHandle(
       body: JSON.stringify({
         title: "Jules session",
         format: "markdown",
-        body: formatJulesSessionHandleBody(sessionId, sessionUrl),
+        body: formatJulesSessionHandleBody(sessionId, sessionUrl, pr),
         changeSummary: `Jules session ${sessionId}`,
         baseRevisionId,
       }),
@@ -263,6 +314,27 @@ export async function readJulesSessionHandle(
   }
 }
 
+/** Reads the full versioned recovery handle while retaining the legacy ID API. */
+export async function readJulesSessionHandleState(
+  issueId: string,
+  authToken: string | undefined,
+  runId?: string,
+): Promise<JulesSessionHandle | null> {
+  try {
+    const response = await paperclipRequest(
+      `/api/issues/${encodeURIComponent(issueId)}/documents/${JULES_SESSION_DOCUMENT_KEY}`,
+      authToken,
+      { method: "GET" },
+      runId,
+    );
+    const document = await response.json() as Record<string, unknown>;
+    return parseJulesSessionHandle(typeof document["body"] === "string" ? document["body"] : null);
+  } catch (error) {
+    if (!(error instanceof PaperclipClientError) || error.status !== 404) throw error;
+    return null;
+  }
+}
+
 /** Posts a standalone clickable Jules-session link as an issue comment. */
 export async function postSessionLink(
   issueId: string,
@@ -283,9 +355,17 @@ export async function registerPullRequestWorkProduct(
   runId?: string,
 ): Promise<void> {
   const existing = await listWorkProducts(issueId, authToken, runId).catch(
-    () => [] as Array<{ url?: string }>,
+    () => [] as Awaited<ReturnType<typeof listWorkProducts>>,
   );
-  if (!existing.some((w) => w.url === prUrl)) {
+  const normalizedPrUrl = prUrl.replace(/\/$/, "").toLowerCase();
+  const matching = existing.find((workProduct) => workProduct.url?.replace(/\/$/, "").toLowerCase() === normalizedPrUrl);
+  const canonicalMetadata = { source: "jules", producer: "paperclip-jules-adapter", schemaVersion: 1 } as const;
+  if (matching?.id && (matching.isPrimary !== true || matching.metadata?.["producer"] !== canonicalMetadata.producer)) {
+    await paperclipRequest(`/api/work-products/${encodeURIComponent(matching.id)}`, authToken, {
+      method: "PATCH",
+      body: JSON.stringify({ isPrimary: true, metadata: canonicalMetadata }),
+    }, runId);
+  } else if (!matching) {
     await paperclipRequest(`/api/issues/${encodeURIComponent(issueId)}/work-products`, authToken, {
       method: "POST",
       body: JSON.stringify({
@@ -296,7 +376,7 @@ export async function registerPullRequestWorkProduct(
         externalId: prUrl,
         status: "ready_for_review",
         isPrimary: true,
-        metadata: { source: "jules" },
+        metadata: canonicalMetadata,
       }),
     }, runId);
   }
@@ -352,6 +432,18 @@ export async function moveIssueToDone(
   );
 }
 
+/** Requeue one protocol child after a terminal reviewer task omitted its JSON decision. */
+export async function requeueInternalReviewIssue(
+  issueId: string,
+  authToken: string | undefined,
+  runId?: string,
+): Promise<void> {
+  await paperclipRequest(`/api/issues/${encodeURIComponent(issueId)}`, authToken, {
+    method: "PATCH",
+    body: JSON.stringify({ status: "todo", blockParentUntilDone: false, executionPolicy: INTERNAL_REVIEW_EXECUTION_POLICY }),
+  }, runId);
+}
+
 function interactionFromResponse(raw: unknown, status: number): PaperclipInteraction {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     throw new PaperclipClientError(status, "Paperclip returned an invalid interaction response");
@@ -366,6 +458,8 @@ function interactionFromResponse(raw: unknown, status: number): PaperclipInterac
     id,
     status: interactionStatus,
     result: record["result"],
+    payload: record["payload"],
+    ...(typeof record["addresseeAgentId"] === "string" ? { addresseeAgentId: record["addresseeAgentId"] } : {}),
     target: (record["payload"] as Record<string, unknown> | undefined)?.["target"] ?? record["target"],
     ...(typeof record["kind"] === "string" ? { kind: record["kind"] } : {}),
     ...(typeof record["idempotencyKey"] === "string" ? { idempotencyKey: record["idempotencyKey"] } : {}),
@@ -380,14 +474,35 @@ export async function addJulesActivityComment(
   authToken: string | undefined,
   runId?: string,
 ): Promise<void> {
-  await paperclipRequest(`/api/issues/${encodeURIComponent(issueId)}/comments`, authToken, {
-    method: "POST",
-    body: JSON.stringify({
-      body,
-      authorType: "agent",
-    }),
-  }, runId);
+  // Jules returns the full activity window on every poll. The activity ID is
+  // the provider's immutable event identity; question text and timestamps are
+  // not. Check the issue before writing so a restart or concurrent heartbeat
+  // cannot mirror the same provider event repeatedly.
+  const marker = `<!-- jules-activity:${activityId} -->`;
+  const lockKey = `${issueId}:${activityId}`;
+  const previous = activityCommentLocks.get(lockKey) ?? Promise.resolve();
+  const operation = previous.then(async () => {
+    const existing = await listIssueComments(issueId, authToken, runId).catch(() => []);
+    if (existing.some((comment) => comment.body.includes(marker))) return;
+    await paperclipRequest(`/api/issues/${encodeURIComponent(issueId)}/comments`, authToken, {
+      method: "POST",
+      headers: { "Idempotency-Key": `jules:activity-comment:${issueId}:${activityId}` },
+      body: JSON.stringify({
+        body: `${marker}\n${body}`,
+        authorType: "agent",
+      }),
+    }, runId);
+  });
+  const lock = operation.then(() => undefined, () => undefined);
+  activityCommentLocks.set(lockKey, lock);
+  try {
+    await operation;
+  } finally {
+    if (activityCommentLocks.get(lockKey) === lock) activityCommentLocks.delete(lockKey);
+  }
 }
+
+const activityCommentLocks = new Map<string, Promise<void>>();
 
 export async function createJulesFeedbackInteraction(
   issueId: string,
@@ -442,6 +557,74 @@ export async function createJulesFeedbackInteraction(
 }
 
 /**
+ * Creates the human-only follow-up for a strong reviewer's escalation.
+ *
+ * This deliberately retains the ordinary Jules feedback payload (`reply`) so
+ * the established provider-relay state machine remains the sole consumer of
+ * human answers.  The distinction is authorization, not a new workflow:
+ * reviewer agents may answer their own child adjudication form, but they must
+ * never be able to resolve the human escalation created from it.
+ *
+ * Paperclip currently exposes `human_only` as its narrowest native resolver
+ * policy. It targets board humans (including the local board operator) rather
+ * than a particular user ID; an adapter cannot reliably identify a board user.
+ */
+export async function createJulesHumanEscalationInteraction(
+  issueId: string,
+  sessionId: string,
+  activityId: string,
+  question: SafeCardPrompt | string,
+  escalationReason: SafeCardSummary | string,
+  authToken: string | undefined,
+  runId?: string,
+): Promise<PaperclipInteraction> {
+  const idempotencyKey = `jules:human-escalation:${issueId}:${sessionId}:${activityId}`;
+  const combinedPrompt = `${String(question)}\n\nReviewer escalation: ${String(escalationReason)}`;
+  const { prompt: safePrompt, helpText: customHelpText } = formatCardPromptAndHelpText(combinedPrompt);
+  try {
+    const response = await paperclipRequest(
+      `/api/issues/${encodeURIComponent(issueId)}/interactions`, authToken, {
+        method: "POST",
+        body: JSON.stringify({
+          kind: "ask_user_questions",
+          idempotencyKey,
+          title: "Human decision needed for Jules",
+          summary: "A strong reviewer could not safely answer Jules. A board human must decide.",
+          continuationPolicy: "wake_assignee",
+          resolverPolicy: "human_only",
+          payload: {
+            version: 1,
+            title: "Human decision needed for Jules",
+            submitLabel: "Send to Jules",
+            questions: [{
+              id: "reply",
+              prompt: safePrompt,
+              helpText: customHelpText
+                ? (customHelpText.slice(0, 930) + "\n\nType your decision or instructions for Jules below.")
+                : "Type your decision or instructions for Jules below.",
+              selectionMode: "single",
+              required: true,
+              options: [{ id: "response", label: "Write a response", freeText: true }],
+            }],
+          },
+        }),
+      },
+      runId,
+    );
+    return interactionFromResponse(await response.json(), response.status);
+  } catch (error) {
+    if (error instanceof PaperclipClientError && (error.status === 409 || error.status === 422 || error.status === 400)) {
+      // Do not recover an arbitrary ask-user form: an unrelated generic card
+      // could otherwise be mistaken for this privileged escalation.
+      const existing = await listPaperclipInteractions(issueId, authToken, runId).catch(() => []);
+      const match = existing.find((interaction) => interaction.idempotencyKey === idempotencyKey);
+      if (match) return match;
+    }
+    throw error;
+  }
+}
+
+/**
  * Visible parent-thread record for a provider question handled by the strong
  * reviewer lane. It is intentionally not addressed to the reviewer: Jules
  * remains the parent assignee, while the executable reviewer form lives on a
@@ -489,9 +672,7 @@ export async function createJulesAgentAdjudicationInteraction(
             }, {
               id: "response",
               prompt,
-              helpText: helpText
-                ? `${helpText.slice(0, 800)}\n\nProvide the exact answer for Jules, or the concrete ambiguity requiring human input. Submit this Paperclip form through its native respond endpoint using exactly: answers: [{ questionId: "resolution", optionIds: ["answer"] }, { questionId: "response", optionIds: ["response"], otherText: "..." }]. For escalation, use optionIds: ["escalate"] and put the concrete reason in otherText. Do not use selectedOptionIds, text, an object map, or an issue comment.`
-                : "Provide the exact answer for Jules, or the concrete ambiguity requiring human input. Submit this Paperclip form through its native respond endpoint using exactly: answers: [{ questionId: \"resolution\", optionIds: [\"answer\"] }, { questionId: \"response\", optionIds: [\"response\"], otherText: \"...\" }]. For escalation, use optionIds: [\"escalate\"] and put the concrete reason in otherText. Do not use selectedOptionIds, text, an object map, or an issue comment.",
+              helpText: appendCardHelpText(helpText, JULES_REVIEWER_RESPONSE_HELP),
               selectionMode: "single",
               required: true,
               options: [{ id: "response", label: "Reviewer response", freeText: true }],
@@ -566,9 +747,7 @@ export async function createJulesQuestionReviewInteraction(
             }, {
               id: "response",
               prompt,
-              helpText: helpText
-                ? `${helpText.slice(0, 800)}\n\nProvide the exact answer for Jules, or the concrete ambiguity requiring human input. Submit this Paperclip form through its native respond endpoint using exactly: answers: [{ questionId: "resolution", optionIds: ["answer"] }, { questionId: "response", optionIds: ["response"], otherText: "..." }]. For escalation, use optionIds: ["escalate"] and put the concrete reason in otherText. Do not use selectedOptionIds, text, an object map, or an issue comment.`
-                : "Provide the exact answer for Jules, or the concrete ambiguity requiring human input. Submit this Paperclip form through its native respond endpoint using exactly: answers: [{ questionId: \"resolution\", optionIds: [\"answer\"] }, { questionId: \"response\", optionIds: [\"response\"], otherText: \"...\" }]. For escalation, use optionIds: [\"escalate\"] and put the concrete reason in otherText. Do not use selectedOptionIds, text, an object map, or an issue comment.",
+              helpText: appendCardHelpText(helpText, JULES_REVIEWER_RESPONSE_HELP),
               selectionMode: "single",
               required: true,
               options: [{ id: "response", label: "Reviewer response", freeText: true }],
@@ -659,7 +838,7 @@ export async function resolveJulesAgentAdjudicationInteraction(
     // already-answered card as success; every other 409 remains visible.
     if (error instanceof PaperclipClientError && error.status === 409) {
       const current = await getPaperclipInteraction(issueId, interactionId, authToken, runId).catch(() => null);
-      if (current?.status === "answered") return;
+      if (isTerminalInteractionStatus(current?.status)) return;
     }
     throw error;
   }
@@ -713,6 +892,79 @@ export async function createJulesPlanApprovalInteraction(
   };
 }
 
+/**
+ * Creates the only supported automated plan-review primitive. The reviewer
+ * responds through Paperclip's typed verdict endpoint; comments and child
+ * issue prose are deliberately outside this protocol.
+ */
+export async function createJulesPlanReviewInteraction(
+  issueId: string,
+  sessionId: string,
+  revision: PlanRevision,
+  planMarkdown: string,
+  stage: "luna" | "terra",
+  reviewerAgentId: string,
+  authToken: string | undefined,
+  runId?: string,
+  recoveryAttempt?: number,
+): Promise<PlanApprovalInteraction> {
+  const idempotencyKey = planReviewIdempotencyKey({
+    issueId,
+    sessionId,
+    documentId: revision.documentId,
+    revisionId: revision.revisionId,
+    revisionNumber: revision.revisionNumber,
+    stage,
+    reviewerAgentId,
+  }, "v2", recoveryAttempt);
+  const stageName = stage === "luna" ? "Luna" : "Terra";
+  const requestBody = {
+    kind: "request_item_verdicts",
+    idempotencyKey,
+    title: `Review Jules plan (${stageName})`,
+    summary: `Review Jules plan revision ${revision.revisionNumber}.`,
+    addresseeAgentId: reviewerAgentId,
+    continuationPolicy: "wake_assignee",
+    resolverPolicy: "anyone",
+    payload: {
+      version: 1,
+      prompt: formatCardPrompt(
+        `Review the attached Jules plan as ${stageName}. Choose All good only when it is ready to implement; choose Needs work only with a concrete reason.`,
+        MAX_CONFIRMATION_PROMPT_LENGTH,
+      ),
+      detailsMarkdown: formatConfirmationDetails(planMarkdown, revision.revisionNumber),
+      items: [{ id: "plan", label: "Plan", description: `Plan revision ${revision.revisionNumber}` }],
+      verdicts: ["approve", "reject"],
+      requireReasonOn: ["reject"],
+      reasonLabel: "What must change?",
+      allowBulkApprove: true,
+      supersedeOnUserComment: false,
+      target: {
+        type: "issue_document",
+        issueId,
+        documentId: revision.documentId,
+        key: "plan",
+        revisionId: revision.revisionId,
+        revisionNumber: revision.revisionNumber,
+      },
+    },
+  };
+  try {
+    const response = await paperclipRequest(
+      `/api/issues/${encodeURIComponent(issueId)}/interactions`, authToken,
+      { method: "POST", body: JSON.stringify(requestBody) }, runId,
+    );
+    return { ...interactionFromResponse(await response.json(), response.status), planRevision: revision };
+  } catch (error) {
+    if (error instanceof PaperclipClientError && (error.status === 409 || error.status === 422 || error.status === 400)) {
+      const existing = await listPaperclipInteractions(issueId, authToken, runId).catch(() => []);
+      const match = existing.find((interaction) => interaction.idempotencyKey === requestBody.idempotencyKey);
+      if (match) return { ...match, planRevision: revision };
+    }
+    throw error;
+  }
+}
+
 export async function withdrawPaperclipInteraction(
   issueId: string,
   interactionId: string,
@@ -720,15 +972,30 @@ export async function withdrawPaperclipInteraction(
   authToken: string | undefined,
   runId?: string,
 ): Promise<void> {
-  await paperclipRequest(
-    `/api/issues/${encodeURIComponent(issueId)}/interactions/${encodeURIComponent(interactionId)}/withdraw`,
-    authToken,
-    {
-      method: "POST",
-      body: JSON.stringify({ reason }),
-    },
-    runId,
-  );
+  try {
+    await paperclipRequest(
+      `/api/issues/${encodeURIComponent(issueId)}/interactions/${encodeURIComponent(interactionId)}/withdraw`,
+      authToken,
+      {
+        method: "POST",
+        body: JSON.stringify({ reason }),
+      },
+      runId,
+    );
+  } catch (error) {
+    if (!(error instanceof PaperclipClientError) || error.status !== 409) throw error;
+
+    // Paperclip correctly rejects a second terminal transition. A recovery
+    // heartbeat can race an earlier withdrawal, though, and treating that
+    // expected conflict as fatal previously prevented unrelated, already
+    // validated provider feedback from reaching Jules. Confirm the terminal
+    // state rather than broadly swallowing 409: a still-pending card remains
+    // a real failure and must not be replaced or silently ignored.
+    const interaction = (await listPaperclipInteractions(issueId, authToken, runId))
+      .find((candidate) => candidate.id === interactionId);
+    if (interaction && interaction.status !== "pending") return;
+    throw error;
+  }
 }
 
 export async function listPaperclipApprovals(
@@ -763,9 +1030,11 @@ export async function listPaperclipInteractions(
   issueId: string,
   authToken: string | undefined,
   runId?: string,
+  timeoutMs?: number,
 ): Promise<PaperclipInteraction[]> {
   const response = await paperclipRequest(`/api/issues/${encodeURIComponent(issueId)}/interactions`, authToken, {
     method: "GET",
+    ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
   }, runId);
   const raw: unknown = await response.json();
   if (!Array.isArray(raw)) return [];
@@ -898,6 +1167,81 @@ function executionPolicyWithJulesMonitor(
 }
 
 /**
+ * Reuse a future monitor for this exact provider session.  A Paperclip issue
+ * update can wake Jules between scheduled checks (for example when a review
+ * decision is recorded). Replacing the monitor in that path delays polling
+ * and leaves the old due callback able to race and clear the replacement.
+ */
+function hasReusableJulesMonitor(
+  issue: PaperclipIssue,
+  sessionId: string,
+  nowMs = Date.now(),
+): boolean {
+  const monitor = issue.executionPolicy?.["monitor"];
+  if (!monitor || typeof monitor !== "object" || Array.isArray(monitor)) return false;
+  const record = monitor as Record<string, unknown>;
+  if (record["serviceName"] !== "jules") return false;
+  const externalRef = record["externalRef"];
+  if (typeof externalRef === "string" && externalRef !== "[redacted]" && externalRef !== sessionId) return false;
+  if (typeof record["nextCheckAt"] !== "string") return false;
+  const nextCheckAtMs = Date.parse(record["nextCheckAt"]);
+  return Number.isFinite(nextCheckAtMs) && nextCheckAtMs > nowMs;
+}
+
+/**
+ * Checks whether Paperclip already owns a future poll for this active provider
+ * session. Event-driven wakes are advisory; callers use this before touching
+ * Jules so a stale review/status ping cannot defeat the configured cadence.
+ */
+export async function hasFutureJulesSessionMonitor(
+  issueId: string,
+  sessionId: string,
+  authToken: string | undefined,
+  runId?: string,
+): Promise<boolean> {
+  const issue = await getPaperclipIssue(issueId, authToken, runId);
+  return hasReusableJulesMonitor(issue, sessionId);
+}
+
+export interface JulesMonitorScheduleExpectation {
+  readonly sessionId: string;
+  readonly nextCheckAt: string;
+}
+
+/**
+ * Paperclip can accept a monitor PATCH while returning a normalized issue
+ * projection. Treat that response as the write receipt: a 2xx without the
+ * expected monitor is not a successful continuation and must be retried.
+ */
+export function assertJulesMonitorScheduled(
+  issue: unknown,
+  expectation: JulesMonitorScheduleExpectation,
+): void {
+  if (!issue || typeof issue !== "object" || Array.isArray(issue)) {
+    throw new PaperclipClientError(200, "Paperclip returned no issue while scheduling a verified Jules monitor");
+  }
+  const policy = (issue as Record<string, unknown>)["executionPolicy"];
+  const monitor = policy && typeof policy === "object" && !Array.isArray(policy)
+    ? (policy as Record<string, unknown>)["monitor"]
+    : undefined;
+  if (!monitor || typeof monitor !== "object" || Array.isArray(monitor)) {
+    throw new PaperclipClientError(200, "Paperclip returned no verified Jules monitor");
+  }
+  const record = monitor as Record<string, unknown>;
+  const externalRef = record["externalRef"];
+  // Paperclip intentionally redacts provider handles in issue projections.
+  // The monitor identity is still verified by serviceName + nextCheckAt;
+  // preserve strict rejection for a non-redacted, wrong provider handle.
+  const externalRefIsRedacted = externalRef === "[redacted]";
+  if (record["serviceName"] !== "jules" ||
+      (typeof externalRef === "string" && !externalRefIsRedacted && externalRef !== expectation.sessionId) ||
+      typeof record["nextCheckAt"] !== "string" ||
+      record["nextCheckAt"].trim().length === 0) {
+    throw new PaperclipClientError(200, "Paperclip returned an invalid verified Jules monitor");
+  }
+}
+
+/**
  * Persists Paperclip's native durable continuation for a live Jules session.
  * The monitor scheduler atomically claims the due check and wakes this issue's
  * assignee, so no adapter-private timer or orchestrator poll is required.
@@ -911,7 +1255,8 @@ export async function scheduleJulesSessionMonitor(
   runId?: string,
 ): Promise<void> {
   const issue = await getPaperclipIssue(issueId, authToken, runId);
-  await paperclipRequest(`/api/issues/${encodeURIComponent(issueId)}`, authToken, {
+  if (hasReusableJulesMonitor(issue, sessionId)) return;
+  const response = await paperclipRequest(`/api/issues/${encodeURIComponent(issueId)}`, authToken, {
     method: "PATCH",
     body: JSON.stringify({
       executionPolicy: executionPolicyWithJulesMonitor(issue.executionPolicy, {
@@ -921,6 +1266,8 @@ export async function scheduleJulesSessionMonitor(
       }),
     }),
   }, runId);
+  const updatedIssue = await response.json().catch(() => null) as unknown;
+  assertJulesMonitorScheduled(updatedIssue, { sessionId, nextCheckAt });
 }
 
 /** Remove only the Jules continuation marker and retain any review workflow. */
@@ -1088,6 +1435,16 @@ implementation advice as an issue comment.`;
             assigneeAgentId: reviewerAgentId,
             blockParentUntilDone: false,
             executionPolicy: INTERNAL_REVIEW_EXECUTION_POLICY,
+            // Company-level issue creation has a recent-title duplicate guard.
+            // This fallback is used after the parent reaches Paperclip's child
+            // cap, and every correlated provider activity must get fresh task
+            // context. Reusing an older terminal issue can make an otherwise
+            // correct reviewer answer the previous provider question. The
+            // request body's correlation marker plus paperclipRequest's stable
+            // idempotency key still make retries of this activity converge.
+            // Remove this adapter workaround if Paperclip gains a native
+            // protocol/helper-issue identity independent of title deduplication.
+            allowDuplicate: true,
           }),
           }, runId,
         );

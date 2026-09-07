@@ -2,7 +2,7 @@ import { JulesAdapterSessionV1 } from "./session.js";
 import { PaperclipInteraction } from "./paperclip-client.js";
 import { readContextRecord, readContextString } from "./session-lifecycle.js";
 
-export type ResolvedInteractionType = "plan_approval" | "user_feedback" | "completion_confirmation" | "none";
+export type ResolvedInteractionType = "plan_approval" | "plan_native_review" | "user_feedback" | "completion_confirmation" | "none";
 
 export interface ResolvedInteraction {
   type: ResolvedInteractionType;

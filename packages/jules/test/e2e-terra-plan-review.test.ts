@@ -29,6 +29,9 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
   const mod = await importOriginal<typeof import("../src/server/paperclip-client.js")>();
   return {
     ...mod,
+    // These are offline execute tests. The durable monitor contract is tested
+    // by paperclip-client.test.ts and the heartbeat failure path separately.
+    scheduleJulesSessionMonitor: vi.fn().mockResolvedValue(undefined),
     createJulesPlanApprovalInteraction: vi.fn().mockResolvedValue({
       id: "inter-plan-1",
       planRevision: { documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1 },

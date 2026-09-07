@@ -2,6 +2,7 @@ import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { JULES_PROVIDER_POLL_CADENCE_SECONDS } from "@pilleo/paperclip-adapter-common";
 
 function findGitDir(startDir?: string): string | undefined {
   let cur = startDir ? path.resolve(startDir) : process.cwd();
@@ -79,7 +80,7 @@ export const SettingsSchema = z.object({
   workspacePath: z.string().trim().min(1).optional(),
   planApprovalPolicy: z.enum(["required", "trusted_opt_out"]).optional(),
   prPolicy: z.enum(["auto", "always", "never"]).optional(),
-  pollCadenceSeconds: z.number().optional().transform(v => (v !== undefined && v > 0 ? Math.max(30, Math.min(3600, Math.round(v))) : 300)),
+  pollCadenceSeconds: z.number().optional().transform(v => (v !== undefined && v > 0 ? Math.max(30, Math.min(3600, Math.round(v))) : JULES_PROVIDER_POLL_CADENCE_SECONDS)),
   requestTimeoutSeconds: z.number().optional().transform(v => (v !== undefined && v > 0 ? Math.max(5, Math.min(600, Math.round(v))) : 120)),
   retryBudget: z.number().int().min(0).max(10).optional(),
   sessionDeadlineMinutes: z.number().optional().transform(v => (v !== undefined && v > 0 ? Math.max(15, Math.min(10080, Math.round(v))) : 2880)),
@@ -143,7 +144,7 @@ export interface AdapterConfig {
 export const SAFE_DEFAULTS: Omit<AdapterConfig, "repository" | "source" | "baseBranch" | "requirePlanApproval"> = {
   planApprovalPolicy: "required",
   prPolicy: "auto",
-  pollCadenceSeconds: 300,
+  pollCadenceSeconds: JULES_PROVIDER_POLL_CADENCE_SECONDS,
   requestTimeoutSeconds: 120,
   retryBudget: 3,
   sessionDeadlineMinutes: 2880,
@@ -159,6 +160,35 @@ export function requireJulesApiKey(config: Record<string, unknown>): string {
     throw new Error("JULES_API_KEY did not resolve (secret_ref binding missing or empty in env.JULES_API_KEY)");
   }
   return key.trim();
+}
+
+/**
+ * Resolve the provider endpoint. Production always uses Jules' public API;
+ * the loopback override exists solely for the disposable server E2E harness.
+ */
+export function resolveJulesBaseUrl(
+  config: Record<string, unknown>,
+  environment: Record<string, string | undefined> = process.env,
+): string {
+  const candidate = config["e2eProviderBaseUrl"];
+  if (candidate === undefined || candidate === null || candidate === "") {
+    return "https://jules.googleapis.com/v1alpha";
+  }
+  if (environment["PAPERCLIP_ADAPTER_E2E"] !== "1") {
+    throw new Error("e2eProviderBaseUrl requires PAPERCLIP_ADAPTER_E2E=1");
+  }
+  if (typeof candidate !== "string") throw new Error("e2eProviderBaseUrl must be a URL");
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    throw new Error("e2eProviderBaseUrl must be a loopback URL");
+  }
+  const loopback = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "[::1]";
+  if (!loopback || !["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error("e2eProviderBaseUrl must be a loopback URL");
+  }
+  return candidate.replace(/\/+$/, "");
 }
 
 function sourceRepository(source?: string): string | undefined {

@@ -37,6 +37,10 @@ export async function persistSessionBestEffort(
       session.julesSessionUrl ?? null,
       paperclip?.authToken,
       paperclip?.runId,
+      {
+        ...(session.currentPrUrl ? { prUrl: session.currentPrUrl } : {}),
+        ...(session.currentPrHeadSha ? { headSha: session.currentPrHeadSha } : {}),
+      },
     );
   } catch (error) {
     if (onLog) {

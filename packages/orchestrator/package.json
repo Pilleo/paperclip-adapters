@@ -35,7 +35,7 @@
   },
   "dependencies": {
     "zod": "^3.24.0",
-    "@pilleo/paperclip-adapter-common": "workspace:*"
+    "@pilleo/paperclip-adapter-common": "workspace:^"
   },
   "engines": {
     "node": ">=22"

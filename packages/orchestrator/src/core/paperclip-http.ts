@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { resilientFetch } from "./resilient-fetch.js";
 import { createUpdateIssuePayload, type UpdateIssuePayload } from "./paperclip-orchestrator-client.js";
 import type { IssueStatus } from "./types.js";
-import { executePaperclipCommand, type PaperclipCommandResponse, type WorkerFeedbackEnvelope } from "@pilleo/paperclip-adapter-common";
+import { executePaperclipCommand, type PaperclipCommandResponse } from "@pilleo/paperclip-adapter-common";
 
 export class OrchestratorPaperclipError extends Error {
   constructor(
@@ -24,6 +24,12 @@ export interface PaperclipHttpOptions {
    * In local-trusted mode only, use the implicit board actor for mutations.
    */
   readonly localTrustedBoardWrites?: boolean | undefined;
+}
+
+export interface IssueListOptions {
+  readonly projectId?: string | undefined;
+  readonly includeBlockedBy?: boolean | undefined;
+  readonly parentId?: string | undefined;
 }
 
 function apiBase(apiUrl: string): string {
@@ -142,8 +148,21 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
     async listAgents<T = unknown>(companyId: string): Promise<T> {
       return getJson<T>(`/api/companies/${encodeURIComponent(companyId)}/agents`);
     },
-    async listIssues<T = unknown>(companyId: string): Promise<T> {
-      return getJson<T>(`/api/companies/${encodeURIComponent(companyId)}/issues?limit=1000`);
+    async listIssues<T = unknown>(companyId: string, listOptions: IssueListOptions = {}): Promise<T> {
+      const query = new URLSearchParams({ limit: "1000" });
+      if (listOptions.projectId) query.set("projectId", listOptions.projectId);
+      if (listOptions.includeBlockedBy) query.set("includeBlockedBy", "true");
+      if (listOptions.parentId) query.set("parentId", listOptions.parentId);
+      return getJson<T>(`/api/companies/${encodeURIComponent(companyId)}/issues?${query.toString()}`);
+    },
+    /** Children are authoritative even when Paperclip omitted their projectId. */
+    async listChildren<T = unknown>(companyId: string, parentIssueId: string): Promise<T> {
+      const raw = await getJson<unknown>(`/api/companies/${encodeURIComponent(companyId)}/issues?limit=1000&parentId=${encodeURIComponent(parentIssueId)}`);
+      if (Array.isArray(raw)) return raw as T;
+      if (raw && typeof raw === "object" && Array.isArray((raw as Record<string, unknown>)["children"])) {
+        return (raw as Record<string, unknown>)["children"] as T;
+      }
+      return raw as T;
     },
     /** Fetch the enriched issue representation; list responses omit work products. */
     async getIssue<T = unknown>(issueId: string): Promise<T> {
@@ -221,9 +240,10 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
       options?: {
         resumeFromRunId?: string | undefined;
         idempotencyKey?: string | undefined;
-        workerFeedback?: WorkerFeedbackEnvelope | undefined;
         /** Native review cards need their identity in the runtime task context. */
         reviewInteractionId?: string | undefined;
+        /** Reviewers must not reuse a stale session whose prompt predates the card. */
+        forceFreshSession?: boolean | undefined;
       },
     ) {
       // Paperclip wakeAgentSchema ignores top-level issueId. Heartbeat only
@@ -232,20 +252,21 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
         source: "on_demand",
         triggerDetail: "ping",
         reason,
-        forceFreshSession: false,
-        ...(issueId || options?.resumeFromRunId || options?.workerFeedback
+        // A reviewer session contains the previous task prompt and may be
+        // reused by Paperclip. Review-card wakes are protocol-bound and must
+        // receive a fresh prompt, otherwise the model can act on a cancelled
+        // historical card even though the wake carries a new interaction id.
+        forceFreshSession: options?.forceFreshSession === true || options?.reviewInteractionId !== undefined,
+        ...(issueId || options?.resumeFromRunId
           ? {
               payload: {
                 ...(issueId ? { issueId } : {}),
                 ...(options?.resumeFromRunId ? { resumeFromRunId: options.resumeFromRunId } : {}),
-                ...(options?.workerFeedback ? { workerFeedback: options.workerFeedback } : {}),
                 ...(options?.reviewInteractionId ? { interactionId: options.reviewInteractionId, interactionKind: "request_item_verdicts" } : {}),
               },
             }
           : {}),
-      }, options?.idempotencyKey || (options?.workerFeedback
-        ? `paperclip:wakeup:${agentId}:${options.workerFeedback.deliveryId}`
-        : undefined));
+      }, options?.idempotencyKey);
     },
   };
 }

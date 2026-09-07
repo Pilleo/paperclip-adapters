@@ -1,3 +1,5 @@
+import { StructuredDecisionCapabilitySchema, type DecisionKind } from "@pilleo/paperclip-adapter-common";
+
 export const MANAGED_BY = "paperclip-orchestrator";
 
 export interface FleetAgentRecord {
@@ -42,6 +44,13 @@ export function isJulesAdapterType(adapterType: string): boolean {
   return adapterType === "jules";
 }
 
+function supportsStructuredDecision(agent: FleetAgentRecord, kind: DecisionKind): boolean {
+  const parsed = StructuredDecisionCapabilitySchema.safeParse(
+    agent.metadata?.["structuredDecisionCapability"],
+  );
+  return parsed.success && parsed.data.decisionKinds.includes(kind);
+}
+
 export interface ManagedFleetIds {
   readonly managedIds: ReadonlySet<string>;
   readonly julesAgentId?: string | undefined;
@@ -73,12 +82,16 @@ export function resolveManagedFleet(
 
   const pick = (
     configuredId: string | undefined,
-    predicate: (a: FleetAgentRecord) => boolean
+    predicate: (a: FleetAgentRecord) => boolean,
+    eligible: (a: FleetAgentRecord) => boolean = () => true,
   ): string | undefined => {
-    if (configuredId && managedIds.has(configuredId)) {
+    const configuredAgent = configuredId
+      ? managed.find((agent) => agent.id === configuredId)
+      : undefined;
+    if (configuredAgent && predicate(configuredAgent) && eligible(configuredAgent)) {
       return configuredId;
     }
-    return managed.find(predicate)?.id;
+    return managed.find((agent) => predicate(agent) && eligible(agent))?.id;
   };
 
   const julesAgentId = pick(
@@ -99,7 +112,8 @@ export function resolveManagedFleet(
   );
   const lunaReviewerAgentId = pick(
     configured?.lunaReviewerAgentId,
-    (a) => a.metadata?.["workerKey"] === "luna_reviewer" && a.name === "[Orchestrated] Luna Fast Reviewer",
+    (a) => a.metadata?.["workerKey"] === "luna_reviewer",
+    (a) => supportsStructuredDecision(a, "pull_request_review"),
   );
   const antigravityAgentId = managed.find(
     (a) => a.adapterType === "antigravity" || a.name.toLowerCase().includes("antigravity")
@@ -114,6 +128,7 @@ export function resolveManagedFleet(
   const terraReviewerAgentId = pick(
     configured?.terraReviewerAgentId,
     (a) => (a.metadata?.["workerKey"] === "terra_reviewer" || a.name === "[Orchestrated] Terra Strong Reviewer" || a.name === "[Orchestrated] Code Reviewer") && a.adapterType === "codex_local",
+    (a) => supportsStructuredDecision(a, "pull_request_review"),
   );
   const terraAdjudicatorAgentId = pick(
     configured?.terraAdjudicatorAgentId,

@@ -116,6 +116,11 @@ describe("E2E host-plan scope conformity on Jules PRs", () => {
   });
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks preserves queued one-shot provider responses; reset them
+    // so a terminal scope-drift test cannot leak an old question into the next
+    // lifecycle scenario.
+    vi.mocked(JulesClient.prototype.getSession).mockReset();
+    vi.mocked(JulesClient.prototype.getActivities).mockReset();
     global.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({}) });
     vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({
       id: "session-141",
@@ -140,7 +145,8 @@ describe("E2E host-plan scope conformity on Jules PRs", () => {
     ]);
     vi.mocked(getPullRequestPatch).mockResolvedValue("fun getOrCreate()");
 
-    const result = await execute(ctx());
+    const executionContext = ctx();
+    const result = await execute(executionContext);
     expect(result.exitCode).toBe(0);
     expect(result.clearSession).toBe(false);
     expect(result.resultJson?.scopeConformant).toBe(false);

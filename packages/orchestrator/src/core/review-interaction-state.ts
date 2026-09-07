@@ -34,6 +34,28 @@ export interface NativeReviewInteraction {
 }
 
 /**
+ * A pending native question is an unresolved execution decision, regardless of
+ * which provider or adapter produced it. PR review must not start in parallel:
+ * doing so spends reviewer quota against code that the worker is explicitly
+ * waiting to clarify and creates two competing owners for one issue.
+ */
+export function hasPendingBlockingQuestion(
+  interactions: readonly Pick<NativeReviewInteraction, "kind" | "status">[],
+): boolean {
+  return interactions.some((interaction) =>
+    interaction.kind === "ask_user_questions" && interaction.status === "pending"
+  );
+}
+
+/** Terminal review decisions must converge even while a question is pending. */
+export function shouldDeferPrReviewDispatch(
+  interactions: readonly Pick<NativeReviewInteraction, "kind" | "status">[],
+  isNewReviewDispatch: boolean,
+): boolean {
+  return isNewReviewDispatch && hasPendingBlockingQuestion(interactions);
+}
+
+/**
  * Pending review cards are durable locks, including cards created by an older
  * adapter generation. Once a terminal reject sends the PR back to its worker,
  * every other pending card for that immutable review turn is unsafe: it can

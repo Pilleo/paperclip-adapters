@@ -26,8 +26,6 @@ export interface JulesLifecycleSignals {
   readonly nowMs?: number | undefined;
   readonly planMarkdown?: string | undefined;
   readonly userQuestion?: string | undefined;
-  readonly scopeConformant?: boolean | undefined;
-  readonly scopeSummary?: string | undefined;
 }
 
 export type LifecycleAction =
@@ -38,7 +36,6 @@ export type LifecycleAction =
   | { readonly type: "CREATE_REVIEW_CARD"; readonly prUrl: string }
   | { readonly type: "NUDGE_WATCHDOG"; readonly message: string }
   | { readonly type: "RESET_PAUSED_SESSION" }
-  | { readonly type: "FLAG_SCOPE_DRIFT"; readonly summary: string };
 
 export interface JulesLifecyclePlan {
   readonly phase: JulesTaskPhase;
@@ -140,22 +137,8 @@ export function evaluateJulesLifecycleState(
     };
   }
 
-  // 4. PR exists but drifted from the host plan contract
-  if (signals.prUrl && signals.scopeConformant === false) {
-    return {
-      phase: "CODING",
-      issueTransition: {
-        targetStatus: "in_progress",
-        comment: signals.scopeSummary,
-      },
-      actions: [{ type: "FLAG_SCOPE_DRIFT", summary: signals.scopeSummary || "Scope drift vs declared plan." }],
-      shouldDeleteSession: false,
-      shouldExitRun: true,
-      exitCode: 0,
-    };
-  }
-
-  // 5. PR Open with Green CI -> In Review
+  // 4. PR Open with Green CI -> In Review. Scope conformity is deliberately
+  // absent from lifecycle signals: it is advisory telemetry, never a gate.
   if (signals.prUrl && signals.ciStatus === "success") {
     const existingReviewCard = signals.existingInteractions?.find(
       (i) => i.kind === "request_confirmation" && i.status === "pending"

@@ -19,12 +19,12 @@ describe("activity checkpoint restart recovery", () => {
     const progress = {
       id: "activity-2",
       createTime: "2026-08-08T10:02:00.000Z",
-      userMessaged: { userMessage: "Working through the lifecycle." },
+      agentMessaged: { agentMessage: "Working through the lifecycle." },
     };
     const bashEvidence = {
       id: "activity-1",
       createTime: "2026-08-08T10:01:00.000Z",
-      userMessaged: { userMessage: "all checks passed" },
+      agentMessaged: { agentMessage: "all checks passed" },
     };
     vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({
       name: "sessions/session-1" as any,
@@ -79,8 +79,8 @@ describe("activity checkpoint restart recovery", () => {
       createTime: "2026-08-08T10:02:00.000Z",
       id: "activity-2",
     });
-    expect(JulesClient.prototype.getActivities).toHaveBeenCalledWith("session-1", undefined);
-    expect(JulesClient.prototype.getActivities).toHaveBeenCalledWith("session-1", "page-2");
+    expect(JulesClient.prototype.getActivities).toHaveBeenCalledWith("session-1", undefined, 100);
+    expect(JulesClient.prototype.getActivities).toHaveBeenCalledWith("session-1", "page-2", 100);
 
     const secondAbort = new AbortController();
     setTimeout(() => secondAbort.abort(), 10);

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { evaluateSessionStartup, isInteractionWake, sessionMatchesConfig } from "../src/server/session-lifecycle.js";
+import { evaluateSessionStartup, isInteractionWake, sessionMatchesConfig, shouldReadIssueSessionHandle } from "../src/server/session-lifecycle.js";
 import { asPaperclipId, asJulesSessionId } from "../src/server/brands.js";
 import { JulesAdapterSessionV1 } from "../src/server/session.js";
 
@@ -25,6 +25,15 @@ describe("session-lifecycle", () => {
     failedSessions: [],
     createdAt: new Date().toISOString()
   };
+
+  it.each([
+    { description: "tokenless local trusted recovery", hasSession: false, hasCanonicalSessionId: false, hasStoredRecoverySession: false, expected: true },
+    { description: "decoded session wins", hasSession: true, hasCanonicalSessionId: false, hasStoredRecoverySession: false, expected: false },
+    { description: "canonical session wins", hasSession: false, hasCanonicalSessionId: true, hasStoredRecoverySession: false, expected: false },
+    { description: "local recovery record wins", hasSession: false, hasCanonicalSessionId: false, hasStoredRecoverySession: true, expected: false },
+  ])("issue handle lookup: $description", ({ hasSession, hasCanonicalSessionId, hasStoredRecoverySession, expected }) => {
+    expect(shouldReadIssueSessionHandle({ hasSession, hasCanonicalSessionId, hasStoredRecoverySession })).toBe(expected);
+  });
 
   it("matches session identity on repository, source, and base branch", () => {
     expect(sessionMatchesConfig(sampleSession, config)).toBe(true);
@@ -125,11 +134,20 @@ describe("session-lifecycle", () => {
   });
 
   it("merges newer local idempotency checkpoints into a replayed session envelope", () => {
-    const stored = { ...sampleSession, scopeDriftFingerprint: "pr-1\ndrift-1" };
+    const stored = {
+      ...sampleSession,
+      scopeDriftFingerprint: "pr-1\ndrift-1",
+      providerContinuation: {
+        deliveryId: "native-review:card-1:sha-1",
+        state: "sent_awaiting_provider" as const,
+        sentAt: "2026-09-06T10:00:00.000Z",
+      },
+    };
     const decision = evaluateSessionStartup(
       {}, sampleSession, stored, null, config,
     );
     expect(decision.session?.scopeDriftFingerprint).toBe("pr-1\ndrift-1");
+    expect(decision.session?.providerContinuation).toEqual(stored.providerContinuation);
   });
 
   it("relays interaction when wake is an interaction response", () => {

@@ -36,7 +36,7 @@ describe("orchestrator execute fail-closed auth", () => {
   it("sends Authorization on agent list and fails closed without a token", async () => {
     delete process.env["PAPERCLIP_API_KEY"];
     delete process.env["PAPERCLIP_AGENT_TOKEN"];
-    const result = await execute(ctx());
+    const result = await execute(ctx({ config: { workspacePath: process.cwd(), apiUrl: "https://paperclip.example" } }));
     expect(result.exitCode).toBe(1);
     expect(result.errorMessage || result.summary).toMatch(/token/i);
   });

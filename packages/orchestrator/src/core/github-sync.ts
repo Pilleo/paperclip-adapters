@@ -42,9 +42,28 @@ export function matchPrToIssue(pr: GitHubPullRequest, issue: ParsedIssueMetadata
 export function registeredPullRequestFromIssue(issue: ParsedIssueMetadata): GitHubPullRequest | undefined {
   const rawWorkProducts = issue.rawIssue["workProducts"] ?? issue.rawIssue["work_products"];
   if (!Array.isArray(rawWorkProducts)) return undefined;
-  for (const product of rawWorkProducts) {
-    if (!product || typeof product !== "object") continue;
-    const candidate = product as Record<string, unknown>;
+  const candidates = rawWorkProducts
+    .filter((product): product is Record<string, unknown> => Boolean(product && typeof product === "object"))
+    .map((candidate) => {
+      const metadata = candidate["metadata"];
+      const source = metadata && typeof metadata === "object" && !Array.isArray(metadata)
+        ? (metadata as Record<string, unknown>)["source"]
+        : undefined;
+      const producer = metadata && typeof metadata === "object" && !Array.isArray(metadata)
+        ? (metadata as Record<string, unknown>)["producer"]
+        : undefined;
+      return {
+        candidate,
+        // A Jules session is the authoritative producer for this adapter's
+        // PR handoff. Prefer it over imported/demo placeholders, then use the
+        // board's primary marker as a deterministic tie-breaker.
+        score: (producer === "paperclip-jules-adapter" ? 8 : 0) +
+          (source === "jules" ? 2 : 0) +
+          (candidate["isPrimary"] === true ? 1 : 0),
+      };
+    })
+    .sort((left, right) => right.score - left.score);
+  for (const { candidate } of candidates) {
     const type = candidate["type"] ?? candidate["kind"];
     const url = candidate["url"];
     if ((type !== "pull_request" && type !== "pull-request") || typeof url !== "string") continue;
@@ -139,20 +158,25 @@ export function processRawPullRequests(
   };
 }
 
-export async function fetchGitHubPullRequests(workspacePath: string, limit = 50): Promise<GitHubSyncStatus> {
+export function buildGitHubPullRequestListArgs(repository: string | undefined, limit = 50): string[] {
+  const args = ["pr", "list"];
+  if (repository?.trim()) args.push("--repo", repository.trim());
+  args.push(
+    "--state", "all", "--limit", String(limit),
+    "--json", "number,title,state,headRefName,headRefOid,baseRefName,mergedAt,url,files",
+  );
+  return args;
+}
+
+export async function fetchGitHubPullRequests(
+  workspacePath: string,
+  limit = 50,
+  repository?: string,
+): Promise<GitHubSyncStatus> {
   try {
     const { stdout } = await execFileAsync(
       "gh",
-      [
-        "pr",
-        "list",
-        "--state",
-        "all",
-        "--limit",
-        String(limit),
-        "--json",
-        "number,title,state,headRefName,headRefOid,baseRefName,mergedAt,url,files",
-      ],
+      buildGitHubPullRequestListArgs(repository, limit),
       // Remote verification must not consume an entire heartbeat when gh is
       // unauthenticated or waiting on a broken network connection. Registered
       // Paperclip work products provide the review fallback below.

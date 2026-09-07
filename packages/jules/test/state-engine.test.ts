@@ -127,7 +127,6 @@ describe("Jules Pure State Engine & Disposition Invariants", () => {
           prUrl: "https://github.com/Pilleo/mazewall/pull/1",
           prDetails: { isMerged: true, mergeableStatus: "mergeable" as const },
           ciStatus: "success" as const,
-          scopeConformant: false,
         },
         phase: "COMPLETED_AND_MERGED",
         shouldDeleteSession: true,
@@ -139,22 +138,19 @@ describe("Jules Pure State Engine & Disposition Invariants", () => {
           prUrl: "https://github.com/Pilleo/mazewall/pull/1",
           prDetails: { isMerged: false, mergeableStatus: "conflicting" as const },
           ciStatus: "pending" as const,
-          scopeConformant: true,
         },
         phase: "PR_CREATED_AWAITING_CI",
         shouldDeleteSession: false,
       },
       {
-        desc: "scope drift before in_review",
+        desc: "scope drift does not block review",
         signals: {
           julesState: "COMPLETED",
           prUrl: "https://github.com/Pilleo/mazewall/pull/1",
           prDetails: { isMerged: false, mergeableStatus: "mergeable" as const },
           ciStatus: "success" as const,
-          scopeConformant: false,
-          scopeSummary: "Unplanned file README.md",
         },
-        phase: "CODING",
+        phase: "IN_REVIEW",
         shouldDeleteSession: false,
       },
     ])("lifecycle table: $desc", ({ signals, phase, shouldDeleteSession }) => {
@@ -163,23 +159,19 @@ describe("Jules Pure State Engine & Disposition Invariants", () => {
       expect(plan.shouldDeleteSession).toBe(shouldDeleteSession);
     });
 
-    it("flags scope drift before review and keeps the Jules session", () => {
+    it("does not let scope drift change the ordinary review transition", () => {
       const plan = evaluateJulesLifecycleState(baseSession, {
         julesState: "COMPLETED",
         prUrl: "https://github.com/Pilleo/mazewall/pull/1",
         prDetails: { isMerged: false, mergeableStatus: "mergeable" },
         ciStatus: "success",
-        scopeConformant: false,
-        scopeSummary: "Unplanned file README.md",
         unreadReviewComments: [],
         nowMs: Date.now(),
       });
-      expect(plan.phase).toBe("CODING");
+      expect(plan.phase).toBe("IN_REVIEW");
       expect(plan.shouldDeleteSession).toBe(false);
-      expect(plan.shouldExitRun).toBe(true);
-      expect(plan.actions).toEqual([
-        expect.objectContaining({ type: "FLAG_SCOPE_DRIFT", summary: "Unplanned file README.md" }),
-      ]);
+      expect(plan.shouldExitRun).toBe(false);
+      expect(plan.actions).toEqual([]);
     });
 
     it("does not create a provider nudge when session is idle for >15m in IN_PROGRESS", () => {

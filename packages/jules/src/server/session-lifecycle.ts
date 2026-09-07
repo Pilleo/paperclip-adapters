@@ -63,6 +63,21 @@ export function sessionMatchesConfig(
   );
 }
 
+/**
+ * The issue handle is the last durable recovery source after Paperclip has
+ * discarded sessionParamsJson.  Built-in adapters on local_trusted do not
+ * have an API token, but their loopback Paperclip client is deliberately
+ * allowed to read the handle.  Keep this decision pure so tokenless recovery
+ * cannot regress when the startup code is refactored.
+ */
+export function shouldReadIssueSessionHandle(input: {
+  readonly hasSession: boolean;
+  readonly hasCanonicalSessionId: boolean;
+  readonly hasStoredRecoverySession: boolean;
+}): boolean {
+  return !input.hasSession && !input.hasCanonicalSessionId && !input.hasStoredRecoverySession;
+}
+
 export function evaluateSessionStartup(
   rawContext: Record<string, unknown>,
   decodedSession: JulesAdapterSessionV1 | null,
@@ -120,6 +135,9 @@ export function evaluateSessionStartup(
       deliveredActivityIds: session.deliveredActivityIds ?? storedSession.deliveredActivityIds,
       relayedReviewCommentIds: session.relayedReviewCommentIds ?? storedSession.relayedReviewCommentIds,
       pendingInteraction: session.pendingInteraction ?? storedSession.pendingInteraction,
+      workerFeedbackDeliveryId: session.workerFeedbackDeliveryId ?? storedSession.workerFeedbackDeliveryId,
+      providerContinuation: session.providerContinuation ?? storedSession.providerContinuation,
+      currentPrHeadSha: session.currentPrHeadSha ?? storedSession.currentPrHeadSha,
     };
   }
 

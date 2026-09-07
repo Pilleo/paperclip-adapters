@@ -82,3 +82,8 @@ no active reviewer run, reuse that card with
 `packages/orchestrator/scripts/recover-native-review.mjs`. The expected outcome
 is the same card becoming `answered`. A new card, a normal issue comment, or a
 second concurrent wake is a recovery failure, not progress.
+
+If the reviewer reports `missing_runtime_context`, treat the terminal run as a
+transport failure, not a review decision. The orchestrator reuses the same
+pending card once with its terminal-run idempotency key. Do not reassign the
+issue to Jules or write a prose fallback while that card remains pending.

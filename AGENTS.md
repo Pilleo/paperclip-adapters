@@ -46,8 +46,7 @@ Because this project manages autonomous AI coding agents interacting with produc
 
 ## 🛠️ Agent DevKit (ADK) Universal Tooling & Hard Boundaries
 
-- **Never call \`view_file\` without inspecting AST structure first:** Use \`codanna retrieve describe <Class>\` or the \`file_structure\` skill before reading full files.
-- **Always check blast-radius memory before modifying core symbols:** Run \`./scripts/adkw blast-radius <SymbolName>\` to surface invariants and past regressions across downstream callers.
-- **Deterministic compilation guard:** Run \`./scripts/adkw guard <file>\` to verify syntax and typecheck before committing.
-- **Scaffold new backlog issues cleanly:** Run \`./scripts/adkw new-issue --title "<title>" [options]\`.
-- **Verify backlog integrity:** Run \`./scripts/adkw check-backlog\` before marking work completed.
+- Outline with `./scripts/adkw slice <file-or-class>` (or the file_structure skill) before a full source-file view.
+- Before modifying a core symbol, run `./scripts/adkw doctor` then `./scripts/adkw blast-radius <SymbolName>`.
+- After edits, hooks run `adk hook` (syntax). Delivery uses `./scripts/adkw guard <file> --stage compile|test|delivery`.
+- Scaffold issues with `./scripts/adkw new-issue --title "<title>"` and run `./scripts/adkw check-backlog` before completion.

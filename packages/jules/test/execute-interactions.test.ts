@@ -11,9 +11,15 @@ import {
   resolveJulesAgentAdjudicationInteraction,
   activateInternalReviewIssue,
   createJulesFeedbackInteraction,
+  createJulesHumanEscalationInteraction,
   createJulesQuestionAdjudication,
   createJulesPlanApprovalInteraction,
   getPaperclipInteraction,
+  findJulesQuestionAdjudication,
+  getPaperclipIssue,
+  completeInternalReviewIssue,
+  listIssueComments,
+  listPaperclipInteractions,
   moveIssueToBlocked,
 } from "../src/server/paperclip-client";
 
@@ -38,9 +44,16 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
     resolveJulesAgentAdjudicationInteraction: vi.fn().mockResolvedValue(undefined),
     activateInternalReviewIssue: vi.fn().mockResolvedValue(undefined),
     createJulesFeedbackInteraction: vi.fn(),
+    createJulesHumanEscalationInteraction: vi.fn(),
     createJulesQuestionAdjudication: vi.fn(),
     createJulesPlanApprovalInteraction: vi.fn(),
     getPaperclipInteraction: vi.fn(),
+    listPaperclipInteractions: vi.fn().mockResolvedValue([]),
+    listIssueComments: vi.fn().mockResolvedValue([]),
+    findJulesQuestionAdjudication: vi.fn(),
+    getPaperclipIssue: vi.fn(),
+    normalizeInternalReviewIssue: vi.fn().mockResolvedValue(undefined),
+    completeInternalReviewIssue: vi.fn().mockResolvedValue(undefined),
     moveIssueToBlocked: vi.fn(),
     scheduleJulesSessionMonitor: vi.fn().mockResolvedValue(),
   };
@@ -89,6 +102,10 @@ describe("Jules activity interactions", { timeout: 30000 }, () => {
     vi.clearAllMocks();
     vi.mocked(addJulesActivityComment).mockResolvedValue();
     vi.mocked(moveIssueToBlocked).mockResolvedValue();
+    vi.mocked(createJulesQuestionAdjudication).mockResolvedValue({ id: "child-question-1", status: "todo" } as never);
+    vi.mocked(createJulesQuestionReviewInteraction).mockResolvedValue({ id: "child-form-1", status: "pending" });
+    vi.mocked(getPaperclipInteraction).mockResolvedValue(null);
+    vi.mocked(getPaperclipIssue).mockResolvedValue(null);
   });
 
   it("mirrors a Jules question into a visible parent card and Terra child form", async () => {
@@ -116,6 +133,7 @@ describe("Jules activity interactions", { timeout: 30000 }, () => {
     expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
       type: "agent_adjudication", nativeForm: true, transport: "child_form_bridge", paperclipInteractionId: "visible-question-1", reviewerChildIssueId: "child-question-1", reviewerInteractionId: "child-form-1", julesActivityId: "activity-question",
     });
+    expect(sessionCodec.decode(result.sessionParams!)?.unresolvedProviderQuestionActivityId).toBe("activity-question");
   });
 
   it("sends the Paperclip free-text answer to Jules", async () => {
@@ -158,6 +176,407 @@ describe("Jules activity interactions", { timeout: 30000 }, () => {
     expect(JulesClient.prototype.getSession).not.toHaveBeenCalled();
     expect(createJulesFeedbackInteraction).not.toHaveBeenCalled();
     // pending checkpoint has exitCode 0
+  });
+
+  it("consumes the Terra child form, resolves the parent card, and relays once", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_USER_FEEDBACK" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [] } as never);
+    vi.mocked(getPaperclipInteraction).mockResolvedValue({
+      id: "child-form-1", status: "answered", result: { answers: [
+        { questionId: "resolution", optionIds: ["answer"] },
+        { questionId: "response", otherText: "Run the declared tests and submit the PR." },
+      ] },
+    });
+    const result = await execute({
+      ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({
+        ...session,
+        phase: "WAITING_FOR_FEEDBACK",
+        pendingInteraction: {
+          type: "agent_adjudication", nativeForm: true, transport: "child_form_bridge",
+          julesActivityId: "activity-question", paperclipInteractionId: "parent-form-1",
+          reviewerChildIssueId: "child-1", reviewerInteractionId: "child-form-1",
+          question: "Should I submit?", reviewerAgentId: "terra-1", createdAt: "2026-08-08T00:00:00.000Z",
+        },
+      }) },
+    } as AdapterExecutionContext);
+
+    expect(resolveJulesAgentAdjudicationInteraction).toHaveBeenCalledWith(
+      "issue-1", "parent-form-1", "answer", "Run the declared tests and submit the PR.", "jwt-token", "run-1",
+    );
+    expect(completeInternalReviewIssue).toHaveBeenCalledWith("child-1", "jwt-token", "run-1");
+    expect(JulesClient.prototype.sendMessage).toHaveBeenCalledTimes(1);
+    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction?.type).not.toBe("agent_adjudication");
+  });
+
+  it("opens a human-only escalation form when the strong reviewer cannot answer", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_USER_FEEDBACK" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [] } as never);
+    vi.mocked(getPaperclipInteraction).mockResolvedValue({
+      id: "child-form-1", status: "answered", result: { answers: [
+        { questionId: "resolution", optionIds: ["escalate"] },
+        { questionId: "response", otherText: "The repository does not identify the correct monitor API." },
+      ] },
+    });
+    vi.mocked(createJulesHumanEscalationInteraction).mockResolvedValue({ id: "human-form-1", status: "pending" });
+
+    const result = await execute({
+      ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({
+        ...session,
+        julesState: "COMPLETED",
+        currentPrUrl: "https://github.com/example/repository/pull/1",
+        phase: "WAITING_FOR_FEEDBACK",
+        pendingInteraction: {
+          type: "agent_adjudication", nativeForm: true, transport: "child_form_bridge",
+          julesActivityId: "activity-question", paperclipInteractionId: "parent-form-1",
+          reviewerChildIssueId: "child-1", reviewerInteractionId: "child-form-1",
+          question: "Which monitor API should I use?", reviewerAgentId: "terra-1", createdAt: "2026-08-08T00:00:00.000Z",
+        },
+      }) },
+    } as AdapterExecutionContext);
+
+    expect(createJulesHumanEscalationInteraction).toHaveBeenCalledWith(
+      "issue-1", "session-1", "activity-question", "Which monitor API should I use?",
+      "The repository does not identify the correct monitor API.", "jwt-token", "run-1",
+    );
+    expect(createJulesFeedbackInteraction).not.toHaveBeenCalled();
+    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
+      type: "user_feedback", paperclipInteractionId: "human-form-1", question: "Which monitor API should I use?",
+    });
+  });
+
+  it("replaces a terminal child that completed before its typed form existed", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_USER_FEEDBACK" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [] } as never);
+    vi.mocked(getPaperclipIssue).mockResolvedValue({
+      id: "old-child", status: "done", assigneeAgentId: "terra-1",
+    } as never);
+    vi.mocked(getPaperclipInteraction).mockResolvedValue(null);
+    vi.mocked(createJulesQuestionAdjudication).mockResolvedValue({ id: "fresh-child", status: "blocked" } as never);
+    vi.mocked(createJulesQuestionReviewInteraction).mockResolvedValue({ id: "fresh-form", status: "pending" });
+
+    const result = await execute({
+      ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({
+        ...session,
+        // Mirror a checkpoint written after the provider had already exposed
+        // its PR. A historical question activity must not win over this
+        // terminal provider state during the next monitor heartbeat.
+        julesState: "COMPLETED",
+        currentPrUrl: "https://github.com/example/repository/pull/1",
+        phase: "WAITING_FOR_FEEDBACK",
+        pendingInteraction: {
+          type: "agent_adjudication", nativeForm: true, transport: "child_form_bridge",
+          julesActivityId: "activity-question", paperclipInteractionId: "parent-form-1",
+          reviewerChildIssueId: "old-child", reviewerInteractionId: "old-form",
+          question: "Should I proceed?", reviewerAgentId: "terra-1", adjudicationGeneration: 1,
+          createdAt: "2026-08-08T00:00:00.000Z",
+        },
+      }) },
+    } as AdapterExecutionContext);
+
+    expect(createJulesQuestionAdjudication).toHaveBeenCalledWith(
+      "issue-1", "terra-1", "Should I proceed?", "jwt-token", "run-1", "company-1",
+      "activity-question", "session-1", 2, true,
+    );
+    expect(activateInternalReviewIssue).toHaveBeenCalledWith("fresh-child", "terra-1", "jwt-token", "run-1");
+    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
+      reviewerChildIssueId: "fresh-child", reviewerInteractionId: "fresh-form", adjudicationGeneration: 2,
+    });
+    expect(JulesClient.prototype.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("repairs one legacy expired bridge after the old generic recovery budget was exhausted", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_USER_FEEDBACK" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [] } as never);
+    vi.mocked(getPaperclipIssue).mockResolvedValue({
+      id: "old-child", status: "done", assigneeAgentId: "terra-1",
+    } as never);
+    vi.mocked(getPaperclipInteraction).mockResolvedValue({
+      id: "old-form", status: "expired", result: { outcome: "issue_closed" },
+    } as never);
+    vi.mocked(createJulesQuestionAdjudication).mockResolvedValue({ id: "repaired-child", status: "backlog" } as never);
+    vi.mocked(createJulesQuestionReviewInteraction).mockResolvedValue({ id: "repaired-form", status: "pending" });
+
+    const result = await execute({
+      ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({
+        ...session,
+        phase: "WAITING_FOR_FEEDBACK",
+        adjudicationRecoveryCount: 2,
+        pendingInteraction: {
+          type: "agent_adjudication", nativeForm: true, transport: "child_form_bridge",
+          julesActivityId: "activity-question", paperclipInteractionId: "parent-form-1",
+          reviewerChildIssueId: "old-child", reviewerInteractionId: "old-form",
+          question: "Which resolver should I use?", reviewerAgentId: "terra-1", adjudicationGeneration: 2,
+          createdAt: "2026-08-08T00:00:00.000Z",
+        },
+      }) },
+    } as AdapterExecutionContext);
+
+    expect(createJulesQuestionAdjudication).toHaveBeenCalledWith(
+      "issue-1", "terra-1", "Which resolver should I use?", "jwt-token", "run-1", "company-1",
+      "activity-question", "session-1", 3, true,
+    );
+    expect(sessionCodec.decode(result.sessionParams!)?.adjudicationBridgeRepairAttempt).toBe(1);
+  });
+
+  it("does not repeatedly requeue the same expired-bridge migration", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_USER_FEEDBACK" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [] } as never);
+    vi.mocked(getPaperclipIssue).mockResolvedValue({ id: "old-child", status: "done" } as never);
+    vi.mocked(getPaperclipInteraction).mockResolvedValue({
+      id: "old-form", status: "expired", result: { outcome: "issue_closed" },
+    } as never);
+
+    await execute({
+      ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({
+        ...session,
+        phase: "WAITING_FOR_FEEDBACK",
+        adjudicationRecoveryCount: 2,
+        adjudicationBridgeRepairAttempt: 1,
+        pendingInteraction: {
+          type: "agent_adjudication", nativeForm: true, transport: "child_form_bridge",
+          julesActivityId: "activity-question", paperclipInteractionId: "parent-form-1",
+          reviewerChildIssueId: "old-child", reviewerInteractionId: "old-form",
+          question: "Which resolver should I use?", reviewerAgentId: "terra-1", adjudicationGeneration: 3,
+          createdAt: "2026-08-08T00:00:00.000Z",
+        },
+      }) },
+    } as AdapterExecutionContext);
+
+    expect(createJulesQuestionAdjudication).not.toHaveBeenCalled();
+  });
+
+  it("replaces a missing child-form bridge instead of yielding forever", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_USER_FEEDBACK" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [] } as never);
+    vi.mocked(getPaperclipIssue).mockResolvedValue(null);
+    vi.mocked(getPaperclipInteraction).mockResolvedValue(null);
+    vi.mocked(createJulesQuestionAdjudication).mockResolvedValue({ id: "replacement-child", status: "blocked" } as never);
+    vi.mocked(createJulesQuestionReviewInteraction).mockResolvedValue({ id: "replacement-form", status: "pending" });
+
+    const result = await execute({
+      ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({
+        ...session,
+        phase: "WAITING_FOR_FEEDBACK",
+        pendingInteraction: {
+          type: "agent_adjudication", nativeForm: true, transport: "child_form_bridge",
+          julesActivityId: "activity-question", paperclipInteractionId: "parent-form-1",
+          reviewerChildIssueId: "missing-child", reviewerInteractionId: "missing-form",
+          question: "Which monitor API clears terminal state?", reviewerAgentId: "terra-1",
+          createdAt: "2026-08-08T00:00:00.000Z",
+        },
+      }) },
+    } as AdapterExecutionContext);
+
+    expect(createJulesQuestionAdjudication).toHaveBeenCalledWith(
+      "issue-1", "terra-1", "Which monitor API clears terminal state?", "jwt-token", "run-1", "company-1",
+      "activity-question", "session-1", 1, true,
+    );
+    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
+      reviewerChildIssueId: "replacement-child", reviewerInteractionId: "replacement-form", adjudicationGeneration: 1,
+    });
+  });
+
+  it("recreates the missing parent card before replacing a terminal native child bridge", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_USER_FEEDBACK" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{
+      id: "activity-question", createTime: "2026-08-08T00:00:00.000Z",
+      agentMessaged: { agentMessage: "Which literal package artifact should the test import?" },
+    }] } as never);
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([]);
+    vi.mocked(getPaperclipIssue).mockResolvedValue({ id: "old-child", status: "done" } as never);
+    vi.mocked(getPaperclipInteraction).mockResolvedValue(null);
+    vi.mocked(createJulesAgentAdjudicationInteraction).mockResolvedValue({ id: "visible-question-repaired", status: "pending" });
+    vi.mocked(createJulesQuestionAdjudication).mockResolvedValue({ id: "replacement-child", status: "blocked" } as never);
+    vi.mocked(createJulesQuestionReviewInteraction).mockResolvedValue({ id: "replacement-form", status: "pending" });
+
+    const result = await execute({
+      ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({
+        ...session,
+        phase: "WAITING_FOR_FEEDBACK",
+        adjudicationRecoveryCount: 2,
+        pendingInteraction: {
+          type: "agent_adjudication", nativeForm: true, transport: "child_form_bridge",
+          julesActivityId: "activity-question", paperclipInteractionId: "missing-parent-form",
+          reviewerChildIssueId: "old-child", reviewerInteractionId: "missing-child-form",
+          question: "Which literal package artifact should the test import?", reviewerAgentId: "terra-1",
+          createdAt: "2026-08-08T00:00:00.000Z",
+        },
+      }) },
+    } as AdapterExecutionContext);
+
+    expect(createJulesAgentAdjudicationInteraction).toHaveBeenCalledWith(
+      "issue-1", "session-1", "activity-question", "Which literal package artifact should the test import?",
+      "terra-1", "jwt-token", "run-1",
+    );
+    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
+      paperclipInteractionId: "visible-question-repaired",
+      reviewerChildIssueId: "replacement-child",
+      reviewerInteractionId: "replacement-form",
+    });
+    expect(sessionCodec.decode(result.sessionParams!)?.missingParentBridgeRepairAttempt).toBe(1);
+  });
+
+  it("does not recreate a missing parent bridge after its one-time migration repair", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_USER_FEEDBACK" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{
+      id: "activity-question", createTime: "2026-08-08T00:00:00.000Z",
+      agentMessaged: { agentMessage: "Which literal package artifact should the test import?" },
+    }] } as never);
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([]);
+    vi.mocked(getPaperclipIssue).mockResolvedValue({ id: "old-child", status: "done" } as never);
+    vi.mocked(getPaperclipInteraction).mockResolvedValue(null);
+
+    const result = await execute({
+      ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({
+        ...session,
+        phase: "WAITING_FOR_FEEDBACK",
+        adjudicationRecoveryCount: 2,
+        missingParentBridgeRepairAttempt: 1,
+        pendingInteraction: {
+          type: "agent_adjudication", nativeForm: true, transport: "child_form_bridge",
+          julesActivityId: "activity-question", paperclipInteractionId: "missing-parent-form",
+          reviewerChildIssueId: "old-child", reviewerInteractionId: "missing-child-form",
+          question: "Which literal package artifact should the test import?", reviewerAgentId: "terra-1",
+          createdAt: "2026-08-08T00:00:00.000Z",
+        },
+      }) },
+    } as AdapterExecutionContext);
+
+    expect(createJulesAgentAdjudicationInteraction).not.toHaveBeenCalled();
+    expect(createJulesQuestionAdjudication).not.toHaveBeenCalled();
+    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
+      paperclipInteractionId: "missing-parent-form",
+      reviewerChildIssueId: "old-child",
+    });
+  });
+
+  it("supersedes a persisted question bridge when the provider completes with a PR", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({
+      state: "COMPLETED",
+      rawOutputs: [{ pullRequest: { url: "https://github.com/example/repository/pull/1" } }],
+    } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [
+      { id: "activity-question", createTime: "2026-08-08T00:00:00.000Z", agentMessaged: { agentMessage: "Which monitor API clears terminal state?" } },
+      { id: "activity-completed", createTime: "2026-08-08T00:01:00.000Z", sessionCompleted: {} },
+    ] } as never);
+    vi.mocked(getPaperclipIssue).mockResolvedValue(null);
+    vi.mocked(getPaperclipInteraction).mockResolvedValue(null);
+    vi.mocked(createJulesQuestionAdjudication).mockResolvedValue({ id: "replacement-child", status: "blocked" } as never);
+    vi.mocked(createJulesQuestionReviewInteraction).mockResolvedValue({ id: "replacement-form", status: "pending" });
+
+    const result = await execute({
+      ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({
+        ...session,
+        phase: "WAITING_FOR_FEEDBACK",
+        pendingInteraction: {
+          type: "agent_adjudication", nativeForm: true, transport: "child_form_bridge",
+          julesActivityId: "activity-question", paperclipInteractionId: "parent-form-1",
+          reviewerChildIssueId: "missing-child", reviewerInteractionId: "missing-form",
+          question: "Which monitor API clears terminal state?", reviewerAgentId: "terra-1",
+          createdAt: "2026-08-08T00:00:00.000Z",
+        },
+      }) },
+    } as AdapterExecutionContext);
+
+    expect(createJulesQuestionAdjudication).not.toHaveBeenCalled();
+    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toBeUndefined();
+  });
+
+  it("recovers a lost native-form pointer and relays its structured answer once", async () => {
+    vi.mocked(createJulesQuestionAdjudication).mockResolvedValue({ id: "child-question-1", status: "todo" } as never);
+    vi.mocked(createJulesQuestionReviewInteraction).mockResolvedValue({ id: "child-form-1", status: "pending" });
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_USER_FEEDBACK" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({
+      activities: [{
+        id: "activity-question-recovered",
+        createTime: "2026-08-08T00:00:00.000Z",
+        agentMessaged: { agentMessage: "The recovery canary differs from the requested test. Should I rewrite it?" },
+      }],
+    } as never);
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([{
+      id: "visible-question-recovered",
+      kind: "ask_user_questions",
+      status: "pending",
+      idempotencyKey: "jules:agent-adjudication:issue-1:session-1:activity-question-recovered",
+    }]);
+    const first = await execute(baseContext);
+    expect(sessionCodec.decode(first.sessionParams!)?.pendingInteraction).toMatchObject({
+      transport: "child_form_bridge", reviewerChildIssueId: "child-question-1", reviewerInteractionId: "child-form-1",
+    });
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([]);
+    vi.mocked(getPaperclipInteraction).mockResolvedValue({
+      id: "visible-question-recovered", status: "answered", result: { answers: [
+        { questionId: "resolution", optionIds: ["answer"] },
+        { questionId: "response", otherText: "Reapply the requested server-observed assertion, then run the declared tests." },
+      ] },
+    });
+    const result = await execute({ ...baseContext, runtime: { ...baseContext.runtime, sessionParams: first.sessionParams } });
+
+    expect(findJulesQuestionAdjudication).not.toHaveBeenCalled();
+    expect(listIssueComments).not.toHaveBeenCalled();
+    expect(completeInternalReviewIssue).toHaveBeenCalledWith("child-question-1", "jwt-token", "run-1");
+    expect(JulesClient.prototype.sendMessage).toHaveBeenCalledTimes(1);
+    expect(JulesClient.prototype.sendMessage).toHaveBeenCalledWith("session-1", {
+      prompt: "Reapply the requested server-observed assertion, then run the declared tests.",
+    });
+    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction?.type).not.toBe("agent_adjudication");
+  });
+
+  it("creates one fresh adjudication generation for a done child with prose", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_USER_FEEDBACK" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({
+      activities: [{
+        id: "activity-question-invalid-terminal",
+        createTime: "2026-08-08T00:00:00.000Z",
+        agentMessaged: { agentMessage: "Should I proceed?" },
+      }],
+    } as never);
+    vi.mocked(getPaperclipIssue).mockResolvedValue({
+      id: "adjudication-invalid", status: "done", assigneeAgentId: "00000000-0000-4000-8000-000000000123",
+    } as never);
+    vi.mocked(listIssueComments).mockResolvedValue([{
+      id: "prose-review", body: "I reviewed the task and it looks fine.", authorAgentId: "00000000-0000-4000-8000-000000000123",
+    }]);
+    vi.mocked(createJulesQuestionAdjudication).mockResolvedValue({ id: "adjudication-replacement", status: "todo" } as never);
+
+    const result = await execute({
+      ...baseContext,
+      runtime: {
+        ...baseContext.runtime,
+        sessionParams: sessionCodec.encode({
+          ...session,
+          pendingInteraction: {
+            type: "agent_adjudication",
+            julesActivityId: "activity-question-invalid-terminal",
+            paperclipInteractionId: "visible-question-invalid",
+            question: "Should I proceed?",
+            adjudicationIssueId: "adjudication-invalid",
+            reviewerAgentId: "00000000-0000-4000-8000-000000000123",
+            createdAt: "2026-08-08T00:00:00.000Z",
+          },
+        }),
+      },
+    } as AdapterExecutionContext);
+
+    expect(answerJulesAgentAdjudicationInteraction).not.toHaveBeenCalled();
+    expect(JulesClient.prototype.sendMessage).not.toHaveBeenCalled();
+    expect(createJulesQuestionAdjudication).toHaveBeenCalledWith(
+      "issue-1", "00000000-0000-4000-8000-000000000123", "Should I proceed?",
+      "jwt-token", "run-1", "company-1", "activity-question-invalid-terminal", "session-1", 1,
+    );
+    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
+      type: "agent_adjudication", adjudicationIssueId: "adjudication-replacement", adjudicationGeneration: 1,
+    });
+    expect(sessionCodec.decode(result.sessionParams!)?.adjudicationRecoveryCount).toBe(1);
   });
 
   it("reopens the reply card instead of sending an empty answer to Jules", async () => {

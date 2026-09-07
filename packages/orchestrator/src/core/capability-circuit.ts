@@ -94,6 +94,21 @@ export class CapabilityCircuit {
   }
 }
 
+/**
+ * Fleet authorization is stable during one Paperclip process lifetime, but a
+ * restart is the supported signal that credentials/grants may have changed.
+ * Include the process generation so old on-disk denials cannot suppress the
+ * mandatory post-restart probe forever.
+ */
+export function fleetCapabilityCircuitKey(
+  companyId: string,
+  operation: "create" | "configure",
+  workerKey: string,
+  processGeneration: number = process.pid,
+): string {
+  return `fleet:${processGeneration}:${companyId}:${operation}:${workerKey}`;
+}
+
 export const capabilityCircuit = new CapabilityCircuit(
   process.env["PAPERCLIP_ADAPTER_STATE_DIR"] || "/tmp/paperclip-adapters-capability-circuit",
 );

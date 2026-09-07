@@ -6,9 +6,13 @@
  * state; it never reads or classifies Jules prose.
  */
 import { liveSessionId, type HeartbeatRunSummary } from "./session-continuation.js";
+import { JULES_PROVIDER_POLL_CADENCE_MS } from "@pilleo/paperclip-adapter-common";
 
 export const JULES_SUPERVISOR_MARKER = "jules-session-supervisor";
-export const JULES_SUPERVISOR_CADENCE_MS = 300_000;
+// The supervisor is only a compatibility continuation path. It must never
+// poll more often than the native Jules monitor, or it defeats the provider
+// pacing contract by sending an additional wake between monitor checks.
+export const JULES_SUPERVISOR_CADENCE_MS = JULES_PROVIDER_POLL_CADENCE_MS;
 
 export interface JulesSupervisorIssue {
   readonly id: string;

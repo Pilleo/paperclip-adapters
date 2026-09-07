@@ -167,6 +167,31 @@ export function extractIssueMetadata(issue: {
     }
   }
 
+  // Paperclip's first-class blocker edge is authoritative scheduling state.
+  // Backlog Markdown may be imported before an upstream issue has an MAZ
+  // identifier, so a textual dependency alone cannot safely represent the
+  // relationship. Normalize the server IDs into the same dependency set used
+  // by the pure dispatcher: an approved start gate authorizes future work but
+  // never bypasses an unresolved persisted blocker.
+  const rawBlockedBy = issue["blockedBy"];
+  if (Array.isArray(rawBlockedBy)) {
+    for (const blocker of rawBlockedBy) {
+      if (typeof blocker === "string" && blocker.trim()) {
+        dependencies.push(blocker.trim());
+        continue;
+      }
+      if (!blocker || typeof blocker !== "object" || Array.isArray(blocker)) continue;
+      const blockerId = (blocker as Record<string, unknown>)["id"];
+      if (typeof blockerId === "string" && blockerId.trim()) dependencies.push(blockerId.trim());
+    }
+  }
+  const rawBlockedByIds = issue["blockedByIssueIds"];
+  if (Array.isArray(rawBlockedByIds)) {
+    for (const blockerId of rawBlockedByIds) {
+      if (typeof blockerId === "string" && blockerId.trim()) dependencies.push(blockerId.trim());
+    }
+  }
+
   const { priority, rank } = parsePriorityRank(priorityStr);
   const idOrIdent = (identifier || id).toLowerCase();
   const isNonInterfering =

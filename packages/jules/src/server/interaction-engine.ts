@@ -6,6 +6,22 @@
 import { JulesAdapterSessionV1, SessionPhase } from "./session.js";
 import { PaperclipInteraction } from "./paperclip-client.js";
 import { formatCardSummary, SafeCardPrompt, SafeCardSummary } from "./card-prompt.js";
+import { parsePlanReviewVerdictResult } from "./plan-review-protocol.js";
+import { createHash } from "node:crypto";
+
+export type PlanStepFingerprintInput = {
+  readonly index?: number | undefined;
+  readonly title?: string | undefined;
+  readonly description?: string | undefined;
+};
+
+/** Fingerprints only typed plan steps; generated prose and review comments are excluded. */
+export function fingerprintPlanSteps(steps: readonly PlanStepFingerprintInput[]): string {
+  const canonical = [...steps]
+    .map((step) => ({ index: step.index ?? null, title: step.title?.trim() ?? "", description: step.description?.trim() ?? "" }))
+    .sort((left, right) => (left.index ?? Number.MAX_SAFE_INTEGER) - (right.index ?? Number.MAX_SAFE_INTEGER));
+  return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+}
 
 export type InteractionAction =
   | { type: "RELAY_FEEDBACK"; answer: string; interactionId: string }
@@ -18,6 +34,26 @@ export type InteractionAction =
   | { type: "RESOLVE_COMPLETION_WITH_PR"; prUrl: string }
   | { type: "CONFIRM_NO_PR_COMPLETION"; sessionId: string }
   | { type: "RESET_PAUSED_SESSION"; sessionId: string; reason: string };
+
+export type PlanReviewVerdict =
+  | { readonly decision: "approve" }
+  | { readonly decision: "reject"; readonly reason: string };
+
+/** Reads only Paperclip's typed verdict result; comments are not input. */
+export function extractPlanReviewVerdict(interaction: PaperclipInteraction | undefined): PlanReviewVerdict | null {
+  if (!interaction) return null;
+  if (interaction.kind === "request_item_verdicts" && interaction.status === "answered") {
+    const verdict = parsePlanReviewVerdictResult(interaction.result);
+    if (!verdict) return null;
+    return verdict.kind === "approve" ? { decision: "approve" } : { decision: "reject", reason: verdict.reason! };
+  }
+  if (interaction.kind !== "request_confirmation" ||
+      (interaction.status !== "accepted" && interaction.status !== "rejected")) return null;
+  const result = interaction.result;
+  if (interaction.status === "accepted") return { decision: "approve" };
+  const reason = result && typeof result === "object" ? (result as { reason?: unknown }).reason : undefined;
+  return typeof reason === "string" && reason.trim() ? { decision: "reject", reason: reason.trim() } : null;
+}
 
 /**
  * Extracts a human feedback answer from an answered Paperclip interaction payload.
@@ -224,13 +260,38 @@ export function recordFeedbackRelayed(
  */
 export function recordPlanApprovalRelayed(
   session: JulesAdapterSessionV1,
+  planActivityId?: string,
 ): JulesAdapterSessionV1 {
   return {
     ...session,
     planApprovedAt: new Date().toISOString(),
+    ...(planActivityId ? { planApprovedActivityId: planActivityId } : {}),
     pendingInteraction: undefined,
     phase: "RUNNING",
   };
+}
+
+/**
+ * A plan gate is a property of one provider plan activity, not of the whole
+ * Jules session. The activity identity makes polling/restarts idempotent while
+ * still reopening the gate for a genuinely regenerated plan. Sessions written
+ * before this field existed retain the old approved-session behavior.
+ */
+export function isPlanApprovalRequired(input: {
+  requirePlanApproval: boolean;
+  planActivityId?: string | undefined;
+  planApprovedAt?: string | undefined;
+  planApprovedActivityId?: string | undefined;
+  supersededPlanActivityId?: string | undefined;
+  planFingerprint?: string | undefined;
+  supersededPlanFingerprint?: string | undefined;
+}): boolean {
+  if (!input.requirePlanApproval || !input.planActivityId) return false;
+  if (input.supersededPlanActivityId === input.planActivityId) return false;
+  if (input.planFingerprint && input.supersededPlanFingerprint === input.planFingerprint) return false;
+  if (!input.planApprovedAt) return true;
+  if (!input.planApprovedActivityId) return false;
+  return input.planApprovedActivityId !== input.planActivityId;
 }
 
 export interface PaperclipIssueStatePolicy {

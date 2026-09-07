@@ -14,10 +14,33 @@ import {
   selectReviewCardsToWithdrawAfterRejection,
   canPromoteOpenPrToReview,
   hasNativeRejectionForHead,
+  hasPendingBlockingQuestion,
+  shouldDeferPrReviewDispatch,
 } from "../src/core/review-interaction-state.js";
 import { isAuthoritativeJulesMonitor } from "../src/core/jules-monitor-state.js";
 
 describe("native PR review interaction state", () => {
+  it.each([
+    ["pending provider question", { id: "q1", kind: "ask_user_questions", status: "pending" }, true],
+    ["answered provider question", { id: "q1", kind: "ask_user_questions", status: "answered" }, false],
+    ["pending PR verdict", { id: "r1", kind: "request_item_verdicts", status: "pending" }, false],
+    ["unknown pending interaction", { id: "x1", kind: "confirmation", status: "pending" }, false],
+  ])("classifies %s before PR review dispatch", (_name, interaction, expected) => {
+    expect(hasPendingBlockingQuestion([interaction])).toBe(expected);
+  });
+
+  it.each([
+    [true, true, true],
+    [true, false, false],
+    [false, true, false],
+    [false, false, false],
+  ])("defers only new dispatch (question=%s, dispatch=%s)", (hasQuestion, isDispatch, expected) => {
+    const interactions = hasQuestion
+      ? [{ id: "q1", kind: "ask_user_questions", status: "pending" }]
+      : [];
+    expect(shouldDeferPrReviewDispatch(interactions, isDispatch)).toBe(expected);
+  });
+
   it("recognizes canonical retry keys while rejecting legacy review stages", () => {
     expect(isCanonicalReviewCardKey("pr-review:v13:issue-1:pr:sha:luna:attempt:21")).toBe(true);
     expect(isCanonicalReviewCardKey("pr-review:v13:issue-1:pr:sha:terra")).toBe(true);

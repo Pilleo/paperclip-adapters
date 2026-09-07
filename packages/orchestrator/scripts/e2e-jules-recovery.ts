@@ -252,9 +252,65 @@ async function main(): Promise<void> {
       const child = requireObject(await request(`/api/issues/${childId}`, "GET"), "stale child");
       if (child.status !== "done") throw new Error(`Stale child ${childId} was not closed`);
     }
-    const childrenBefore = await request(`/api/companies/${companyId}/issues?parentId=${encodeURIComponent(issueId)}`, "GET");
-    const interactionsBefore = await request(`/api/issues/${issueId}/interactions`, "GET");
-    const issueBefore = await request(`/api/issues/${issueId}`, "GET");
+
+    // Reproduce the host projection observed after a hot restart: the PR card
+    // survived, but Paperclip put its source back in backlog and left an old
+    // Jules plan card alongside it. The recovery must retain the exact PR
+    // card, withdraw only the stale plan card, and restore the native review
+    // projection. No model credentials are involved in this assertion.
+    const stalePlan = requireObject(await request(`/api/issues/${issueId}/interactions`, "POST", {
+      kind: "request_item_verdicts",
+      idempotencyKey: `jules:plan-review:v2:${issueId}:canary-session:revision-1:luna`,
+      title: "Stale Jules plan review",
+      summary: "Disposable stale plan card for native review recovery.",
+      addresseeAgentId: luna.id,
+      continuationPolicy: "wake_assignee",
+      resolverPolicy: "anyone",
+      payload: {
+        version: 1,
+        prompt: "Disposable stale plan card.",
+        detailsMarkdown: "This card must be withdrawn by the recovery canary.",
+        items: [{ id: "plan", label: "Plan", description: "Stale plan" }],
+        verdicts: ["approve", "reject"],
+        requireReasonOn: ["reject"],
+        reasonLabel: "What must change?",
+        allowBulkApprove: true,
+        supersedeOnUserComment: false,
+      },
+    }), "stale Jules plan card");
+    await request(`/api/issues/${issueId}`, "PATCH", { status: "backlog", assigneeAgentId: jules.id });
+    const recoveryWake = requireObject(await request(`/api/agents/${orch.id}/wakeup`, "POST", {
+      source: "on_demand",
+      reason: "e2e_jules_recovery_canary_restart_projection",
+      idempotencyKey: `e2e-jules-recovery:${issueId}:orchestrator:restart-projection`,
+      payload: {},
+    }), "recovery orchestrator wake");
+    const recoveryRunId = String(recoveryWake.id || "");
+    if (!recoveryRunId) throw new Error(`Paperclip recovery wake did not return a heartbeat run: ${JSON.stringify(recoveryWake)}`);
+    await waitForIssueExecution(issueId, recoveryRunId, "Recovery orchestrator");
+    const repeated = requireObject(await request(`/api/issues/${issueId}`, "GET"), "repeated issue");
+    const childrenAfter = await request(`/api/companies/${companyId}/issues?parentId=${encodeURIComponent(issueId)}`, "GET");
+    const interactionsAfter = await request(`/api/issues/${issueId}/interactions`, "GET");
+    const issueAfter = await request(`/api/issues/${issueId}`, "GET");
+    const recoveredPrCards = pendingReviewCards(interactionsAfter);
+    const recoveredLunaCard = recoveredPrCards.find((card) => String(card.id) === String(lunaCard.id));
+    const stalePlanAfter = (Array.isArray(interactionsAfter) ? interactionsAfter : []).find((card) =>
+      card && typeof card === "object" && String((card as Record<string, unknown>).id) === String(stalePlan.id),
+    ) as Record<string, unknown> | undefined;
+    if (repeated.status !== "in_review" ||
+        (repeated.assigneeAgentId !== null && repeated.assigneeAgentId !== luna.id) ||
+        recoveredPrCards.length !== 1 || !recoveredLunaCard || stalePlanAfter?.status !== "cancelled") {
+      throw new Error(`Canary did not recover the typed PR review authority: ${JSON.stringify({
+        status: repeated.status,
+        assigneeAgentId: repeated.assigneeAgentId,
+        expectedPrCardId: lunaCard.id,
+        pendingCards: recoveredPrCards,
+        stalePlan: stalePlanAfter ?? null,
+      })}`);
+    }
+    const childrenBefore = childrenAfter;
+    const interactionsBefore = interactionsAfter;
+    const issueBefore = issueAfter;
     const repeatWake = requireObject(await request(`/api/agents/${orch.id}/wakeup`, "POST", {
       source: "on_demand",
       reason: "e2e_jules_recovery_canary_repeat",
@@ -264,37 +320,36 @@ async function main(): Promise<void> {
     const repeatRunId = String(repeatWake.id || "");
     if (!repeatRunId) throw new Error(`Paperclip repeat wake did not return a heartbeat run: ${JSON.stringify(repeatWake)}`);
     await waitForIssueExecution(issueId, repeatRunId, "Repeat orchestrator");
-    const repeated = requireObject(await request(`/api/issues/${issueId}`, "GET"), "repeated issue");
-    const childrenAfter = await request(`/api/companies/${companyId}/issues?parentId=${encodeURIComponent(issueId)}`, "GET");
-    const interactionsAfter = await request(`/api/issues/${issueId}/interactions`, "GET");
-    const issueAfter = await request(`/api/issues/${issueId}`, "GET");
+    const idempotentIssue = requireObject(await request(`/api/issues/${issueId}`, "GET"), "idempotent issue");
+    const idempotentChildren = await request(`/api/companies/${companyId}/issues?parentId=${encodeURIComponent(issueId)}`, "GET");
+    const idempotentInteractions = await request(`/api/issues/${issueId}/interactions`, "GET");
     const beforeState = projectRecoveryCanaryState({
       issue: issueBefore,
       children: Array.isArray(childrenBefore) ? childrenBefore : [],
       interactions: Array.isArray(interactionsBefore) ? interactionsBefore : [],
     });
     const afterState = projectRecoveryCanaryState({
-      issue: issueAfter,
-      children: Array.isArray(childrenAfter) ? childrenAfter : [],
-      interactions: Array.isArray(interactionsAfter) ? interactionsAfter : [],
+      issue: idempotentIssue,
+      children: Array.isArray(idempotentChildren) ? idempotentChildren : [],
+      interactions: Array.isArray(idempotentInteractions) ? idempotentInteractions : [],
     });
     if (JSON.stringify(beforeState) !== JSON.stringify(afterState) ||
-        repeated.status !== "in_review") {
+        idempotentIssue.status !== "in_review") {
       throw new Error(`Canary recovery was not idempotent: ${JSON.stringify({
-        status: repeated.status,
-        assigneeAgentId: repeated.assigneeAgentId,
+        status: idempotentIssue.status,
+        assigneeAgentId: idempotentIssue.assigneeAgentId,
         beforeState,
         afterState,
-        workProducts: repeated.workProducts ?? repeated.work_products ?? null,
-        executionPolicy: repeated.executionPolicy ?? null,
-        executionState: repeated.executionState ?? null,
+        workProducts: idempotentIssue.workProducts ?? idempotentIssue.work_products ?? null,
+        executionPolicy: idempotentIssue.executionPolicy ?? null,
+        executionState: idempotentIssue.executionState ?? null,
       })}`);
     }
 
     // Drive both canonical reviewer stages through their native verdict API.
     // This is deliberately board-level: it verifies the real external
     // orchestrator sees the answered card and advances exactly one stage.
-    const firstCards = pendingReviewCards(interactionsAfter);
+    const firstCards = pendingReviewCards(idempotentInteractions);
     const answeredLunaCard = firstCards.find((card) =>
       String(card.idempotencyKey || "").endsWith(":luna") &&
       card.addresseeAgentId === luna.id,

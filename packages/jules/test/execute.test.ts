@@ -86,6 +86,13 @@ beforeAll(() => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Keep each lifecycle test independent. A prior test may install a
+    // minimal fetch stub; the question bridge needs a JSON-capable response.
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: "test-interaction", status: "pending", kind: "ask_user_questions" }),
+    });
   });
 
   it('checkpoints a new session as pending before long polling', async () => {
@@ -243,6 +250,7 @@ beforeAll(() => {
       state: 'COMPLETED',
       rawOutputs: [],
     });
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [] } as never);
 
     const res = await execute({
       ...baseCtx,

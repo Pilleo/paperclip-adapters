@@ -93,6 +93,8 @@ export interface MultiLaneOptions {
   readonly vibeCapacity?: number | undefined;
   readonly maxToSelect?: number | undefined;
   readonly extraLockedFiles?: ReadonlySet<string> | undefined;
+  /** Already-approved starts outrank merely pending resource contenders. */
+  readonly preferredIssueIds?: ReadonlySet<string> | undefined;
 }
 
 export interface JulesQuotaStatus {

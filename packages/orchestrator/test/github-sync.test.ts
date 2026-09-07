@@ -1,9 +1,38 @@
 import { describe, it, expect } from "vitest";
-import { describeGitHubAccessProblem, hasUnreviewedReadyPullRequest, matchPrToIssue, processRawPullRequests, registeredPullRequestFromIssue } from "../src/core/github-sync.js";
+import { buildGitHubPullRequestListArgs, describeGitHubAccessProblem, hasUnreviewedReadyPullRequest, matchPrToIssue, processRawPullRequests, registeredPullRequestFromIssue } from "../src/core/github-sync.js";
 import { extractIssueMetadata } from "../src/core/parser.js";
 import { GitHubPullRequest } from "../src/core/types.js";
 
 describe("GitHub PR Sync Module", () => {
+  it("prefers the primary Jules PR over an older placeholder work product", () => {
+    const issue = extractIssueMetadata({
+      id: "issue-1", identifier: "MAZ-1", title: "Task", status: "in_review",
+      workProducts: [
+        { type: "pull_request", url: "https://github.com/example/repo/pull/1", isPrimary: true },
+        { type: "pull_request", url: "https://github.com/Pilleo/paperclip-adapters/pull/5", isPrimary: true, metadata: { source: "jules" } },
+      ],
+    });
+    expect(registeredPullRequestFromIssue(issue)?.url).toBe("https://github.com/Pilleo/paperclip-adapters/pull/5");
+  });
+
+  it("prefers the adapter-canonical Jules PR over a stale primary that also claims Jules provenance", () => {
+    const issue = extractIssueMetadata({
+      id: "issue-985", identifier: "MAZ-985", title: "Task", status: "in_review",
+      workProducts: [
+        { type: "pull_request", url: "https://github.com/example/repo/pull/1", isPrimary: true, metadata: { source: "jules" } },
+        { type: "pull_request", url: "https://github.com/Pilleo/paperclip-adapters/pull/5", isPrimary: false, metadata: { source: "jules", producer: "paperclip-jules-adapter", schemaVersion: 1 } },
+      ],
+    });
+    expect(registeredPullRequestFromIssue(issue)?.url).toBe("https://github.com/Pilleo/paperclip-adapters/pull/5");
+  });
+
+  it("uses an explicit repository when building gh discovery arguments", () => {
+    expect(buildGitHubPullRequestListArgs("Pilleo/paperclip-adapters", 50)).toEqual([
+      "pr", "list", "--repo", "Pilleo/paperclip-adapters", "--state", "all", "--limit", "50",
+      "--json", "number,title,state,headRefName,headRefOid,baseRefName,mergedAt,url,files",
+    ]);
+  });
+
   it("makes authentication and rate-limit failures human-actionable", () => {
     expect(describeGitHubAccessProblem(401, "rest")).toContain("authentication was rejected");
     expect(describeGitHubAccessProblem(403, "rest")).toContain("authenticate the Paperclip service");

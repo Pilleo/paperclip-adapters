@@ -25,6 +25,11 @@ export interface HeartbeatRunSummary {
   readonly issueId: string | null;
   readonly retryNotBefore: string | null;
   readonly providerSessionId: string | null;
+  /** Native Paperclip review binding, when the heartbeat was launched by a card. */
+  readonly interactionId: string | null;
+  readonly interactionKind: string | null;
+  readonly reviewStage: string | null;
+  readonly reviewHeadSha: string | null;
 }
 
 export type ContinuationDecision =
@@ -68,6 +73,10 @@ export function parseHeartbeatRun(raw: Record<string, unknown>): HeartbeatRunSum
     issueId: nonEmpty(contextRecord["issueId"]) ?? nonEmpty(resultRecord["issueId"]),
     retryNotBefore: nonEmpty(resultRecord["retryNotBefore"]) ?? nonEmpty(raw["retryNotBefore"]),
     providerSessionId: nonEmpty(resultRecord["julesSessionId"]) ?? nonEmpty(resultRecord["sessionId"]),
+    interactionId: nonEmpty(contextRecord["interactionId"]) ?? nonEmpty(resultRecord["interactionId"]),
+    interactionKind: nonEmpty(contextRecord["interactionKind"]) ?? nonEmpty(resultRecord["interactionKind"]),
+    reviewStage: nonEmpty(contextRecord["reviewStage"]) ?? nonEmpty(resultRecord["reviewStage"]),
+    reviewHeadSha: nonEmpty(contextRecord["reviewHeadSha"]) ?? nonEmpty(resultRecord["reviewHeadSha"]),
   };
 }
 

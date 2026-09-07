@@ -16,7 +16,7 @@ describe("Jules monitor reconciliation", () => {
       mode: "normal",
       stages: [],
       monitor: {
-        nextCheckAt: "2026-09-02T15:05:00.000Z",
+        nextCheckAt: "2026-09-02T15:15:00.000Z",
         timeoutAt: "2026-09-04T15:00:00.000Z",
         notes: "Jules cloud session is active; Paperclip will poll it when this monitor is due.",
         scheduledBy: "assignee",

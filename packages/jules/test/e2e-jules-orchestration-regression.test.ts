@@ -12,6 +12,7 @@ import {
   activateInternalReviewIssue,
   createJulesQuestionAdjudication,
   createNoPrCompletionInteraction,
+  PaperclipClientError,
   getPaperclipIssue,
   listIssueComments,
   listPaperclipInteractions,
@@ -190,12 +191,68 @@ describe("E2E Jules orchestration regression", { timeout: 30_000 }, () => {
     expect(moveIssueToBlocked).not.toHaveBeenCalled();
     expect(JulesClient.prototype.sendMessage).not.toHaveBeenCalled();
     expect(createJulesQuestionAdjudication).toHaveBeenCalled();
+    // Recovery after the visible parent card was persisted must install the
+    // typed child form before activating Terra. Otherwise the reviewer can
+    // complete the child from prose before a form exists, which expires the
+    // only valid decision channel.
+    expect(
+      vi.mocked(createJulesQuestionReviewInteraction).mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      vi.mocked(activateInternalReviewIssue).mock.invocationCallOrder[0]!,
+    );
     expect(result.resultJson).toMatchObject({ pending: true });
     expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
       type: "agent_adjudication",
       julesActivityId: "activity-question",
       nativeForm: true,
     });
+  });
+
+  it("installs the child form before activating a recovered visible question", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({
+      id: "jules-834",
+      name: "sessions/jules-834",
+      state: "AWAITING_USER_FEEDBACK",
+      url: "https://jules.google.com/session/jules-834",
+    } as never);
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([{
+      id: "visible-question-1",
+      kind: "ask_user_questions",
+      status: "pending",
+      idempotencyKey: "jules:agent-adjudication:MAZ-834:jules-834:activity-question",
+    }]);
+
+    await execute(baseContext);
+
+    expect(createJulesQuestionReviewInteraction).toHaveBeenCalledTimes(1);
+    expect(activateInternalReviewIssue).toHaveBeenCalledTimes(1);
+    expect(
+      vi.mocked(createJulesQuestionReviewInteraction).mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      vi.mocked(activateInternalReviewIssue).mock.invocationCallOrder[0]!,
+    );
+    expect(scheduleJulesSessionMonitor).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a native question resumable when the monitor PATCH is forbidden", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({
+      id: "jules-834", name: "sessions/jules-834", state: "AWAITING_USER_FEEDBACK",
+      url: "https://jules.google.com/session/jules-834",
+    } as never);
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([{
+      id: "visible-question-1", kind: "ask_user_questions", status: "pending",
+      idempotencyKey: "jules:agent-adjudication:MAZ-834:jules-834:activity-question",
+    }]);
+    vi.mocked(scheduleJulesSessionMonitor).mockRejectedValue(
+      new PaperclipClientError(403, "Only the assignee agent or a board user can manage issue monitors"),
+    );
+
+    const result = await execute(baseContext);
+
+    expect(createJulesQuestionReviewInteraction).toHaveBeenCalledTimes(1);
+    expect(activateInternalReviewIssue).toHaveBeenCalledTimes(1);
+    expect(result.exitCode).toBe(0);
+    expect(result.resultJson).toMatchObject({ pending: true, continuation: "parent_question_wake" });
   });
 
   it("backfills a resolved visible question from the exact delivered activity while plan review is pending", async () => {

@@ -16,7 +16,7 @@ open_questions: false
 dependencies:
   - "issue-20260830-210100-backlog-linter-npm-workspaces"
 
-paperclip_issue_id: "364d8ab2-95ba-4183-9d31-628fbdf49626"
+paperclip_issue_id: "627bc22f-59b0-4e4c-bd79-e306691a3fb5"
 paperclip_identifier: "JUL-9"
 ---
 

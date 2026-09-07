@@ -71,7 +71,11 @@ export function calculateConflictMatrix(issues: readonly ParsedIssueMetadata[]):
     if (issue.issueNumber) {
       identifierToId.set(String(issue.issueNumber), issue.id);
     }
-    identifierToId.set(issue.id, issue.id);
+    // Dependencies are normalized to uppercase for identifiers and Markdown
+    // references. Paperclip blocker IDs are UUIDs, which may contain letters;
+    // index their normalized form too or a persisted blockedBy edge disappears
+    // before scheduling.
+    identifierToId.set(issue.id.toUpperCase(), issue.id);
   }
 
   for (const issue of issues) {
@@ -205,7 +209,16 @@ export function selectNextTasksMultiLane(
     const blockers = blockedMap.get(candidate.id) || [];
     for (const blockerId of blockers) {
       const blocker = allIssues.find((i) => i.id === blockerId);
-      if (blocker && blocker.status !== "done" && blocker.status !== "cancelled") {
+      const edge = conflictResult.conflictEdges.find(
+        (candidateEdge) => candidateEdge.issueId1 === blockerId && candidateEdge.issueId2 === candidate.id,
+      );
+      const isExplicitDependency = edge?.reason.startsWith("Explicit dependency:") === true;
+      const isActiveResourceOwner = blocker?.status === "in_progress" || blocker?.status === "in_review";
+      // Backlog/todo resource contenders do not hold a lock. They are still
+      // represented in the matrix for deterministic same-tick collision
+      // handling, but must not prevent an already-approved task from starting.
+      // Explicit DAG dependencies remain blocking in every nonterminal state.
+      if (blocker && blocker.status !== "done" && blocker.status !== "cancelled" && (isExplicitDependency || isActiveResourceOwner)) {
         return false;
       }
     }
@@ -241,7 +254,11 @@ export function selectNextTasksMultiLane(
     return true;
   });
 
+  const preferredIssueIds = options.preferredIssueIds ?? new Set<string>();
   const sortedCandidates = [...unblockedCandidates].sort((a, b) => {
+    const aPreferred = preferredIssueIds.has(a.id);
+    const bPreferred = preferredIssueIds.has(b.id);
+    if (aPreferred !== bPreferred) return aPreferred ? -1 : 1;
     if (b.priorityRank !== a.priorityRank) {
       return b.priorityRank - a.priorityRank;
     }

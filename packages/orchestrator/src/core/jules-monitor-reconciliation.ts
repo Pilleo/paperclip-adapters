@@ -1,3 +1,5 @@
+import { JULES_PROVIDER_POLL_CADENCE_MS } from "@pilleo/paperclip-adapter-common";
+
 export type JulesMonitorAction =
   | { readonly action: "resume_provider"; readonly issueStatus: "in_progress"; readonly reason: string }
   | { readonly action: "return_to_todo"; readonly issueStatus: "todo"; readonly reason: string }
@@ -18,7 +20,6 @@ export interface JulesMonitorSnapshot {
   readonly assigneeIsJules?: boolean;
 }
 
-const JULES_MONITOR_CADENCE_MS = 5 * 60 * 1000;
 const JULES_MONITOR_TIMEOUT_MS = 48 * 60 * 60 * 1000;
 
 /**
@@ -39,7 +40,7 @@ export function buildJulesMonitorReattachment(
     ...policy,
     mode: policy["mode"] ?? "normal",
     monitor: {
-      nextCheckAt: new Date(now + JULES_MONITOR_CADENCE_MS).toISOString(),
+      nextCheckAt: new Date(now + JULES_PROVIDER_POLL_CADENCE_MS).toISOString(),
       timeoutAt: new Date(now + JULES_MONITOR_TIMEOUT_MS).toISOString(),
       notes: "Jules cloud session is active; Paperclip will poll it when this monitor is due.",
       scheduledBy: "assignee",

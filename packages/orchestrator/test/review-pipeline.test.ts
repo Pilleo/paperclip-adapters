@@ -215,6 +215,27 @@ describe("native multi-tier review pipeline", () => {
     expect(evaluateReviewPipelineProgress(params)).toMatchObject({ action: "DISPATCH_TERRA_REVIEW", targetAgentId: "agent-terra" });
   });
 
+  it("returns to Jules after Luna rejects and never dispatches Terra for that PR head", () => {
+    const params = {
+      ...base(),
+      vibeReviewerAgentId: undefined,
+      reviewerAgentId: undefined,
+      lunaReviewerAgentId: "agent-luna",
+      terraReviewerAgentId: "agent-terra",
+      interactions: [{
+        id: "luna-reject", kind: "request_item_verdicts", status: "answered",
+        idempotencyKey: reviewInteractionIdempotencyKey({ issueId: "issue-141", prUrl: "pr-526", headSha: "unknown", stage: "luna" }),
+        result: { items: [{ id: "pull_request", verdict: "reject", reason: "Fix the cancellation endpoint." }] },
+      }, {
+        id: "stale-terra", kind: "request_item_verdicts", status: "pending",
+        idempotencyKey: reviewInteractionIdempotencyKey({ issueId: "issue-141", prUrl: "pr-526", headSha: "unknown", stage: "terra" }),
+      }],
+    } satisfies ReviewPipelineParams;
+    expect(evaluateReviewPipelineProgress(params)).toMatchObject({
+      action: "REASSIGN_TO_WORKER", targetAssigneeId: "agent-jules",
+    });
+  });
+
   it("does not wake Luna when its native approval is already terminal", () => {
     const params = {
       ...base(),
@@ -409,6 +430,30 @@ describe("native multi-tier review pipeline", () => {
       executionState: { status: "idle" },
     };
     expect(evaluateReviewPipelineProgress(params)).toMatchObject({ action: "AWAIT_OPERATOR_RECOVERY", stage: "luna_review" });
+  });
+
+  it("recovers the same pending card once when a bound reviewer exits without a structured verdict", () => {
+    const params = {
+      ...base(),
+      vibeReviewerAgentId: undefined,
+      reviewerAgentId: undefined,
+      lunaReviewerAgentId: "agent-luna",
+      terraReviewerAgentId: "agent-terra",
+      interactions: [nativeCard("luna", "pending")],
+      heartbeatRuns: [{
+        id: "run-luna-no-verdict",
+        agentId: "agent-luna",
+        status: "succeeded",
+        issueId: "issue-141",
+        interactionId: "luna-pending",
+      }],
+      executionState: { status: "idle" },
+    } satisfies ReviewPipelineParams;
+    expect(evaluateReviewPipelineProgress(params)).toMatchObject({
+      action: "RECOVER_REVIEW",
+      stage: "luna_review",
+      targetAgentId: "agent-luna",
+    });
   });
 
   it("requires operator recovery for an expired or cancelled card", () => {

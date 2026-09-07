@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
+import { fileURLToPath, pathToFileURL } from 'url';
 
 beforeAll(() => {
     process.env['JULES_API_KEY'] = 'test-key';
@@ -11,9 +13,10 @@ beforeAll(() => {
     delete process.env['JULES_API_KEY'];
   });
 
-  describe('Package Load Test', () => {
-    let tgzPath: string;
-    let extractDir: string;
+describe('Package Load Test', () => {
+    let fixtureDir: string;
+    let julesTarball: string;
+    let commonTarball: string;
 
     beforeAll(() => {
         const packageDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -50,19 +53,20 @@ beforeAll(() => {
     }, 120000);
 
     afterAll(() => {
-        // Cleanup
-        if (fs.existsSync(tgzPath)) {
-            fs.unlinkSync(tgzPath);
-        }
-        if (fs.existsSync(extractDir)) {
-            fs.rmSync(extractDir, { recursive: true, force: true });
-        }
+        if (fixtureDir && fs.existsSync(fixtureDir)) fs.rmSync(fixtureDir, { recursive: true, force: true });
     });
 
     it('loads the packed adapter factory conforming to Paperclip external adapter expectations', async () => {
-        // Dynamically import the extracted module's main entry point
-        const modulePath = path.resolve(extractDir, 'package', 'dist', 'index.js');
-        const imported = await import(modulePath);
+        const entrypoint = path.join(
+            fixtureDir,
+            'node_modules',
+            '@pilleo',
+            'paperclip-jules-adapter',
+            'dist',
+            'index.js',
+        );
+        expect(fs.existsSync(entrypoint)).toBe(true);
+        const imported = await import(pathToFileURL(entrypoint).href);
 
         expect(imported.type).toBe('jules');
         expect(imported.createServerAdapter).toBeDefined();
