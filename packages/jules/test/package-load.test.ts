@@ -1,9 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { execFileSync } from 'child_process';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { fileURLToPath, pathToFileURL } from 'url';
+
+const execFileAsync = promisify(execFile);
+const PACKAGE_CONTRACT_TIMEOUT_MS = 300_000;
 
 beforeAll(() => {
     process.env['JULES_API_KEY'] = 'test-key';
@@ -18,39 +22,47 @@ describe('Package Load Test', () => {
     let julesTarball: string;
     let commonTarball: string;
 
-    beforeAll(() => {
+    beforeAll(async () => {
         const packageDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
         const commonDir = path.resolve(packageDir, '..', 'common');
         fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'paperclip-jules-package-'));
         const packDir = path.join(fixtureDir, 'tarballs');
         fs.mkdirSync(packDir);
 
-        const pack = (cwd: string): string => {
+        const pack = async (cwd: string): Promise<string> => {
             // pnpm rewrites workspace:^ to a publishable semver range. npm pack
             // preserves the workspace protocol, producing an archive consumers
             // cannot install outside this monorepo.
-            execFileSync('pnpm', ['pack', '--pack-destination', packDir], { cwd, stdio: 'ignore' });
+            await execFileAsync('pnpm', ['pack', '--pack-destination', packDir], {
+                cwd,
+                timeout: PACKAGE_CONTRACT_TIMEOUT_MS,
+            });
             const tarballs = fs.readdirSync(packDir).filter((entry) => entry.endsWith('.tgz'));
             if (tarballs.length === 0) throw new Error(`pnpm pack did not create a tarball for ${cwd}`);
             return path.resolve(packDir, tarballs[tarballs.length - 1]!);
         };
 
-        commonTarball = pack(commonDir);
-        julesTarball = pack(packageDir);
+        commonTarball = await pack(commonDir);
+        julesTarball = await pack(packageDir);
 
-        const manifest = JSON.parse(execFileSync('tar', ['-xOf', julesTarball, 'package/package.json'], { encoding: 'utf-8' })) as {
+        const { stdout: packedManifest } = await execFileAsync('tar', ['-xOf', julesTarball, 'package/package.json'], {
+            encoding: 'utf-8',
+            timeout: PACKAGE_CONTRACT_TIMEOUT_MS,
+        });
+        const manifest = JSON.parse(packedManifest) as {
             dependencies?: Record<string, string>;
         };
         expect(manifest.dependencies?.['@pilleo/paperclip-adapter-common']).toMatch(/^\^\d+\.\d+\.\d+$/);
 
-        execFileSync('npm', [
+        await execFileAsync('npm', [
             'install', '--ignore-scripts', '--no-audit', '--no-fund', '--legacy-peer-deps',
             commonTarball, julesTarball,
-        ], { cwd: fixtureDir, stdio: 'ignore' });
-    // npm pack runs the adapter's prepack build. Under the workspace suite it
-    // competes with coverage workers, so 30 seconds caused a false timeout
-    // before the package-load assertion even ran.
-    }, 120000);
+        ], { cwd: fixtureDir, timeout: PACKAGE_CONTRACT_TIMEOUT_MS });
+    // This is a packaging integration contract, not an in-process unit hook:
+    // it builds two publishable archives and installs their dependency graph.
+    // Await subprocesses so Vitest's worker RPC remains responsive while the
+    // full monorepo runs concurrently, and retain a finite CI failure bound.
+    }, PACKAGE_CONTRACT_TIMEOUT_MS);
 
     afterAll(() => {
         if (fixtureDir && fs.existsSync(fixtureDir)) fs.rmSync(fixtureDir, { recursive: true, force: true });

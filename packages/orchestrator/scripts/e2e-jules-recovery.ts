@@ -106,7 +106,7 @@ async function main(): Promise<void> {
   // A clean Paperclip install knows no repository-local external adapters.
   // Install the built artifacts through the same admin API used in production
   // before creating canary agents; otherwise this test only exercises builtins.
-  for (const packageDir of ["packages/orchestrator", "packages/jules"]) {
+  for (const packageDir of ["packages/orchestrator", "packages/jules", "packages/vibe"]) {
     await request("/api/adapters/install", "POST", {
       packageName: path.join(workspacePath, packageDir),
       isLocalPath: true,
@@ -115,7 +115,7 @@ async function main(): Promise<void> {
   const installedAdapters = await request("/api/adapters", "GET");
   const adapterTypes = new Set((Array.isArray(installedAdapters) ? installedAdapters : [])
     .map((adapter) => adapter && typeof adapter === "object" ? (adapter as Record<string, unknown>).type : undefined));
-  for (const requiredType of ["orchestrator", "jules"]) {
+  for (const requiredType of ["orchestrator", "jules", "vibe"]) {
     if (!adapterTypes.has(requiredType)) {
       throw new Error(`Clean-server canary did not install external adapter ${requiredType}`);
     }
@@ -132,17 +132,26 @@ async function main(): Promise<void> {
     const project = requireObject(await request(`/api/companies/${companyId}/projects`, "POST", {
       name: `Jules recovery workspace ${Date.now()}`,
       description: "Disposable workspace for the Jules recovery canary",
-      workspace: { name: "Canary local workspace", sourceType: "local_path", cwd: workspacePath, isPrimary: true },
     }), "project");
     if (!project.id) throw new Error("Paperclip did not return a canary project id");
+    const projectWorkspace = requireObject(await request(`/api/projects/${project.id}/workspaces`, "POST", {
+      name: "Canary local workspace",
+      sourceType: "local_path",
+      cwd: workspacePath,
+      isPrimary: true,
+    }), "project workspace");
+    if (!projectWorkspace.id || projectWorkspace.cwd !== workspacePath || projectWorkspace.isPrimary !== true) {
+      throw new Error(`Paperclip did not persist the primary canary workspace: ${JSON.stringify(projectWorkspace)}`);
+    }
 
     const orch = requireObject(await request(`/api/companies/${companyId}/agents`, "POST", {
-      name: "Canary Orchestrator", role: "general", adapterType: "orchestrator",
+      name: "Canary Orchestrator", role: "ceo", adapterType: "orchestrator",
       // The real server runner supplies this adapter configuration as the
       // heartbeat context. Enable fleet reconciliation so the canary fails
       // loudly if the canonical Luna/Terra reviewer identities cannot be
       // provisioned, rather than silently producing no review card.
-      adapterConfig: { reconcileFleet: true },
+      adapterConfig: { reconcileFleet: true, apiUrl, backlogDirectory: ".paperclip-canary-empty" },
+      permissions: { canCreateAgents: true, canCreateSkills: true, canAssignTasks: true, trustPreset: "standard" },
     }), "orchestrator agent");
     const jules = requireObject(await request(`/api/companies/${companyId}/agents`, "POST", {
       name: "Canary Jules", role: "general", adapterType: "jules", reportsTo: orch.id,
@@ -160,16 +169,50 @@ async function main(): Promise<void> {
     // asserts card binding and duplicate suppression before a model is woken.
     const luna = requireObject(await request(`/api/companies/${companyId}/agents`, "POST", {
       name: "[Orchestrated] Luna Fast Reviewer", role: "qa", adapterType: "codex_local",
-      reportsTo: orch.id, runtimeConfig: { heartbeat: { enabled: false } },
+      reportsTo: orch.id, runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: false } },
       metadata: { managedBy: "paperclip-orchestrator", workerKey: "luna_reviewer" },
     }), "Luna reviewer");
     const terra = requireObject(await request(`/api/companies/${companyId}/agents`, "POST", {
       name: "[Orchestrated] Terra Strong Reviewer", role: "qa", adapterType: "codex_local",
-      reportsTo: orch.id, runtimeConfig: { heartbeat: { enabled: false } },
+      reportsTo: orch.id, runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: false } },
       metadata: { managedBy: "paperclip-orchestrator", workerKey: "terra_reviewer" },
     }), "Terra reviewer");
     await request(`/api/agents/${orch.id}`, "PATCH", {
-      adapterConfig: { reconcileFleet: true, lunaReviewerAgentId: luna.id, terraReviewerAgentId: terra.id },
+      adapterConfig: {
+        reconcileFleet: true,
+        apiUrl,
+        backlogDirectory: ".paperclip-canary-empty",
+        lunaReviewerAgentId: luna.id,
+        terraReviewerAgentId: terra.id,
+      },
+    });
+    // Canonicalize the managed fleet before introducing the PR. The bootstrap
+    // run has no actionable issue, so it can safely install reviewer protocol
+    // metadata without launching a reviewer. Afterwards freeze fleet mutation
+    // and disable on-demand reviewer execution; verdicts below use native API
+    // forms and must never consume model credentials or quota.
+    const bootstrapWake = requireObject(await request(`/api/agents/${orch.id}/wakeup`, "POST", {
+      source: "on_demand",
+      reason: "e2e_jules_recovery_canary_fleet_bootstrap",
+      idempotencyKey: `e2e-jules-recovery:${companyId}:fleet-bootstrap`,
+      payload: {},
+    }), "fleet bootstrap wake");
+    const bootstrapRunId = String(bootstrapWake.id || "");
+    if (!bootstrapRunId) throw new Error(`Paperclip bootstrap wake did not return a heartbeat run: ${JSON.stringify(bootstrapWake)}`);
+    await waitForIssueExecution("", bootstrapRunId, "Fleet bootstrap");
+    for (const reviewer of [luna, terra]) {
+      await request(`/api/agents/${reviewer.id}`, "PATCH", {
+        runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: false, maxConcurrentRuns: 1 } },
+      });
+    }
+    await request(`/api/agents/${orch.id}`, "PATCH", {
+      adapterConfig: {
+        reconcileFleet: false,
+        apiUrl,
+        backlogDirectory: ".paperclip-canary-empty",
+        lunaReviewerAgentId: luna.id,
+        terraReviewerAgentId: terra.id,
+      },
     });
     const marker = `e2e-jules-recovery-${Date.now()}`;
     const issue = requireObject(await request(`/api/companies/${companyId}/issues`, "POST", {
@@ -226,7 +269,7 @@ async function main(): Promise<void> {
       interaction.addresseeAgentId === luna.id &&
       interaction.continuationPolicy === "none",
     );
-    if (recovered.status !== "in_review" || recovered.assigneeAgentId !== null || pendingCards.length !== 1 || !lunaCard) {
+    if (recovered.status !== "in_review" || recovered.assigneeAgentId !== luna.id || pendingCards.length !== 1 || !lunaCard) {
       const canaryAgents = await request(`/api/companies/${companyId}/agents`, "GET");
       const canaryComments = await request(`/api/issues/${issueId}/comments`, "GET");
       throw new Error(`Canary did not enter native review: ${JSON.stringify({

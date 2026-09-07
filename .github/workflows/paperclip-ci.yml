@@ -64,10 +64,14 @@ jobs:
           esac
           EOF
           chmod +x "${RUNNER_TEMP}/paperclip-e2e-bin/gh"
-          # Bound onboarding so a CLI prompt/upgrade can never prevent the
-          # disposable server, canary, and fail-closed teardown from running.
-          timeout --foreground 60s npx -y paperclipai onboard --config "$PAPERCLIP_HOME/config.json" --data-dir "$PAPERCLIP_HOME" --bind loopback --yes --no-install-service </dev/null
-          PATH="${RUNNER_TEMP}/paperclip-e2e-bin:${PATH}" nohup npx -y paperclipai run --config "$PAPERCLIP_HOME/config.json" --data-dir "$PAPERCLIP_HOME" --instance "$PAPERCLIP_INSTANCE_ID" --no-repair >"${RUNNER_TEMP}/paperclip-canary.log" 2>&1 &
+          # In Paperclip 2026.831.1, noninteractive onboarding owns the
+          # foreground server lifecycle. Start that one process in a separate
+          # process group: waiting for onboarding and then invoking `run`
+          # deadlocks until a timeout because onboarding does not return.
+          # Pin the control-plane version used by the adapter contract test.
+          # Floating latest made upstream releases silently change the canary
+          # semantics before this repository had deliberately adopted them.
+          PATH="${RUNNER_TEMP}/paperclip-e2e-bin:${PATH}" nohup setsid npx -y paperclipai@2026.831.1 onboard --config "$PAPERCLIP_HOME/config.json" --data-dir "$PAPERCLIP_HOME" --bind loopback --yes --no-install-service >"${RUNNER_TEMP}/paperclip-canary.log" 2>&1 </dev/null &
           echo $! >"${RUNNER_TEMP}/paperclip-canary.pid"
           for attempt in {1..60}; do
             if curl --fail --silent http://127.0.0.1:3100/api/health >/dev/null; then
@@ -89,7 +93,9 @@ jobs:
         if: always()
         run: |
           if [ -f "${RUNNER_TEMP}/paperclip-canary.pid" ]; then
-            kill "$(cat "${RUNNER_TEMP}/paperclip-canary.pid")" || true
+            # Stop the complete onboarding/server process group, including
+            # the embedded database child. A parent-only kill leaks CI state.
+            kill -TERM -- "-$(cat "${RUNNER_TEMP}/paperclip-canary.pid")" || true
           fi
           if [ -f "${RUNNER_TEMP}/paperclip-canary.log" ]; then
             tail -100 "${RUNNER_TEMP}/paperclip-canary.log"
