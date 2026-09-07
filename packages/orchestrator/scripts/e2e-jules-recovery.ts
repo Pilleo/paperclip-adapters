@@ -155,6 +155,7 @@ async function main(): Promise<void> {
     }), "orchestrator agent");
     const jules = requireObject(await request(`/api/companies/${companyId}/agents`, "POST", {
       name: "Canary Jules", role: "general", adapterType: "jules", reportsTo: orch.id,
+      runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: false, maxConcurrentRuns: 1 } },
       metadata: { managedBy: "paperclip-orchestrator" },
     }), "Jules agent");
     const vibe = requireObject(await request(`/api/companies/${companyId}/agents`, "POST", {
@@ -200,8 +201,8 @@ async function main(): Promise<void> {
     const bootstrapRunId = String(bootstrapWake.id || "");
     if (!bootstrapRunId) throw new Error(`Paperclip bootstrap wake did not return a heartbeat run: ${JSON.stringify(bootstrapWake)}`);
     await waitForIssueExecution("", bootstrapRunId, "Fleet bootstrap");
-    for (const reviewer of [luna, terra]) {
-      await request(`/api/agents/${reviewer.id}`, "PATCH", {
+    for (const nonExecutableAgent of [jules, luna, terra]) {
+      await request(`/api/agents/${nonExecutableAgent.id}`, "PATCH", {
         runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: false, maxConcurrentRuns: 1 } },
       });
     }
@@ -321,6 +322,9 @@ async function main(): Promise<void> {
         supersedeOnUserComment: false,
       },
     }), "stale Jules plan card");
+    // Recovery candidates are Jules-owned. Assign only after fleet bootstrap
+    // and after explicitly making this synthetic Jules agent non-invokable;
+    // the final zero-run assertion protects hosts with global credentials.
     await request(`/api/issues/${issueId}`, "PATCH", { status: "backlog", assigneeAgentId: jules.id });
     const recoveryWake = requireObject(await request(`/api/agents/${orch.id}/wakeup`, "POST", {
       source: "on_demand",
@@ -340,8 +344,7 @@ async function main(): Promise<void> {
     const stalePlanAfter = (Array.isArray(interactionsAfter) ? interactionsAfter : []).find((card) =>
       card && typeof card === "object" && String((card as Record<string, unknown>).id) === String(stalePlan.id),
     ) as Record<string, unknown> | undefined;
-    if (repeated.status !== "in_review" ||
-        (repeated.assigneeAgentId !== null && repeated.assigneeAgentId !== luna.id) ||
+    if (repeated.status !== "in_review" || repeated.assigneeAgentId !== luna.id ||
         recoveredPrCards.length !== 1 || !recoveredLunaCard || stalePlanAfter?.status !== "cancelled") {
       throw new Error(`Canary did not recover the typed PR review authority: ${JSON.stringify({
         status: repeated.status,
@@ -404,19 +407,36 @@ async function main(): Promise<void> {
     }), "Luna verdict wake");
     await waitForIssueExecution(issueId, String(lunaWake.id), "Luna verdict");
     const afterLuna = await request(`/api/issues/${issueId}/interactions`, "GET");
-    const terraCard = pendingReviewCards(afterLuna).find((card) => String(card.idempotencyKey || "").endsWith(":terra"));
-    if (!terraCard) throw new Error(`Canary did not advance to Terra: ${JSON.stringify(afterLuna)}`);
+    const terraCards = pendingReviewCards(afterLuna).filter((card) =>
+      String(card.idempotencyKey || "").endsWith(":terra") &&
+      card.addresseeAgentId === terra.id &&
+      card.continuationPolicy === "none",
+    );
+    const terraCard = terraCards[0];
+    if (terraCards.length !== 1 || !terraCard) throw new Error(`Canary did not advance to exactly one native Terra card: ${JSON.stringify(afterLuna)}`);
     await submitReviewVerdict(issueId, String(terraCard.id), "approve");
     const terraWake = requireObject(await request(`/api/agents/${orch.id}/wakeup`, "POST", {
       source: "on_demand", reason: "e2e_terra_verdict", idempotencyKey: `e2e-jules-recovery:${issueId}:terra-verdict`, payload: {},
     }), "Terra verdict wake");
     await waitForIssueExecution(issueId, String(terraWake.id), "Terra verdict");
     const approvals = await request(`/api/companies/${companyId}/approvals`, "GET");
-    const mergeApproval = (Array.isArray(approvals) ? approvals : []).find((approval) =>
-      approval && typeof approval === "object" &&
-      ((approval as Record<string, unknown>).type === "task_merge_approval" || (approval as Record<string, unknown>).type === "request_board_approval"),
+    const mergeApprovals = (Array.isArray(approvals) ? approvals : []).filter((approval) =>
+      approval && typeof approval === "object" && (() => {
+        const candidate = approval as Record<string, any>;
+        const payload = candidate.payload && typeof candidate.payload === "object" ? candidate.payload : {};
+        const isMergeType = candidate.type === "task_merge_approval" ||
+          (candidate.type === "request_board_approval" && payload.action === "task_merge");
+        const belongsToIssue = payload.issueId === issueId ||
+          (Array.isArray(candidate.issueIds) && candidate.issueIds.includes(issueId));
+        return isMergeType && belongsToIssue;
+      })(),
     );
-    if (!mergeApproval) throw new Error(`Canary did not create final merge approval: ${JSON.stringify(approvals)}`);
+    if (mergeApprovals.length !== 1) throw new Error(`Canary did not create exactly one issue-scoped merge approval: ${JSON.stringify(approvals)}`);
+    const companyRuns = await request(`/api/companies/${companyId}/heartbeat-runs`, "GET");
+    const julesRuns = (Array.isArray(companyRuns) ? companyRuns : []).filter((run) =>
+      run && typeof run === "object" && (run as Record<string, unknown>).agentId === jules.id,
+    );
+    if (julesRuns.length !== 0) throw new Error(`Recovery canary unexpectedly executed Jules: ${JSON.stringify(julesRuns)}`);
     console.log("Jules recovery canary passed: Luna → Terra → merge approval, recovery, cleanup, and idempotency verified.");
   } catch (error) {
     operationError = error;

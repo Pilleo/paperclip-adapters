@@ -15,6 +15,17 @@ function findGitDir(startDir?: string): string | undefined {
   return undefined;
 }
 
+function workspaceGitEnvironment(): NodeJS.ProcessEnv {
+  // Paperclip can launch an adapter from a process that inherited Git's
+  // repository-routing variables. Those variables override `cwd` and can
+  // make discovery inspect the host checkout instead of the project workspace.
+  const environment = { ...process.env };
+  delete environment["GIT_DIR"];
+  delete environment["GIT_WORK_TREE"];
+  delete environment["GIT_COMMON_DIR"];
+  return environment;
+}
+
 export function discoverLocalGitRepository(cwd?: string): string | undefined {
   if (cwd && !fs.existsSync(cwd)) return undefined;
   const targetCwd = findGitDir(cwd) || cwd || process.cwd();
@@ -24,6 +35,7 @@ export function discoverLocalGitRepository(cwd?: string): string | undefined {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 3000,
+      env: workspaceGitEnvironment(),
     }).trim();
     if (remoteUrl) return remoteUrl;
   } catch {
@@ -42,6 +54,7 @@ export function discoverLocalGitDefaultBranch(cwd?: string): string | undefined 
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 3000,
+      env: workspaceGitEnvironment(),
     }).trim();
     if (ref) return ref.replace(/^origin\//, "");
   } catch {
@@ -54,6 +67,7 @@ export function discoverLocalGitDefaultBranch(cwd?: string): string | undefined 
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 3000,
+      env: workspaceGitEnvironment(),
     }).trim();
     if (branch && branch !== "HEAD") return branch;
   } catch {

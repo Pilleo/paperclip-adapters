@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { buildValidatedIssuePatch } from "../src/server/disposition.js";
 import { discoverLocalGitDefaultBranch, discoverLocalGitRepository, validateConfig } from "../src/server/config.js";
 import { activityComment, extractQuestionText, formatActivityForLog, latestAgentMessage, latestPlan, planMarkdown } from "../src/server/activity-formatter.js";
@@ -21,11 +25,23 @@ describe("deterministic coverage paths", () => {
     }
   });
 
-  it("normalizes repository settings and discovers the local git metadata", () => {
+  it("normalizes repository settings and discovers deterministic git metadata", () => {
     expect(validateConfig({ repository: "git@github.com:Acme/Tool.git", baseBranch: "main" }).repository).toBe("Acme/Tool");
     expect(validateConfig({ repository: "https://user:pass@github.com/acme/tool.git", baseBranch: "main" }).repository).toBe("acme/tool");
-    expect(discoverLocalGitRepository(process.cwd())).toContain("github.com");
-    expect(discoverLocalGitDefaultBranch(process.cwd())).toBeTypeOf("string");
+    const repository = mkdtempSync(path.join(tmpdir(), "paperclip-jules-git-discovery-"));
+    const gitEnvironment = { ...process.env };
+    delete gitEnvironment["GIT_DIR"];
+    delete gitEnvironment["GIT_WORK_TREE"];
+    delete gitEnvironment["GIT_COMMON_DIR"];
+    try {
+      execFileSync("git", ["init", "-q"], { cwd: repository, env: gitEnvironment });
+      execFileSync("git", ["remote", "add", "origin", "git@github.com:Acme/Tool.git"], { cwd: repository, env: gitEnvironment });
+      execFileSync("git", ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], { cwd: repository, env: gitEnvironment });
+      expect(discoverLocalGitRepository(repository)).toBe("git@github.com:Acme/Tool.git");
+      expect(discoverLocalGitDefaultBranch(repository)).toBe("main");
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
     expect(discoverLocalGitRepository("/tmp/does-not-exist-for-coverage")).toBeUndefined();
     expect(discoverLocalGitDefaultBranch("/tmp/does-not-exist-for-coverage")).toBeUndefined();
   });

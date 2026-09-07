@@ -96,6 +96,17 @@ jobs:
             # Stop the complete onboarding/server process group, including
             # the embedded database child. A parent-only kill leaks CI state.
             kill -TERM -- "-$(cat "${RUNNER_TEMP}/paperclip-canary.pid")" || true
+            for attempt in {1..50}; do
+              if ! kill -0 -- "-$(cat "${RUNNER_TEMP}/paperclip-canary.pid")" 2>/dev/null; then
+                break
+              fi
+              sleep 0.2
+            done
+            if kill -0 -- "-$(cat "${RUNNER_TEMP}/paperclip-canary.pid")" 2>/dev/null; then
+              echo "Paperclip canary process group did not stop after SIGTERM" >&2
+              kill -KILL -- "-$(cat "${RUNNER_TEMP}/paperclip-canary.pid")" || true
+              exit 1
+            fi
           fi
           if [ -f "${RUNNER_TEMP}/paperclip-canary.log" ]; then
             tail -100 "${RUNNER_TEMP}/paperclip-canary.log"
