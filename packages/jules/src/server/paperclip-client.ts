@@ -596,3 +596,36 @@ export async function listIssueComments(
   const raw = (await response.json()) as unknown;
   return Array.isArray(raw) ? (raw as IssueComment[]) : [];
 }
+
+export async function clearJulesSessionMonitor(
+  issueId: string,
+  authToken: string | undefined,
+  runId?: string,
+): Promise<void> {
+  const issue = await getPaperclipJson(`/api/issues/${encodeURIComponent(issueId)}`, authToken, runId) as { executionPolicy?: { monitor?: unknown } };
+  if (issue?.executionPolicy?.monitor) {
+    try {
+      const { monitor, ...restPolicy } = issue.executionPolicy;
+      await paperclipRequest(`/api/issues/${encodeURIComponent(issueId)}`, authToken, {
+        method: "PATCH",
+        body: JSON.stringify({ executionPolicy: restPolicy }),
+      }, runId);
+    } catch (e: any) {
+      if (e?.status === 409 || e?.status === 400) {
+         // Some transient mismatch could occur if another process stripped the monitor
+         try {
+           const issueAgain = await getPaperclipJson(`/api/issues/${encodeURIComponent(issueId)}`, authToken, runId) as { executionPolicy?: { monitor?: unknown } };
+           if (issueAgain?.executionPolicy?.monitor) {
+             const { monitor, ...restPolicy } = issueAgain.executionPolicy;
+             await paperclipRequest(`/api/issues/${encodeURIComponent(issueId)}`, authToken, {
+                method: "PATCH",
+                body: JSON.stringify({ executionPolicy: restPolicy }),
+             }, runId);
+           }
+         } catch {
+             // Fall through if retry fails
+         }
+      }
+    }
+  }
+}

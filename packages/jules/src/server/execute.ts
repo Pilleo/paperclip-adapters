@@ -69,6 +69,7 @@ import {
   PaperclipClientError,
   getPaperclipJson,
   type PaperclipInteraction,
+  clearJulesSessionMonitor,
 } from "./paperclip-client.js";
 import { createTelemetry } from "./telemetry.js";
 
@@ -1153,6 +1154,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (isPlanningTurnCompleted) {
         session.phase = "WAITING_FOR_PLAN_APPROVAL";
       } else if (stateMachineRes.isTerminal) {
+         const failureDetails = session.phase === 'FAILED' ? julesSession.errorInfo || {} : {};
+         const classification = session.phase === 'FAILED' ? classifyFailure(failureDetails) : 'task';
+         const willRetry = session.phase === 'FAILED' && shouldRetry(classification, session.attempt, config);
+
+         // Clear terminal monitors before any early returns for FAILED (if not retrying) or COMPLETED states
+         if (session.phase === 'COMPLETED' || (session.phase === 'FAILED' && !willRetry)) {
+             try {
+                 await clearJulesSessionMonitor(taskId, ctx.authToken, ctx.runId);
+             } catch (e) {
+                 if (ctx.onLog) await ctx.onLog('stderr', `[jules] Warning: failed to clear session monitor on terminal path: ${e}\n`);
+             }
+         }
+
          if (session.phase === 'COMPLETED') {
              if (!stateMachineRes.isSuccess) {
                  try {
@@ -1254,10 +1268,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                   clearSession: true
              };
          } else if (session.phase === 'FAILED') {
-             const failureDetails = julesSession.errorInfo || {};
-             const classification = classifyFailure(failureDetails);
-             const willRetry = shouldRetry(classification, session.attempt, config);
-
              if (willRetry) {
                  session.failedSessions.push({
                      sessionId: session.julesSessionId,
