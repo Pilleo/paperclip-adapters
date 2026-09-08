@@ -27,7 +27,7 @@ async function run(filter = "all") {
       env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` },
     });
     const jsonStream = result.stdout.split("\n").slice(1).join("\n").trim();
-    return JSON.parse(`[${jsonStream.replace(/}\s*{/g, "},{")}]`);
+    return JSON.parse(jsonStream);
   } finally {
     rmSync(bin, { recursive: true, force: true });
   }
