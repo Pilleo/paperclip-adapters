@@ -43,11 +43,17 @@ jobs:
         run: pnpm -r test
 
       - name: Install pinned Paperclip control plane
+        if: matrix.node-version == '24.x'
         # Keep package download outside the server health budget. A cold npx
         # cache can take over a minute and otherwise looks like a boot failure.
         run: npm install --global paperclipai@2026.831.1
 
       - name: Start disposable Paperclip server
+        # Adapter packages support Node 22, but the pinned Paperclip control
+        # plane requires Node >=24.11 and deliberately refuses to boot on 22.
+        # The 22.x job still validates build/test/package compatibility; the
+        # native server contract runs once on its supported runtime.
+        if: matrix.node-version == '24.x'
         env:
           HOME: ${{ runner.temp }}/paperclip-canary-user-home
           PAPERCLIP_HOME: ${{ runner.temp }}/paperclip-canary-home
@@ -89,6 +95,7 @@ jobs:
           exit 1
 
       - name: Run Jules recovery canary
+        if: matrix.node-version == '24.x'
         env:
           PAPERCLIP_TEST_API_URL: http://127.0.0.1:3100
           PAPERCLIP_E2E_GH_FIXTURE: server
@@ -96,7 +103,7 @@ jobs:
         run: pnpm test:e2e:jules-recovery
 
       - name: Stop disposable Paperclip server
-        if: always()
+        if: always() && matrix.node-version == '24.x'
         run: |
           if [ -f "${RUNNER_TEMP}/paperclip-canary.pid" ]; then
             # Stop the complete onboarding/server process group, including
