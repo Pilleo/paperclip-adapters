@@ -19,21 +19,22 @@ echo "🏛️ Fetching approvals from Paperclip (${PAPERCLIP_API_URL})..."
 RAW=$(curl -s "${PAPERCLIP_API_URL}/api/companies/${COMPANY_ID}/approvals")
 
 if [ "${FILTER}" != "all" ]; then
-  echo "${RAW}" | jq --arg status "${FILTER}" '
-    map(select(.status == $status)) |
-    .[] | {
+  echo "${RAW}" | jq -c --arg status "${FILTER}" '
+    map(select(.status == $status))[] | {
       id: .id,
       type: .type,
       status: .status,
-      title: .title,
-      description: (.description // "")[0:150]
+      action: (.payload.action // "N/A"),
+      identifier: (.payload.identifier // .payload.issueId // "N/A"),
+      title: (.payload.title // .title // "N/A")
     }'
 else
-  echo "${RAW}" | jq '.[] | {
+  echo "${RAW}" | jq -c '.[] | {
     id: .id,
     type: .type,
     status: .status,
-    title: .title,
-    description: (.description // "")[0:150]
+    action: (.payload.action // "N/A"),
+    identifier: (.payload.identifier // .payload.issueId // "N/A"),
+    title: (.payload.title // .title // "N/A")
   }'
 fi
