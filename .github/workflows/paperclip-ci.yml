@@ -86,7 +86,7 @@ jobs:
           PATH="${RUNNER_TEMP}/paperclip-e2e-bin:${PATH}" nohup setsid paperclipai run --config "$PAPERCLIP_HOME/config.json" >"${RUNNER_TEMP}/paperclip-canary.log" 2>&1 </dev/null &
           echo $! >"${RUNNER_TEMP}/paperclip-canary.pid"
           for attempt in {1..120}; do
-            if curl --fail --silent http://127.0.0.1:3100/api/health >/dev/null; then
+            if curl --max-time 1 --fail --silent http://127.0.0.1:3100/api/health >/dev/null; then
               exit 0
             fi
             sleep 1
