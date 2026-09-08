@@ -43,17 +43,11 @@ jobs:
         run: pnpm -r test
 
       - name: Install pinned Paperclip control plane
-        if: matrix.node-version == '24.x'
         # Keep package download outside the server health budget. A cold npx
         # cache can take over a minute and otherwise looks like a boot failure.
         run: npm install --global paperclipai@2026.831.1
 
       - name: Start disposable Paperclip server
-        # Adapter packages support Node 22, but the pinned Paperclip control
-        # plane requires Node >=24.11 and deliberately refuses to boot on 22.
-        # The 22.x job still validates build/test/package compatibility; the
-        # native server contract runs once on its supported runtime.
-        if: matrix.node-version == '24.x'
         env:
           HOME: ${{ runner.temp }}/paperclip-canary-user-home
           PAPERCLIP_HOME: ${{ runner.temp }}/paperclip-canary-home
@@ -75,14 +69,15 @@ jobs:
           esac
           EOF
           chmod +x "${RUNNER_TEMP}/paperclip-e2e-bin/gh"
-          # In Paperclip 2026.831.1, noninteractive onboarding owns the
-          # foreground server lifecycle. Start that one process in a separate
-          # process group: waiting for onboarding and then invoking `run`
-          # deadlocks until a timeout because onboarding does not return.
-          # Pin the control-plane version used by the adapter contract test.
-          # Floating latest made upstream releases silently change the canary
-          # semantics before this repository had deliberately adopted them.
-          PATH="${RUNNER_TEMP}/paperclip-e2e-bin:${PATH}" nohup setsid paperclipai onboard --config "$PAPERCLIP_HOME/config.json" --data-dir "$PAPERCLIP_HOME" --bind loopback --yes --no-install-service >"${RUNNER_TEMP}/paperclip-canary.log" 2>&1 </dev/null &
+          # Ensure PAPERCLIP_HOME exists so onboard doesn't try to write to root
+          mkdir -p "$PAPERCLIP_HOME"
+          # First run onboard to create the configuration
+          paperclipai onboard --config "$PAPERCLIP_HOME/config.json" --data-dir "$PAPERCLIP_HOME" --yes --no-install-service >"${RUNNER_TEMP}/paperclip-onboard.log" 2>&1 || {
+            cat "${RUNNER_TEMP}/paperclip-onboard.log"
+            exit 1
+          }
+          # Start the actual server process using the supported `run` command
+          PATH="${RUNNER_TEMP}/paperclip-e2e-bin:${PATH}" nohup setsid paperclipai run --config "$PAPERCLIP_HOME/config.json" >"${RUNNER_TEMP}/paperclip-canary.log" 2>&1 </dev/null &
           echo $! >"${RUNNER_TEMP}/paperclip-canary.pid"
           for attempt in {1..120}; do
             if curl --fail --silent http://127.0.0.1:3100/api/health >/dev/null; then
@@ -94,7 +89,6 @@ jobs:
           exit 1
 
       - name: Run Jules recovery canary
-        if: matrix.node-version == '24.x'
         env:
           PAPERCLIP_TEST_API_URL: http://127.0.0.1:3100
           PAPERCLIP_E2E_GH_FIXTURE: server
@@ -102,12 +96,12 @@ jobs:
         run: pnpm test:e2e:jules-recovery
 
       - name: Stop disposable Paperclip server
-        if: always() && matrix.node-version == '24.x'
+        if: always()
         run: |
           if [ -f "${RUNNER_TEMP}/paperclip-canary.pid" ]; then
             # Stop the complete onboarding/server process group, including
             # the embedded database child. A parent-only kill leaks CI state.
-            kill -TERM -- "-$(cat "${RUNNER_TEMP}/paperclip-canary.pid")" || true
+            kill -TERM -- "-$(cat "${RUNNER_TEMP}/paperclip-canary.pid")"
             for attempt in {1..50}; do
               if ! kill -0 -- "-$(cat "${RUNNER_TEMP}/paperclip-canary.pid")" 2>/dev/null; then
                 break
@@ -116,7 +110,7 @@ jobs:
             done
             if kill -0 -- "-$(cat "${RUNNER_TEMP}/paperclip-canary.pid")" 2>/dev/null; then
               echo "Paperclip canary process group did not stop after SIGTERM" >&2
-              kill -KILL -- "-$(cat "${RUNNER_TEMP}/paperclip-canary.pid")" || true
+              kill -KILL -- "-$(cat "${RUNNER_TEMP}/paperclip-canary.pid")"
               exit 1
             fi
           fi

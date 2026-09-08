@@ -444,8 +444,15 @@ async function main(): Promise<void> {
   } finally {
     if (companyId) {
       try {
-        await request(`/api/companies/${companyId}`, "DELETE");
+        const res = await fetch(`${apiUrl}/api/companies/${companyId}`, { method: "DELETE" });
+        if (!res.ok) {
+          throw new Error(`company deletion returned HTTP ${res.status}`);
+        }
       } catch (error) {
+        const code = (error as NodeJS.ErrnoException)?.code;
+        if (code === "EPERM" || code === "EACCES") {
+          throw new Error(`company deletion failed with ${code}`);
+        }
         cleanupError = error;
       }
     }
