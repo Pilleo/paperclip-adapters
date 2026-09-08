@@ -26,8 +26,8 @@ async function run(filter = "all") {
       timeout: 3_000,
       env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` },
     });
-    const jsonStream = result.stdout.split("\n").slice(1).join("\n").trim();
-    return JSON.parse(jsonStream);
+    // Skip the first line (status message), parse each remaining line as JSON
+    return result.stdout.split("\n").slice(1).filter(line => line.trim()).map(line => JSON.parse(line));
   } finally {
     rmSync(bin, { recursive: true, force: true });
   }
