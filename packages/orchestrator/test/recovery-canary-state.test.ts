@@ -37,6 +37,9 @@ describe("projectRecoveryCanaryState", () => {
         { id: "one", kind: "request_item_verdicts", status: "pending", idempotencyKey: "pr-review:luna", addresseeAgentId: "luna" },
         { id: "two", kind: "request_item_verdicts", status: "pending", idempotencyKey: "pr-review:luna:attempt:2", addresseeAgentId: "luna" },
       ],
+      workProducts: [],
+      approvals: [],
+      heartbeatRuns: [],
     })).toEqual({
       parent: { status: "in_review", assigneeAgentId: null },
       children: [{ id: "child-a", status: "todo", parentId: "parent" }],
