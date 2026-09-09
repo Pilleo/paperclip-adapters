@@ -104,6 +104,9 @@ describe("Orchestrator Managed Fleet Manager", () => {
     const lunaReviewer = createdCalls.find((call) => call.name === "[Orchestrated] Luna Fast Reviewer");
     const reviewerInstructions = lunaReviewer?.instructionsBundle.files["AGENTS.md"] as string;
     expect(reviewerInstructions).toContain("paperclip_review.submit_native_review_verdict");
+    expect(reviewerInstructions).toContain("Authoritative PR evidence");
+    expect(reviewerInstructions).toContain("gh pr view");
+    expect(reviewerInstructions).toContain("Do not use the local checkout's HEAD, git diff, git status");
     expect(reviewerInstructions).not.toContain("PAPERCLIP_API_KEY");
     expect(reviewerInstructions).not.toContain("DECISION=");
     expect(reviewerInstructions).not.toContain('id":"pull_request"');

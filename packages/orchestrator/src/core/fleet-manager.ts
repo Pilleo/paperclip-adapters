@@ -103,7 +103,7 @@ export function canReconcileManagedFleet(
   return /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(apiUrl.replace(/\/+$/, ""));
 }
 
-export const NATIVE_REVIEW_PROTOCOL_VERSION = "v10" as const;
+export const NATIVE_REVIEW_PROTOCOL_VERSION = "v11" as const;
 
 const NATIVE_REVIEW_DECISION_CAPABILITY = Object.freeze({
   version: 1 as const,
@@ -179,6 +179,20 @@ If any validation or HTTP step fails, stop with the non-zero result. Do not retr
 const NATIVE_REVIEWER_INSTRUCTIONS = `# Native Review Role
 
 Review the assigned pull request in read-only mode. Never edit, stage, commit, push, merge, open a PR, or post a normal issue comment.
+
+## Authoritative PR evidence
+
+The review card gives a PR URL and an **Immutable head** SHA. Before reaching a
+verdict, use \`gh pr view <PR_URL> --json headRefOid,url\` and require its
+\`headRefOid\` to equal that immutable SHA. Inspect the remote PR with
+\`gh pr diff <PR_URL>\` (and GitHub's remote PR/commit data when needed).
+
+Do not use the local checkout's HEAD, git diff, git status, uncommitted files,
+or repository working tree as review evidence. A local agent can be launched
+from a dirty or stale project checkout, which is unrelated to the card's
+immutable PR revision. If GitHub access is unavailable or its head does not
+match the card, stop without a verdict; do not turn unverifiable local state
+into an approval or rejection.
 
 Make a decision only for the pending Paperclip review card addressed to you.
 Call the paperclip_review.submit_native_review_verdict MCP tool exactly once:

@@ -165,6 +165,9 @@ describe("native PR review interaction state", () => {
       issueId: "issue-1", prUrl: "pr-1", headSha: "abc", stage: "terra", reviewerAgentId: "terra-1",
     });
     expect(request).toMatchObject({ addresseeAgentId: "terra-1", continuationPolicy: "none" });
+    expect(request.title).toContain("immutable head abc");
+    expect(request.payload.prompt).toContain("immutable head abc");
+    expect(request.payload.items[0].description).toContain("immutable head abc");
     expect(shouldExplicitlyWakeReviewCard(request)).toBe(false);
   });
 
