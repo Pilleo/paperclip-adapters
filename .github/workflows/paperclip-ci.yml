@@ -98,6 +98,7 @@ jobs:
         env:
           PAPERCLIP_TEST_API_URL: http://127.0.0.1:3100
           PAPERCLIP_E2E_GH_FIXTURE: server
+          PAPERCLIP_E2E_GH_DIR: ${{ runner.temp }}/paperclip-e2e-bin
           WORKSPACE_PATH: ${{ github.workspace }}
         run: pnpm test:e2e:jules-recovery
 

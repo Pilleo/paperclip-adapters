@@ -144,13 +144,19 @@ async function main(): Promise<void> {
       throw new Error(`Paperclip did not persist the primary canary workspace: ${JSON.stringify(projectWorkspace)}`);
     }
 
+    const envPath = process.env["PAPERCLIP_E2E_GH_DIR"]
+      ? `${process.env["PAPERCLIP_E2E_GH_DIR"]}:${process.env["PATH"] || ""}`
+      : process.env["PATH"] || "";
+
     const orch = requireObject(await request(`/api/companies/${companyId}/agents`, "POST", {
       name: "Canary Orchestrator", role: "ceo", adapterType: "orchestrator",
       // The real server runner supplies this adapter configuration as the
       // heartbeat context. Enable fleet reconciliation so the canary fails
       // loudly if the canonical Luna/Terra reviewer identities cannot be
       // provisioned, rather than silently producing no review card.
-      adapterConfig: { reconcileFleet: true, apiUrl, backlogDirectory: ".paperclip-canary-empty" },
+      adapterConfig: { reconcileFleet: true, apiUrl, backlogDirectory: ".paperclip-canary-empty", env: {
+        PATH: { type: "plain", value: envPath },
+      } },
       permissions: { canCreateAgents: true, canCreateSkills: true, canAssignTasks: true, trustPreset: "standard" },
     }), "orchestrator agent");
     const jules = requireObject(await request(`/api/companies/${companyId}/agents`, "POST", {
@@ -185,6 +191,9 @@ async function main(): Promise<void> {
         backlogDirectory: ".paperclip-canary-empty",
         lunaReviewerAgentId: luna.id,
         terraReviewerAgentId: terra.id,
+        env: {
+          PATH: { type: "plain", value: envPath },
+        },
       },
     });
     // Canonicalize the managed fleet before introducing the PR. The bootstrap
@@ -213,6 +222,9 @@ async function main(): Promise<void> {
         backlogDirectory: ".paperclip-canary-empty",
         lunaReviewerAgentId: luna.id,
         terraReviewerAgentId: terra.id,
+        env: {
+          PATH: { type: "plain", value: envPath },
+        },
       },
     });
     const marker = `e2e-jules-recovery-${Date.now()}`;
