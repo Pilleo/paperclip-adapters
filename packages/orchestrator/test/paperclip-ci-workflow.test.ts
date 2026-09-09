@@ -15,6 +15,9 @@ describe("Paperclip CI recovery canary lifecycle", () => {
     expect(workflow).toMatch(/paperclipai onboard\s+--run/);
     expect(workflow).toContain("paperclipai onboard --help | grep -F -- '--run' | grep -F 'Start Paperclip immediately'");
     expect(workflow).not.toMatch(/if: matrix\.node-version == '24\.x'/);
+    expect(workflow).toContain('PAPERCLIP_E2E_OWNS_SERVER_STATE: "true"');
+    expect(workflow).toContain('PAPERCLIP_E2E_DATA_DIR: ${{ runner.temp }}/paperclip-canary-home');
+    expect(workflow).toContain('rm -rf -- "$PAPERCLIP_E2E_DATA_DIR"');
     expect(workflow).toContain("run: env -u JULES_API_KEY pnpm test:e2e:jules-recovery");
   });
 });

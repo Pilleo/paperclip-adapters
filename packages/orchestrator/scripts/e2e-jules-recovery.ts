@@ -1,5 +1,9 @@
 import path from "node:path";
-import { combineRecoveryCanaryFailure, projectRecoveryCanaryState } from "../src/core/recovery-canary-state.js";
+import {
+  combineRecoveryCanaryFailure,
+  projectRecoveryCanaryState,
+  shouldUseOwnedRecoveryCanaryCleanup,
+} from "../src/core/recovery-canary-state.js";
 
 /**
  * Fast, destructive-by-design E2E canary for the Jules open-PR recovery path.
@@ -102,6 +106,17 @@ async function main(): Promise<void> {
   }
   if (process.env["JULES_API_KEY"] !== undefined) {
     throw new Error("Canary must run without a JULES_API_KEY to ensure credential isolation");
+  }
+  const ownsServerState = process.env["PAPERCLIP_E2E_OWNS_SERVER_STATE"] === "true";
+  const useOwnedStateCleanup = shouldUseOwnedRecoveryCanaryCleanup({
+    ownsServerState,
+    apiUrl,
+    dataDirectory: process.env["PAPERCLIP_E2E_DATA_DIR"],
+  });
+  if (ownsServerState && !useOwnedStateCleanup) {
+    throw new Error(
+      "Owned recovery-canary cleanup requires an absolute data directory and a loopback Paperclip API",
+    );
   }
   const health = requireObject(await request("/api/health", "GET"), "health");
   if (health.status !== "ok") throw new Error("Paperclip health check failed");
@@ -475,7 +490,7 @@ async function main(): Promise<void> {
     operationError = error;
     throw error;
   } finally {
-    if (companyId) {
+    if (companyId && !useOwnedStateCleanup) {
       try {
         const res = await fetch(`${apiUrl}/api/companies/${companyId}`, { method: "DELETE" });
         if (!res.ok) {
