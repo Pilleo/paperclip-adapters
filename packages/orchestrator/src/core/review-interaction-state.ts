@@ -292,15 +292,15 @@ export function buildReviewInteractionRequest(identity: ReviewInteractionIdentit
   return {
     kind: "request_item_verdicts",
     idempotencyKey: reviewInteractionIdempotencyKey(identity),
-    title: `Review pull request ${identity.prUrl} at immutable head ${identity.headSha}`,
+    title: `Review pull request ${identity.prUrl}`,
     ...(identity.reviewerAgentId
       ? { addresseeAgentId: identity.reviewerAgentId, continuationPolicy: "none" as const }
       : { continuationPolicy: "wake_assignee" as const }),
     payload: {
       version: 1,
-      prompt: `Review this pull request at immutable head ${identity.headSha} and choose a disposition.`,
+      prompt: "Review this pull request and choose a disposition.",
       detailsMarkdown: `**PR:** ${identity.prUrl}\n\nChoose approve only when the PR is ready. Reject requires a concrete reason.\n\nThis is a native Paperclip review card. The structured interaction verdict is the only review decision. Submit it with POST \`$PAPERCLIP_API_BASE/api/issues/$PAPERCLIP_TASK_ID/interactions/<INTERACTION_ID>/verdicts\` using JSON \`{\"verdicts\":[{\"id\":\"pull_request\",\"verdict\":\"approve\"}]}\` (use \`verdict: \"reject\"\` plus \`reason\` for requested changes). Replace \`<INTERACTION_ID>\` with the actual interaction id from the wake message. Do not PATCH issue status or assignment and do not post a plain issue comment as a fallback. The orchestrator owns the state transition after it observes the verdict. If a write returns HTTP 409, re-fetch the issue and interaction; do not retry the locked mutation or emit a prose substitute.`,
-      items: [{ id: "pull_request", label: "Pull request", description: `${identity.prUrl} at immutable head ${identity.headSha}` }],
+      items: [{ id: "pull_request", label: "Pull request", description: identity.prUrl }],
       verdicts: ["approve", "reject"],
       requireReasonOn: ["reject"],
       reasonLabel: "What must change?",

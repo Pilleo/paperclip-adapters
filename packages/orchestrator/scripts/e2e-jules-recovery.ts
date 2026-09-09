@@ -1,9 +1,5 @@
 import path from "node:path";
-import {
-  combineRecoveryCanaryFailure,
-  projectRecoveryCanaryState,
-  shouldUseOwnedRecoveryCanaryCleanup,
-} from "../src/core/recovery-canary-state.js";
+import { projectRecoveryCanaryState } from "../src/core/recovery-canary-state.js";
 
 /**
  * Fast, destructive-by-design E2E canary for the Jules open-PR recovery path.
@@ -106,17 +102,6 @@ async function main(): Promise<void> {
   }
   if (process.env["JULES_API_KEY"] !== undefined) {
     throw new Error("Canary must run without a JULES_API_KEY to ensure credential isolation");
-  }
-  const ownsServerState = process.env["PAPERCLIP_E2E_OWNS_SERVER_STATE"] === "true";
-  const useOwnedStateCleanup = shouldUseOwnedRecoveryCanaryCleanup({
-    ownsServerState,
-    apiUrl,
-    dataDirectory: process.env["PAPERCLIP_E2E_DATA_DIR"],
-  });
-  if (ownsServerState && !useOwnedStateCleanup) {
-    throw new Error(
-      "Owned recovery-canary cleanup requires an absolute data directory and a loopback Paperclip API",
-    );
   }
   const health = requireObject(await request("/api/health", "GET"), "health");
   if (health.status !== "ok") throw new Error("Paperclip health check failed");
@@ -490,8 +475,22 @@ async function main(): Promise<void> {
     operationError = error;
     throw error;
   } finally {
-    if (companyId && !useOwnedStateCleanup) {
+    if (companyId) {
       try {
+        // Supported deterministic cleanup API: Delete agents first to gracefully terminate
+        // managed fleet adapters (e.g. Orchestrator, Jules) before deleting the company.
+        // This prevents the adapters from inserting `heartbeat_run_events` concurrently
+        // which causes a foreign key constraint violation (500 error) during company deletion.
+        const agentsReq = await fetch(`${apiUrl}/api/companies/${companyId}/agents`);
+        if (agentsReq.ok) {
+          const agents = await agentsReq.json();
+          if (Array.isArray(agents)) {
+            for (const agent of agents) {
+              await fetch(`${apiUrl}/api/agents/${agent.id}`, { method: "DELETE" });
+            }
+          }
+        }
+
         const res = await fetch(`${apiUrl}/api/companies/${companyId}`, { method: "DELETE" });
         if (!res.ok) {
           throw new Error(`company deletion returned HTTP ${res.status}`);
@@ -504,8 +503,11 @@ async function main(): Promise<void> {
         cleanupError = error;
       }
     }
-    if (cleanupError) {
-      throw combineRecoveryCanaryFailure(operationError, cleanupError, companyId);
+    if (cleanupError && !operationError) {
+      throw new Error(`Canary cleanup failed; disposable company ${companyId} may remain: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
+    }
+    if (cleanupError && operationError) {
+      throw new Error(`Canary failed with operation error, AND cleanup also failed (disposable company ${companyId} may remain): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}\n\nOriginal operation error: ${operationError instanceof Error ? operationError.message : String(operationError)}`);
     }
   }
 }

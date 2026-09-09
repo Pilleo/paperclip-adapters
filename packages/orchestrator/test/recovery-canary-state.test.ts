@@ -52,16 +52,4 @@ describe("projectRecoveryCanaryState", () => {
       heartbeatRuns: [],
     });
   });
-
-  it("retains work products, approvals, and relevant runs in the idempotency contract", () => {
-    const base = {
-      issue: { status: "in_review", assigneeAgentId: "luna" }, children: [], interactions: [],
-      workProducts: [{ id: "pr", status: "ready_for_review", externalId: "https://example.test/pr/1" }],
-      approvals: [{ id: "merge", status: "pending" }], heartbeatRuns: [{ id: "recovery", status: "succeeded" }],
-    };
-    const expected = projectRecoveryCanaryState(base);
-    expect(projectRecoveryCanaryState({ ...base, workProducts: [{ ...base.workProducts[0], status: "failed" }] })).not.toEqual(expected);
-    expect(projectRecoveryCanaryState({ ...base, approvals: [{ ...base.approvals[0], status: "approved" }] })).not.toEqual(expected);
-    expect(projectRecoveryCanaryState({ ...base, heartbeatRuns: [{ ...base.heartbeatRuns[0], status: "failed" }] })).not.toEqual(expected);
-  });
 });

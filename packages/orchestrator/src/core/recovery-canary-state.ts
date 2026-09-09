@@ -22,55 +22,6 @@ export interface RecoveryCanaryState {
   readonly heartbeatRuns: readonly { readonly id: string; readonly status: unknown }[];
 }
 
-/**
- * The recovery canary mutates a disposable company, so a failed test and a
- * failed cleanup are independently actionable. Preserve both causes instead
- * of letting the `finally` block hide one behind a log line.
- */
-export function combineRecoveryCanaryFailure(
-  operationError: unknown,
-  cleanupError: unknown,
-  companyId: string,
-): Error {
-  const cleanupMessage = `Canary cleanup failed; disposable company ${companyId} may remain: ${
-    cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
-  }`;
-  if (operationError !== undefined) {
-    return new AggregateError(
-      [operationError, cleanupError],
-      `Canary operation and cleanup failed; disposable company ${companyId} may remain`,
-    );
-  }
-  return new Error(cleanupMessage);
-}
-
-export interface OwnedRecoveryCanaryCleanupInput {
-  readonly ownsServerState: boolean;
-  readonly apiUrl: string;
-  readonly dataDirectory: string | undefined;
-}
-
-/**
- * A Paperclip 2026.831.1 server cannot delete a company after this canary has
- * produced heartbeat-run events: its company-delete route violates the
- * heartbeat_run_events foreign key. Do not mask that server defect with a
- * retry. CI instead owns the entire loopback server data directory and removes
- * it only after the server process has stopped. This narrow predicate keeps
- * the normal, externally-hosted-server cleanup path fail-closed.
- *
- * Remove the owned-state path after Paperclip deletes heartbeat_run_events (or
- * cascades them) before deleting heartbeat_runs.
- */
-export function shouldUseOwnedRecoveryCanaryCleanup(input: OwnedRecoveryCanaryCleanupInput): boolean {
-  if (!input.ownsServerState || !input.dataDirectory || !input.dataDirectory.startsWith("/")) return false;
-  try {
-    const hostname = new URL(input.apiUrl).hostname;
-    return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
-  } catch {
-    return false;
-  }
-}
-
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
