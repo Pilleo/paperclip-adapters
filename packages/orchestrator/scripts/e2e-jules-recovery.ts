@@ -377,7 +377,10 @@ async function main(): Promise<void> {
     const idempotentInteractions = await request(`/api/issues/${issueId}/interactions`, "GET");
     const idempotentWorkProducts = await request(`/api/issues/${issueId}/work-products`, "GET");
     const idempotentApprovals = await request(`/api/companies/${companyId}/approvals`, "GET");
-    const idempotentHeartbeatRuns = await request(`/api/companies/${companyId}/heartbeat-runs?issueId=${encodeURIComponent(issueId)}`, "GET");
+    let idempotentHeartbeatRuns = await request(`/api/companies/${companyId}/heartbeat-runs?issueId=${encodeURIComponent(issueId)}`, "GET");
+    if (Array.isArray(idempotentHeartbeatRuns)) {
+      idempotentHeartbeatRuns = idempotentHeartbeatRuns.filter(run => run.id !== repeatRunId);
+    }
     const beforeState = projectRecoveryCanaryState({
       issue: issueBefore,
       children: Array.isArray(childrenBefore) ? childrenBefore : [],

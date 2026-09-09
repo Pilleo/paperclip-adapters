@@ -40,9 +40,30 @@ export function projectRecoveryCanaryState(input: RecoveryCanaryInput): Recovery
       ? [{ id: interaction["id"], idempotencyKey: interaction["idempotencyKey"], addresseeAgentId: interaction["addresseeAgentId"] }]
       : [])
     .sort((left, right) => left.id.localeCompare(right.id));
+  const workProducts = (input.workProducts || [])
+    .filter(isRecord)
+    .flatMap((wp) => typeof wp["id"] === "string"
+      ? [{ id: wp["id"], status: wp["status"], externalId: wp["externalId"] }]
+      : [])
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const approvals = (input.approvals || [])
+    .filter(isRecord)
+    .flatMap((approval) => typeof approval["id"] === "string"
+      ? [{ id: approval["id"], status: approval["status"] }]
+      : [])
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const heartbeatRuns = (input.heartbeatRuns || [])
+    .filter(isRecord)
+    .flatMap((run) => typeof run["id"] === "string"
+      ? [{ id: run["id"], status: run["status"] }]
+      : [])
+    .sort((left, right) => left.id.localeCompare(right.id));
   return {
     parent: { status: input.issue["status"], assigneeAgentId: input.issue["assigneeAgentId"] },
     children,
     pendingCards,
+    workProducts,
+    approvals,
+    heartbeatRuns,
   };
 }

@@ -44,6 +44,9 @@ describe("projectRecoveryCanaryState", () => {
         { id: "one", idempotencyKey: "pr-review:luna", addresseeAgentId: "luna" },
         { id: "two", idempotencyKey: "pr-review:luna:attempt:2", addresseeAgentId: "luna" },
       ],
+      workProducts: [],
+      approvals: [],
+      heartbeatRuns: [],
     });
   });
 });
