@@ -42,18 +42,23 @@ jobs:
       - name: Run Full Test Matrix (399+ unit tests)
         run: pnpm -r test
 
+      # Keep the adapter build/typecheck/test contract on the matrix runtime.
+      # Paperclip 2026.831.1 itself requires Node >=24.11, so the disposable
+      # server is deliberately booted with Node 24 after the matrix checks.
+      # This executes the canary in both CI lanes without misrepresenting the
+      # control-plane runtime requirement as an adapter incompatibility.
+      - name: Setup Node.js 24 for disposable Paperclip control plane
+        id: paperclip-server-node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+
       - name: Install pinned Paperclip control plane
-        if: matrix.node-version == '24.x'
         # Keep package download outside the server health budget. A cold npx
         # cache can take over a minute and otherwise looks like a boot failure.
         run: npm install --global paperclipai@2026.831.1
 
       - name: Start disposable Paperclip server
-        # Adapter packages support Node 22, but the pinned Paperclip control
-        # plane requires Node >=24.11 and deliberately refuses to boot on 22.
-        # The 22.x job still validates build/test/package compatibility; the
-        # native server contract runs once on its supported runtime.
-        if: matrix.node-version == '24.x'
         env:
           HOME: ${{ runner.temp }}/paperclip-canary-user-home
           PAPERCLIP_HOME: ${{ runner.temp }}/paperclip-canary-home
@@ -94,7 +99,6 @@ jobs:
           exit 1
 
       - name: Run Jules recovery canary
-        if: matrix.node-version == '24.x'
         env:
           PAPERCLIP_TEST_API_URL: http://127.0.0.1:3100
           PAPERCLIP_E2E_GH_FIXTURE: server
@@ -103,7 +107,7 @@ jobs:
         run: env -u JULES_API_KEY pnpm test:e2e:jules-recovery
 
       - name: Stop disposable Paperclip server
-        if: always() && matrix.node-version == '24.x'
+        if: always()
         run: |
           if [ -f "${RUNNER_TEMP}/paperclip-canary.pid" ]; then
             # Stop the complete onboarding/server process group, including
