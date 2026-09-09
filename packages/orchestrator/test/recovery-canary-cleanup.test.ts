@@ -101,8 +101,9 @@ describe("Recovery Canary Cleanup sequence", () => {
     });
 
     try {
+      const { JULES_API_KEY, ...cleanEnv } = process.env;
       await execFileAsync("tsx", [scriptPath], {
-        env: { ...process.env, PAPERCLIP_TEST_API_URL: apiUrl, PAPERCLIP_E2E_GH_FIXTURE: "server" }
+        env: { ...cleanEnv, PAPERCLIP_TEST_API_URL: apiUrl, PAPERCLIP_E2E_GH_FIXTURE: "server" }
       });
       expect.fail("Should have thrown");
     } catch (error: any) {
@@ -122,8 +123,9 @@ describe("Recovery Canary Cleanup sequence", () => {
     });
 
     try {
+      const { JULES_API_KEY, ...cleanEnv } = process.env;
       await execFileAsync("tsx", [scriptPath], {
-        env: { ...process.env, PAPERCLIP_TEST_API_URL: apiUrl, PAPERCLIP_E2E_GH_FIXTURE: "server" }
+        env: { ...cleanEnv, PAPERCLIP_TEST_API_URL: apiUrl, PAPERCLIP_E2E_GH_FIXTURE: "server" }
       });
       expect.fail("Should have thrown");
     } catch (error: any) {
@@ -141,8 +143,9 @@ describe("Recovery Canary Cleanup sequence", () => {
       if (!res.writableEnded) res.end(JSON.stringify({}));
     });
 
+    const { JULES_API_KEY, ...cleanEnv } = process.env;
     const { stdout } = await execFileAsync("tsx", [scriptPath], {
-      env: { ...process.env, PAPERCLIP_TEST_API_URL: apiUrl, PAPERCLIP_E2E_GH_FIXTURE: "server" }
+      env: { ...cleanEnv, PAPERCLIP_TEST_API_URL: apiUrl, PAPERCLIP_E2E_GH_FIXTURE: "server" }
     });
 
     expect(stdout).toContain("Jules recovery canary passed");
