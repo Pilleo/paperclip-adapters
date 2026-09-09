@@ -16,6 +16,7 @@ describe("Paperclip CI recovery canary lifecycle", () => {
     expect(workflow).toContain("node-version: 24.x");
     expect(workflow).toContain("nohup setsid paperclipai onboard");
     expect(workflow).toMatch(/paperclipai onboard\s+--run/);
+    expect(workflow).toContain("paperclipai onboard --help | grep -F -- '--run' | grep -F 'Start Paperclip immediately'");
     expect(workflow).not.toMatch(/if: matrix\.node-version == '24\.x'/);
     expect(workflow).toContain("run: env -u JULES_API_KEY pnpm test:e2e:jules-recovery");
   });

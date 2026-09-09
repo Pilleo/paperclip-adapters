@@ -58,6 +58,12 @@ jobs:
         # cache can take over a minute and otherwise looks like a boot failure.
         run: npm install --global paperclipai@2026.831.1
 
+      - name: Verify documented Paperclip onboarding lifecycle
+        # The pinned CLI documents `onboard --run` as the supported immediate
+        # startup mode. Keep this executable assertion next to the pin: a
+        # future CLI contract change must fail CI before it changes the canary.
+        run: paperclipai onboard --help | grep -F -- '--run' | grep -F 'Start Paperclip immediately'
+
       - name: Start disposable Paperclip server
         env:
           HOME: ${{ runner.temp }}/paperclip-canary-user-home

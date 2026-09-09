@@ -1,5 +1,5 @@
 import path from "node:path";
-import { projectRecoveryCanaryState } from "../src/core/recovery-canary-state.js";
+import { combineRecoveryCanaryFailure, projectRecoveryCanaryState } from "../src/core/recovery-canary-state.js";
 
 /**
  * Fast, destructive-by-design E2E canary for the Jules open-PR recovery path.
@@ -489,11 +489,8 @@ async function main(): Promise<void> {
         cleanupError = error;
       }
     }
-    if (cleanupError && !operationError) {
-      throw new Error(`Canary cleanup failed; disposable company ${companyId} may remain: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
-    }
-    if (cleanupError && operationError) {
-      console.error(`Canary cleanup also failed; disposable company ${companyId} may remain: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
+    if (cleanupError) {
+      throw combineRecoveryCanaryFailure(operationError, cleanupError, companyId);
     }
   }
 }
