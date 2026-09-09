@@ -42,18 +42,29 @@ jobs:
       - name: Run Full Test Matrix (399+ unit tests)
         run: pnpm -r test
 
+      # Keep the adapter build/typecheck/test contract on the matrix runtime.
+      # Paperclip 2026.831.1 itself requires Node >=24.11, so the disposable
+      # server is deliberately booted with Node 24 after the matrix checks.
+      # This executes the canary in both CI lanes without misrepresenting the
+      # control-plane runtime requirement as an adapter incompatibility.
+      - name: Setup Node.js 24 for disposable Paperclip control plane
+        id: paperclip-server-node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+
       - name: Install pinned Paperclip control plane
-        if: matrix.node-version == '24.x'
         # Keep package download outside the server health budget. A cold npx
         # cache can take over a minute and otherwise looks like a boot failure.
         run: npm install --global paperclipai@2026.831.1
 
+      - name: Verify documented Paperclip onboarding lifecycle
+        # The pinned CLI documents `onboard --run` as the supported immediate
+        # startup mode. Keep this executable assertion next to the pin: a
+        # future CLI contract change must fail CI before it changes the canary.
+        run: paperclipai onboard --help | grep -F -- '--run' | grep -F 'Start Paperclip immediately'
+
       - name: Start disposable Paperclip server
-        # Adapter packages support Node 22, but the pinned Paperclip control
-        # plane requires Node >=24.11 and deliberately refuses to boot on 22.
-        # The 22.x job still validates build/test/package compatibility; the
-        # native server contract runs once on its supported runtime.
-        if: matrix.node-version == '24.x'
         env:
           HOME: ${{ runner.temp }}/paperclip-canary-user-home
           PAPERCLIP_HOME: ${{ runner.temp }}/paperclip-canary-home
@@ -75,15 +86,14 @@ jobs:
           esac
           EOF
           chmod +x "${RUNNER_TEMP}/paperclip-e2e-bin/gh"
-          # In Paperclip 2026.831.1, noninteractive onboarding owns the
-          # foreground server lifecycle. Start that one process in a separate
-          # process group: waiting for onboarding and then invoking `run`
-          # deadlocks until a timeout because onboarding does not return.
+          # `onboard --run` is the documented single-process lifecycle: it
+          # persists this disposable instance's config and starts the server.
+          # Do not invoke a second `paperclipai run` afterwards: the first
+          # process owns the port and a sequential invocation deadlocks.
           # Pin the control-plane version used by the adapter contract test.
           # Floating latest made upstream releases silently change the canary
           # semantics before this repository had deliberately adopted them.
-          env -u JULES_API_KEY PATH="${RUNNER_TEMP}/paperclip-e2e-bin:${PATH}" paperclipai onboard --config "$PAPERCLIP_HOME/config.json" --data-dir "$PAPERCLIP_HOME" --bind loopback --yes --no-install-service >/dev/null 2>&1
-          env -u JULES_API_KEY PATH="${RUNNER_TEMP}/paperclip-e2e-bin:${PATH}" nohup setsid paperclipai run --config "$PAPERCLIP_HOME/config.json" >"${RUNNER_TEMP}/paperclip-canary.log" 2>&1 </dev/null &
+          env -u JULES_API_KEY PATH="${RUNNER_TEMP}/paperclip-e2e-bin:${PATH}" nohup setsid paperclipai onboard --run --config "$PAPERCLIP_HOME/config.json" --data-dir "$PAPERCLIP_HOME" --bind loopback --yes --no-install-service >"${RUNNER_TEMP}/paperclip-canary.log" 2>&1 </dev/null &
           echo $! >"${RUNNER_TEMP}/paperclip-canary.pid"
           for attempt in {1..120}; do
             if curl --connect-timeout 1 --max-time 1 --fail --silent http://127.0.0.1:3100/api/health >/dev/null; then
@@ -95,10 +105,6 @@ jobs:
           exit 1
 
       - name: Run Jules recovery canary
-        # The Paperclip control plane deliberately refuses to boot on Node 22 (requires Node >=24.11),
-        # so the full server-backed recovery canary cannot execute during the 22.x matrix job.
-        # It runs only on 24.x where the native server is successfully started.
-        if: matrix.node-version == '24.x'
         env:
           PAPERCLIP_TEST_API_URL: http://127.0.0.1:3100
           PAPERCLIP_E2E_GH_FIXTURE: server
@@ -107,7 +113,7 @@ jobs:
         run: env -u JULES_API_KEY pnpm test:e2e:jules-recovery
 
       - name: Stop disposable Paperclip server
-        if: always() && matrix.node-version == '24.x'
+        if: always()
         run: |
           if [ -f "${RUNNER_TEMP}/paperclip-canary.pid" ]; then
             # Stop the complete onboarding/server process group, including
