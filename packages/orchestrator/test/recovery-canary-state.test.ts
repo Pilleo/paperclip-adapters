@@ -10,6 +10,9 @@ describe("projectRecoveryCanaryState", () => {
         { id: "child-a", status: "done", parentId: "parent", statusVersion: 1 },
       ],
       interactions: [{ id: "card-luna", kind: "request_item_verdicts", status: "pending", idempotencyKey: "pr-review:luna", addresseeAgentId: "luna", createdAt: "first" }],
+      workProducts: [],
+      approvals: [],
+      heartbeatRuns: [],
     });
     const second = projectRecoveryCanaryState({
       issue: { status: "in_review", assigneeAgentId: null, updatedAt: "second", lastActivityAt: "second", statusVersion: 99 },
@@ -18,6 +21,9 @@ describe("projectRecoveryCanaryState", () => {
         { id: "child-b", status: "done", parentId: "parent", updatedAt: "second", completedAt: "second" },
       ],
       interactions: [{ id: "card-luna", kind: "request_item_verdicts", status: "pending", idempotencyKey: "pr-review:luna", addresseeAgentId: "luna", createdAt: "second" }],
+      workProducts: [],
+      approvals: [],
+      heartbeatRuns: [],
     });
 
     expect(second).toEqual(first);

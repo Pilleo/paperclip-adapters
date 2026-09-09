@@ -339,6 +339,9 @@ async function main(): Promise<void> {
     const childrenAfter = await request(`/api/companies/${companyId}/issues?parentId=${encodeURIComponent(issueId)}`, "GET");
     const interactionsAfter = await request(`/api/issues/${issueId}/interactions`, "GET");
     const issueAfter = await request(`/api/issues/${issueId}`, "GET");
+    const workProductsAfter = await request(`/api/issues/${issueId}/work-products`, "GET");
+    const approvalsAfter = await request(`/api/companies/${companyId}/approvals`, "GET");
+    const heartbeatRunsAfter = await request(`/api/companies/${companyId}/heartbeat-runs?issueId=${encodeURIComponent(issueId)}`, "GET");
     const recoveredPrCards = pendingReviewCards(interactionsAfter);
     const recoveredLunaCard = recoveredPrCards.find((card) => String(card.id) === String(lunaCard.id));
     const stalePlanAfter = (Array.isArray(interactionsAfter) ? interactionsAfter : []).find((card) =>
@@ -357,6 +360,9 @@ async function main(): Promise<void> {
     const childrenBefore = childrenAfter;
     const interactionsBefore = interactionsAfter;
     const issueBefore = issueAfter;
+    const workProductsBefore = workProductsAfter;
+    const approvalsBefore = approvalsAfter;
+    const heartbeatRunsBefore = heartbeatRunsAfter;
     const repeatWake = requireObject(await request(`/api/agents/${orch.id}/wakeup`, "POST", {
       source: "on_demand",
       reason: "e2e_jules_recovery_canary_repeat",
@@ -369,15 +375,24 @@ async function main(): Promise<void> {
     const idempotentIssue = requireObject(await request(`/api/issues/${issueId}`, "GET"), "idempotent issue");
     const idempotentChildren = await request(`/api/companies/${companyId}/issues?parentId=${encodeURIComponent(issueId)}`, "GET");
     const idempotentInteractions = await request(`/api/issues/${issueId}/interactions`, "GET");
+    const idempotentWorkProducts = await request(`/api/issues/${issueId}/work-products`, "GET");
+    const idempotentApprovals = await request(`/api/companies/${companyId}/approvals`, "GET");
+    const idempotentHeartbeatRuns = await request(`/api/companies/${companyId}/heartbeat-runs?issueId=${encodeURIComponent(issueId)}`, "GET");
     const beforeState = projectRecoveryCanaryState({
       issue: issueBefore,
       children: Array.isArray(childrenBefore) ? childrenBefore : [],
       interactions: Array.isArray(interactionsBefore) ? interactionsBefore : [],
+      workProducts: Array.isArray(workProductsBefore) ? workProductsBefore : [],
+      approvals: Array.isArray(approvalsBefore) ? approvalsBefore : [],
+      heartbeatRuns: Array.isArray(heartbeatRunsBefore) ? heartbeatRunsBefore : [],
     });
     const afterState = projectRecoveryCanaryState({
       issue: idempotentIssue,
       children: Array.isArray(idempotentChildren) ? idempotentChildren : [],
       interactions: Array.isArray(idempotentInteractions) ? idempotentInteractions : [],
+      workProducts: Array.isArray(idempotentWorkProducts) ? idempotentWorkProducts : [],
+      approvals: Array.isArray(idempotentApprovals) ? idempotentApprovals : [],
+      heartbeatRuns: Array.isArray(idempotentHeartbeatRuns) ? idempotentHeartbeatRuns : [],
     });
     if (JSON.stringify(beforeState) !== JSON.stringify(afterState) ||
         idempotentIssue.status !== "in_review") {
