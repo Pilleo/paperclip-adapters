@@ -60,6 +60,7 @@ jobs:
           PAPERCLIP_INSTANCE_ID: canary
           PORT: 3100
           HOST: 127.0.0.1
+          JULES_API_KEY: ""
         run: |
           # The orchestrator is an external process. Put the deterministic
           # GitHub fixture on the *server* PATH before boot so spawned adapter
@@ -100,6 +101,7 @@ jobs:
           PAPERCLIP_E2E_GH_FIXTURE: server
           PAPERCLIP_E2E_GH_DIR: ${{ runner.temp }}/paperclip-e2e-bin
           WORKSPACE_PATH: ${{ github.workspace }}
+          JULES_API_KEY: ""
         run: pnpm test:e2e:jules-recovery
 
       - name: Stop disposable Paperclip server

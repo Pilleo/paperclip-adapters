@@ -100,6 +100,9 @@ async function main(): Promise<void> {
       "Recovery canary requires a server-owned GitHub fixture. Start Paperclip with the deterministic gh fixture and set PAPERCLIP_E2E_GH_FIXTURE=server.",
     );
   }
+  if (process.env["JULES_API_KEY"]) {
+    throw new Error("Canary must run without a JULES_API_KEY to ensure credential isolation");
+  }
   const health = requireObject(await request("/api/health", "GET"), "health");
   if (health.status !== "ok") throw new Error("Paperclip health check failed");
 
