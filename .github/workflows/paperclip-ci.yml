@@ -77,14 +77,23 @@ jobs:
           esac
           EOF
           chmod +x "${RUNNER_TEMP}/paperclip-e2e-bin/gh"
-          # In Paperclip 2026.831.1, noninteractive onboarding owns the
-          # foreground server lifecycle. Start that one process in a separate
-          # process group: waiting for onboarding and then invoking `run`
-          # deadlocks until a timeout because onboarding does not return.
+          # In Paperclip 2026.831.1, noninteractive onboarding with --yes also starts the server.
+          # To satisfy the required startup lifecycle of both `onboard` and `run`, we
+          # allow `onboard` to create the configuration, kill it gracefully once healthy,
+          # and then natively use `run` as the primary background daemon.
+          env -u JULES_API_KEY PATH="${RUNNER_TEMP}/paperclip-e2e-bin:${PATH}" paperclipai onboard --config "$PAPERCLIP_HOME/config.json" --data-dir "$PAPERCLIP_HOME" --bind loopback --yes --no-install-service >/dev/null 2>&1 &
+          ONBOARD_PID=$!
+          for attempt in {1..120}; do
+            if curl --connect-timeout 1 --max-time 1 --fail --silent http://127.0.0.1:3100/api/health >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          kill -TERM $ONBOARD_PID
+          while kill -0 $ONBOARD_PID 2>/dev/null; do sleep 0.2; done
+
           # Pin the control-plane version used by the adapter contract test.
-          # Floating latest made upstream releases silently change the canary
-          # semantics before this repository had deliberately adopted them.
-          env -u JULES_API_KEY PATH="${RUNNER_TEMP}/paperclip-e2e-bin:${PATH}" nohup setsid paperclipai onboard --run --config "$PAPERCLIP_HOME/config.json" --data-dir "$PAPERCLIP_HOME" --bind loopback --yes --no-install-service >"${RUNNER_TEMP}/paperclip-canary.log" 2>&1 </dev/null &
+          env -u JULES_API_KEY PATH="${RUNNER_TEMP}/paperclip-e2e-bin:${PATH}" nohup setsid paperclipai run --config "$PAPERCLIP_HOME/config.json" >"${RUNNER_TEMP}/paperclip-canary.log" 2>&1 </dev/null &
           echo $! >"${RUNNER_TEMP}/paperclip-canary.pid"
           for attempt in {1..120}; do
             if curl --connect-timeout 1 --max-time 1 --fail --silent http://127.0.0.1:3100/api/health >/dev/null; then

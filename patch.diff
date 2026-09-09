@@ -1,7 +1,0 @@
-<<<<<<< SEARCH
-    if (method === "POST" && url === "/api/companies/comp-1/agents") return res.end(JSON.stringify({ id: "agent-" + Date.now(), apiToken: "tok" }));
-=======
-    if (method === "POST" && url === "/api/companies/comp-1/agents") return res.end(JSON.stringify({ id: "agent-jules", apiToken: "tok" }));
-    if (method === "GET" && url === "/api/companies/comp-1/agents") return res.end(JSON.stringify([{ id: "agent-jules" }]));
-    if (method === "DELETE" && url.includes("/api/agents/")) return res.end(JSON.stringify({ ok: true }));
->>>>>>> REPLACE
