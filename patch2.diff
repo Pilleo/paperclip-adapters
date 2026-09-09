@@ -1,6 +1,0 @@
-<<<<<<< SEARCH
-          env -u JULES_API_KEY PATH="${RUNNER_TEMP}/paperclip-e2e-bin:${PATH}" paperclipai onboard --config "$PAPERCLIP_HOME/config.json" --data-dir "$PAPERCLIP_HOME" --bind loopback --yes --no-install-service >/dev/null 2>&1
-          env -u JULES_API_KEY PATH="${RUNNER_TEMP}/paperclip-e2e-bin:${PATH}" nohup setsid paperclipai run --config "$PAPERCLIP_HOME/config.json" >"${RUNNER_TEMP}/paperclip-canary.log" 2>&1 </dev/null &
-=======
-          env -u JULES_API_KEY PATH="${RUNNER_TEMP}/paperclip-e2e-bin:${PATH}" nohup setsid paperclipai onboard --run --config "$PAPERCLIP_HOME/config.json" --data-dir "$PAPERCLIP_HOME" --bind loopback --yes --no-install-service >"${RUNNER_TEMP}/paperclip-canary.log" 2>&1 </dev/null &
->>>>>>> REPLACE

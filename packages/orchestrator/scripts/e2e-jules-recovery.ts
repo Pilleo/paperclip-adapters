@@ -482,11 +482,15 @@ async function main(): Promise<void> {
         // This prevents the adapters from inserting `heartbeat_run_events` concurrently
         // which causes a foreign key constraint violation (500 error) during company deletion.
         const agentsReq = await fetch(`${apiUrl}/api/companies/${companyId}/agents`);
-        if (agentsReq.ok) {
-          const agents = await agentsReq.json();
-          if (Array.isArray(agents)) {
-            for (const agent of agents) {
-              await fetch(`${apiUrl}/api/agents/${agent.id}`, { method: "DELETE" });
+        if (!agentsReq.ok) {
+          throw new Error(`agent list fetch returned HTTP ${agentsReq.status}`);
+        }
+        const agents = await agentsReq.json();
+        if (Array.isArray(agents)) {
+          for (const agent of agents) {
+            const delReq = await fetch(`${apiUrl}/api/agents/${agent.id}`, { method: "DELETE" });
+            if (!delReq.ok) {
+              throw new Error(`agent deletion returned HTTP ${delReq.status} for agent ${agent.id}`);
             }
           }
         }
