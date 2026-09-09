@@ -288,6 +288,11 @@ async function main(): Promise<void> {
     if (recovered.status !== "in_review" || recovered.assigneeAgentId !== luna.id || pendingCards.length !== 1 || !lunaCard) {
       const canaryAgents = await request(`/api/companies/${companyId}/agents`, "GET");
       const canaryComments = await request(`/api/issues/${issueId}/comments`, "GET");
+      const canaryInteractions = await request(`/api/issues/${issueId}/interactions`, "GET");
+
+      const interactionDump = (Array.isArray(canaryInteractions) ? canaryInteractions : [])
+        .map((i: any) => ({ kind: i.kind, status: i.status, error: i.error || i.errorReason, metadata: i.metadata }));
+
       throw new Error(`Canary did not enter native review: ${JSON.stringify({
         status: recovered.status,
         assigneeAgentId: recovered.assigneeAgentId,
