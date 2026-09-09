@@ -22,28 +22,6 @@ export interface RecoveryCanaryState {
   readonly heartbeatRuns: readonly { readonly id: string; readonly status: unknown }[];
 }
 
-/**
- * The recovery canary mutates a disposable company, so a failed test and a
- * failed cleanup are independently actionable. Preserve both causes instead
- * of letting the `finally` block hide one behind a log line.
- */
-export function combineRecoveryCanaryFailure(
-  operationError: unknown,
-  cleanupError: unknown,
-  companyId: string,
-): Error {
-  const cleanupMessage = `Canary cleanup failed; disposable company ${companyId} may remain: ${
-    cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
-  }`;
-  if (operationError !== undefined) {
-    return new AggregateError(
-      [operationError, cleanupError],
-      `Canary operation and cleanup failed; disposable company ${companyId} may remain`,
-    );
-  }
-  return new Error(cleanupMessage);
-}
-
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
