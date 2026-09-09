@@ -18,8 +18,6 @@ describe("Recovery Canary Cleanup sequence", () => {
       server.close();
       server = null;
     }
-    globalThis._agentCount = 0;
-    globalThis._issueCount = 0;
   });
 
   async function startMockServer(handler: (req: any, res: any, state: any) => void) {
