@@ -56,7 +56,7 @@ describe("Recovery Canary Cleanup sequence", () => {
       state.agentCount = (state.agentCount || 0) + 1;
       return res.end(JSON.stringify({ id: "agent-" + state.agentCount, apiToken: "tok" }));
     }
-    if (method === "GET" && url === "/api/companies/comp-1/agents") return res.end(JSON.stringify([{ id: "agent-1" }, { id: "agent-2" }, { id: "agent-3" }, { id: "agent-4" }]));
+    if (method === "GET" && url === "/api/companies/comp-1/agents") return res.end(JSON.stringify([{ id: "agent-1" }, { id: "agent-2" }]));
     if (method === "DELETE" && url.includes("/api/agents/")) return res.end(JSON.stringify({ ok: true }));
     if (method === "POST" && url === "/api/companies/comp-1/issues") {
       state.issueCount = (state.issueCount || 0) + 1;
@@ -92,12 +92,6 @@ describe("Recovery Canary Cleanup sequence", () => {
           agentId: "agent-1",
           events: [{ message: "GITHUB ACCESS UNAVAILABLE" }]
         },
-        {
-          id: "run-2",
-          // Note: agent-2 is jules in the test, so we use a different agent ID like agent-100 or simply empty array
-          // In the real code we verify that jules (agent-2) didn't execute
-          agentId: "agent-100"
-        }
       ]));
     }
   }
