@@ -69,28 +69,48 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/paperclip-e2e-bin"
           cat >"${RUNNER_TEMP}/paperclip-e2e-bin/gh" <<'EOF'
           #!/usr/bin/env sh
-          case "$*" in
-            *"pr list"*) printf '%s\n' '[{"number":991,"title":"canary","state":"OPEN","headRefName":"canary","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","baseRefName":"main","mergedAt":null,"url":"https://github.com/example/canary/pull/991","files":["canary.txt"]}]' ;;
-            *"pr view"*) printf '%s\n' '{"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefName":"canary","baseRefName":"main"}' ;;
-            *"pr checks"*) printf '%s\n' '[{"state":"SUCCESS","bucket":"pass","name":"canary"}]' ;;
-            *) exit 1 ;;
-          esac
+          if [ "$#" -eq 8 ] \
+            && [ "$1" = "pr" ] && [ "$2" = "list" ] \
+            && [ "$3" = "--state" ] && [ "$4" = "all" ] \
+            && [ "$5" = "--limit" ] && [ "$6" = "50" ] \
+            && [ "$7" = "--json" ] \
+            && [ "$8" = "number,title,state,headRefName,headRefOid,baseRefName,mergedAt,url,files" ]; then
+            printf '%s\n' '[{"number":991,"title":"canary","state":"OPEN","headRefName":"canary","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","baseRefName":"main","mergedAt":null,"url":"https://github.com/example/canary/pull/991","files":["canary.txt"]}]'
+            exit 0
+          fi
+          if [ "$#" -eq 5 ] \
+            && [ "$1" = "pr" ] && [ "$2" = "checks" ] && [ "$3" = "991" ] \
+            && [ "$4" = "--json" ] && [ "$5" = "state,bucket,name" ]; then
+            printf '%s\n' '[{"state":"SUCCESS","bucket":"pass","name":"canary"}]'
+            exit 0
+          fi
+          echo "unexpected gh argv: $*" >&2
+          exit 1
           EOF
           chmod +x "${RUNNER_TEMP}/paperclip-e2e-bin/gh"
           # In Paperclip 2026.831.1, noninteractive onboarding with --yes also starts the server.
           # To satisfy the required startup lifecycle of both `onboard` and `run`, we
           # allow `onboard` to create the configuration, kill it gracefully once healthy,
           # and then natively use `run` as the primary background daemon.
-          env -u JULES_API_KEY PATH="${RUNNER_TEMP}/paperclip-e2e-bin:${PATH}" paperclipai onboard --config "$PAPERCLIP_HOME/config.json" --data-dir "$PAPERCLIP_HOME" --bind loopback --yes --no-install-service >/dev/null 2>&1 &
+          env -u JULES_API_KEY PATH="${RUNNER_TEMP}/paperclip-e2e-bin:${PATH}" paperclipai onboard --config "$PAPERCLIP_HOME/config.json" --data-dir "$PAPERCLIP_HOME" --bind loopback --yes --no-install-service >"${RUNNER_TEMP}/paperclip-onboard.log" 2>&1 &
           ONBOARD_PID=$!
+          ONBOARD_HEALTHY=false
           for attempt in {1..120}; do
             if curl --connect-timeout 1 --max-time 1 --fail --silent http://127.0.0.1:3100/api/health >/dev/null; then
+              ONBOARD_HEALTHY=true
               break
             fi
             sleep 1
           done
-          kill -TERM $ONBOARD_PID
-          while kill -0 $ONBOARD_PID 2>/dev/null; do sleep 0.2; done
+          if [ "$ONBOARD_HEALTHY" != "true" ]; then
+            echo "Onboarding did not become healthy within 120 seconds" >&2
+            cat "${RUNNER_TEMP}/paperclip-onboard.log" >&2
+            kill -TERM "$ONBOARD_PID" 2>/dev/null || true
+            wait "$ONBOARD_PID" 2>/dev/null || true
+            exit 1
+          fi
+          kill -TERM "$ONBOARD_PID"
+          wait "$ONBOARD_PID" 2>/dev/null || true
 
           # Pin the control-plane version used by the adapter contract test.
           env -u JULES_API_KEY PATH="${RUNNER_TEMP}/paperclip-e2e-bin:${PATH}" nohup setsid paperclipai run --config "$PAPERCLIP_HOME/config.json" >"${RUNNER_TEMP}/paperclip-canary.log" 2>&1 </dev/null &
