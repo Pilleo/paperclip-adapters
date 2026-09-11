@@ -313,6 +313,17 @@ async function main(): Promise<void> {
       })}`);
     }
 
+    // Harness Assertion: Verify environment isolation (fake gh intercepting commands).
+    // The orchestration phase needs to execute the external GitHub provider checks.
+    // If our fake gh rejected the command, or if it bypassed it completely, the status/logs will reflect it.
+    // The previous throw naturally checks the state transition, but we also proactively check
+    // we reached the expected condition using the precise isolated server PATH without leaking keys.
+    const companyRunsForGhCheck = await request(`/api/companies/${companyId}/heartbeat-runs?issueId=${encodeURIComponent(issueId)}`, "GET");
+    const orchestratorRunsForGhCheck = (Array.isArray(companyRunsForGhCheck) ? companyRunsForGhCheck : []).filter((run: any) => run && run.agentId === orch.id);
+    if (!orchestratorRunsForGhCheck.some((run: any) => (run.events || []).some((e: any) => JSON.stringify(e).includes("GITHUB ACCESS UNAVAILABLE") || JSON.stringify(e).includes("pr list")))) {
+      throw new Error(`Canary harness assertion failed: The orchestrator's first execution did not execute the expected gh provider command or the fake gh was not correctly installed/interpolated on the server PATH. Check the server-side environment boundary logic.`);
+    }
+
     for (const childId of childIds) {
       const child = requireObject(await request(`/api/issues/${childId}`, "GET"), "stale child");
       if (child.status !== "done") throw new Error(`Stale child ${childId} was not closed`);
