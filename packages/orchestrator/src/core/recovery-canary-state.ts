@@ -8,12 +8,18 @@ export interface RecoveryCanaryInput {
   readonly issue: Readonly<Record<string, unknown>>;
   readonly children: readonly Readonly<Record<string, unknown>>[];
   readonly interactions: readonly Readonly<Record<string, unknown>>[];
+  readonly workProducts: readonly Readonly<Record<string, unknown>>[];
+  readonly approvals: readonly Readonly<Record<string, unknown>>[];
+  readonly heartbeatRuns: readonly Readonly<Record<string, unknown>>[];
 }
 
 export interface RecoveryCanaryState {
   readonly parent: { readonly status: unknown; readonly assigneeAgentId: unknown };
   readonly children: readonly { readonly id: string; readonly status: unknown; readonly parentId: unknown }[];
   readonly pendingCards: readonly { readonly id: string; readonly idempotencyKey: unknown; readonly addresseeAgentId: unknown }[];
+  readonly workProducts: readonly { readonly id: string; readonly status: unknown; readonly externalId: unknown }[];
+  readonly approvals: readonly { readonly id: string; readonly status: unknown }[];
+  readonly heartbeatRuns: readonly { readonly id: string; readonly status: unknown }[];
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -34,9 +40,30 @@ export function projectRecoveryCanaryState(input: RecoveryCanaryInput): Recovery
       ? [{ id: interaction["id"], idempotencyKey: interaction["idempotencyKey"], addresseeAgentId: interaction["addresseeAgentId"] }]
       : [])
     .sort((left, right) => left.id.localeCompare(right.id));
+  const workProducts = (input.workProducts || [])
+    .filter(isRecord)
+    .flatMap((wp) => typeof wp["id"] === "string"
+      ? [{ id: wp["id"], status: wp["status"], externalId: wp["externalId"] }]
+      : [])
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const approvals = (input.approvals || [])
+    .filter(isRecord)
+    .flatMap((approval) => typeof approval["id"] === "string"
+      ? [{ id: approval["id"], status: approval["status"] }]
+      : [])
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const heartbeatRuns = (input.heartbeatRuns || [])
+    .filter(isRecord)
+    .flatMap((run) => typeof run["id"] === "string"
+      ? [{ id: run["id"], status: run["status"] }]
+      : [])
+    .sort((left, right) => left.id.localeCompare(right.id));
   return {
     parent: { status: input.issue["status"], assigneeAgentId: input.issue["assigneeAgentId"] },
     children,
     pendingCards,
+    workProducts,
+    approvals,
+    heartbeatRuns,
   };
 }

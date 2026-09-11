@@ -100,6 +100,9 @@ async function main(): Promise<void> {
       "Recovery canary requires a server-owned GitHub fixture. Start Paperclip with the deterministic gh fixture and set PAPERCLIP_E2E_GH_FIXTURE=server.",
     );
   }
+  if (process.env["JULES_API_KEY"] !== undefined) {
+    throw new Error("Canary must run without a JULES_API_KEY to ensure credential isolation");
+  }
   const health = requireObject(await request("/api/health", "GET"), "health");
   if (health.status !== "ok") throw new Error("Paperclip health check failed");
 
@@ -144,13 +147,19 @@ async function main(): Promise<void> {
       throw new Error(`Paperclip did not persist the primary canary workspace: ${JSON.stringify(projectWorkspace)}`);
     }
 
+    const envPath = process.env["PAPERCLIP_E2E_GH_DIR"]
+      ? `${process.env["PAPERCLIP_E2E_GH_DIR"]}:${process.env["PATH"] || ""}`
+      : process.env["PATH"] || "";
+
     const orch = requireObject(await request(`/api/companies/${companyId}/agents`, "POST", {
       name: "Canary Orchestrator", role: "ceo", adapterType: "orchestrator",
       // The real server runner supplies this adapter configuration as the
       // heartbeat context. Enable fleet reconciliation so the canary fails
       // loudly if the canonical Luna/Terra reviewer identities cannot be
       // provisioned, rather than silently producing no review card.
-      adapterConfig: { reconcileFleet: true, apiUrl, backlogDirectory: ".paperclip-canary-empty" },
+      adapterConfig: { reconcileFleet: true, apiUrl, backlogDirectory: ".paperclip-canary-empty", env: {
+        PATH: { type: "plain", value: envPath },
+      } },
       permissions: { canCreateAgents: true, canCreateSkills: true, canAssignTasks: true, trustPreset: "standard" },
     }), "orchestrator agent");
     const jules = requireObject(await request(`/api/companies/${companyId}/agents`, "POST", {
@@ -185,6 +194,9 @@ async function main(): Promise<void> {
         backlogDirectory: ".paperclip-canary-empty",
         lunaReviewerAgentId: luna.id,
         terraReviewerAgentId: terra.id,
+        env: {
+          PATH: { type: "plain", value: envPath },
+        },
       },
     });
     // Canonicalize the managed fleet before introducing the PR. The bootstrap
@@ -213,6 +225,9 @@ async function main(): Promise<void> {
         backlogDirectory: ".paperclip-canary-empty",
         lunaReviewerAgentId: luna.id,
         terraReviewerAgentId: terra.id,
+        env: {
+          PATH: { type: "plain", value: envPath },
+        },
       },
     });
     const marker = `e2e-jules-recovery-${Date.now()}`;
@@ -273,6 +288,11 @@ async function main(): Promise<void> {
     if (recovered.status !== "in_review" || recovered.assigneeAgentId !== luna.id || pendingCards.length !== 1 || !lunaCard) {
       const canaryAgents = await request(`/api/companies/${companyId}/agents`, "GET");
       const canaryComments = await request(`/api/issues/${issueId}/comments`, "GET");
+      const canaryInteractions = await request(`/api/issues/${issueId}/interactions`, "GET");
+
+      const interactionDump = (Array.isArray(canaryInteractions) ? canaryInteractions : [])
+        .map((i: any) => ({ kind: i.kind, status: i.status, error: i.error || i.errorReason, metadata: i.metadata }));
+
       throw new Error(`Canary did not enter native review: ${JSON.stringify({
         status: recovered.status,
         assigneeAgentId: recovered.assigneeAgentId,
@@ -292,6 +312,18 @@ async function main(): Promise<void> {
         comments: canaryComments,
       })}`);
     }
+
+    // Harness Assertion: Verify environment isolation (fake gh intercepting commands).
+    // The orchestration phase needs to execute the external GitHub provider checks.
+    // If our fake gh rejected the command, or if it bypassed it completely, the status/logs will reflect it.
+    // The previous throw naturally checks the state transition, but we also proactively check
+    // we reached the expected condition using the precise isolated server PATH without leaking keys.
+    const companyRunsForGhCheck = await request(`/api/companies/${companyId}/heartbeat-runs?issueId=${encodeURIComponent(issueId)}`, "GET");
+    const orchestratorRunsForGhCheck = (Array.isArray(companyRunsForGhCheck) ? companyRunsForGhCheck : []).filter((run: any) => run && run.agentId === orch.id);
+    if (!orchestratorRunsForGhCheck.some((run: any) => (run.events || []).some((e: any) => JSON.stringify(e).includes("GITHUB ACCESS UNAVAILABLE") || JSON.stringify(e).includes("pr list")))) {
+      throw new Error(`Canary harness assertion failed: The orchestrator's first execution did not execute the expected gh provider command or the fake gh was not correctly installed/interpolated on the server PATH. Check the server-side environment boundary logic.`);
+    }
+
     for (const childId of childIds) {
       const child = requireObject(await request(`/api/issues/${childId}`, "GET"), "stale child");
       if (child.status !== "done") throw new Error(`Stale child ${childId} was not closed`);
@@ -339,6 +371,9 @@ async function main(): Promise<void> {
     const childrenAfter = await request(`/api/companies/${companyId}/issues?parentId=${encodeURIComponent(issueId)}`, "GET");
     const interactionsAfter = await request(`/api/issues/${issueId}/interactions`, "GET");
     const issueAfter = await request(`/api/issues/${issueId}`, "GET");
+    const workProductsAfter = await request(`/api/issues/${issueId}/work-products`, "GET");
+    const approvalsAfter = await request(`/api/companies/${companyId}/approvals`, "GET");
+    const heartbeatRunsAfter = await request(`/api/companies/${companyId}/heartbeat-runs?issueId=${encodeURIComponent(issueId)}`, "GET");
     const recoveredPrCards = pendingReviewCards(interactionsAfter);
     const recoveredLunaCard = recoveredPrCards.find((card) => String(card.id) === String(lunaCard.id));
     const stalePlanAfter = (Array.isArray(interactionsAfter) ? interactionsAfter : []).find((card) =>
@@ -357,6 +392,9 @@ async function main(): Promise<void> {
     const childrenBefore = childrenAfter;
     const interactionsBefore = interactionsAfter;
     const issueBefore = issueAfter;
+    const workProductsBefore = workProductsAfter;
+    const approvalsBefore = approvalsAfter;
+    const heartbeatRunsBefore = heartbeatRunsAfter;
     const repeatWake = requireObject(await request(`/api/agents/${orch.id}/wakeup`, "POST", {
       source: "on_demand",
       reason: "e2e_jules_recovery_canary_repeat",
@@ -369,15 +407,31 @@ async function main(): Promise<void> {
     const idempotentIssue = requireObject(await request(`/api/issues/${issueId}`, "GET"), "idempotent issue");
     const idempotentChildren = await request(`/api/companies/${companyId}/issues?parentId=${encodeURIComponent(issueId)}`, "GET");
     const idempotentInteractions = await request(`/api/issues/${issueId}/interactions`, "GET");
+    const idempotentWorkProducts = await request(`/api/issues/${issueId}/work-products`, "GET");
+    const idempotentApprovals = await request(`/api/companies/${companyId}/approvals`, "GET");
+    let idempotentHeartbeatRuns = await request(`/api/companies/${companyId}/heartbeat-runs?issueId=${encodeURIComponent(issueId)}`, "GET");
+    if (Array.isArray(idempotentHeartbeatRuns)) {
+      idempotentHeartbeatRuns = idempotentHeartbeatRuns.filter(run => run.id !== repeatRunId && run.id !== runId && run.id !== recoveryRunId);
+    }
+    let heartbeatRunsBeforeFiltered = heartbeatRunsBefore;
+    if (Array.isArray(heartbeatRunsBefore)) {
+      heartbeatRunsBeforeFiltered = heartbeatRunsBefore.filter(run => run.id !== runId && run.id !== recoveryRunId);
+    }
     const beforeState = projectRecoveryCanaryState({
       issue: issueBefore,
       children: Array.isArray(childrenBefore) ? childrenBefore : [],
       interactions: Array.isArray(interactionsBefore) ? interactionsBefore : [],
+      workProducts: Array.isArray(workProductsBefore) ? workProductsBefore : [],
+      approvals: Array.isArray(approvalsBefore) ? approvalsBefore : [],
+      heartbeatRuns: Array.isArray(heartbeatRunsBeforeFiltered) ? heartbeatRunsBeforeFiltered : [],
     });
     const afterState = projectRecoveryCanaryState({
       issue: idempotentIssue,
       children: Array.isArray(idempotentChildren) ? idempotentChildren : [],
       interactions: Array.isArray(idempotentInteractions) ? idempotentInteractions : [],
+      workProducts: Array.isArray(idempotentWorkProducts) ? idempotentWorkProducts : [],
+      approvals: Array.isArray(idempotentApprovals) ? idempotentApprovals : [],
+      heartbeatRuns: Array.isArray(idempotentHeartbeatRuns) ? idempotentHeartbeatRuns : [],
     });
     if (JSON.stringify(beforeState) !== JSON.stringify(afterState) ||
         idempotentIssue.status !== "in_review") {
@@ -444,8 +498,33 @@ async function main(): Promise<void> {
   } finally {
     if (companyId) {
       try {
-        await request(`/api/companies/${companyId}`, "DELETE");
+        // Supported deterministic cleanup API: Delete agents first to gracefully terminate
+        // managed fleet adapters (e.g. Orchestrator, Jules) before deleting the company.
+        // This prevents the adapters from inserting `heartbeat_run_events` concurrently
+        // which causes a foreign key constraint violation (500 error) during company deletion.
+        const agentsReq = await fetch(`${apiUrl}/api/companies/${companyId}/agents`);
+        if (!agentsReq.ok) {
+          throw new Error(`agent list fetch returned HTTP ${agentsReq.status}`);
+        }
+        const agents = await agentsReq.json();
+        if (Array.isArray(agents)) {
+          for (const agent of agents) {
+            const delReq = await fetch(`${apiUrl}/api/agents/${agent.id}`, { method: "DELETE" });
+            if (!delReq.ok) {
+              throw new Error(`agent deletion returned HTTP ${delReq.status} for agent ${agent.id}`);
+            }
+          }
+        }
+
+        const res = await fetch(`${apiUrl}/api/companies/${companyId}`, { method: "DELETE" });
+        if (!res.ok) {
+          throw new Error(`company deletion returned HTTP ${res.status}`);
+        }
       } catch (error) {
+        const code = (error as NodeJS.ErrnoException)?.code;
+        if (code === "EPERM" || code === "EACCES") {
+          throw new Error(`company deletion failed with ${code}`);
+        }
         cleanupError = error;
       }
     }
@@ -453,7 +532,7 @@ async function main(): Promise<void> {
       throw new Error(`Canary cleanup failed; disposable company ${companyId} may remain: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
     }
     if (cleanupError && operationError) {
-      console.error(`Canary cleanup also failed; disposable company ${companyId} may remain: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
+      throw new Error(`Canary failed with operation error, AND cleanup also failed (disposable company ${companyId} may remain): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}\n\nOriginal operation error: ${operationError instanceof Error ? operationError.message : String(operationError)}`);
     }
   }
 }
