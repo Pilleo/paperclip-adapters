@@ -67,14 +67,12 @@ jobs:
           # GitHub fixture on the *server* PATH before boot so spawned adapter
           # processes inherit it; a client-side PATH change cannot test this.
           mkdir -p "${RUNNER_TEMP}/paperclip-e2e-bin"
-          REPO_LOWER=$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')
-          cat >"${RUNNER_TEMP}/paperclip-e2e-bin/gh" <<EOF
+          cat >"${RUNNER_TEMP}/paperclip-e2e-bin/gh" <<'EOF'
           #!/usr/bin/env sh
-          case "\$*" in
-            "pr list --state all --limit 50 --json number,title,state,headRefName,headRefOid,baseRefName,mergedAt,url,files" | \
-            "pr list --repo ${GITHUB_REPOSITORY} --state all --limit 50 --json number,title,state,headRefName,headRefOid,baseRefName,mergedAt,url,files" | \
-            "pr list --repo ${REPO_LOWER} --state all --limit 50 --json number,title,state,headRefName,headRefOid,baseRefName,mergedAt,url,files")
-              printf '%s\n' '[{"number":991,"title":"canary","state":"OPEN","headRefName":"canary","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","baseRefName":"main","mergedAt":null,"url":"https://github.com/example/canary/pull/991","files":["canary.txt"]}]' ;;
+          case "$*" in
+            *"pr list"*) printf '%s\n' '[{"number":991,"title":"canary","state":"OPEN","headRefName":"canary","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","baseRefName":"main","mergedAt":null,"url":"https://github.com/example/canary/pull/991","files":["canary.txt"]}]' ;;
+            *"pr view"*) printf '%s\n' '{"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefName":"canary","baseRefName":"main"}' ;;
+            *"pr checks"*) printf '%s\n' '[{"state":"SUCCESS","bucket":"pass","name":"canary"}]' ;;
             *) exit 1 ;;
           esac
           EOF
