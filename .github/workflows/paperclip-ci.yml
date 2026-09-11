@@ -69,12 +69,13 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/paperclip-e2e-bin"
           cat >"${RUNNER_TEMP}/paperclip-e2e-bin/gh" <<'EOF'
           #!/usr/bin/env sh
-          if [ "$#" -eq 8 ] \
+          if [ "$#" -eq 10 ] \
             && [ "$1" = "pr" ] && [ "$2" = "list" ] \
-            && [ "$3" = "--state" ] && [ "$4" = "all" ] \
-            && [ "$5" = "--limit" ] && [ "$6" = "50" ] \
-            && [ "$7" = "--json" ] \
-            && [ "$8" = "number,title,state,headRefName,headRefOid,baseRefName,mergedAt,url,files" ]; then
+            && [ "$3" = "--repo" ] && [ "$4" = "pilleo/paperclip-adapters" ] \
+            && [ "$5" = "--state" ] && [ "$6" = "all" ] \
+            && [ "$7" = "--limit" ] && [ "$8" = "50" ] \
+            && [ "$9" = "--json" ] \
+            && [ "${10}" = "number,title,state,headRefName,headRefOid,baseRefName,mergedAt,url,files" ]; then
             printf '%s\n' '[{"number":991,"title":"canary","state":"OPEN","headRefName":"canary","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","baseRefName":"main","mergedAt":null,"url":"https://github.com/example/canary/pull/991","files":["canary.txt"]}]'
             exit 0
           fi
