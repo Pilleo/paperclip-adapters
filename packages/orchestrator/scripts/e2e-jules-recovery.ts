@@ -236,7 +236,7 @@ async function main(): Promise<void> {
     // The server process receives a deterministic `gh` fixture from the CI
     // harness before it starts. The adapter, not this client process, invokes
     // `gh`; this verifies the actual external-adapter process boundary.
-    const prUrl = "https://github.com/example/canary/pull/991";
+    const prUrl = "https://github.com/pilleo/paperclip-adapters/pull/991";
     await request(`/api/issues/${issueId}/work-products`, "POST", {
       type: "pull_request", provider: "github", title: "Canary Jules PR", url: prUrl,
       externalId: prUrl, status: "ready_for_review", isPrimary: true, metadata: { source: "jules" },

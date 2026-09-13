@@ -42,18 +42,24 @@ jobs:
       - name: Run Full Test Matrix (399+ unit tests)
         run: pnpm -r test
 
+      - name: Test GitHub CLI Fixture
+        run: node scripts/paperclip-ci-gh-fixture.test.mjs
+
+      - name: Setup Node.js 24.x for Paperclip server
+        if: matrix.node-version == '22.x'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+
       - name: Install pinned Paperclip control plane
-        if: matrix.node-version == '24.x'
         # Keep package download outside the server health budget. A cold npx
         # cache can take over a minute and otherwise looks like a boot failure.
         run: npm install --global paperclipai@2026.831.1
 
       - name: Start disposable Paperclip server
-        # Adapter packages support Node 22, but the pinned Paperclip control
-        # plane requires Node >=24.11 and deliberately refuses to boot on 22.
-        # The 22.x job still validates build/test/package compatibility; the
-        # native server contract runs once on its supported runtime.
-        if: matrix.node-version == '24.x'
+        # The orchestrator is an external process. Put the deterministic
+        # GitHub fixture on the *server* PATH before boot so spawned adapter
+        # processes inherit it; a client-side PATH change cannot test this.
         env:
           HOME: ${{ runner.temp }}/paperclip-canary-user-home
           PAPERCLIP_HOME: ${{ runner.temp }}/paperclip-canary-home
@@ -67,12 +73,13 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/paperclip-e2e-bin"
           cat >"${RUNNER_TEMP}/paperclip-e2e-bin/gh" <<'EOF'
           #!/usr/bin/env sh
-          case "$*" in
-            *"pr list"*) printf '%s\n' '[{"number":991,"title":"canary","state":"OPEN","headRefName":"canary","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","baseRefName":"main","mergedAt":null,"url":"https://github.com/example/canary/pull/991","files":["canary.txt"]}]' ;;
-            *"pr view"*) printf '%s\n' '{"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefName":"canary","baseRefName":"main"}' ;;
-            *"pr checks"*) printf '%s\n' '[{"state":"SUCCESS","bucket":"pass","name":"canary"}]' ;;
-            *) exit 1 ;;
-          esac
+          if [ "$#" -eq 10 ] && [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$3" = "--repo" ] && [ "$4" = "pilleo/paperclip-adapters" ] && [ "$5" = "--state" ] && [ "$6" = "all" ] && [ "$7" = "--limit" ] && [ "$8" = "50" ] && [ "$9" = "--json" ] && [ "${10}" = "number,title,state,headRefName,headRefOid,baseRefName,mergedAt,url,files" ]; then
+            printf '%s\n' '[{"number":991,"title":"canary","state":"OPEN","headRefName":"canary","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","baseRefName":"main","mergedAt":null,"url":"https://github.com/pilleo/paperclip-adapters/pull/991","files":["canary.txt"]}]'
+          elif [ "$#" -eq 5 ] && [ "$1" = "pr" ] && [ "$2" = "checks" ] && [ "$3" = "991" ] && [ "$4" = "--json" ] && [ "$5" = "state,bucket,name" ]; then
+            printf '%s\n' '[{"state":"SUCCESS","bucket":"pass","name":"canary"}]'
+          else
+            exit 1
+          fi
           EOF
           chmod +x "${RUNNER_TEMP}/paperclip-e2e-bin/gh"
           # In Paperclip 2026.831.1, noninteractive onboarding owns the
@@ -93,8 +100,13 @@ jobs:
           cat "${RUNNER_TEMP}/paperclip-canary.log"
           exit 1
 
+      - name: Restore Node.js ${{ matrix.node-version }} for Canary
+        if: matrix.node-version == '22.x'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
       - name: Run Jules recovery canary
-        if: matrix.node-version == '24.x'
         env:
           PAPERCLIP_TEST_API_URL: http://127.0.0.1:3100
           PAPERCLIP_E2E_GH_FIXTURE: server
@@ -102,7 +114,7 @@ jobs:
         run: pnpm test:e2e:jules-recovery
 
       - name: Stop disposable Paperclip server
-        if: always() && matrix.node-version == '24.x'
+        if: always()
         run: |
           if [ -f "${RUNNER_TEMP}/paperclip-canary.pid" ]; then
             # Stop the complete onboarding/server process group, including
