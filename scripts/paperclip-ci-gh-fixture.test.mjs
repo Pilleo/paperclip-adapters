@@ -21,7 +21,11 @@ async function runTest() {
   const endIndex = workflowContent.indexOf(endMarker, scriptStartIndex);
   if (endIndex === -1) throw new Error("Could not find end marker in workflow file");
 
-  const fixtureScript = workflowContent.substring(scriptStartIndex, endIndex);
+  const rawScript = workflowContent.substring(scriptStartIndex, endIndex);
+  // Find the minimum indentation of non-empty lines to correctly strip leading spaces
+  const lines = rawScript.split('\n');
+  const indent = lines.find(line => line.trim().length > 0)?.match(/^\s*/)?.[0] || '';
+  const fixtureScript = lines.map(line => line.startsWith(indent) ? line.slice(indent.length) : line).join('\n');
 
   // Write to a temporary file
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gh-fixture-test-'));
@@ -113,4 +117,7 @@ async function runTest() {
   }
 }
 
-runTest().catch(console.error);
+runTest().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

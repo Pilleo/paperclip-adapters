@@ -45,6 +45,12 @@ jobs:
       - name: Test GitHub CLI Fixture
         run: node scripts/paperclip-ci-gh-fixture.test.mjs
 
+      - name: Setup Node.js 24.x for Paperclip server
+        if: matrix.node-version == '22.x'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+
       - name: Install pinned Paperclip control plane
         # Keep package download outside the server health budget. A cold npx
         # cache can take over a minute and otherwise looks like a boot failure.
@@ -93,6 +99,12 @@ jobs:
           done
           cat "${RUNNER_TEMP}/paperclip-canary.log"
           exit 1
+
+      - name: Restore Node.js ${{ matrix.node-version }} for Canary
+        if: matrix.node-version == '22.x'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
 
       - name: Run Jules recovery canary
         env:
