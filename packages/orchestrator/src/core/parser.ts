@@ -253,7 +253,7 @@ export interface PaperclipProjectRecord {
   readonly name?: string | null | undefined;
   readonly urlKey?: string | null | undefined;
   readonly primaryWorkspace?:
-    | { readonly repoUrl?: string | null | undefined; readonly cwd?: string | null | undefined }
+    | { readonly repoUrl?: string | null | undefined; readonly cwd?: string | null | undefined; readonly defaultRef?: string | null | undefined; }
     | null
     | undefined;
   readonly codebase?:
@@ -262,6 +262,7 @@ export interface PaperclipProjectRecord {
         readonly cwd?: string | null | undefined;
         readonly localFolder?: string | null | undefined;
         readonly effectiveLocalFolder?: string | null | undefined;
+        readonly defaultRef?: string | null | undefined;
       }
     | null
     | undefined;
@@ -270,6 +271,30 @@ export interface PaperclipProjectRecord {
 export type ProjectWorkspaceResolution =
   | { readonly ok: true; readonly project: PaperclipProjectRecord; readonly workspacePath: string }
   | { readonly ok: false; readonly reason: "missing-project" | "unknown-project" | "missing-workspace"; readonly projectId?: string | undefined };
+
+export type ProjectMetadataResolution =
+  | { readonly ok: true; readonly repoUrl: string; readonly defaultRef: string; readonly sourceBlock: "primaryWorkspace" | "codebase" }
+  | { readonly ok: false; readonly reason: "missing_repo_url" | "missing_default_ref"; readonly repoUrl?: string; readonly sourceBlock?: "primaryWorkspace" | "codebase" };
+
+export function resolveProjectMetadata(project: PaperclipProjectRecord): ProjectMetadataResolution {
+  const blocks = [
+    { name: "primaryWorkspace" as const, data: project.primaryWorkspace },
+    { name: "codebase" as const, data: project.codebase },
+  ];
+
+  for (const block of blocks) {
+    if (block.data && typeof block.data.repoUrl === "string" && block.data.repoUrl.trim().startsWith("https://")) {
+      const repoUrl = block.data.repoUrl.trim();
+      const defaultRef = typeof block.data.defaultRef === "string" ? block.data.defaultRef.trim() : "";
+      if (!defaultRef) {
+        return { ok: false, reason: "missing_default_ref", repoUrl, sourceBlock: block.name };
+      }
+      return { ok: true, repoUrl, defaultRef, sourceBlock: block.name };
+    }
+  }
+
+  return { ok: false, reason: "missing_repo_url" };
+}
 
 /**
  * Resolve the checkout from the issue-owned Paperclip project.

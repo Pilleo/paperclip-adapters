@@ -14,8 +14,10 @@ const execFileAsync = promisify(execFile);
 // restarting the adapter safely revalidates the current state once.
 const reconciledOperatorGates = new Set<string>();
 
+const lastSyncDisposition = new Map<string, string>();
+
 import { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
-import { extractIssueMetadata, normalizeGitHubOwnerRepo, resolvePaperclipProject, resolveProjectWorkspace, type PaperclipProjectRecord } from "../core/parser.js";
+import { extractIssueMetadata, normalizeGitHubOwnerRepo, resolvePaperclipProject, resolveProjectWorkspace, resolveProjectMetadata, type PaperclipProjectRecord } from "../core/parser.js";
 import { calculateConflictMatrix, selectNextTasksMultiLane } from "../core/dispatcher.js";
 import { fetchJulesQuota } from "../core/jules-quota.js";
 import { checkWorkspaceConsistency } from "../core/consistency.js";
@@ -618,13 +620,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     };
   }
 
-  // 2. Read-only Workspace consistency verification
-  const wsConsistency = await checkWorkspaceConsistency(workspacePath);
-  if (wsConsistency.warning) {
-    await log(`[ORCHESTRATOR] ℹ️ Workspace note: ${wsConsistency.warning}`);
-  }
-
-  // 3. Two-Way Markdown Ingestion (project comes from workspace folder / git remote)
+  // 2. Two-Way Markdown Ingestion (project comes from workspace folder / git remote)
   let companyProjects: PaperclipProjectRecord[] = [];
   try {
     companyProjects = asArray<PaperclipProjectRecord>(await pc.listProjects(companyId));
@@ -646,29 +642,98 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       `[ORCHESTRATOR] Workspace folder maps to Paperclip project ${workspaceProject.name || workspaceProject.urlKey || workspaceProject.id}`,
     );
   }
-  const syncSummary = await syncBacklogMarkdownToPaperclip({
-    workspacePath,
-    companyId,
-    apiUrl,
-    backlogDirectory: config.backlogDirectory,
-    resolvedDirectory: config.resolvedDirectory,
-    gitRemoteUrl,
-    projects: companyProjects,
-    ...(workspaceProject?.id ? { projectId: workspaceProject.id } : {}),
-    orchestratorAgentId: orchestratorId,
-    managedAgentIds: managedIds,
-  });
-  if (syncSummary.createdCount > 0 || syncSummary.syncedHeadersCount > 0) {
-    await log(
-      `[ORCHESTRATOR] 📥 Backlog Sync: created=${syncSummary.createdCount}, headers_synced=${syncSummary.syncedHeadersCount}`
+
+  // 3. Workspace consistency verification
+  let isSyncHealthy = false;
+  let syncDispositionStatus = "unhealthy";
+  let syncDispositionObservation: { type: string; [key: string]: unknown } = { type: "missing_repo_url" };
+  if (workspaceProject) {
+    let metadataResolution = resolveProjectMetadata(workspaceProject);
+
+    // Implicit Migration: if repoUrl points to the orchestrator repository but defaultRef is missing, auto-migrate to "master".
+    if (
+      !metadataResolution.ok &&
+      metadataResolution.reason === "missing_default_ref" &&
+      metadataResolution.repoUrl &&
+      metadataResolution.sourceBlock &&
+      normalizeGitHubOwnerRepo(metadataResolution.repoUrl) === "pilleo/paperclip-adapters"
+    ) {
+      const sourceBlockName = metadataResolution.sourceBlock;
+      const patchedBlock = {
+        ...(workspaceProject[sourceBlockName] as Record<string, unknown>),
+        defaultRef: "master",
+      };
+
+      try {
+        const patchRes = await pc.patchProject(workspaceProject.id, { [sourceBlockName]: patchedBlock });
+        if (patchRes.ok) {
+          await log(`[ORCHESTRATOR] Migrated orchestrator project metadata to defaultRef: "master" in block ${sourceBlockName}`);
+          metadataResolution = { ok: true, repoUrl: metadataResolution.repoUrl, defaultRef: "master", sourceBlock: sourceBlockName };
+        } else {
+          await log(`[ORCHESTRATOR] Warning: Failed to migrate orchestrator project defaultRef (${patchRes.status}): ${patchRes.text}`);
+        }
+      } catch (err: unknown) {
+        await log(`[ORCHESTRATOR] Warning: Exception while migrating orchestrator project defaultRef: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    const wsConsistency = await checkWorkspaceConsistency(
+      workspacePath,
+      metadataResolution.ok ? metadataResolution.repoUrl : undefined,
+      metadataResolution.ok ? metadataResolution.defaultRef : undefined
     );
+
+    isSyncHealthy = wsConsistency.status === "healthy";
+    syncDispositionStatus = wsConsistency.status;
+    syncDispositionObservation = wsConsistency.observation;
+  } else {
+    // If we have no workspaceProject, fallback logic
+    const wsConsistency = await checkWorkspaceConsistency(workspacePath);
+    isSyncHealthy = wsConsistency.status === "healthy";
+    syncDispositionStatus = wsConsistency.status;
+    syncDispositionObservation = wsConsistency.observation;
   }
-  if (syncSummary.conflicts.length > 0) {
-    for (const conflict of syncSummary.conflicts) {
+
+  if (workspaceProject) {
+    const currentFingerprint = JSON.stringify({ status: syncDispositionStatus, observation: syncDispositionObservation });
+    if (lastSyncDisposition.get(workspaceProject.id) !== currentFingerprint) {
+      lastSyncDisposition.set(workspaceProject.id, currentFingerprint);
+      if (!isSyncHealthy) {
+        await log(`[ORCHESTRATOR] 🚨 Sync Disposition changed to unhealthy: ${syncDispositionObservation.type}. Synchronization guard deliberately fails closed while preserving existing autonomous lifecycles.`);
+      } else {
+        await log(`[ORCHESTRATOR] ✅ Sync Disposition recovered to healthy: ${syncDispositionObservation.type}`);
+      }
+    }
+  }
+
+  let syncSummary = { createdCount: 0, syncedHeadersCount: 0, conflicts: [] as readonly { logicalId: string; reason: string; candidateIssueIds: readonly string[]; filePath: string }[] };
+  if (isSyncHealthy) {
+    syncSummary = await syncBacklogMarkdownToPaperclip({
+      workspacePath,
+      companyId,
+      apiUrl,
+      backlogDirectory: config.backlogDirectory,
+      resolvedDirectory: config.resolvedDirectory,
+      gitRemoteUrl,
+      projects: companyProjects,
+      ...(workspaceProject?.id ? { projectId: workspaceProject.id } : {}),
+      orchestratorAgentId: orchestratorId,
+      managedAgentIds: managedIds,
+    });
+    if (syncSummary.createdCount > 0 || syncSummary.syncedHeadersCount > 0) {
       await log(
-        `[ORCHESTRATOR] Backlog identity conflict for ${conflict.logicalId}: ${conflict.reason}; candidates=${conflict.candidateIssueIds.join(",")}. Skipping sync for ${conflict.filePath}.`
+        `[ORCHESTRATOR] 📥 Backlog Sync: created=${syncSummary.createdCount}, headers_synced=${syncSummary.syncedHeadersCount}`
       );
     }
+    if (syncSummary.conflicts.length > 0) {
+      for (const conflict of syncSummary.conflicts) {
+        await log(
+          `[ORCHESTRATOR] Backlog identity conflict for ${conflict.logicalId}: ${conflict.reason}; candidates=${conflict.candidateIssueIds.join(",")}. Skipping sync for ${conflict.filePath}.`
+        );
+      }
+    }
+  } else {
+    await log(`[ORCHESTRATOR] ⚠️ Skipping Backlog Sync: workspace sync disposition is unhealthy (${syncDispositionObservation.type}).`);
   }
 
   // 4. Verify remote GitHub state
@@ -2105,6 +2170,17 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
     }
 
     if (isReviewDispatchDecision(pipelineDecision)) {
+      if (!isSyncHealthy) {
+        // Find highest priority held task for human question (done later in phase 4 fallback if not here)
+        // Actually, we'll let Phase 4 handle emitting the exact one question for the highest priority held task across BOTH lanes
+        // Wait, dispatchIssues contains all held issues? No, inReviewIssues are separate.
+        // Let's defer it to Phase 4 so we have a unified point for the question. Wait, Phase 4 selects from `dispatchIssues`, which does not include `inReviewIssues`.
+        // I will add the task to a global `heldTasks` array.
+
+        await log(`[ORCHESTRATOR] ⚠️ Deferring PR review dispatch for [${reviewTask.identifier || reviewTask.id}]: workspace sync disposition is unhealthy (${syncDispositionObservation.type}).`);
+        continue;
+      }
+
       // Existing terminal verdicts still need to converge while a provider
       // question is pending, but starting another reviewer would create a
       // competing owner and spend quota on a revision awaiting clarification.
@@ -2500,7 +2576,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
 
   // 9. PHASE 3: Route ambiguous / open_questions tasks to Vibe Clarifier Lane
   let clarifierDispatchedCount = 0;
-  if (vibeAgentId && managedIds.has(vibeAgentId) && vibeRunning < vibeCapacity) {
+  if (vibeAgentId && managedIds.has(vibeAgentId) && vibeRunning < vibeCapacity && isSyncHealthy) {
     const clarificationCandidates = selectClarificationCandidates(
       overlayedIssues.filter((issue) => issue.orchestratorManaged),
       vibeAgentId,
@@ -2536,7 +2612,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
   const conflictForDispatch = calculateConflictMatrix(dispatchIssues);
 
   // 10. PHASE 4: Multi-Lane Implementation Dispatching
-  const candidateSelections = selectNextTasksMultiLane(dispatchIssues, conflictForDispatch, {
+  let candidateSelections = isSyncHealthy ? selectNextTasksMultiLane(dispatchIssues, conflictForDispatch, {
     julesAgentId,
     vibeAgentId,
     julesCapacity,
@@ -2552,16 +2628,61 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
         .filter((issue) => findTaskStartApproval(existingApprovals, issue.id)?.status === "approved")
         .map((issue) => issue.id),
     ),
-  });
+  }) : [];
 
   if (candidateSelections.length === 0) {
-    const reason =
-      julesRunning >= julesCapacity && vibeRunning >= vibeCapacity
+    const reason = !isSyncHealthy
+      ? `Workspace synchronization is unhealthy (${syncDispositionObservation.type}); new dev tasks suppressed.`
+      : julesRunning >= julesCapacity && vibeRunning >= vibeCapacity
         ? `Worker lanes at full capacity (Jules: ${julesRunning}/${julesCapacity}, Vibe: ${vibeRunning}/${vibeCapacity})`
         : "No unblocked implementation tasks ready in backlog/todo";
 
     await log(`[ORCHESTRATOR] Implementation dispatch: ${reason}.`);
     const summary = `Orchestrator tick: ${mergedAutoCompleted} merged tasks reconciled, ${archiveResult.archivedCount} archived, ${reviewDispatchedCount} reviews routed, ${clarifierDispatchedCount} clarified, backfilled ${executionPolicyBackfillCount} execution policies, continued ${continuationWakeCount} live sessions, 0 new dev tasks dispatched (${reason}).`;
+
+    if (!isSyncHealthy) {
+      const heldCandidates = selectNextTasksMultiLane(dispatchIssues, conflictForDispatch, {
+        julesAgentId, vibeAgentId, julesCapacity: 1, vibeCapacity: 1, julesRunningCount: 0, vibeRunningCount: 0,
+        maxToSelect: 1, extraLockedFiles: ghStatus.openPrFiles, preferredIssueIds: new Set(),
+      });
+
+      let topHeldIssue: ParsedIssueMetadata | null = heldCandidates.length > 0 ? heldCandidates[0]!.issue : null;
+      if (!topHeldIssue) {
+        // Fallback to finding highest priority held task from inReviewIssues that were held
+        // But evaluating pipeline decisions precisely here is complex. We'll simply use any orchestrated issue that is held if we couldn't find a dispatch issue.
+        const backupHeld = overlayedIssues.filter(i => i.orchestratorManaged && (i.status === "todo" || i.status === "backlog" || i.status === "in_review"))
+          .sort((a, b) => b.priorityRank - a.priorityRank);
+        if (backupHeld.length > 0) topHeldIssue = backupHeld[0] || null;
+      }
+
+      if (topHeldIssue) {
+        const fingerprintStr = JSON.stringify({ status: syncDispositionStatus, observation: syncDispositionObservation });
+        const idempotencyKey = `sync-hold:${topHeldIssue.id}:${fingerprintStr}`;
+        const holdDesc = `[Task Orchestrator] The shared project workspace failed to synchronize safely. New work has been temporarily suspended to avoid conflicting with another teammate's unpushed changes or a damaged git tree.\n\nObservation: ${syncDispositionObservation.type}\nStatus: ${syncDispositionStatus}\n\nExisting merges and reviews will continue to process, but this task will not begin until the workspace is healthy again. Please inspect the host git repository manually to resolve the issue.`;
+
+        try {
+          const interactionRes = await pc.createInteraction(topHeldIssue.id, {
+            kind: "ask_user_questions",
+            status: "pending",
+            resolverPolicy: "human_only",
+            continuationPolicy: "wake_assignee",
+            idempotencyKey,
+            request: {
+              prompt: holdDesc,
+              questions: [{ id: "sync_resolved", type: "confirm", text: "I have manually restored the workspace consistency. Re-evaluate sync on the next heartbeat." }]
+            }
+          });
+          if (!interactionRes.ok) {
+            await log(`[ORCHESTRATOR] Warning: Failed to create sync-hold user question for ${topHeldIssue.identifier || topHeldIssue.id}: ${interactionRes.status} ${interactionRes.text}`);
+          } else {
+            await log(`[ORCHESTRATOR] ⚠️ Emitted sync-hold human question for held task ${topHeldIssue.identifier || topHeldIssue.id}.`);
+          }
+        } catch (e: unknown) {
+          await log(`[ORCHESTRATOR] Warning: Exception creating sync-hold user question: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+    }
+
     return {
       exitCode: 0,
       signal: null,

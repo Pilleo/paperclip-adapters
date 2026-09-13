@@ -21,9 +21,12 @@ describe("Deep Workspace Consistency Tests", () => {
   });
 
   it("checks real workspace consistency using current working directory", async () => {
+    // without repoUrl and defaultRef, checkWorkspaceConsistency now explicitly fails closed
     const report = await checkWorkspaceConsistency(process.cwd());
     expect(typeof report.currentBranch).toBe("string");
     expect(typeof report.headSha).toBe("string");
-    expect(report.isConsistent).toBe(true);
+    expect(report.isConsistent).toBe(false);
+    expect(report.status).toBe("unhealthy");
+    expect(report.observation.type).toBe("missing_repo_url");
   });
 });

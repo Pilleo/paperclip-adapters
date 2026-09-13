@@ -186,6 +186,9 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
     async patchAgent(agentId: string, payload: Record<string, unknown>) {
       return sendJson(`/api/agents/${encodeURIComponent(agentId)}`, "PATCH", payload);
     },
+    async patchProject(projectId: string, payload: Record<string, unknown>) {
+      return sendJson(`/api/projects/${encodeURIComponent(projectId)}`, "PATCH", payload);
+    },
     async comment(issueId: string, body: string) {
       return sendJson(`/api/issues/${encodeURIComponent(issueId)}/comments`, "POST", { body });
     },
