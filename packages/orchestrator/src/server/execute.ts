@@ -17,7 +17,8 @@ const reconciledOperatorGates = new Set<string>();
 import { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { extractIssueMetadata, normalizeGitHubOwnerRepo, resolvePaperclipProject, resolveProjectWorkspace, type PaperclipProjectRecord } from "../core/parser.js";
 import { calculateConflictMatrix, selectNextTasksMultiLane } from "../core/dispatcher.js";
-import { checkWorkspaceConsistency } from "../core/consistency.js";
+import { evaluateWorkspaceSync, observeWorkspaceSync, synchronizeWorkspace } from "../core/workspace-sync.js";
+import { buildWorkspaceSyncInteractionRequest, planWorkspaceSyncInteraction } from "../core/workspace-sync-interaction.js";
 import { fetchGitHubPullRequests, hasUnreviewedReadyPullRequest, matchPrToIssue, registeredPullRequestFromIssue, checkPrCiIsGreen, fetchPullRequestHeadSha } from "../core/github-sync.js";
 import { evaluateIssueTransition } from "../core/state-machine.js";
 import { readWorkspaceGitRemote, syncBacklogMarkdownToPaperclip } from "../core/backlog-sync.js";
@@ -644,13 +645,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     };
   }
 
-  // 2. Read-only Workspace consistency verification
-  const wsConsistency = await checkWorkspaceConsistency(workspacePath);
-  if (wsConsistency.warning) {
-    await log(`[ORCHESTRATOR] ℹ️ Workspace note: ${wsConsistency.warning}`);
-  }
-
-  // 3. Two-Way Markdown Ingestion (project comes from workspace folder / git remote)
+  // 2. Resolve the project before any checkout-affecting fresh-work action.
   let companyProjects: PaperclipProjectRecord[] = [];
   try {
     companyProjects = asArray<PaperclipProjectRecord>(await pc.listProjects(companyId));
@@ -672,7 +667,35 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       `[ORCHESTRATOR] Workspace folder maps to Paperclip project ${workspaceProject.name || workspaceProject.urlKey || workspaceProject.id}`,
     );
   }
-  const syncSummary = await syncBacklogMarkdownToPaperclip({
+  const repoUrl = workspaceProject?.primaryWorkspace?.repoUrl?.trim();
+  const defaultRef = workspaceProject?.primaryWorkspace?.defaultRef?.trim();
+  const workspacePolicy = repoUrl && defaultRef ? { repoUrl, defaultRef } : null;
+  let workspaceDecision = evaluateWorkspaceSync({
+    policy: workspacePolicy,
+    observation: workspacePolicy
+      ? await observeWorkspaceSync({ workspacePath, policy: workspacePolicy })
+      : { kind: "inspection_failed", detail: "Paperclip project workspace policy is missing." },
+  });
+  if (workspaceDecision.action === "fast_forward" && workspacePolicy) {
+    await synchronizeWorkspace({
+      workspacePath,
+      policy: workspacePolicy,
+      observation: await observeWorkspaceSync({ workspacePath, policy: workspacePolicy }),
+    });
+    workspaceDecision = evaluateWorkspaceSync({
+      policy: workspacePolicy,
+      observation: await observeWorkspaceSync({ workspacePath, policy: workspacePolicy }),
+    });
+  }
+  const freshDispatchAllowed = workspaceDecision.action === "ready";
+  if (workspaceDecision.action === "hold") {
+    await log(`[ORCHESTRATOR] Workspace sync hold: ${workspaceDecision.reason}`);
+  } else if (workspaceDecision.action === "fast_forward") {
+    await log("[ORCHESTRATOR] Workspace sync hold: checkout did not converge after fast-forward attempt.");
+  }
+
+  // 3. Two-Way Markdown Ingestion is fresh-work admission and must not run while held.
+  const syncSummary = freshDispatchAllowed ? await syncBacklogMarkdownToPaperclip({
     workspacePath,
     companyId,
     apiUrl,
@@ -683,7 +706,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     ...(workspaceProject?.id ? { projectId: workspaceProject.id } : {}),
     orchestratorAgentId: orchestratorId,
     managedAgentIds: managedIds,
-  });
+  }) : { createdCount: 0, syncedHeadersCount: 0, conflicts: [] };
   if (syncSummary.createdCount > 0 || syncSummary.syncedHeadersCount > 0) {
     await log(
       `[ORCHESTRATOR] 📥 Backlog Sync: created=${syncSummary.createdCount}, headers_synced=${syncSummary.syncedHeadersCount}`
@@ -1808,6 +1831,27 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
       : issue
   );
 
+  if (!freshDispatchAllowed && workspaceDecision.action === "hold") {
+    const heldIssue = [...overlayedIssues]
+      .filter((issue) => issue.orchestratorManaged && (issue.status === "todo" || issue.status === "backlog"))
+      .sort((left, right) => right.priorityRank - left.priorityRank)[0];
+    if (heldIssue) {
+      try {
+        const interactions = asArray<Record<string, unknown>>(await pc.listInteractions(heldIssue.id))
+          .filter((interaction): interaction is Record<string, unknown> & { id: string } => typeof interaction["id"] === "string")
+          .map((interaction) => ({ id: interaction.id, ...(typeof interaction["kind"] === "string" ? { kind: interaction["kind"] } : {}), ...(typeof interaction["status"] === "string" ? { status: interaction["status"] } : {}), ...(typeof interaction["idempotencyKey"] === "string" ? { idempotencyKey: interaction["idempotencyKey"] } : {}) }));
+        const disposition = workspaceDecision.reason;
+        const interactionPlan = planWorkspaceSyncInteraction(heldIssue.id, disposition, interactions);
+        if (interactionPlan.action === "create") {
+          const created = await pc.createInteraction(heldIssue.id, buildWorkspaceSyncInteractionRequest(heldIssue.id, disposition, workspaceDecision.reason));
+          if (!created.ok) await log(`[ORCHESTRATOR] Warning: could not create workspace sync form (${created.status}): ${created.text}`);
+        }
+      } catch (error: unknown) {
+        await log(`[ORCHESTRATOR] Warning: could not reconcile workspace sync form: ${String(error)}`);
+      }
+    }
+  }
+
   let executionPolicyBackfillCount = 0;
   const mazewallPolicy = buildMazewallExecutionPolicy({
     vibeReviewerAgentId: lunaReviewerAgentId,
@@ -2822,7 +2866,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
 
   // 9. PHASE 3: Route ambiguous / open_questions tasks to Vibe Clarifier Lane
   let clarifierDispatchedCount = 0;
-  if (vibeAgentId && managedIds.has(vibeAgentId) && vibeRunning < vibeCapacity) {
+  if (freshDispatchAllowed && vibeAgentId && managedIds.has(vibeAgentId) && vibeRunning < vibeCapacity) {
     const clarificationCandidates = selectClarificationCandidates(
       overlayedIssues.filter((issue) => issue.orchestratorManaged),
       vibeAgentId,
@@ -2866,7 +2910,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
   const conflictForDispatch = calculateConflictMatrix(dispatchIssues);
 
   // 10. PHASE 4: Multi-Lane Implementation Dispatching
-  const candidateSelections = selectNextTasksMultiLane(dispatchIssues, conflictForDispatch, {
+  const candidateSelections = freshDispatchAllowed ? selectNextTasksMultiLane(dispatchIssues, conflictForDispatch, {
     julesAgentId,
     vibeAgentId,
     julesNewSessionBudget,
@@ -2883,7 +2927,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
         .map((issue) => issue.id),
     ),
     julesOnlyIssueIds,
-  });
+  }) : [];
 
   if (candidateSelections.length === 0) {
     const reason =

@@ -254,7 +254,11 @@ export interface PaperclipProjectRecord {
   readonly name?: string | null | undefined;
   readonly urlKey?: string | null | undefined;
   readonly primaryWorkspace?:
-    | { readonly repoUrl?: string | null | undefined; readonly cwd?: string | null | undefined }
+    | {
+        readonly repoUrl?: string | null | undefined;
+        readonly cwd?: string | null | undefined;
+        readonly defaultRef?: string | null | undefined;
+      }
     | null
     | undefined;
   readonly codebase?:
