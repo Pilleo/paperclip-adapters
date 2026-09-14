@@ -35,7 +35,12 @@ export function buildWorkspaceSyncInteractionRequest(issueId: string, dispositio
     payload: {
       version: 1,
       prompt: `Fresh work is paused because ${reason}. Repair the project workspace, then submit this form to trigger a fresh safety check.`,
-      questions: [{ id: "workspace_rechecked", label: "Workspace repaired", type: "boolean", required: true }],
+      questions: [{
+        id: "workspace_rechecked",
+        prompt: "After repairing the workspace, confirm that Paperclip should recheck it.",
+        selectionMode: "single",
+        options: [{ id: "recheck", label: "Recheck workspace synchronization" }],
+      }],
     },
   };
 }
