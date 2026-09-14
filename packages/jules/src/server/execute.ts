@@ -379,7 +379,10 @@ function createPendingResult(
         // plan was approved; the phase is the authoritative state-machine
         // result for this heartbeat.
         planPending: session.phase === "WAITING_FOR_PLAN_APPROVAL",
-        nextAction: `Continue polling Jules session ${session.julesSessionId || "after the next heartbeat"}.`,
+        // Do not expose a prose nextAction here. Paperclip promotes it into
+        // run liveness and immediately retries the worker, bypassing this
+        // result's retryNotBefore. The durable Jules monitor is the sole
+        // authority for normal provider polling cadence.
       },
       clearSession: false,
     };

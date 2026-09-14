@@ -114,6 +114,11 @@ beforeAll(() => {
     expect(session.julesSessionId).toBe('123');
     expect(session.phase).toBe('RUNNING');
     expect(res.summary).toBeUndefined();
+    // Paperclip promotes resultJson.nextAction into run liveness and treats
+    // prose such as "Continue polling" as an immediate retry request. The
+    // durable Jules monitor owns this cadence, so a normal pending result
+    // must not publish a competing host-level next action.
+    expect(res.resultJson).not.toHaveProperty('nextAction');
   });
 
   it('moves the issue to review on COMPLETED state with PR', async () => {
