@@ -17,7 +17,7 @@ const reconciledOperatorGates = new Set<string>();
 import { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { extractIssueMetadata, normalizeGitHubOwnerRepo, resolvePaperclipProject, resolveProjectWorkspace, type PaperclipProjectRecord } from "../core/parser.js";
 import { calculateConflictMatrix, selectNextTasksMultiLane } from "../core/dispatcher.js";
-import { evaluateWorkspaceSync, observeWorkspaceSync, synchronizeWorkspace } from "../core/workspace-sync.js";
+import { isFreshDispatchAllowed, reconcileWorkspaceSync } from "../core/workspace-sync.js";
 import { buildWorkspaceSyncInteractionRequest, planWorkspaceSyncInteraction } from "../core/workspace-sync-interaction.js";
 import { fetchGitHubPullRequests, hasUnreviewedReadyPullRequest, matchPrToIssue, registeredPullRequestFromIssue, checkPrCiIsGreen, fetchPullRequestHeadSha } from "../core/github-sync.js";
 import { evaluateIssueTransition } from "../core/state-machine.js";
@@ -670,24 +670,8 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
   const repoUrl = workspaceProject?.primaryWorkspace?.repoUrl?.trim();
   const defaultRef = workspaceProject?.primaryWorkspace?.defaultRef?.trim();
   const workspacePolicy = repoUrl && defaultRef ? { repoUrl, defaultRef } : null;
-  let workspaceDecision = evaluateWorkspaceSync({
-    policy: workspacePolicy,
-    observation: workspacePolicy
-      ? await observeWorkspaceSync({ workspacePath, policy: workspacePolicy })
-      : { kind: "inspection_failed", detail: "Paperclip project workspace policy is missing." },
-  });
-  if (workspaceDecision.action === "fast_forward" && workspacePolicy) {
-    await synchronizeWorkspace({
-      workspacePath,
-      policy: workspacePolicy,
-      observation: await observeWorkspaceSync({ workspacePath, policy: workspacePolicy }),
-    });
-    workspaceDecision = evaluateWorkspaceSync({
-      policy: workspacePolicy,
-      observation: await observeWorkspaceSync({ workspacePath, policy: workspacePolicy }),
-    });
-  }
-  const freshDispatchAllowed = workspaceDecision.action === "ready";
+  const workspaceDecision = await reconcileWorkspaceSync({ workspacePath, policy: workspacePolicy });
+  const freshDispatchAllowed = isFreshDispatchAllowed(workspaceDecision);
   if (workspaceDecision.action === "hold") {
     await log(`[ORCHESTRATOR] Workspace sync hold: ${workspaceDecision.reason}`);
   } else if (workspaceDecision.action === "fast_forward") {
@@ -2468,6 +2452,10 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
     }
 
     if (isReviewDispatchDecision(pipelineDecision)) {
+      // A pending/active card, CI, PR, merge, and recovery paths above still
+      // reconcile during a workspace hold. This boundary only prevents a new
+      // reviewer card or wake from consuming quota against an unsafe checkout.
+      if (!freshDispatchAllowed) continue;
       // Existing terminal verdicts still need to converge while a provider
       // question is pending, but starting another reviewer would create a
       // competing owner and spend quota on a revision awaiting clarification.
