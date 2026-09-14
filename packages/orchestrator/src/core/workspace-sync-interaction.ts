@@ -6,29 +6,36 @@ export type WorkspaceSyncInteraction = Readonly<{
 }>;
 
 export type WorkspaceSyncInteractionPlan =
-  | Readonly<{ action: "reuse"; interactionId: string }>
+  | Readonly<{ action: "reuse"; interactionId: string; withdrawInteractionIds: readonly string[] }>
   | Readonly<{ action: "create"; idempotencyKey: string }>;
 
-export function workspaceSyncInteractionKey(issueId: string, disposition: string): string {
-  return `workspace-sync:${issueId}:${disposition}`;
+export function workspaceSyncInteractionKey(issueId: string): string {
+  return `workspace-sync:v2:${issueId}`;
 }
 
 export function planWorkspaceSyncInteraction(
   issueId: string,
-  disposition: string,
   interactions: readonly WorkspaceSyncInteraction[],
 ): WorkspaceSyncInteractionPlan {
-  const idempotencyKey = workspaceSyncInteractionKey(issueId, disposition);
-  const pending = interactions.find((interaction) =>
-    interaction.kind === "ask_user_questions" && interaction.status === "pending" && interaction.idempotencyKey === idempotencyKey,
+  const idempotencyKey = workspaceSyncInteractionKey(issueId);
+  // v1 incorrectly included the volatile hold reason in the key. Recognize
+  // those pending cards so an upgrade neither spams a second form nor loses a
+  // human's in-flight response; retain exactly one and withdraw the rest.
+  const keyPrefix = `workspace-sync:${issueId}:`;
+  const pending = interactions.filter((interaction) =>
+    interaction.kind === "ask_user_questions" && interaction.status === "pending" &&
+    (interaction.idempotencyKey === idempotencyKey || interaction.idempotencyKey?.startsWith(keyPrefix)),
   );
-  return pending ? { action: "reuse", interactionId: pending.id } : { action: "create", idempotencyKey };
+  const retained = pending[0];
+  return retained
+    ? { action: "reuse", interactionId: retained.id, withdrawInteractionIds: pending.slice(1).map((interaction) => interaction.id) }
+    : { action: "create", idempotencyKey };
 }
 
-export function buildWorkspaceSyncInteractionRequest(issueId: string, disposition: string, reason: string): Record<string, unknown> {
+export function buildWorkspaceSyncInteractionRequest(issueId: string, reason: string): Record<string, unknown> {
   return {
     kind: "ask_user_questions",
-    idempotencyKey: workspaceSyncInteractionKey(issueId, disposition),
+    idempotencyKey: workspaceSyncInteractionKey(issueId),
     title: "Workspace synchronization needs operator action",
     resolverPolicy: "human_only",
     continuationPolicy: "wake_assignee",

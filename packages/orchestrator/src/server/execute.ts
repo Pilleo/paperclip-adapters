@@ -1824,10 +1824,21 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
         const interactions = asArray<Record<string, unknown>>(await pc.listInteractions(heldIssue.id))
           .filter((interaction): interaction is Record<string, unknown> & { id: string } => typeof interaction["id"] === "string")
           .map((interaction) => ({ id: interaction.id, ...(typeof interaction["kind"] === "string" ? { kind: interaction["kind"] } : {}), ...(typeof interaction["status"] === "string" ? { status: interaction["status"] } : {}), ...(typeof interaction["idempotencyKey"] === "string" ? { idempotencyKey: interaction["idempotencyKey"] } : {}) }));
-        const disposition = workspaceDecision.reason;
-        const interactionPlan = planWorkspaceSyncInteraction(heldIssue.id, disposition, interactions);
+        const interactionPlan = planWorkspaceSyncInteraction(heldIssue.id, interactions);
+        if (interactionPlan.action === "reuse") {
+          for (const interactionId of interactionPlan.withdrawInteractionIds) {
+            const withdrawn = await pc.withdrawInteraction(
+              heldIssue.id,
+              interactionId,
+              "Superseded duplicate workspace synchronization form; one human-only recheck form remains authoritative.",
+            );
+            if (!withdrawn.ok && withdrawn.status !== 404 && withdrawn.status !== 409) {
+              await log(`[ORCHESTRATOR] Warning: could not withdraw duplicate workspace sync form (${withdrawn.status}): ${withdrawn.text}`);
+            }
+          }
+        }
         if (interactionPlan.action === "create") {
-          const created = await pc.createInteraction(heldIssue.id, buildWorkspaceSyncInteractionRequest(heldIssue.id, disposition, workspaceDecision.reason));
+          const created = await pc.createInteraction(heldIssue.id, buildWorkspaceSyncInteractionRequest(heldIssue.id, workspaceDecision.reason));
           if (!created.ok) await log(`[ORCHESTRATOR] Warning: could not create workspace sync form (${created.status}): ${created.text}`);
         }
       } catch (error: unknown) {
