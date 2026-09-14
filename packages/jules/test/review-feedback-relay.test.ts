@@ -34,6 +34,7 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
     moveIssueToBlocked: vi.fn(),
     moveIssueToInProgress: vi.fn(),
     moveIssueToReview: vi.fn(),
+    clearJulesSessionMonitor: vi.fn().mockResolvedValue(undefined),
     listPaperclipInteractions: vi.fn().mockResolvedValue([]),
     readJulesSessionHandleState: vi.fn().mockResolvedValue(null),
     withdrawPaperclipInteraction: vi.fn().mockResolvedValue(undefined),
@@ -69,6 +70,7 @@ describe("Review Feedback Relay to Jules", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(readJulesSessionHandleState).mockResolvedValue(null);
   });
 
   it("does not relay a comment-shaped review decision to Jules", async () => {
@@ -238,12 +240,22 @@ describe("Review Feedback Relay to Jules", () => {
           julesActivityId: "replacement-plan-activity", paperclipInteractionId: "replacement-luna-plan-1",
           question: "Replacement plan", planRevisionId: "revision-2", planRevisionNumber: 2,
           planDocumentId: "document-2", reviewerAgentId: "luna-1", stage: "luna" as const,
+          reviewerChildIssueId: "replacement-plan-review-child-1",
           createdAt: "2026-09-06T01:25:00.000Z",
         },
       }) },
       context: { task: { id: "issue-141", title: "Review" }, payload: { workerFeedback: deliveredFeedback } },
       config: adapterConfig, authToken: "mock-token", runId: "run-2", onLog: vi.fn().mockResolvedValue(undefined),
     } as unknown as AdapterExecutionContext;
+
+    // The reviewer-owned child form remains the durable authority after the
+    // PR rejection was delivered. An empty response would model a compacted
+    // card and should deliberately retire the stale local pointer instead.
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([{
+      id: "replacement-luna-plan-1",
+      kind: "request_item_verdicts",
+      status: "pending",
+    }] as never);
 
     const result = await execute(ctx);
 
@@ -252,6 +264,45 @@ describe("Review Feedback Relay to Jules", () => {
     expect(JulesClient.prototype.sendMessage).not.toHaveBeenCalled();
     expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
       paperclipInteractionId: "replacement-luna-plan-1",
+    });
+  });
+
+  it("nudges one acknowledged rejection that completed without a new PR head", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({
+      id: "session-141", state: "COMPLETED", url: "https://jules.example/session-141",
+    } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [] } as never);
+
+    const result = await execute({
+      agent: { id: "jules-1", companyId: "c-1", name: "Jules", adapterType: "jules", adapterConfig },
+      runtime: { sessionParams: sessionCodec.encode({
+        ...session,
+        phase: "RUNNING" as const,
+        currentPrHeadSha: "abc123",
+        workerFeedbackDeliveryId: "native-review:luna-reject-1:abc123",
+        providerContinuation: {
+          deliveryId: "native-review:luna-reject-1:abc123",
+          state: "provider_acknowledged" as const,
+          sentAt: "2026-09-09T13:00:00.000Z",
+          acknowledgedActivityId: "provider-progress-1",
+        },
+      }) },
+      context: { task: { id: "issue-141", title: "Review" } },
+      config: adapterConfig,
+      authToken: "mock-token",
+      runId: "run-3",
+      onLog: vi.fn().mockResolvedValue(undefined),
+    } as unknown as AdapterExecutionContext);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.resultJson).toMatchObject({ pending: true });
+    expect(JulesClient.prototype.sendMessage).toHaveBeenCalledWith(
+      "session-141",
+      expect.objectContaining({ prompt: expect.stringContaining("commit and push") }),
+    );
+    expect(sessionCodec.decode(result.sessionParams!)?.providerContinuation).toMatchObject({
+      state: "terminal_revision_reminder_sent",
+      deliveryId: "native-review:luna-reject-1:abc123",
     });
   });
 
@@ -364,7 +415,7 @@ describe("Review Feedback Relay to Jules", () => {
 
     await execute({
       agent: { id: "jules-1", companyId: "c-1", name: "Jules", adapterType: "jules", adapterConfig },
-      runtime: { sessionParams: sessionCodec.encode({ ...session, phase: "COMPLETED" as const, currentPrHeadSha: undefined, currentPrUrl: "https://github.com/example/repo/pull/1" as never }) },
+      runtime: { sessionParams: sessionCodec.encode({ ...session, phase: "COMPLETED" as const, currentPrHeadSha: "legacy-head", currentPrUrl: "https://github.com/example/repo/pull/1" as never }) },
       context: { task: { id: "issue-141", title: "Review" } }, config: adapterConfig,
       authToken: "mock-token", onLog: vi.fn().mockResolvedValue(undefined),
     } as unknown as AdapterExecutionContext);

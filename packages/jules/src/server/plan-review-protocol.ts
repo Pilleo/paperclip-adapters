@@ -18,6 +18,7 @@ const RawInteractionSchema = z.object({
   kind: z.string().optional(),
   status: z.string().optional(),
   addresseeAgentId: z.string().optional(),
+  resolvedByAgentId: z.string().optional().nullable(),
   idempotencyKey: z.string().optional(),
   payload: z.unknown().optional(),
   result: z.unknown().optional(),
@@ -66,21 +67,22 @@ export type PlanReviewObservation =
       readonly identity: PlanReviewIdentity;
       readonly reason?: string;
     }
+  | {
+      /** A terminal card was resolved by a human override rather than its addressed reviewer. */
+      readonly kind: "untrusted";
+      readonly reason: "v2 answered card was not resolved by the addressed reviewer";
+      readonly interactionId: string;
+      readonly identity: PlanReviewIdentity;
+    }
   | { readonly kind: "unrecognized"; readonly reason: string };
 
-function key(identity: PlanReviewIdentity, version: "v1" | "v2", recoveryAttempt?: number): string {
-  const base = `jules:plan-review:${version}:${identity.issueId}:${identity.sessionId}:${identity.revisionId}:${identity.stage}`;
-  return recoveryAttempt && recoveryAttempt > 0 ? `${base}:recovery:${recoveryAttempt}` : base;
+function key(identity: PlanReviewIdentity, version: "v1" | "v2"): string {
+  return `jules:plan-review:${version}:${identity.issueId}:${identity.sessionId}:${identity.revisionId}:${identity.stage}`;
 }
 
 function hasKey(rawKey: string | undefined, identity: PlanReviewIdentity, version: "v1" | "v2"): boolean {
   if (!rawKey) return false;
-  const base = key(identity, version);
-  return rawKey === base || new RegExp(`^${escapeRegExp(base)}:recovery:[1-9][0-9]*$`).test(rawKey);
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return rawKey === key(identity, version);
 }
 
 function sameTarget(target: unknown, identity: PlanReviewIdentity): boolean {
@@ -120,6 +122,17 @@ export function parsePlanReviewInteraction(rawValue: unknown, identity: PlanRevi
   if (!items.success) return { kind: "unrecognized", reason: "v2 card does not declare exactly one plan item" };
   if (raw.data.status === "pending") return { kind: "v2", state: "pending", interactionId: raw.data.id, identity };
   if (raw.data.status !== "answered") return { kind: "unrecognized", reason: "v2 card is not pending or answered" };
+  // Paperclip currently permits a human override for an addressed-agent card.
+  // A plan-review ladder must not misrepresent that override as Luna/Terra's
+  // decision: only the configured reviewer can advance or reject this gate.
+  if (raw.data.resolvedByAgentId !== identity.reviewerAgentId) {
+    return {
+      kind: "untrusted",
+      reason: "v2 answered card was not resolved by the addressed reviewer",
+      interactionId: raw.data.id,
+      identity,
+    };
+  }
 
   const verdict = parsePlanReviewVerdictResult(raw.data.result);
   if (!verdict) return { kind: "unrecognized", reason: "v2 result is not one complete plan verdict" };
@@ -156,6 +169,6 @@ function assertNever(value: never): never {
   throw new Error(`Unhandled plan-review state: ${String(value)}`);
 }
 
-export function planReviewIdempotencyKey(identity: PlanReviewIdentity, version: "v1" | "v2" = "v2", recoveryAttempt?: number): string {
-  return key(identity, version, recoveryAttempt);
+export function planReviewIdempotencyKey(identity: PlanReviewIdentity, version: "v1" | "v2" = "v2"): string {
+  return key(identity, version);
 }

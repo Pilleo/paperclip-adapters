@@ -69,7 +69,10 @@ describe("deterministic coverage paths", () => {
     expect(evaluateInteractionAction(session, "COMPLETED").type).toBe("CONFIRM_NO_PR_COMPLETION");
     expect(evaluateInteractionAction({ ...session, currentPrUrl: "https://github.com/o/r/pull/1" }, "COMPLETED").type).toBe("RESOLVE_COMPLETION_WITH_PR");
     expect(evaluateInteractionAction(session, "PAUSED").type).toBe("RESET_PAUSED_SESSION");
-    expect(evaluateInteractionAction(session, "AWAITING_PLAN_APPROVAL", [{ id: "p", kind: "request_confirmation", status: "pending" }]).type).toBe("WAIT_FOR_HUMAN");
+    // A card without the session's exact immutable pointer may be historical
+    // confirmation from another plan revision. It cannot park this plan or
+    // authorize an approval relay.
+    expect(evaluateInteractionAction(session, "AWAITING_PLAN_APPROVAL", [{ id: "p", kind: "request_confirmation", status: "pending" }]).type).toBe("CREATE_PLAN_CARD");
     expect(evaluateInteractionAction({ ...session, pendingInteraction: { type: "user_feedback", julesActivityId: "a", paperclipInteractionId: "p", question: "q", createdAt: new Date().toISOString() } }, "AWAITING_USER_FEEDBACK", [{ id: "p", kind: "ask_user_questions", status: "answered", result: { answers: [{ otherText: "yes" }] } }]).type).toBe("RELAY_FEEDBACK");
     expect(determinePaperclipIssueStatus("RUNNING" as any).status).toBe("in_progress");
     expect(extractFeedbackAnswer({ answers: [{ otherText: "  answer  " }] })).toBe("answer");

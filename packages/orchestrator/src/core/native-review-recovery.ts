@@ -11,7 +11,8 @@ export interface NativeReviewRecoveryInput {
 
 export type NativeReviewRecoveryResult =
   | { readonly ok: boolean; readonly status: number; readonly text: string; readonly data?: unknown }
-  | { readonly ok: false; readonly status: 400; readonly text: string; readonly code: "invalid_native_review_identity" };
+  | { readonly ok: false; readonly status: 400; readonly text: string; readonly code: "invalid_native_review_identity" }
+  | { readonly ok: false; readonly status: 409; readonly text: string; readonly code: "host_card_requeue_required" };
 
 /**
  * Single adapter-owned wake contract for native review cards.
@@ -33,20 +34,21 @@ export async function wakeNativeReview(input: NativeReviewRecoveryInput): Promis
 }
 
 /**
- * Compatibility bridge for Paperclip versions that validate queued reviewer
- * ownership before reading the interaction binding. Keep it limited to an
- * explicit existing card recovery; normal review routing remains core-owned.
- * Remove once the host persists the native-card binding before its ownership
- * gate (see native-review-recovery-state.ts).
+ * Compatibility fence for Paperclip versions that validate queued reviewer
+ * ownership before reading the interaction binding. Patching ownership queues
+ * an unbound assignment run before an adapter can issue the typed wake; a
+ * following HTTP 202 therefore cannot prove the native card was recovered.
+ *
+ * Keep normal routing core-owned. Until Paperclip exposes atomic requeue of an
+ * addressed pending interaction, operator recovery must surface this typed
+ * state instead of manufacturing an unsafe assignment-plus-wake sequence.
  */
 export async function prepareAndWakeNativeReview(input: NativeReviewRecoveryInput): Promise<NativeReviewRecoveryResult> {
-  const paperclip = input.paperclip as NativeReviewRecoveryInput["paperclip"] & {
-    patchIssue(issueId: string, payload: { status: "in_review"; assigneeAgentId: string }): Promise<{ ok: boolean; status: number; text: string; data?: unknown }>;
+  void input;
+  return {
+    ok: false,
+    status: 409,
+    text: "host_card_requeue_required",
+    code: "host_card_requeue_required",
   };
-  const patched = await paperclip.patchIssue(input.issueId, {
-    status: "in_review",
-    assigneeAgentId: input.agentId,
-  });
-  if (!patched.ok) return patched;
-  return wakeNativeReview(input);
 }

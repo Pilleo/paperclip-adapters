@@ -1,7 +1,7 @@
 ---
 title: "Run the Paperclip Jules recovery canary in CI against a disposable server"
 severity: "HIGH"
-status: "open"
+status: "resolved"
 orchestrator_managed: true
 priority: high
 dependencies: []

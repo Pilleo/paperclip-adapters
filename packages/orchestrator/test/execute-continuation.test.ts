@@ -212,7 +212,9 @@ describe("orchestrator live session continuation", () => {
       title: "native monitor canary",
       status: "blocked",
       projectId: "project-1",
-      assigneeAgentId: "jules-orch",
+      // Failed-run recovery can return ownership to the orchestrator before
+      // this reducer restores the durable Jules monitor.
+      assigneeAgentId: "orch-1",
       updatedAt: expired,
       executionPolicy: {
         mode: "normal",
@@ -257,7 +259,13 @@ describe("orchestrator live session continuation", () => {
     const result = await execute(ctx());
     expect(result.exitCode).toBe(0);
     expect(patches).toHaveLength(1);
-    expect(patches[0]).toMatchObject({ status: "in_progress" });
+    expect(patches[0]).toMatchObject({
+      status: "in_progress",
+      // The monitor's recoveryPolicy wakes the issue owner. Reattachment must
+      // therefore restore the Jules worker, not retain the orchestrator that
+      // performed the recovery patch.
+      assigneeAgentId: "jules-orch",
+    });
     const monitor = (patches[0]?.executionPolicy as Record<string, unknown>)?.monitor as Record<string, unknown>;
     expect(monitor).toMatchObject({ serviceName: "jules", externalRef: "jules-session-836" });
     expect(Date.parse(String(monitor.nextCheckAt))).toBeGreaterThan(Date.now());
@@ -265,5 +273,119 @@ describe("orchestrator live session continuation", () => {
 
     await execute(ctx());
     expect(patches).toHaveLength(1);
+  });
+
+  it("restores a manually cleared Jules parent and wakes it once after its exact plan verdict", async () => {
+    const patches: Array<Record<string, unknown>> = [];
+    const childPatches: Array<Record<string, unknown>> = [];
+    const wakes: unknown[] = [];
+    const parentId = "issue-1450";
+    const childId = "plan-child-1450";
+    const sessionId = "session-1450";
+    const revisionId = "revision-1450";
+    const parent = {
+      id: parentId,
+      identifier: "MAZ-1450",
+      title: "resume typed plan verdict",
+      // Paperclip may normalize a parent waiting on a child-owned native form
+      // to blocked. The bridge must still consume the exact typed verdict;
+      // accepting only backlog strands the Jules session indefinitely.
+      status: "blocked",
+      projectId: "project-1",
+      assigneeAgentId: "jules-orch",
+      updatedAt: new Date().toISOString(),
+      executionPolicy: null,
+      executionState: {
+        status: "idle",
+        monitor: {
+          serviceName: "jules",
+          status: "cleared",
+          clearReason: "manual",
+          externalRef: "[redacted]",
+          timeoutAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        },
+      },
+    };
+    const child = {
+      id: childId,
+      parentId,
+      identifier: "MAZ-1451",
+      title: "Review Jules plan",
+      description: "<!-- jules-question-adjudication:v2|parent=issue-1450 -->",
+      status: "backlog",
+      projectId: "project-1",
+      assigneeAgentId: "luna-1",
+      updatedAt: new Date().toISOString(),
+    };
+    globalThis.fetch = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      const method = (init?.method || "GET").toUpperCase();
+      if (method === "POST" && href.includes("/agents/jules-orch/wakeup")) {
+        wakes.push(JSON.parse(String(init?.body || "{}")));
+        return new Response("{}", { status: 202 });
+      }
+      if (method === "PATCH" && href.endsWith(`/api/issues/${parentId}`)) {
+        const patch = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+        patches.push(patch);
+        Object.assign(parent, patch);
+        return new Response("{}", { status: 200 });
+      }
+      if (method === "PATCH" && href.endsWith(`/api/issues/${childId}`)) {
+        const patch = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+        childPatches.push(patch);
+        Object.assign(child, patch);
+        return new Response("{}", { status: 200 });
+      }
+      if (href.endsWith(`/api/issues/${parentId}/documents`)) {
+        return new Response(JSON.stringify([{
+          key: "jules-session",
+          body: `julesSessionId: ${sessionId}\nurl: https://jules.google.com/session/${sessionId}`,
+        }]), { status: 200 });
+      }
+      if (href.endsWith(`/api/issues/${childId}/interactions`)) {
+        return new Response(JSON.stringify([{
+          id: "plan-card-1450",
+          kind: "request_item_verdicts",
+          status: "answered",
+          idempotencyKey: `jules:plan-review:v2:${parentId}:${sessionId}:${revisionId}:luna`,
+          payload: { target: { type: "issue_document", issueId: parentId, key: "plan", revisionId } },
+        }]), { status: 200 });
+      }
+      if (href.includes("/heartbeat-runs")) return new Response("[]", { status: 200 });
+      if (href.endsWith("/agents") || href.includes("/agents?")) return new Response(JSON.stringify([{
+        id: "jules-orch", name: "[Orchestrated] Jules Async Worker", adapterType: "jules", status: "idle", reportsTo: "orch-1",
+        metadata: { managedBy: "paperclip-orchestrator", workerKey: "jules" },
+      }]), { status: 200 });
+      if (href.includes("/projects")) return new Response(JSON.stringify([
+        { id: "project-1", name: "paperclip-adapters", primaryWorkspace: { cwd: process.cwd() } },
+      ]), { status: 200 });
+      if (method === "GET" && href.endsWith(`/api/issues/${parentId}`)) return new Response(JSON.stringify(parent), { status: 200 });
+      if (href.includes("/issues")) return new Response(JSON.stringify([parent, child]), { status: 200 });
+      if (href.includes("/approvals")) return new Response("[]", { status: 200 });
+      if (method === "POST" || method === "PATCH") return new Response("{}", { status: 200 });
+      return new Response("[]", { status: 200 });
+    }) as typeof fetch;
+
+    const result = await execute(ctx());
+    expect(result.exitCode).toBe(0);
+    // Paperclip's child relation can remain a real dependency even when the
+    // adapter requested a non-blocking internal-review child. Close only the
+    // exact child that owns the resolved v2 form before reviving its parent.
+    expect(childPatches).toEqual([{ status: "done", blockParentUntilDone: false }]);
+    expect(patches).toHaveLength(1);
+    expect(patches[0]).toMatchObject({ status: "in_progress", assigneeAgentId: "jules-orch" });
+    expect(wakes).toEqual([{
+      source: "on_demand",
+      triggerDetail: "ping",
+      // This is the Jules adapter's closed protocol signal for an immediate
+      // provider synchronization. It is not reviewer prose.
+      reason: "synchronize_provider_plan_ready",
+      forceFreshSession: false,
+      payload: { issueId: parentId },
+    }]);
+    await execute(ctx());
+    expect(childPatches).toHaveLength(1);
+    expect(patches).toHaveLength(1);
+    expect(wakes).toHaveLength(1);
   });
 });

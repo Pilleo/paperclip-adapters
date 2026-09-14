@@ -64,6 +64,34 @@ describe("native multi-tier review pipeline", () => {
     }).action).toBe("CREATE_MERGE_APPROVAL");
   });
 
+  it("reassigns once for a rejected contract-scoped Luna card on the same PR head", () => {
+    const headSha = "fc2fc8f14a598a8e7dc930f8f2a4421d2d5b5d80";
+    const reviewContractMarkdown = "Run the disposable control-plane canary only on Node 24.";
+    const rejectedLunaCard = {
+      id: "luna-contract-rejected",
+      kind: "request_item_verdicts",
+      status: "answered",
+      idempotencyKey: reviewInteractionIdempotencyKey({
+        issueId: issue.id,
+        prUrl: "https://github.com/Pilleo/paperclip-adapters/pull/8",
+        headSha,
+        stage: "luna",
+        reviewContractMarkdown,
+      }),
+      result: { items: [{ id: "pull_request", verdict: "reject", reason: "Contract-specific change required." }] },
+    };
+
+    expect(evaluateReviewPipelineProgress({
+      ...base(),
+      issue: { ...issue, description: reviewContractMarkdown },
+      prUrl: "https://github.com/Pilleo/paperclip-adapters/pull/8",
+      reviewHeadSha: headSha,
+      lunaReviewerAgentId: "agent-luna",
+      terraReviewerAgentId: "agent-terra",
+      interactions: [rejectedLunaCard],
+    })).toMatchObject({ action: "REASSIGN_TO_WORKER", targetAssigneeId: "agent-jules" });
+  });
+
   it("ignores an expired pre-version card before the answered migrated card", () => {
     const p = base([]);
     const headSha = "9d1b229fa0a9102c25b619b1bc5252f1b4851201";

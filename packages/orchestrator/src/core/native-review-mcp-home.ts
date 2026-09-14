@@ -3,20 +3,30 @@ import path from "node:path";
 
 export type NativeReviewWorkerKey = "luna_reviewer" | "terra_reviewer" | "terra_adjudicator";
 
-export interface NativeReviewRuntimeContext {
+/**
+ * Values which are safe to persist in a reviewer home shared by every
+ * project in a company. Task identity deliberately cannot be represented
+ * here: concurrent project heartbeats otherwise overwrite each other.
+ */
+export interface NativeReviewStaticContext {
   readonly apiBase: string;
-  readonly issueId: string;
   readonly agentId: string;
-  readonly runId: string;
+  /**
+   * Codex does not forward per-run PAPERCLIP_TASK_ID to configured MCP
+   * subprocesses. This stable company scope permits a fail-closed lookup of
+   * the one card addressed to this reviewer when that upstream limitation is
+   * present. It is not task or run identity.
+   */
+  readonly companyId: string;
 }
 
 /**
  * Paperclip's stock Codex adapter may rewrite config.toml after the
  * orchestrator provisions it, which can strip MCP-specific env entries.
- * Keep the non-secret review identity in this dedicated reviewer home as a
- * compatibility fallback. It deliberately contains neither a bearer token nor
- * an interaction/item id; the bridge still resolves the sole addressed card
- * from Paperclip at submission time.
+ * Keep only the non-secret, agent-scoped configuration in this dedicated
+ * reviewer home as a compatibility fallback. It deliberately contains neither
+ * a bearer token nor task/run identity; the bridge resolves the sole addressed
+ * card from the active Paperclip run at submission time.
  */
 export const NATIVE_REVIEW_RUNTIME_CONTEXT_FILE = "paperclip-native-review-runtime.json";
 
@@ -41,7 +51,7 @@ export function resolveNativeReviewMcpHome(input: {
 export function nativeReviewMcpConfigToml(input: {
   readonly nodePath: string;
   readonly serverPath: string;
-  readonly runtimeContext: NativeReviewRuntimeContext;
+  readonly staticContext: NativeReviewStaticContext;
 }): string {
   return [
     "# Managed by paperclip-orchestrator. This home exposes exactly one typed review tool.",
@@ -54,10 +64,9 @@ export function nativeReviewMcpConfigToml(input: {
     `args = [${JSON.stringify(input.serverPath)}]`,
     "",
     "[mcp_servers.paperclip_review.env]",
-    `PAPERCLIP_API_URL = ${JSON.stringify(input.runtimeContext.apiBase)}`,
-    `PAPERCLIP_TASK_ID = ${JSON.stringify(input.runtimeContext.issueId)}`,
-    `PAPERCLIP_AGENT_ID = ${JSON.stringify(input.runtimeContext.agentId)}`,
-    `PAPERCLIP_RUN_ID = ${JSON.stringify(input.runtimeContext.runId)}`,
+    `PAPERCLIP_API_URL = ${JSON.stringify(input.staticContext.apiBase)}`,
+    `PAPERCLIP_AGENT_ID = ${JSON.stringify(input.staticContext.agentId)}`,
+    `PAPERCLIP_COMPANY_ID = ${JSON.stringify(input.staticContext.companyId)}`,
     "",
   ].join("\n");
 }
@@ -72,7 +81,7 @@ export async function provisionNativeReviewMcpHome(input: {
   readonly authSource: string;
   readonly nodePath: string;
   readonly serverPath: string;
-  readonly runtimeContext: NativeReviewRuntimeContext;
+  readonly staticContext: NativeReviewStaticContext;
 }): Promise<void> {
   await fs.access(input.authSource);
   await fs.mkdir(input.home, { recursive: true, mode: 0o700 });
@@ -82,14 +91,14 @@ export async function provisionNativeReviewMcpHome(input: {
     nativeReviewMcpConfigToml({
       nodePath: input.nodePath,
       serverPath: input.serverPath,
-      runtimeContext: input.runtimeContext,
+      staticContext: input.staticContext,
     }),
     { mode: 0o600 },
   );
   await fs.chmod(path.join(input.home, "config.toml"), 0o600);
   await fs.writeFile(
     nativeReviewRuntimeContextPath(input.home),
-    `${JSON.stringify(input.runtimeContext)}\n`,
+    `${JSON.stringify(input.staticContext)}\n`,
     { mode: 0o600 },
   );
   await fs.chmod(nativeReviewRuntimeContextPath(input.home), 0o600);

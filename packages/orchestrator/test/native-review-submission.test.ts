@@ -141,6 +141,31 @@ describe("native review submission protocol", () => {
     expect(result).toMatchObject({ ok: true, interactionId: "card-1", verdict: "approve" });
   });
 
+  it("fails closed without submitting when the Codex MCP compatibility lookup finds cards on two issues", async () => {
+    const calls: string[] = [];
+    const result = await submitNativeReviewVerdictFromRuntime({
+      apiBase: "http://127.0.0.1:3100/api",
+      companyId: "company-1",
+      agentId: "luna-1",
+      verdict: "approve",
+      fetcher: async (url, init) => {
+        const request = `${init?.method ?? "GET"} ${String(url)}`;
+        calls.push(request);
+        if (String(url).includes("/companies/company-1/issues")) {
+          return new Response(JSON.stringify([{ id: "issue-1" }, { id: "issue-2" }]), { status: 200 });
+        }
+        return new Response(JSON.stringify([card()]), { status: 200 });
+      },
+    });
+
+    expect(result).toEqual({ ok: false, code: "ambiguous_owned_pending_cards" });
+    expect(calls).toEqual([
+      "GET http://127.0.0.1:3100/api/companies/company-1/issues?assigneeAgentId=luna-1&status=todo%2Cin_progress%2Cin_review%2Cblocked",
+      "GET http://127.0.0.1:3100/api/issues/issue-1/interactions",
+      "GET http://127.0.0.1:3100/api/issues/issue-2/interactions",
+    ]);
+  });
+
   it("returns a typed transport failure when the control-plane request throws", async () => {
     const result = await submitNativeReviewVerdictFromRuntime({
       apiBase: "http://paperclip.test/api",

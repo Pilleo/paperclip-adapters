@@ -188,6 +188,7 @@ describe("createPaperclipHttp wakeup", () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe("http://127.0.0.1:3100/api/issues/issue%2F834");
   });
 
+
   it("patches a merged work product through the dedicated route", async () => {
     const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
     globalThis.fetch = fetchMock as typeof fetch;

@@ -2,7 +2,7 @@ import readline from "node:readline";
 import fs from "node:fs";
 import path from "node:path";
 import { submitNativeReviewVerdictFromRuntime, type NativeReviewSubmissionResult } from "../core/native-review-submission.js";
-import { NATIVE_REVIEW_RUNTIME_CONTEXT_FILE } from "../core/native-review-mcp-home.js";
+import { NATIVE_REVIEW_RUNTIME_CONTEXT_FILE, type NativeReviewStaticContext } from "../core/native-review-mcp-home.js";
 import {
   NATIVE_REVIEW_MCP_TOOL,
   createNativeReviewMcpHandler,
@@ -30,39 +30,52 @@ type JsonRpcResponse = {
 
 export interface NativeReviewMcpRuntime {
   readonly apiBase: string;
-  readonly issueId: string;
+  readonly issueId?: string;
   readonly agentId: string;
+  readonly companyId?: string;
+  readonly runId?: string;
   readonly token?: string;
 }
 
-function readRuntimeContextFile(codexHome: string | undefined): NativeReviewMcpRuntime | null {
+function readStaticContextFile(codexHome: string | undefined): NativeReviewStaticContext | null {
   if (!codexHome?.trim()) return null;
   try {
     const value: unknown = JSON.parse(fs.readFileSync(path.join(codexHome, NATIVE_REVIEW_RUNTIME_CONTEXT_FILE), "utf8"));
     if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
     const record = value as Record<string, unknown>;
     const apiBase = typeof record["apiBase"] === "string" ? record["apiBase"].trim() : "";
-    const issueId = typeof record["issueId"] === "string" ? record["issueId"].trim() : "";
     const agentId = typeof record["agentId"] === "string" ? record["agentId"].trim() : "";
-    const runId = typeof record["runId"] === "string" ? record["runId"].trim() : "";
-    return apiBase && issueId && agentId
-      ? { apiBase, issueId, agentId, ...(runId ? { runId } : {}) }
-      : null;
+    const companyId = typeof record["companyId"] === "string" ? record["companyId"].trim() : "";
+    return apiBase && agentId && companyId ? { apiBase, agentId, companyId } : null;
   } catch {
     return null;
   }
 }
 
 export function nativeReviewMcpRuntimeFromEnv(env: NodeJS.ProcessEnv): NativeReviewMcpRuntime | null {
-  const apiBase = env["PAPERCLIP_API_URL"]?.trim() ?? "";
+  const staticContext = readStaticContextFile(env["CODEX_HOME"]);
+  const processApiBase = env["PAPERCLIP_API_URL"]?.trim() ?? "";
   const issueId = env["PAPERCLIP_TASK_ID"]?.trim() ?? "";
-  const agentId = env["PAPERCLIP_AGENT_ID"]?.trim() ?? "";
+  const processAgentId = env["PAPERCLIP_AGENT_ID"]?.trim() ?? "";
+  const processCompanyId = env["PAPERCLIP_COMPANY_ID"]?.trim() ?? "";
+  const apiBase = processApiBase || staticContext?.apiBase || "";
+  const agentId = processAgentId || staticContext?.agentId || "";
+  const runId = env["PAPERCLIP_RUN_ID"]?.trim() ?? "";
   const token = env["PAPERCLIP_API_KEY"]?.trim() ?? "";
   // Local-trusted Paperclip runs intentionally have no API key. The loopback
   // control plane authenticates the run through its managed execution context;
   // a bearer token is still used automatically when one is supplied.
-  if (apiBase && issueId && agentId) return { apiBase, issueId, agentId, ...(token ? { token } : {}) };
-  return readRuntimeContextFile(env["CODEX_HOME"]);
+  const companyId = processCompanyId || staticContext?.companyId || "";
+  if (!apiBase || !agentId || (!issueId && !companyId)) return null;
+  if (staticContext && processAgentId && staticContext.agentId !== processAgentId) return null;
+  return {
+    apiBase,
+    agentId,
+    ...(issueId ? { issueId } : {}),
+    ...(companyId ? { companyId } : {}),
+    ...(runId ? { runId } : {}),
+    ...(token ? { token } : {}),
+  };
 }
 
 function nativeReviewToolDefinition() {

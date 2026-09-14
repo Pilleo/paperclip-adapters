@@ -87,7 +87,7 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
 
   async function sendJson(
     path: string,
-    method: "POST" | "PATCH" | "DELETE",
+    method: "POST" | "PUT" | "PATCH" | "DELETE",
     body: unknown,
     idempotencyKey?: string,
   ): Promise<{ ok: boolean; status: number; text: string; data?: unknown }> {
@@ -134,7 +134,7 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
     return match?.[1] || "company";
   }
 
-  function commandAction(method: "POST" | "PATCH" | "DELETE", path: string): "comment" | "interaction" | "status" | "assignment" | "wakeup" {
+  function commandAction(method: "POST" | "PUT" | "PATCH" | "DELETE", path: string): "comment" | "interaction" | "status" | "assignment" | "wakeup" {
     if (path.endsWith("/wakeup")) return "wakeup";
     if (path.includes("/interactions")) return "interaction";
     if (path.includes("/comments")) return "comment";

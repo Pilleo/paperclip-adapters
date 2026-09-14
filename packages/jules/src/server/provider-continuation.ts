@@ -11,6 +11,13 @@ export type ProviderContinuation =
       readonly state: "provider_acknowledged";
       readonly sentAt: string;
       readonly acknowledgedActivityId: string;
+    }
+  | {
+      readonly deliveryId: string;
+      readonly state: "terminal_revision_reminder_sent";
+      readonly sentAt: string;
+      readonly acknowledgedActivityId: string;
+      readonly remindedAt: string;
     };
 
 function isProviderActivity(activity: JulesActivity): boolean {
@@ -25,7 +32,7 @@ export function reconcileProviderContinuation(
   continuation: ProviderContinuation,
   activities: readonly JulesActivity[],
 ): ProviderContinuation {
-  if (continuation.state === "provider_acknowledged") return continuation;
+  if (continuation.state === "provider_acknowledged" || continuation.state === "terminal_revision_reminder_sent") return continuation;
   const sentAt = Date.parse(continuation.sentAt);
   const acknowledgement = activities.find((activity) =>
     isProviderActivity(activity) &&

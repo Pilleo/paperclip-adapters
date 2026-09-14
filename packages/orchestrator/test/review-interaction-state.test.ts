@@ -43,6 +43,7 @@ describe("native PR review interaction state", () => {
 
   it("recognizes canonical retry keys while rejecting legacy review stages", () => {
     expect(isCanonicalReviewCardKey("pr-review:v13:issue-1:pr:sha:luna:attempt:21")).toBe(true);
+    expect(isCanonicalReviewCardKey("pr-review:v13:issue-1:pr:sha:luna:contract:170855u:attempt:5")).toBe(true);
     expect(isCanonicalReviewCardKey("pr-review:v13:issue-1:pr:sha:terra")).toBe(true);
     expect(isCanonicalReviewCardKey("pr-review:v13:issue-1:pr:sha:strong:attempt:21")).toBe(false);
     expect(isCanonicalReviewCardKey("pr-review:v13:issue-1:pr:sha:luna:attempt:x")).toBe(false);
@@ -166,6 +167,21 @@ describe("native PR review interaction state", () => {
     });
     expect(request).toMatchObject({ addresseeAgentId: "terra-1", continuationPolicy: "none" });
     expect(shouldExplicitlyWakeReviewCard(request)).toBe(false);
+  });
+
+  it("includes the declared task contract in a native reviewer card", () => {
+    const request = buildReviewInteractionRequest({
+      issueId: "issue-1", prUrl: "pr-1", headSha: "abc", stage: "luna",
+      reviewContractMarkdown: "The server canary runs on Node 24 because the control plane requires Node >=24.11.",
+    });
+    expect(request.payload.detailsMarkdown).toContain("## Task contract");
+    expect(request.payload.detailsMarkdown).toContain("control plane requires Node >=24.11");
+  });
+
+  it("allocates a new idempotency identity when the declared review contract changes", () => {
+    const base = { issueId: "issue-1", prUrl: "pr-1", headSha: "abc", stage: "luna" as const };
+    expect(reviewInteractionIdempotencyKey({ ...base, reviewContractMarkdown: "contract A" }))
+      .not.toBe(reviewInteractionIdempotencyKey({ ...base, reviewContractMarkdown: "contract B" }));
   });
 
   it("binds the parent issue to the native reviewer participant without assigning it", () => {

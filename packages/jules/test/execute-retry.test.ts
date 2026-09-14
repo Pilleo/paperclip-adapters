@@ -218,4 +218,55 @@ beforeAll(() => {
       expect(newSession.sessionId).toBe('124');
       expect(newSession.julesSessionId).toBe('124');
   });
+
+  it('creates a single remediation session on the existing PR branch after terminal failure', async () => {
+      let createRequest: any;
+      (JulesClient.prototype.createSession as any).mockImplementationOnce((request: unknown) => {
+        createRequest = request;
+        return Promise.resolve({ id: 'recovery-124', name: 'sessions/recovery-124' });
+      });
+      (JulesClient.prototype.getSession as any).mockResolvedValue({ state: 'FAILED', source: 'github' });
+      const sessionParams = sessionCodec.encode({
+          version: 1,
+          paperclipIssueId: 'task-1',
+          promptHash: 'old-hash',
+          repository: 'test',
+          source: 'github',
+          baseBranch: 'master',
+          phase: 'RETRY_SCHEDULED',
+          sessionId: 'terminal-123',
+          julesSessionId: 'terminal-123',
+          attempt: 1,
+          failedSessions: [{ sessionId: 'terminal-123', failedAt: new Date().toISOString(), message: 'provider failed', classification: 'transient', prUrl: 'https://github.com/Pilleo/paperclip-adapters/pull/11' }],
+          currentPrUrl: 'https://github.com/Pilleo/paperclip-adapters/pull/11',
+          currentPrHeadSha: 'abc123',
+          currentPrHeadRef: 'jules-18036993849073318863-b259ffba',
+          prRemediation: {
+            originalSessionId: 'terminal-123',
+            prUrl: 'https://github.com/Pilleo/paperclip-adapters/pull/11',
+            headSha: 'abc123',
+            headRefName: 'jules-18036993849073318863-b259ffba',
+            startedAt: '2026-09-13T20:00:00.000Z',
+          },
+          createdAt: new Date().toISOString(),
+      } as any);
+      const abortCtrl = new AbortController();
+      setTimeout(() => abortCtrl.abort(), 50);
+
+      const result = await execute({
+        ...baseCtx,
+        runtime: { ...baseCtx.runtime, sessionParams },
+        abortSignal: abortCtrl.signal,
+      } as any);
+
+      expect((baseCtx.onLog as any).mock.calls.flat().join("\n")).toContain("Created session recovery-124");
+      expect(createRequest).toMatchObject({
+        sourceContext: { githubRepoContext: { startingBranch: 'jules-18036993849073318863-b259ffba' } },
+      });
+      expect(sessionCodec.decode(result.sessionParams!)?.currentPrUrl).toBe('https://github.com/Pilleo/paperclip-adapters/pull/11');
+      expect(sessionCodec.decode(result.sessionParams!)?.prRemediation).toMatchObject({
+        recoverySessionId: 'recovery-124',
+        headRefName: 'jules-18036993849073318863-b259ffba',
+      });
+  });
 });

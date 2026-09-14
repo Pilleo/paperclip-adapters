@@ -252,9 +252,16 @@ export async function upsertJulesSessionHandle(
   sessionUrl: string | null | undefined,
   authToken: string | undefined,
   runId?: string,
-  pr?: { readonly prUrl?: string | null; readonly headSha?: string | null },
+  pr?: { readonly prUrl?: string | null; readonly headSha?: string | null; readonly headRefName?: string | null },
+  delivery?: { readonly deliveredFeedbackActivityId?: string | null; readonly deliveredFeedbackInteractionId?: string | null },
+  remediation?: {
+    readonly originalSessionId?: string | null;
+    readonly recoverySessionId?: string | null;
+    readonly reason?: "ci_failure" | "terminal_plan_revision_unavailable" | null;
+  },
 ): Promise<void> {
   let baseRevisionId: string | null = null;
+  let existingHandle: JulesSessionHandle | null = null;
   try {
     const headResponse = await paperclipRequest(
       `/api/issues/${encodeURIComponent(issueId)}/documents/${JULES_SESSION_DOCUMENT_KEY}`,
@@ -264,9 +271,41 @@ export async function upsertJulesSessionHandle(
     );
     const head = await headResponse.json() as Record<string, unknown>;
     baseRevisionId = typeof head["latestRevisionId"] === "string" ? head["latestRevisionId"] : null;
+    existingHandle = parseJulesSessionHandle(typeof head["body"] === "string" ? head["body"] : null);
   } catch (error) {
     if (!(error instanceof PaperclipClientError) || error.status !== 404) throw error;
   }
+
+  const hasCompletePrIdentity = Boolean(pr?.prUrl && pr.headSha && pr.headRefName);
+  const hasExistingCompletePrIdentity = Boolean(
+    existingHandle?.prUrl && existingHandle.headSha && existingHandle.headRefName,
+  );
+  // `jules-session` is a current-provider pointer, while the PR fields bind
+  // a durable handoff. A generic retry has no authority to erase that handoff
+  // merely by becoming the newest session.
+  const persistedPr = hasCompletePrIdentity
+    ? pr
+    : hasExistingCompletePrIdentity
+      ? {
+          prUrl: existingHandle!.prUrl!,
+          headSha: existingHandle!.headSha!,
+          headRefName: existingHandle!.headRefName!,
+        }
+      : pr;
+  const persistedRemediation = remediation?.originalSessionId && remediation.recoverySessionId && remediation.reason
+    ? remediation
+    : existingHandle?.remediation;
+  // A single branch-bound remediation owns its immutable PR branch.  A stale
+  // retry may still reach this write after creating a provider session, but it
+  // must not replace the durable recovery pointer; doing so loses the only
+  // evidence that a retry was already consumed and permits duplicate work.
+  const persistedSessionId = existingHandle?.remediation?.recoverySessionId &&
+    existingHandle.remediation.recoverySessionId !== sessionId
+    ? existingHandle.remediation.recoverySessionId
+    : sessionId;
+  const persistedSessionUrl = persistedSessionId === existingHandle?.sessionId
+    ? existingHandle.sessionUrl ?? sessionUrl
+    : sessionUrl;
 
   await paperclipRequest(
     `/api/issues/${encodeURIComponent(issueId)}/documents/${JULES_SESSION_DOCUMENT_KEY}`,
@@ -276,8 +315,8 @@ export async function upsertJulesSessionHandle(
       body: JSON.stringify({
         title: "Jules session",
         format: "markdown",
-        body: formatJulesSessionHandleBody(sessionId, sessionUrl, pr),
-        changeSummary: `Jules session ${sessionId}`,
+        body: formatJulesSessionHandleBody(persistedSessionId, persistedSessionUrl, persistedPr, delivery, persistedRemediation),
+        changeSummary: `Jules session ${persistedSessionId}`,
         baseRevisionId,
       }),
     },
@@ -388,11 +427,11 @@ export async function moveIssueToReview(
   authToken: string | undefined,
   runId?: string,
 ): Promise<void> {
-  try {
-    await registerPullRequestWorkProduct(issueId, prUrl, authToken, runId);
-  } catch {
-    // Work product registration is best-effort
-  }
+  // The registered work product is the durable bridge from a terminal Jules
+  // session to the orchestrator's native review pipeline. Swallowing this
+  // write leaves a completed PR indistinguishable from fresh implementation
+  // work and lets a stale Paperclip projection dispatch Jules again.
+  await registerPullRequestWorkProduct(issueId, prUrl, authToken, runId);
 
   // Note: We do not perform an unbacked status PATCH to in_review here to prevent
   // Paperclip server 422 invalid_issue_disposition errors on agent-authored transitions.
@@ -638,9 +677,11 @@ export async function createJulesAgentAdjudicationInteraction(
   reviewerAgentId: string,
   authToken: string | undefined,
   runId?: string,
+  generation = 0,
 ): Promise<PaperclipInteraction> {
   void reviewerAgentId;
-  const idempotencyKey = `jules:agent-adjudication:${issueId}:${sessionId}:${activityId}`;
+  const idempotencyKey = `jules:agent-adjudication:${issueId}:${sessionId}:${activityId}` +
+    (generation > 0 ? `:generation:${generation}` : "");
   const { prompt, helpText } = formatCardPromptAndHelpText(question);
   try {
     const response = await paperclipRequest(
@@ -906,7 +947,6 @@ export async function createJulesPlanReviewInteraction(
   reviewerAgentId: string,
   authToken: string | undefined,
   runId?: string,
-  recoveryAttempt?: number,
 ): Promise<PlanApprovalInteraction> {
   const idempotencyKey = planReviewIdempotencyKey({
     issueId,
@@ -916,7 +956,7 @@ export async function createJulesPlanReviewInteraction(
     revisionNumber: revision.revisionNumber,
     stage,
     reviewerAgentId,
-  }, "v2", recoveryAttempt);
+  }, "v2");
   const stageName = stage === "luna" ? "Luna" : "Terra";
   const requestBody = {
     kind: "request_item_verdicts",
@@ -959,6 +999,65 @@ export async function createJulesPlanReviewInteraction(
     if (error instanceof PaperclipClientError && (error.status === 409 || error.status === 422 || error.status === 400)) {
       const existing = await listPaperclipInteractions(issueId, authToken, runId).catch(() => []);
       const match = existing.find((interaction) => interaction.idempotencyKey === requestBody.idempotencyKey);
+      if (match) return { ...match, planRevision: revision };
+    }
+    throw error;
+  }
+}
+
+/**
+ * Creates the executable plan verdict on a reviewer-owned child. Paperclip
+ * only dispatches an addressed agent when it owns the mutated issue; placing
+ * this on the Jules parent leaves a perfectly valid card permanently pending.
+ * The parent plan document remains the immutable review target.
+ */
+export async function createJulesPlanReviewChildInteraction(
+  childIssueId: string,
+  parentIssueId: string,
+  sessionId: string,
+  revision: PlanRevision,
+  planMarkdown: string,
+  stage: "luna" | "terra",
+  reviewerAgentId: string,
+  authToken: string | undefined,
+  runId?: string,
+  providerActivityId?: string,
+): Promise<PlanApprovalInteraction> {
+  const idempotencyKey = planReviewIdempotencyKey({
+    issueId: parentIssueId, sessionId, documentId: revision.documentId,
+    revisionId: revision.revisionId, revisionNumber: revision.revisionNumber,
+    stage, reviewerAgentId,
+  }, "v2");
+  const stageName = stage === "luna" ? "Luna" : "Terra";
+  const requestBody = {
+    kind: "request_item_verdicts",
+    idempotencyKey,
+    title: `Review Jules plan (${stageName})`,
+    summary: `Review Jules plan revision ${revision.revisionNumber}.`,
+    addresseeAgentId: reviewerAgentId,
+    continuationPolicy: "wake_assignee",
+    resolverPolicy: "anyone",
+    payload: {
+      version: 1,
+      prompt: formatCardPrompt(`Review the attached Jules plan as ${stageName}. Choose All good only when it is ready to implement; choose Needs work only with a concrete reason.`, MAX_CONFIRMATION_PROMPT_LENGTH),
+      detailsMarkdown: formatConfirmationDetails(planMarkdown, revision.revisionNumber),
+      items: [{ id: "plan", label: "Plan", description: `Plan revision ${revision.revisionNumber}` }],
+      verdicts: ["approve", "reject"], requireReasonOn: ["reject"], reasonLabel: "What must change?",
+      allowBulkApprove: true, supersedeOnUserComment: false,
+      // The card must carry the immutable provider activity it reviews. A
+      // session may contain multiple plans; recovery must never replay a
+      // verdict for an older plan against a later replacement.
+      ...(providerActivityId ? { providerActivityId } : {}),
+      target: { type: "issue_document", issueId: parentIssueId, documentId: revision.documentId, key: "plan", revisionId: revision.revisionId, revisionNumber: revision.revisionNumber },
+    },
+  };
+  try {
+    const response = await paperclipRequest(`/api/issues/${encodeURIComponent(childIssueId)}/interactions`, authToken, { method: "POST", body: JSON.stringify(requestBody) }, runId);
+    return { ...interactionFromResponse(await response.json(), response.status), planRevision: revision };
+  } catch (error) {
+    if (error instanceof PaperclipClientError && (error.status === 409 || error.status === 422 || error.status === 400)) {
+      const existing = await listPaperclipInteractions(childIssueId, authToken, runId).catch(() => []);
+      const match = existing.find((interaction) => interaction.idempotencyKey === idempotencyKey);
       if (match) return { ...match, planRevision: revision };
     }
     throw error;
@@ -1317,10 +1416,32 @@ export async function clearJulesSessionMonitor(
   if (strandedJulesMonitor) {
     const verified = await getPaperclipIssue(issueId, authToken, runId);
     const remaining = verified.executionState?.["monitor"];
-    if (remaining && typeof remaining === "object" && !Array.isArray(remaining) &&
-        (remaining as Record<string, unknown>)["serviceName"] === "jules") {
+    if (hasLiveJulesMonitor(remaining)) {
       throw new PaperclipClientError(null, "Paperclip retained a stranded Jules monitor after compatibility cleanup");
     }
+  }
+}
+
+/**
+ * Paperclip retains a `cleared` monitor in executionState as audit history
+ * after removing its scheduling policy.  Only scheduled/triggered monitors
+ * can wake Jules again; treating the cleared record as live turns a successful
+ * compatibility cleanup into a false failed heartbeat and recovery loop.
+ */
+function hasLiveJulesMonitor(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const monitor = value as Record<string, unknown>;
+  if (monitor["serviceName"] !== "jules") return false;
+  switch (monitor["status"]) {
+    case "cleared":
+      return false;
+    case "scheduled":
+    case "triggered":
+      return true;
+    default:
+      // Old/malformed state lacks a terminal status. Fail closed: it can still
+      // represent a live continuation on older Paperclip releases.
+      return true;
   }
 }
 
@@ -1335,7 +1456,9 @@ export async function createJulesQuestionAdjudication(
   sessionId?: string,
   generation = 0,
   deferExecution = false,
+  kind: "question" | "plan" = "question",
 ): Promise<PaperclipIssue> {
+  const isPlanReview = kind === "plan";
   const fingerprint = createHash("sha256").update(question).digest("hex").slice(0, 24);
   const correlation = companyId && activityId
     ? buildQuestionCorrelation({
@@ -1354,15 +1477,16 @@ export async function createJulesQuestionAdjudication(
   const lockKey = `${parentIssueId}:${activityId ?? fingerprint}:${generation}`;
   const description = `
 ${marker}
-You are the strong adjudicator for a Jules provider question. Answer only the quoted operational question. Do not inspect or review the checkout, diff, tests, branches, pull requests, GitHub, or repository files; they may be stale and are not part of this decision. Do not propose code changes or implementation feedback. Use only the parent task's explicit instructions and the quoted provider question. For generic continue/commit/submit questions, return the direct workflow instruction already declared by the parent task. Escalate only when the question requires a concrete product or authorization decision that the parent task does not specify.
+${isPlanReview
+  ? "You are the assigned reviewer for a Jules implementation plan. Review only the plan attached in the typed Paperclip form. Submit All good only when it is implementable; submit Needs work with a concrete reason. Do not post a comment as a substitute for the form."
+  : "You are the strong adjudicator for a Jules provider question. Answer only the quoted operational question. Do not inspect or review the checkout, diff, tests, branches, pull requests, GitHub, or repository files; they may be stale and are not part of this decision. Do not propose code changes or implementation feedback. Use only the parent task's explicit instructions and the quoted provider question. For generic continue/commit/submit questions, return the direct workflow instruction already declared by the parent task. Escalate only when the question requires a concrete product or authorization decision that the parent task does not specify."}
 
-Provider question:
+${isPlanReview ? "Plan:" : "Provider question:"}
 ${question}
 
 The Paperclip interaction attached to this issue is the only decision protocol. Submit
-that typed form with either an answer for Jules or an escalation for a human, then
-mark this adjudication task done. Do not post a JSON object, review findings, or
-implementation advice as an issue comment.`;
+that typed form, then mark this reviewer task done. Do not post a JSON object or
+free-text comment as a substitute for the structured decision.`;
   const previous = questionAdjudicationLocks.get(lockKey) ?? Promise.resolve();
   const operation = previous.then(async () => {
     if (companyId) {
@@ -1385,7 +1509,7 @@ implementation advice as an issue comment.`;
         `/api/issues/${encodeURIComponent(parentIssueId)}/children`, authToken, {
         method: "POST",
         body: JSON.stringify({
-          title: "Adjudicate Jules provider question",
+          title: isPlanReview ? "Review Jules plan" : "Adjudicate Jules provider question",
           description,
           // Paperclip treats `blocked` as closed for interaction creation.
           // Backlog accepts interactions but is not eligible for an agent

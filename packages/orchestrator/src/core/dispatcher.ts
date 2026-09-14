@@ -175,7 +175,9 @@ export function selectNextTasksMultiLane(
   const julesRunning = options.julesRunningCount ?? 0;
   const vibeRunning = options.vibeRunningCount ?? 0;
 
-  let julesAvailable = Math.max(0, julesCapacity - julesRunning);
+  let julesAvailable = options.julesNewSessionBudget === undefined
+    ? Math.max(0, julesCapacity - julesRunning)
+    : Math.max(0, options.julesNewSessionBudget);
   let vibeAvailable = Math.max(0, vibeCapacity - vibeRunning);
 
   const maxToSelect = options.maxToSelect ?? (julesAvailable + vibeAvailable);
@@ -283,13 +285,18 @@ export function selectNextTasksMultiLane(
     }
     if (collidesWithSelected) continue;
 
+    const mustResumeOnJules = options.julesOnlyIssueIds?.has(candidate.id) === true;
+    // A recent Jules heartbeat proves provider-owned work exists. Deferring it
+    // is safe; switching it to Vibe would create duplicate execution.
+    if (mustResumeOnJules && julesAvailable === 0) continue;
+
     const rawDesc = typeof candidate.rawIssue["description"] === "string" ? (candidate.rawIssue["description"] as string) : "";
     const prefersVibe =
       candidate.component === "enforcer" ||
       rawDesc.includes("executor: vibe") ||
       rawDesc.includes('executor: "vibe"');
 
-    if (prefersVibe && vibeAvailable > 0 && options.vibeAgentId) {
+    if (!mustResumeOnJules && prefersVibe && vibeAvailable > 0 && options.vibeAgentId) {
       selections.push(
         Object.freeze({
           issue: candidate,

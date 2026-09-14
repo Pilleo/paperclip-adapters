@@ -45,6 +45,50 @@ export interface BacklogSyncSummary {
   readonly conflicts: readonly BacklogIdentityConflict[];
 }
 
+type BacklogOwnershipDisposition = "claim" | "reclaim" | "preserve";
+
+/**
+ * Markdown describes a task contract, not a live execution lease. Only a
+ * queued card may be returned to the orchestrator. Reassigning an active
+ * provider/review card from a periodic import silently severs its session.
+ */
+function classifyBacklogOwnership(input: {
+  readonly orchestratorManaged: boolean;
+  readonly orchestratorAgentId?: string | undefined;
+  readonly managedAgentIds: ReadonlySet<string>;
+  readonly status: unknown;
+  readonly assigneeAgentId: unknown;
+}): BacklogOwnershipDisposition {
+  if (!input.orchestratorManaged || !input.orchestratorAgentId) return "preserve";
+
+  const queueState: "queued" | "active_or_terminal" = input.status === "backlog" || input.status === "todo"
+    ? "queued"
+    : "active_or_terminal";
+  switch (queueState) {
+    case "active_or_terminal":
+      return "preserve";
+    case "queued": {
+      const assigneeState: "unassigned" | "orchestrator" | "managed_worker" | "external" =
+        !input.assigneeAgentId
+          ? "unassigned"
+          : input.assigneeAgentId === input.orchestratorAgentId
+            ? "orchestrator"
+            : typeof input.assigneeAgentId === "string" && input.managedAgentIds.has(input.assigneeAgentId)
+              ? "managed_worker"
+              : "external";
+      switch (assigneeState) {
+        case "unassigned":
+          return "claim";
+        case "external":
+          return "reclaim";
+        case "orchestrator":
+        case "managed_worker":
+          return "preserve";
+      }
+    }
+  }
+}
+
 export type BacklogIssueCandidate = Record<string, any> & {
   id: string;
   status?: string | undefined;
@@ -367,21 +411,18 @@ export async function syncBacklogMarkdownToPaperclip(options: BacklogSyncOptions
       const orchestratorManaged =
         String(fields["orchestrator_managed"] ?? "").toLowerCase() === "true";
       const managedAgents = options.managedAgentIds ?? new Set<string>();
-      const shouldClaim =
-        orchestratorManaged &&
-        Boolean(options.orchestratorAgentId) &&
-        !existing.assigneeAgentId &&
-        existing.status !== "done" &&
-        existing.status !== "cancelled";
-      const shouldReclaim =
-        orchestratorManaged &&
-        options.orchestratorAgentId &&
-        existing.assigneeAgentId &&
-        existing.assigneeAgentId !== options.orchestratorAgentId &&
-        !managedAgents.has(existing.assigneeAgentId) &&
-        existing.status !== "done" &&
-        existing.status !== "cancelled";
-      if (shouldClaim || shouldReclaim) {
+      const ownershipDisposition = classifyBacklogOwnership({
+        orchestratorManaged,
+        orchestratorAgentId: options.orchestratorAgentId,
+        managedAgentIds: managedAgents,
+        status: existing.status,
+        assigneeAgentId: existing.assigneeAgentId,
+      });
+      switch (ownershipDisposition) {
+        case "preserve":
+          break;
+        case "claim":
+        case "reclaim": {
         try {
           const reclaimRes = await fetch(`${options.apiUrl}/api/issues/${existing.id}`, {
             method: "PATCH",
@@ -396,6 +437,8 @@ export async function syncBacklogMarkdownToPaperclip(options: BacklogSyncOptions
           }
         } catch {
           /* best-effort ownership repair; the next tick retries it */
+        }
+          break;
         }
       }
       if (!fields["paperclip_issue_id"] || !fields["paperclip_identifier"]) {

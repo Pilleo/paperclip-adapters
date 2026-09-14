@@ -3,7 +3,7 @@ import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { execute } from "../src/server/execute.js";
 import { JulesClient } from "../src/server/jules-client.js";
 import { sessionCodec } from "../src/server/session.js";
-import { getPullRequestDetails, getPullRequestPatch, listPullRequestChangedFiles } from "../src/server/ci-status.js";
+import { getPullRequestDetails, getPullRequestCiStatus, getPullRequestPatch, listPullRequestChangedFiles } from "../src/server/ci-status.js";
 import {
   createJulesAgentAdjudicationInteraction,
   createJulesQuestionReviewInteraction,
@@ -11,6 +11,7 @@ import {
   createJulesQuestionAdjudication,
   moveIssueToReview,
   scheduleJulesSessionMonitor,
+  clearJulesSessionMonitor,
 } from "../src/server/paperclip-client.js";
 
 vi.mock("../src/server/ci-status.js", () => ({
@@ -42,6 +43,7 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
     listIssueComments: vi.fn().mockResolvedValue([]),
     listPaperclipInteractions: vi.fn().mockResolvedValue([]),
     scheduleJulesSessionMonitor: vi.fn().mockResolvedValue(undefined),
+    clearJulesSessionMonitor: vi.fn().mockResolvedValue(undefined),
     moveIssueToBlocked: vi.fn(),
     moveIssueToInProgress: vi.fn(),
     moveIssueToReview: vi.fn(),
@@ -136,6 +138,7 @@ describe("E2E host-plan scope conformity on Jules PRs", () => {
       ciStatus: "success",
       mergeableStatus: "mergeable",
     });
+    vi.mocked(getPullRequestCiStatus).mockResolvedValue("success");
   });
 
   it("hands scope drift to the normal PR review pipeline without messaging Jules", async () => {
@@ -178,6 +181,103 @@ describe("E2E host-plan scope conformity on Jules PRs", () => {
     const result = await execute(ctx());
     expect(result.resultJson?.scopeConformant).not.toBe(false);
     expect(result.summary).not.toMatch(/drifted from the host plan/);
+  });
+
+  it("schedules one branch-bound remediation when a terminal Jules session has failed CI", async () => {
+    const previousPolicy = adapterConfig.ciPolicy;
+    adapterConfig.ciPolicy = "required";
+    vi.mocked(getPullRequestCiStatus).mockResolvedValue("failed");
+    vi.mocked(getPullRequestDetails).mockResolvedValue({
+      state: "OPEN", merged: false, ciStatus: "failed", mergeableStatus: "mergeable", headSha: "f".repeat(40), headRefName: "jules-141",
+    });
+
+    const first = await execute(ctx());
+    expect(first.errorCode).toBe("jules_pr_remediation_scheduled");
+    expect(JulesClient.prototype.sendMessage).not.toHaveBeenCalled();
+    expect(moveIssueToReview).not.toHaveBeenCalled();
+    expect(clearJulesSessionMonitor).not.toHaveBeenCalled();
+    expect(sessionCodec.decode(first.sessionParams!)).toMatchObject({
+      phase: "RETRY_SCHEDULED",
+      prRemediation: { headRefName: "jules-141" },
+    });
+    adapterConfig.ciPolicy = previousPolicy;
+  });
+
+  it("does not message a terminal Jules session when its PR CI is stalled", async () => {
+    const previousPolicy = adapterConfig.ciPolicy;
+    adapterConfig.ciPolicy = "required";
+    vi.mocked(getPullRequestCiStatus).mockResolvedValue("stalled");
+    vi.mocked(getPullRequestDetails).mockResolvedValue({
+      state: "OPEN", merged: false, ciStatus: "stalled", mergeableStatus: "mergeable", headSha: "e".repeat(40), headRefName: "jules-141",
+    });
+
+    const first = await execute(ctx());
+    expect(first.errorCode).toBe("jules_pr_remediation_scheduled");
+    expect(JulesClient.prototype.sendMessage).not.toHaveBeenCalled();
+    expect(sessionCodec.decode(first.sessionParams!)).toMatchObject({
+      phase: "RETRY_SCHEDULED",
+      prRemediation: { headRefName: "jules-141" },
+    });
+    adapterConfig.ciPolicy = previousPolicy;
+  });
+
+  it("relays failed CI instead of fabricating a question when a live session has no feedback activity", async () => {
+    const previousPolicy = adapterConfig.ciPolicy;
+    adapterConfig.ciPolicy = "required";
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({
+      id: "session-141",
+      state: "AWAITING_USER_FEEDBACK",
+      rawOutputs: [{ pullRequest: { url: "https://github.com/Pilleo/mazewall/pull/400" } }],
+    } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [] } as never);
+    vi.mocked(getPullRequestCiStatus).mockResolvedValue("failed");
+    vi.mocked(getPullRequestDetails).mockResolvedValue({
+      state: "OPEN", merged: false, ciStatus: "failed", mergeableStatus: "mergeable", headSha: "e".repeat(40),
+    });
+
+    const result = await execute(ctx());
+
+    expect(JulesClient.prototype.sendMessage).toHaveBeenCalledWith(
+      "session-141",
+      expect.objectContaining({ prompt: expect.stringContaining("CI failed") }),
+    );
+    expect(createJulesAgentAdjudicationInteraction).not.toHaveBeenCalled();
+    expect(createJulesQuestionAdjudication).not.toHaveBeenCalled();
+    expect(result.resultJson).toMatchObject({ pending: true });
+    expect(scheduleJulesSessionMonitor).toHaveBeenCalledTimes(1);
+    adapterConfig.ciPolicy = previousPolicy;
+  });
+
+  it("does not let CI recovery preempt an existing typed question adjudication", async () => {
+    const previousPolicy = adapterConfig.ciPolicy;
+    adapterConfig.ciPolicy = "required";
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({
+      id: "session-141",
+      state: "AWAITING_USER_FEEDBACK",
+      rawOutputs: [{ pullRequest: { url: "https://github.com/Pilleo/mazewall/pull/400" } }],
+    } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [] } as never);
+    vi.mocked(getPullRequestCiStatus).mockResolvedValue("failed");
+
+    const result = await execute(ctx({
+      ...session,
+      pendingInteraction: {
+        type: "agent_adjudication",
+        julesActivityId: "provider-question",
+        paperclipInteractionId: "parent-question",
+        question: "What should I do next?",
+        reviewerAgentId: "00000000-0000-4000-8000-000000000834",
+        nativeForm: true,
+        transport: "child_form_bridge",
+        reviewerChildIssueId: "question-child",
+        reviewerInteractionId: "question-form",
+        createdAt: "2026-08-30T00:00:00.000Z",
+      },
+    }));
+
+    expect(JulesClient.prototype.sendMessage).not.toHaveBeenCalled();
+    expect(result.resultJson).toMatchObject({ pending: true });
+    adapterConfig.ciPolicy = previousPolicy;
   });
 
   it("keeps polling and routes a question that arrives after the drift heartbeat", async () => {

@@ -103,7 +103,7 @@ export function canReconcileManagedFleet(
   return /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(apiUrl.replace(/\/+$/, ""));
 }
 
-export const NATIVE_REVIEW_PROTOCOL_VERSION = "v10" as const;
+export const NATIVE_REVIEW_PROTOCOL_VERSION = "v11" as const;
 
 const NATIVE_REVIEW_DECISION_CAPABILITY = Object.freeze({
   version: 1 as const,
@@ -178,7 +178,13 @@ If any validation or HTTP step fails, stop with the non-zero result. Do not retr
 
 const NATIVE_REVIEWER_INSTRUCTIONS = `# Native Review Role
 
-Review the assigned pull request in read-only mode. Never edit, stage, commit, push, merge, open a PR, or post a normal issue comment.
+Review the one pending Paperclip request_item_verdicts card addressed to you in read-only mode. Never edit, stage, commit, push, merge, open a PR, or post a normal issue comment.
+
+First classify the typed review target from the assigned reviewer issue and card:
+
+- A Jules plan card targets an \`issue_document\` with key \`plan\`, and its reviewer issue explicitly says it is a Jules implementation-plan review. Review the supplied plan against the parent task's acceptance criteria. Do not require a PR URL or head SHA for a plan card. Do not run \`gh\`, inspect a checkout, or look for a branch: no implementation or PR exists at this stage.
+- A pull-request card identifies a PR URL and immutable head SHA. Review that immutable remote revision only; validate the head before reaching a verdict. Do not use the local checkout as evidence.
+- For another or malformed target, stop without a verdict and without a comment.
 
 Make a decision only for the pending Paperclip review card addressed to you.
 Call the paperclip_review.submit_native_review_verdict MCP tool exactly once:
@@ -228,7 +234,10 @@ export const MANAGED_FLEET_DEFINITIONS: readonly ManagedWorkerDefinition[] = Obj
     adapterConfig: {
       pollCadenceSeconds: JULES_PROVIDER_POLL_CADENCE_SECONDS,
       prPolicy: "auto",
-      ciPolicy: "skip",
+      // The worker owns a live provider session. It must observe a red PR
+      // check so it can repair the same branch; skipping CI here strands the
+      // session while the orchestrator correctly refuses to begin reviews.
+      ciPolicy: "required",
       automationMode: "AUTO_CREATE_PR",
       planApprovalPolicy: "required",
       retryBudget: 3,
@@ -534,6 +543,7 @@ export async function reconcileManagedFleet(
         matching.adapterType !== def.adapterType ||
         matching.name !== def.name ||
         matching.adapterConfig?.["pollCadenceSeconds"] !== mergedConfig["pollCadenceSeconds"] ||
+        matching.adapterConfig?.["ciPolicy"] !== mergedConfig["ciPolicy"] ||
         matching.adapterConfig?.["engine"] !== mergedConfig["engine"] ||
         matching.adapterConfig?.["model"] !== mergedConfig["model"] ||
         matching.adapterConfig?.["dangerouslyBypassApprovalsAndSandbox"] !== mergedConfig["dangerouslyBypassApprovalsAndSandbox"] ||

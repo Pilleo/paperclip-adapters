@@ -6,16 +6,20 @@ import { sessionCodec } from "../src/server/session";
 import {
   createJulesPlanApprovalInteraction,
   createJulesPlanReviewInteraction,
+  createJulesPlanReviewChildInteraction,
   createJulesAgentAdjudicationInteraction,
   createJulesQuestionAdjudication,
   createJulesQuestionReviewInteraction,
   activateInternalReviewIssue,
+  clearJulesSessionMonitor,
+  upsertJulesSessionHandle,
   saveJulesPlanDocument,
   listPaperclipInteractions,
   getPaperclipInteraction,
   withdrawPaperclipInteraction,
   moveIssueToBlocked,
   moveIssueToInProgress,
+  scheduleJulesSessionMonitor,
 } from "../src/server/paperclip-client";
 
 vi.mock("../src/server/jules-client", async (importOriginal) => {
@@ -35,16 +39,20 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
     ...mod,
     createJulesPlanApprovalInteraction: vi.fn(),
     createJulesPlanReviewInteraction: vi.fn(),
+    createJulesPlanReviewChildInteraction: vi.fn(),
     createJulesAgentAdjudicationInteraction: vi.fn(),
     createJulesQuestionAdjudication: vi.fn(),
     createJulesQuestionReviewInteraction: vi.fn(),
     activateInternalReviewIssue: vi.fn(),
+    clearJulesSessionMonitor: vi.fn(),
+    upsertJulesSessionHandle: vi.fn(),
     saveJulesPlanDocument: vi.fn(),
     listPaperclipInteractions: vi.fn().mockResolvedValue([]),
     getPaperclipInteraction: vi.fn(),
     withdrawPaperclipInteraction: vi.fn(),
     moveIssueToBlocked: vi.fn(),
     moveIssueToInProgress: vi.fn(),
+    scheduleJulesSessionMonitor: vi.fn(),
   };
 });
 
@@ -115,38 +123,42 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
     });
     vi.mocked(moveIssueToBlocked).mockResolvedValue();
     vi.mocked(moveIssueToInProgress).mockResolvedValue();
+    vi.mocked(scheduleJulesSessionMonitor).mockResolvedValue();
+    vi.mocked(clearJulesSessionMonitor).mockResolvedValue();
+    vi.mocked(upsertJulesSessionHandle).mockResolvedValue();
     vi.mocked(saveJulesPlanDocument).mockResolvedValue({ documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1 });
     vi.mocked(createJulesPlanReviewInteraction).mockResolvedValue({ id: "native-plan-review-1", status: "pending", kind: "request_confirmation", planRevision: { documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1 } });
+    vi.mocked(createJulesPlanReviewChildInteraction).mockResolvedValue({ id: "native-plan-review-1", status: "pending", kind: "request_item_verdicts", planRevision: { documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1 } });
     vi.mocked(createJulesAgentAdjudicationInteraction).mockResolvedValue({ id: "question-card-1", status: "pending", kind: "ask_user_questions" });
     vi.mocked(createJulesQuestionAdjudication).mockResolvedValue({ id: "question-child-1" } as never);
     vi.mocked(createJulesQuestionReviewInteraction).mockResolvedValue({ id: "question-review-1" } as never);
   });
 
-  it("creates one addressed native Luna plan-review card when the ladder is configured", async () => {
+  it("creates one typed Luna plan-review form on a reviewer-owned child when the ladder is configured", async () => {
     vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_PLAN_APPROVAL", id: "session-141" } as never);
     vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{
       id: "act-plan-native",
       createTime: "2026-08-30T00:01:00.000Z",
       planGenerated: { plan: { steps: [{ index: 0, title: "Implement the fix", description: "Add tests" }] } },
     }] } as never);
-    vi.mocked(createJulesPlanReviewInteraction).mockResolvedValue({
+    vi.mocked(createJulesPlanReviewChildInteraction).mockResolvedValue({
       id: "native-plan-review-1", status: "pending", kind: "request_confirmation",
       planRevision: { documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1 },
     });
 
     const result = await execute({
       ...baseContext,
-      config: { ...baseContext.config, planApprovalPolicy: "required", planReviewerAgentId: "00000000-0000-4000-8000-000000000001", planStrongReviewerAgentId: "00000000-0000-4000-8000-000000000002" },
-      agent: { ...baseContext.agent, adapterConfig: { ...baseContext.agent.adapterConfig, planApprovalPolicy: "required", planReviewerAgentId: "00000000-0000-4000-8000-000000000001", planStrongReviewerAgentId: "00000000-0000-4000-8000-000000000002" } },
+      config: { ...baseContext.config, requirePlanApproval: true, planApprovalPolicy: "required", planReviewerAgentId: "00000000-0000-4000-8000-000000000001", planStrongReviewerAgentId: "00000000-0000-4000-8000-000000000002" },
+      agent: { ...baseContext.agent, adapterConfig: { ...baseContext.agent.adapterConfig, requirePlanApproval: true, planApprovalPolicy: "required", planReviewerAgentId: "00000000-0000-4000-8000-000000000001", planStrongReviewerAgentId: "00000000-0000-4000-8000-000000000002" } },
     } as AdapterExecutionContext);
 
-    expect(createJulesPlanReviewInteraction).toHaveBeenCalledWith(
-      "issue-141", "session-141", { documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1 },
-      expect.stringContaining("Implement the fix"), "luna", "00000000-0000-4000-8000-000000000001", "jwt-token", "run-1",
+    expect(createJulesPlanReviewChildInteraction).toHaveBeenCalledWith(
+      "question-child-1", "issue-141", "session-141", { documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1 },
+      expect.stringContaining("Implement the fix"), "luna", "00000000-0000-4000-8000-000000000001", "jwt-token", "run-1", "act-plan-native",
     );
     expect(createJulesPlanApprovalInteraction).not.toHaveBeenCalled();
     expect(result.sessionParams && sessionCodec.decode(result.sessionParams)?.pendingInteraction).toMatchObject({
-      type: "plan_native_review", paperclipInteractionId: "native-plan-review-1", stage: "luna",
+      type: "plan_native_review", paperclipInteractionId: "native-plan-review-1", reviewerChildIssueId: "question-child-1", stage: "luna",
     });
   });
 
@@ -195,6 +207,27 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
       runtime: { ...baseContext.runtime, sessionParams: result.sessionParams },
     } as AdapterExecutionContext);
     expect(createJulesAgentAdjudicationInteraction).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not preempt a pending plan review with an older provider question", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_PLAN_APPROVAL", id: "session-141" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [
+      { id: "old-question", createTime: "2026-08-30T00:00:00.000Z", agentMessaged: { agentMessage: "Old question" } },
+      { id: "new-plan", createTime: "2026-08-30T00:01:00.000Z", planGenerated: { plan: { steps: [{ index: 0, title: "Implement", description: "Test" }] } } },
+    ] } as never);
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([{
+      id: "native-plan-review-1", status: "pending", kind: "request_item_verdicts",
+      idempotencyKey: "jules:plan-review:v2:issue-141:session-141:rev-1:luna",
+    }]);
+
+    const result = await execute({ ...baseContext, runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({
+      ...session, phase: "WAITING_FOR_PLAN_APPROVAL", pendingInteraction: {
+        type: "plan_native_review", protocolVersion: 2, julesActivityId: "new-plan", paperclipInteractionId: "native-plan-review-1", question: "Plan", planRevisionId: "rev-1", planRevisionNumber: 1, planDocumentId: "doc-1", reviewerAgentId: "00000000-0000-4000-8000-000000000001", stage: "luna", createdAt: "2026-08-30T00:01:00.000Z",
+      },
+    }) } } as AdapterExecutionContext);
+
+    expect(withdrawPaperclipInteraction).not.toHaveBeenCalled();
+    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({ type: "plan_native_review", julesActivityId: "new-plan" });
   });
 
   it("does not reopen a previously approved plan when the same activity is replayed", async () => {
@@ -251,12 +284,15 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
       }) },
     } as AdapterExecutionContext);
 
-    expect(createJulesPlanReviewInteraction).toHaveBeenCalledWith(
-      "issue-141", "session-141", { documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1 },
-      "Plan", "terra", "00000000-0000-4000-8000-000000000002", "jwt-token", "run-1",
+    expect(sessionCodec.decode(result.sessionParams!)).toMatchObject({
+      phase: "WAITING_FOR_PLAN_APPROVAL",
+    });
+    expect(createJulesPlanReviewChildInteraction).toHaveBeenCalledWith(
+      "question-child-1", "issue-141", "session-141", { documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1 },
+      "Plan", "terra", "00000000-0000-4000-8000-000000000002", "jwt-token", "run-1", "act-plan-native",
     );
     expect(JulesClient.prototype.approvePlan).not.toHaveBeenCalled();
-    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({ stage: "terra", paperclipInteractionId: "native-plan-review-2" });
+    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({ stage: "terra", paperclipInteractionId: "native-plan-review-1", reviewerChildIssueId: "question-child-1" });
   });
 
   it("migrates one pending legacy plan card before waiting", async () => {
@@ -274,6 +310,7 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
     const result = await execute({
       ...baseContext,
       config: { ...baseContext.config, planApprovalPolicy: "required", planReviewerAgentId: "00000000-0000-4000-8000-000000000001", planStrongReviewerAgentId: "00000000-0000-4000-8000-000000000002" },
+      agent: { ...baseContext.agent, adapterConfig: { ...baseContext.agent.adapterConfig, planApprovalPolicy: "required", planReviewerAgentId: "00000000-0000-4000-8000-000000000001", planStrongReviewerAgentId: "00000000-0000-4000-8000-000000000002" } },
       runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({
         ...session,
         phase: "WAITING_FOR_PLAN_APPROVAL",
@@ -286,31 +323,23 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
     } as AdapterExecutionContext);
 
     expect(withdrawPaperclipInteraction).toHaveBeenCalledWith(
-      "issue-141", "legacy-plan-card", expect.stringContaining("v2"), "jwt-token", "run-1",
+      "issue-141", "legacy-plan-card", expect.stringContaining("reviewer-owned"), "jwt-token", "run-1",
     );
-    expect(createJulesPlanReviewInteraction).toHaveBeenCalledTimes(1);
+    expect(createJulesPlanReviewChildInteraction).toHaveBeenCalledTimes(1);
     expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
-      paperclipInteractionId: "native-plan-review-v2", stage: "luna",
+      paperclipInteractionId: "native-plan-review-1", reviewerChildIssueId: "question-child-1", stage: "luna",
     });
   });
 
-  it("restores exactly one current plan card cancelled by the consumed PR rejection", async () => {
+  it("requests a fresh provider plan after Terra's native card expires without creating another Terra card", async () => {
     vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_PLAN_APPROVAL", id: "session-141" } as never);
     vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{
       id: "replacement-plan-activity", createTime: "2026-09-06T01:25:00.000Z",
       planGenerated: { plan: { steps: [{ index: 0, title: "Apply reviewer feedback" }] } },
     }] } as never);
     vi.mocked(listPaperclipInteractions).mockResolvedValue([{
-      id: "cancelled-replacement-card", status: "cancelled", kind: "request_item_verdicts",
-      result: {
-        outcome: "withdrawn",
-        reason: "Superseded by structured PR rejection for the same Jules session and immutable PR head.",
-      },
+      id: "expired-terra-card", status: "expired", kind: "request_item_verdicts",
     }]);
-    vi.mocked(createJulesPlanReviewInteraction).mockResolvedValue({
-      id: "restored-luna-card", status: "pending", kind: "request_item_verdicts",
-      planRevision: { documentId: "doc-2", revisionId: "rev-2", revisionNumber: 2 },
-    });
 
     const result = await execute({
       ...baseContext,
@@ -320,24 +349,29 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
         workerFeedbackDeliveryId: "native-review:old-pr-card:abc123",
         pendingInteraction: {
           type: "plan_native_review", protocolVersion: 2, julesActivityId: "replacement-plan-activity",
-          paperclipInteractionId: "cancelled-replacement-card", question: "Replacement plan",
+          paperclipInteractionId: "expired-terra-card", reviewerChildIssueId: "expired-terra-child", question: "Replacement plan",
           planRevisionId: "rev-2", planRevisionNumber: 2, planDocumentId: "doc-2",
-          reviewerAgentId: "00000000-0000-4000-8000-000000000001", stage: "luna",
+          reviewerAgentId: "00000000-0000-4000-8000-000000000002", stage: "terra",
           createdAt: "2026-09-06T01:25:00.000Z",
         },
       }) },
     } as AdapterExecutionContext);
 
-    expect(createJulesPlanReviewInteraction).toHaveBeenCalledWith(
-      "issue-141", "session-141", { documentId: "doc-2", revisionId: "rev-2", revisionNumber: 2 },
-      "Replacement plan", "luna", "00000000-0000-4000-8000-000000000001", "jwt-token", "run-1", 1,
-    );
-    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
-      paperclipInteractionId: "restored-luna-card", julesActivityId: "replacement-plan-activity", stage: "luna",
+    expect(JulesClient.prototype.sendMessage).toHaveBeenCalledWith("session-141", {
+      prompt: expect.stringContaining("Publish a new plan activity"),
     });
+    expect(createJulesQuestionAdjudication).not.toHaveBeenCalled();
+    expect(createJulesPlanReviewChildInteraction).not.toHaveBeenCalled();
+    expect(sessionCodec.decode(result.sessionParams!)).toMatchObject({
+      supersededPlanActivityId: "replacement-plan-activity",
+      pendingInteraction: undefined,
+    });
+
+    await execute({ ...baseContext, runtime: { ...baseContext.runtime, sessionParams: result.sessionParams } } as AdapterExecutionContext);
+    expect(JulesClient.prototype.sendMessage).toHaveBeenCalledTimes(1);
   });
 
-  it("restores a current plan card after adapter-owned PR-card supersession without a delivery checkpoint", async () => {
+  it("requests a fresh provider plan after an adapter-owned v2 cancellation", async () => {
     vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_PLAN_APPROVAL", id: "session-141" } as never);
     vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{
       id: "replacement-plan-activity", createTime: "2026-09-06T01:25:00.000Z",
@@ -350,11 +384,6 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
         reason: "Superseded plan-review card: an immutable matching PR review card is the active native review authority.",
       },
     }]);
-    vi.mocked(createJulesPlanReviewInteraction).mockResolvedValue({
-      id: "restored-luna-card", status: "pending", kind: "request_item_verdicts",
-      planRevision: { documentId: "doc-2", revisionId: "rev-2", revisionNumber: 2 },
-    });
-
     const result = await execute({
       ...baseContext,
       runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({
@@ -370,12 +399,14 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
       }) },
     } as AdapterExecutionContext);
 
-    expect(createJulesPlanReviewInteraction).toHaveBeenCalledWith(
-      "issue-141", "session-141", { documentId: "doc-2", revisionId: "rev-2", revisionNumber: 2 },
-      "Replacement plan", "luna", "00000000-0000-4000-8000-000000000001", "jwt-token", "run-1", 1,
-    );
-    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
-      paperclipInteractionId: "restored-luna-card", julesActivityId: "replacement-plan-activity", stage: "luna",
+    expect(JulesClient.prototype.sendMessage).toHaveBeenCalledWith("session-141", {
+      prompt: expect.stringContaining("Publish a new plan activity"),
+    });
+    expect(createJulesQuestionAdjudication).not.toHaveBeenCalled();
+    expect(createJulesPlanReviewChildInteraction).not.toHaveBeenCalled();
+    expect(sessionCodec.decode(result.sessionParams!)).toMatchObject({
+      supersededPlanActivityId: "replacement-plan-activity",
+      pendingInteraction: undefined,
     });
   });
 
@@ -406,21 +437,269 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
     } as AdapterExecutionContext);
 
     expect(withdrawPaperclipInteraction).toHaveBeenCalledWith(
-      "issue-141", "legacy-terminal-plan-card", expect.stringContaining("v2"), "jwt-token", "run-1",
+      "issue-141", "legacy-terminal-plan-card", expect.stringContaining("reviewer-owned"), "jwt-token", "run-1",
     );
     expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
-      paperclipInteractionId: "native-terminal-plan-v2", protocolVersion: 2,
+      paperclipInteractionId: "native-plan-review-1", reviewerChildIssueId: "question-child-1", protocolVersion: 2,
     });
+  });
+
+  it("presents a revised terminal plan before entering PR remediation", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "COMPLETED", id: "session-141" } as never);
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([]);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{
+      id: "act-plan-revised", createTime: "2026-08-30T00:02:00.000Z",
+      planGenerated: { plan: { steps: [{ index: 0, title: "Revised plan", description: "Addresses Luna feedback" }] } },
+    }] } as never);
+
+    const result = await execute({
+      ...baseContext,
+      config: { ...baseContext.config, requirePlanApproval: true, planApprovalPolicy: "required", planReviewerAgentId: "00000000-0000-4000-8000-000000000001", planStrongReviewerAgentId: "00000000-0000-4000-8000-000000000002" },
+      agent: { ...baseContext.agent, adapterConfig: { ...baseContext.agent.adapterConfig, requirePlanApproval: true, planApprovalPolicy: "required", planReviewerAgentId: "00000000-0000-4000-8000-000000000001", planStrongReviewerAgentId: "00000000-0000-4000-8000-000000000002" } },
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({
+        ...session,
+        currentPrUrl: "https://github.com/example/repository/pull/1",
+        planReviewOutcome: "revision_requested",
+        deliveredActivityIds: ["act-plan-revised"],
+        terminalActivityScan: {
+          sessionId: "session-141",
+          complete: true,
+          latestPlan: {
+            id: "act-plan-revised", createTime: "2026-08-30T00:02:00.000Z",
+            planGenerated: { plan: { steps: [{ index: 0, title: "Revised plan", description: "Addresses Luna feedback" }] } },
+          },
+        },
+      }) },
+    } as AdapterExecutionContext);
+
+    expect(sessionCodec.decode(result.sessionParams!)).toMatchObject({ phase: "WAITING_FOR_PLAN_APPROVAL" });
+    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
+      type: "plan_native_review", julesActivityId: "act-plan-revised", stage: "luna",
+    });
+    expect(createJulesPlanReviewChildInteraction).toHaveBeenCalledWith(
+      "question-child-1", "issue-141", "session-141", { documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1 },
+      expect.stringContaining("Revised plan"), "luna", "00000000-0000-4000-8000-000000000001", "jwt-token", "run-1", "act-plan-revised",
+    );
+  });
+
+  it("presents the fresh plan from a terminal branch-bound plan-cycle recovery", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "COMPLETED", id: "session-141" } as never);
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([]);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{
+      id: "act-recovery-plan", createTime: "2026-09-14T03:00:00.000Z",
+      planGenerated: { plan: { steps: [{ index: 0, title: "Recover plan review", description: "Present this fresh plan before changing PR #1" }] } },
+    }] } as never);
+
+    const result = await execute({
+      ...baseContext,
+      config: { ...baseContext.config, requirePlanApproval: true, planApprovalPolicy: "required", planReviewerAgentId: "00000000-0000-4000-8000-000000000001", planStrongReviewerAgentId: "00000000-0000-4000-8000-000000000002" },
+      agent: { ...baseContext.agent, adapterConfig: { ...baseContext.agent.adapterConfig, requirePlanApproval: true, planApprovalPolicy: "required", planReviewerAgentId: "00000000-0000-4000-8000-000000000001", planStrongReviewerAgentId: "00000000-0000-4000-8000-000000000002" } },
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({
+        ...session,
+        currentPrUrl: "https://github.com/example/repository/pull/1",
+        currentPrHeadSha: "a".repeat(40),
+        currentPrHeadRef: "jules-existing-pr-branch",
+        prRemediation: {
+          originalSessionId: "terminal-session-141",
+          prUrl: "https://github.com/example/repository/pull/1",
+          headSha: "a".repeat(40),
+          headRefName: "jules-existing-pr-branch",
+          recoverySessionId: "session-141",
+          startedAt: "2026-09-14T02:45:00.000Z",
+          reason: "terminal_plan_revision_unavailable",
+        },
+      }) },
+    } as AdapterExecutionContext);
+
+    expect(result.errorCode).toBeUndefined();
+    expect(sessionCodec.decode(result.sessionParams!)).toMatchObject({ phase: "WAITING_FOR_PLAN_APPROVAL" });
+    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
+      type: "plan_native_review", julesActivityId: "act-recovery-plan", stage: "luna",
+    });
+    expect(createJulesPlanReviewChildInteraction).toHaveBeenCalledWith(
+      "question-child-1", "issue-141", "session-141", { documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1 },
+      expect.stringContaining("Recover plan review"), "luna", "00000000-0000-4000-8000-000000000001", "jwt-token", "run-1", "act-recovery-plan",
+    );
+  });
+
+  it("presents the fresh plan from a terminal branch-bound CI remediation", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "COMPLETED", id: "session-141" } as never);
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([]);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{
+      id: "act-ci-remediation-plan", createTime: "2026-09-14T05:00:00.000Z",
+      planGenerated: { plan: { steps: [{ index: 0, title: "Repair failed CI", description: "Inspect and repair the existing PR without opening another one" }] } },
+    }] } as never);
+
+    const result = await execute({
+      ...baseContext,
+      config: { ...baseContext.config, requirePlanApproval: true, planApprovalPolicy: "required", planReviewerAgentId: "00000000-0000-4000-8000-000000000001", planStrongReviewerAgentId: "00000000-0000-4000-8000-000000000002" },
+      agent: { ...baseContext.agent, adapterConfig: { ...baseContext.agent.adapterConfig, requirePlanApproval: true, planApprovalPolicy: "required", planReviewerAgentId: "00000000-0000-4000-8000-000000000001", planStrongReviewerAgentId: "00000000-0000-4000-8000-000000000002" } },
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({
+        ...session,
+        currentPrUrl: "https://github.com/example/repository/pull/1",
+        currentPrHeadSha: "a".repeat(40),
+        currentPrHeadRef: "jules-existing-pr-branch",
+        prRemediation: {
+          originalSessionId: "terminal-session-141",
+          prUrl: "https://github.com/example/repository/pull/1",
+          headSha: "a".repeat(40),
+          headRefName: "jules-existing-pr-branch",
+          recoverySessionId: "session-141",
+          startedAt: "2026-09-14T04:45:00.000Z",
+          reason: "ci_failure",
+        },
+      }) },
+    } as AdapterExecutionContext);
+
+    expect(result.errorCode).toBeUndefined();
+    expect(sessionCodec.decode(result.sessionParams!)).toMatchObject({ phase: "WAITING_FOR_PLAN_APPROVAL" });
+    expect(createJulesPlanReviewChildInteraction).toHaveBeenCalledTimes(1);
+    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
+      type: "plan_native_review", julesActivityId: "act-ci-remediation-plan", stage: "luna",
+    });
+    expect(createJulesPlanReviewChildInteraction).toHaveBeenCalledWith(
+      "question-child-1", "issue-141", "session-141", { documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1 },
+      expect.stringContaining("Repair failed CI"), "luna", "00000000-0000-4000-8000-000000000001", "jwt-token", "run-1", "act-ci-remediation-plan",
+    );
+  });
+
+  it("does not let stale approval history bypass the first recovery-plan review", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "COMPLETED", id: "session-141" } as never);
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([]);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{
+      id: "act-ci-remediation-plan", createTime: "2026-09-14T05:00:00.000Z",
+      planGenerated: { plan: { steps: [{ index: 0, title: "Repair failed CI", description: "Use the existing pull request" }] } },
+    }] } as never);
+
+    const result = await execute({
+      ...baseContext,
+      config: { ...baseContext.config, requirePlanApproval: true, planApprovalPolicy: "required", planReviewerAgentId: "00000000-0000-4000-8000-000000000001", planStrongReviewerAgentId: "00000000-0000-4000-8000-000000000002" },
+      agent: { ...baseContext.agent, adapterConfig: { ...baseContext.agent.adapterConfig, requirePlanApproval: true, planApprovalPolicy: "required", planReviewerAgentId: "00000000-0000-4000-8000-000000000001", planStrongReviewerAgentId: "00000000-0000-4000-8000-000000000002" } },
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({
+        ...session,
+        currentPrUrl: "https://github.com/example/repository/pull/1",
+        currentPrHeadSha: "a".repeat(40),
+        currentPrHeadRef: "jules-existing-pr-branch",
+        // A pre-fix relay could have recorded this activity as approved before
+        // the native card existed. Recovery identity, not that stale marker,
+        // owns the first plan gate for the replacement Jules session.
+        planApprovedAt: "2026-09-14T04:50:00.000Z",
+        planApprovedActivityId: "act-ci-remediation-plan",
+        prRemediation: {
+          originalSessionId: "terminal-session-141",
+          prUrl: "https://github.com/example/repository/pull/1",
+          headSha: "a".repeat(40),
+          headRefName: "jules-existing-pr-branch",
+          recoverySessionId: "session-141",
+          startedAt: "2026-09-14T04:45:00.000Z",
+          reason: "ci_failure",
+        },
+      }) },
+    } as AdapterExecutionContext);
+
+    expect(result.errorCode).toBeUndefined();
+    expect(sessionCodec.decode(result.sessionParams!)).toMatchObject({ phase: "WAITING_FOR_PLAN_APPROVAL" });
+    expect(createJulesPlanReviewChildInteraction).toHaveBeenCalledTimes(1);
+    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
+      type: "plan_native_review", julesActivityId: "act-ci-remediation-plan", stage: "luna",
+    });
+    expect(createJulesPlanReviewChildInteraction).toHaveBeenCalledWith(
+      "question-child-1", "issue-141", "session-141", { documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1 },
+      expect.stringContaining("Repair failed CI"), "luna", "00000000-0000-4000-8000-000000000001", "jwt-token", "run-1", "act-ci-remediation-plan",
+    );
+  });
+
+  it("retires a missing reviewer-card pointer from a terminal branch-bound CI remediation", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "COMPLETED", id: "session-141" } as never);
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([]);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{
+      id: "act-ci-remediation-plan", createTime: "2026-09-14T05:00:00.000Z",
+      planGenerated: { plan: { steps: [{ index: 0, title: "Repair failed CI", description: "Use the existing pull request" }] } },
+    }] } as never);
+
+    const result = await execute({
+      ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({
+        ...session,
+        phase: "WAITING_FOR_PLAN_APPROVAL",
+        currentPrUrl: "https://github.com/example/repository/pull/1",
+        currentPrHeadSha: "a".repeat(40),
+        currentPrHeadRef: "jules-existing-pr-branch",
+        prRemediation: {
+          originalSessionId: "terminal-session-141", prUrl: "https://github.com/example/repository/pull/1",
+          headSha: "a".repeat(40), headRefName: "jules-existing-pr-branch", recoverySessionId: "session-141",
+          startedAt: "2026-09-14T04:45:00.000Z", reason: "ci_failure",
+        },
+        pendingInteraction: {
+          type: "plan_native_review", protocolVersion: 2, julesActivityId: "act-ci-remediation-plan",
+          paperclipInteractionId: "missing-native-card", reviewerChildIssueId: "missing-review-child",
+          question: "Plan", planDocumentId: "doc-1", planRevisionId: "rev-1", planRevisionNumber: 1,
+          reviewerAgentId: "00000000-0000-4000-8000-000000000001", stage: "luna", createdAt: "2026-09-14T04:50:00.000Z",
+        },
+      }) },
+    } as AdapterExecutionContext);
+
+    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
+      type: "plan_native_review", julesActivityId: "act-ci-remediation-plan", stage: "luna",
+    });
+    expect(createJulesPlanReviewChildInteraction).toHaveBeenCalledWith(
+      "question-child-1", "issue-141", "session-141", { documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1 },
+      expect.stringContaining("Repair failed CI"), "luna", "00000000-0000-4000-8000-000000000001", "jwt-token", "run-1", "act-ci-remediation-plan",
+    );
+  });
+
+  it("starts one branch-bound recovery when a terminal Jules session cannot publish the requested plan revision", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "COMPLETED", id: "session-141" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{
+      id: "act-plan-reviewed", createTime: "2026-08-30T00:01:00.000Z",
+      planGenerated: { plan: { steps: [{ index: 0, title: "Original plan", description: "Needs review" }] } },
+    }] } as never);
+
+    const result = await execute({
+      ...baseContext,
+      config: { ...baseContext.config, requirePlanApproval: true, planApprovalPolicy: "required", planReviewerAgentId: "00000000-0000-4000-8000-000000000001", planStrongReviewerAgentId: "00000000-0000-4000-8000-000000000002" },
+      agent: { ...baseContext.agent, adapterConfig: { ...baseContext.agent.adapterConfig, requirePlanApproval: true, planApprovalPolicy: "required", planReviewerAgentId: "00000000-0000-4000-8000-000000000001", planStrongReviewerAgentId: "00000000-0000-4000-8000-000000000002" } },
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({
+        ...session,
+        phase: "WAITING_FOR_PLAN_APPROVAL",
+        currentPrUrl: "https://github.com/example/repository/pull/1",
+        currentPrHeadSha: "a".repeat(40),
+        currentPrHeadRef: "jules-existing-pr-branch",
+        planReviewOutcome: "revision_requested",
+        supersededPlanActivityId: "act-plan-reviewed",
+        pendingPlanRevisionRequest: {
+          interactionId: "expired-native-review-card",
+          planActivityId: "act-plan-reviewed",
+          state: "delivered",
+        },
+      }) },
+    } as AdapterExecutionContext);
+
+    expect(result.errorCode).toBe("jules_terminal_plan_recovery_scheduled");
+    expect(sessionCodec.decode(result.sessionParams!)).toMatchObject({
+      phase: "RETRY_SCHEDULED",
+      prRemediation: {
+        originalSessionId: "session-141",
+        headRefName: "jules-existing-pr-branch",
+        reason: "terminal_plan_revision_unavailable",
+      },
+    });
+    expect(createJulesPlanReviewChildInteraction).not.toHaveBeenCalled();
   });
 
   it("relays an answered v2 rejection to a terminal Jules session", async () => {
     vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "COMPLETED", id: "session-141" } as never);
     vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [
+      {
+        id: "act-plan-native", createTime: "2026-08-30T00:01:00.000Z",
+        planGenerated: { plan: { steps: [{ index: 0, title: "Original plan", description: "Needs review" }] } },
+      },
       { id: "stale-question", createTime: "2026-08-30T00:02:00.000Z", agentMessaged: { agentMessage: "A stale provider question" } },
     ] } as never);
     vi.mocked(listPaperclipInteractions).mockResolvedValue([{
       id: "native-terminal-plan-v2", status: "answered", kind: "request_item_verdicts",
       addresseeAgentId: "00000000-0000-4000-8000-000000000001",
+      resolvedByAgentId: "00000000-0000-4000-8000-000000000001",
       idempotencyKey: "jules:plan-review:v2:issue-141:session-141:rev-1:luna",
       payload: {
         target: {
@@ -442,6 +721,18 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
         ...session,
         phase: "WAITING_FOR_PLAN_APPROVAL",
         deliveredActivityIds: ["stale-question"],
+        // A terminal provider state normally avoids re-listing immutable history. A
+        // rejection message is a provider-side mutation, so the cache must be
+        // discarded before the next heartbeat can discover Jules's revised plan.
+        terminalActivityScan: {
+          sessionId: "session-141",
+          complete: true,
+          latestPlan: {
+            id: "act-plan-native",
+            createTime: "2026-08-30T00:01:00.000Z",
+            planGenerated: { plan: { steps: [{ index: 0, title: "Original plan", description: "Needs review" }] } },
+          },
+        },
         pendingInteraction: {
           type: "plan_native_review", protocolVersion: 2, julesActivityId: "act-plan-native",
           paperclipInteractionId: "native-terminal-plan-v2", question: "Plan", planRevisionId: "rev-1",
@@ -456,6 +747,208 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
       prompt: expect.stringContaining("Add the missing regression test."),
     });
     expect(sessionCodec.decode(result.sessionParams!)?.planReviewOutcome).toBe("revision_requested");
+    expect(sessionCodec.decode(result.sessionParams!)?.terminalActivityScan).toBeUndefined();
+
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{
+      id: "act-plan-revised", createTime: "2026-08-30T00:03:00.000Z",
+      // Jules is allowed to make an unchanged plan explicit again. The native
+      // review identity is the new activity/document revision, never a hash of
+      // the prose or steps.
+      planGenerated: { plan: { steps: [{ index: 0, title: "Original plan", description: "Needs review" }] } },
+    }] } as never);
+    vi.clearAllMocks();
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_PLAN_APPROVAL", id: "session-141" } as never);
+    vi.mocked(saveJulesPlanDocument).mockResolvedValue({ documentId: "doc-2", revisionId: "rev-2", revisionNumber: 2 });
+    vi.mocked(createJulesQuestionAdjudication).mockResolvedValue({ id: "question-child-2" } as never);
+    vi.mocked(createJulesPlanReviewChildInteraction).mockResolvedValue({
+      id: "native-plan-review-2", status: "pending", kind: "request_item_verdicts",
+      planRevision: { documentId: "doc-2", revisionId: "rev-2", revisionNumber: 2 },
+    });
+
+    const revised = await execute({
+      ...baseContext,
+      config: { ...baseContext.config, planApprovalPolicy: "required", planReviewerAgentId: "00000000-0000-4000-8000-000000000001" },
+      runtime: { ...baseContext.runtime, sessionParams: result.sessionParams },
+    } as AdapterExecutionContext);
+
+    expect(createJulesPlanReviewChildInteraction).toHaveBeenCalledWith(
+      "question-child-2", "issue-141", "session-141", { documentId: "doc-2", revisionId: "rev-2", revisionNumber: 2 },
+      expect.stringContaining("Original plan"), "luna", "00000000-0000-4000-8000-000000000001", "jwt-token", "run-1", "act-plan-revised",
+    );
+    expect(sessionCodec.decode(revised.sessionParams!)?.pendingInteraction).toMatchObject({
+      type: "plan_native_review", julesActivityId: "act-plan-revised", stage: "luna",
+    });
+  });
+
+  it("requests a fresh provider plan after a board-resolved card without treating it as Luna's verdict", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_PLAN_APPROVAL", id: "session-141" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{
+      id: "act-plan-native", createTime: "2026-08-30T00:01:00.000Z",
+      planGenerated: { plan: { steps: [{ index: 0, title: "Implement the fix", description: "Add tests" }] } },
+    }] } as never);
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([{
+      id: "board-resolved-card", status: "answered", kind: "request_item_verdicts",
+      addresseeAgentId: "00000000-0000-4000-8000-000000000001",
+      resolvedByUserId: "local-board",
+      idempotencyKey: "jules:plan-review:v2:issue-141:session-141:rev-1:luna",
+      payload: {
+        items: [{ id: "plan" }],
+        target: { type: "issue_document", issueId: "issue-141", documentId: "doc-1", key: "plan", revisionId: "rev-1", revisionNumber: 1 },
+      },
+      result: { outcome: "resolved", complete: true, items: [{ id: "plan", verdict: "reject", reason: "Not a Luna verdict." }] },
+    }]);
+    const result = await execute({
+      ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({
+        ...session,
+        phase: "WAITING_FOR_PLAN_APPROVAL",
+        pendingInteraction: {
+          type: "plan_native_review", protocolVersion: 2, julesActivityId: "act-plan-native",
+          paperclipInteractionId: "board-resolved-card", reviewerChildIssueId: "old-review-child",
+          question: "Plan", planDocumentId: "doc-1", planRevisionId: "rev-1", planRevisionNumber: 1,
+          reviewerAgentId: "00000000-0000-4000-8000-000000000001", stage: "luna", createdAt: "2026-08-30T00:01:00.000Z",
+        },
+      }) },
+    } as AdapterExecutionContext);
+
+    expect(JulesClient.prototype.sendMessage).toHaveBeenCalledWith("session-141", {
+      prompt: expect.stringContaining("Publish a new plan activity"),
+    });
+    expect(createJulesQuestionAdjudication).not.toHaveBeenCalled();
+    expect(createJulesPlanReviewChildInteraction).not.toHaveBeenCalled();
+    expect(sessionCodec.decode(result.sessionParams!)).toMatchObject({
+      supersededPlanActivityId: "act-plan-native",
+      pendingInteraction: undefined,
+    });
+  });
+
+  it("recovers an answered native rejection after the owner run lost its card pointer", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "COMPLETED", id: "session-141" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{
+      id: "act-plan-native", createTime: "2026-08-30T00:01:00.000Z",
+      planGenerated: { plan: { steps: [{ index: 0, title: "Exercise paperclipai run", description: "Run the canary." }] } },
+    }] } as never);
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([{
+      id: "orphaned-native-plan-v2", status: "answered", kind: "request_item_verdicts",
+      addresseeAgentId: "00000000-0000-4000-8000-000000000001",
+      resolvedByAgentId: "00000000-0000-4000-8000-000000000001",
+      idempotencyKey: "jules:plan-review:v2:issue-141:session-141:rev-1:luna",
+      payload: {
+        providerActivityId: "act-plan-native",
+        detailsMarkdown: "Recovered plan",
+        items: [{ id: "plan" }],
+        target: {
+          type: "issue_document", issueId: "issue-141", documentId: "doc-1", key: "plan",
+          revisionId: "rev-1", revisionNumber: 1,
+        },
+      },
+      result: {
+        outcome: "resolved", complete: true,
+        items: [{ id: "plan", verdict: "reject", reason: "Exercise both supported Node versions." }],
+      },
+    }]);
+
+    const result = await execute({
+      ...baseContext,
+      config: { ...baseContext.config, planApprovalPolicy: "required", planReviewerAgentId: "00000000-0000-4000-8000-000000000001" },
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({ ...session, phase: "RUNNING" }) },
+    } as AdapterExecutionContext);
+
+    expect(JulesClient.prototype.sendMessage).toHaveBeenCalledWith("session-141", {
+      prompt: expect.stringContaining("Exercise both supported Node versions."),
+    });
+    expect(sessionCodec.decode(result.sessionParams!)?.planReviewOutcome).toBe("revision_requested");
+  });
+
+  it("presents a revised plan once instead of replaying an older answered rejection", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_USER_FEEDBACK", id: "session-141" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [
+      {
+        id: "act-plan-original", createTime: "2026-08-30T00:01:00.000Z",
+        planGenerated: { plan: { steps: [{ index: 0, title: "Original plan", description: "Missing Node coverage." }] } },
+      },
+      {
+        id: "act-plan-revised", createTime: "2026-08-30T00:02:00.000Z",
+        planGenerated: { plan: { steps: [{ index: 0, title: "Run on Node 22 and 24", description: "Use paperclipai run." }] } },
+      },
+      {
+        id: "act-plan-prompt", createTime: "2026-08-30T00:03:00.000Z",
+        agentMessaged: { agentMessage: "I have updated the plan. Please let me know if it is acceptable." },
+      },
+    ] } as never);
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([{
+      id: "original-luna-card", status: "answered", kind: "request_item_verdicts",
+      addresseeAgentId: "00000000-0000-4000-8000-000000000001",
+      idempotencyKey: "jules:plan-review:v2:issue-141:session-141:rev-original:luna",
+      payload: {
+        detailsMarkdown: "Original plan", items: [{ id: "plan" }],
+        target: { type: "issue_document", issueId: "issue-141", documentId: "doc-original", key: "plan", revisionId: "rev-original", revisionNumber: 1 },
+      },
+      result: { outcome: "resolved", complete: true, items: [{ id: "plan", verdict: "reject", reason: "Cover both Node versions." }] },
+    }]);
+    vi.mocked(createJulesPlanReviewInteraction).mockResolvedValue({
+      id: "revised-luna-card", status: "pending", kind: "request_item_verdicts",
+      planRevision: { documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1 },
+    });
+
+    const result = await execute({
+      ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({ ...session, phase: "RUNNING" }) },
+    } as AdapterExecutionContext);
+
+    expect(JulesClient.prototype.sendMessage).not.toHaveBeenCalled();
+    expect(createJulesAgentAdjudicationInteraction).not.toHaveBeenCalled();
+    expect(createJulesPlanReviewChildInteraction).toHaveBeenCalledWith(
+      "question-child-1", "issue-141", "session-141", { documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1 },
+      expect.stringContaining("Run on Node 22 and 24"), "luna", "00000000-0000-4000-8000-000000000001", "jwt-token", "run-1", "act-plan-revised",
+    );
+    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
+      type: "plan_native_review", julesActivityId: "act-plan-revised", paperclipInteractionId: "native-plan-review-1", reviewerChildIssueId: "question-child-1",
+    });
+  });
+
+  it("does not relay an answered plan rejection after Jules has published a newer plan activity", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_PLAN_APPROVAL", id: "session-141" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [
+      {
+        id: "act-plan-reviewed", createTime: "2026-08-30T00:01:00.000Z",
+        planGenerated: { plan: { steps: [{ index: 0, title: "Old plan", description: "Missing Node coverage." }] } },
+      },
+      {
+        id: "act-plan-newer", createTime: "2026-08-30T00:02:00.000Z",
+        planGenerated: { plan: { steps: [{ index: 0, title: "Revised plan", description: "Run on both supported Node versions." }] } },
+      },
+    ] } as never);
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([{
+      id: "old-luna-card", status: "answered", kind: "request_item_verdicts",
+      idempotencyKey: "jules:plan-review:v2:issue-141:session-141:rev-old:luna",
+      payload: {
+        providerActivityId: "act-plan-reviewed",
+        items: [{ id: "plan" }],
+        target: { type: "issue_document", issueId: "issue-141", documentId: "doc-old", key: "plan", revisionId: "rev-old", revisionNumber: 1 },
+      },
+      result: { outcome: "resolved", complete: true, items: [{ id: "plan", verdict: "reject", reason: "Cover both Node versions." }] },
+    }] as never);
+    // The reviewer child may already have been compacted after the verdict.
+    // The persisted parent pointer must still be retired from provider identity.
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([]);
+
+    const result = await execute({
+      ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({
+        ...session,
+        phase: "WAITING_FOR_PLAN_APPROVAL",
+        pendingInteraction: {
+          type: "plan_native_review", protocolVersion: 2, julesActivityId: "act-plan-reviewed",
+          paperclipInteractionId: "old-luna-card", question: "Old plan", planDocumentId: "doc-old",
+          planRevisionId: "rev-old", planRevisionNumber: 1, reviewerAgentId: "00000000-0000-4000-8000-000000000001",
+          stage: "luna", reviewerChildIssueId: "old-plan-child", createdAt: "2026-08-30T00:01:00.000Z",
+        },
+      }) },
+    } as AdapterExecutionContext);
+
+    expect(JulesClient.prototype.sendMessage).not.toHaveBeenCalled();
+    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toBeUndefined();
   });
 
   it("relays exactly one Jules approval from an answered Terra card", async () => {

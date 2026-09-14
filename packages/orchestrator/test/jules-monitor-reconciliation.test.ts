@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildJulesMonitorReattachment, decideJulesMonitorReconciliation, type JulesMonitorSnapshot } from "../src/core/jules-monitor-reconciliation.js";
+import { buildJulesMonitorReattachment, decideJulesMonitorReconciliation, resolveJulesMonitorSessionId, type JulesMonitorSnapshot } from "../src/core/jules-monitor-reconciliation.js";
 
 const base: JulesMonitorSnapshot = {
   issueStatus: "blocked",
@@ -11,6 +11,24 @@ const base: JulesMonitorSnapshot = {
 };
 
 describe("Jules monitor reconciliation", () => {
+  it("recovers a redacted monitor reference only from the durable Jules session handle", () => {
+    expect(resolveJulesMonitorSessionId({
+      monitorExternalRef: "[redacted]",
+      sessionHandleBody: [
+        "julesSessionId: session-836",
+        "url: https://jules.google.com/session/session-836",
+        "prUrl: https://github.com/acme/repo/pull/836",
+      ].join("\n"),
+    })).toBe("session-836");
+  });
+
+  it("rejects a redacted monitor reference without an exact durable session handle", () => {
+    expect(resolveJulesMonitorSessionId({
+      monitorExternalRef: "[redacted]",
+      sessionHandleBody: "sessionId: session-836",
+    })).toBeNull();
+  });
+
   it("builds a native monitor patch from a verified provider session", () => {
     expect(buildJulesMonitorReattachment({ mode: "normal", stages: [] }, "jules-836", Date.parse("2026-09-02T15:00:00.000Z"))).toEqual({
       mode: "normal",
@@ -85,6 +103,51 @@ describe("Jules monitor reconciliation", () => {
       action: "resume_provider",
       issueStatus: "in_progress",
       reason: "stranded Jules monitor has a persisted provider session",
+    });
+  });
+
+  it("reattaches a detached Jules monitor after failed-run recovery parks its issue in backlog", () => {
+    expect(decideJulesMonitorReconciliation({
+      ...base,
+      issueStatus: "backlog",
+      monitorDetached: true,
+      timeoutAt: "2026-09-05T19:27:11.536Z",
+    }, Date.parse("2026-09-04T01:00:00.000Z"))).toEqual({
+      action: "resume_provider",
+      issueStatus: "in_progress",
+      reason: "stranded Jules monitor has a persisted provider session",
+    });
+  });
+
+  it("resumes a manually cleared monitor only after an exact native plan verdict was resolved", () => {
+    const snapshot = {
+      ...base,
+      issueStatus: "backlog",
+      assigneeIsJules: true,
+      monitorStatus: "cleared",
+      monitorClearReason: "manual",
+      resolvedNativePlanVerdict: true,
+    } satisfies JulesMonitorSnapshot;
+    expect(decideJulesMonitorReconciliation(snapshot, Date.parse("2026-09-02T15:00:00.000Z"))).toEqual({
+      action: "resume_provider",
+      issueStatus: "in_progress",
+      reason: "resolved native plan verdict needs its Jules parent resumed",
+    });
+    expect(decideJulesMonitorReconciliation({ ...snapshot, resolvedNativePlanVerdict: false }, Date.parse("2026-09-02T15:00:00.000Z")).action).toBe("preserve");
+  });
+
+  it("resumes a blocked Jules parent after its exact native plan verdict resolves", () => {
+    expect(decideJulesMonitorReconciliation({
+      ...base,
+      issueStatus: "blocked",
+      assigneeIsJules: true,
+      monitorStatus: "cleared",
+      monitorClearReason: "manual",
+      resolvedNativePlanVerdict: true,
+    }, Date.parse("2026-09-02T15:00:00.000Z"))).toEqual({
+      action: "resume_provider",
+      issueStatus: "in_progress",
+      reason: "resolved native plan verdict needs its Jules parent resumed",
     });
   });
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   parsePlanReviewInteraction,
+  planReviewIdempotencyKey,
   reducePlanReview,
   type PlanReviewIdentity,
 } from "../src/server/plan-review-protocol.js";
@@ -56,18 +57,25 @@ describe("typed Jules plan-review protocol", () => {
     });
   });
 
+  it("uses one stable v2 key for one immutable review cycle", () => {
+    expect(planReviewIdempotencyKey(identity)).toBe(
+      "jules:plan-review:v2:issue-985:session-985:revision-29:luna",
+    );
+  });
+
   it.each([
-    ["first bounded recovery", "jules:plan-review:v2:issue-985:session-985:revision-29:luna:recovery:1", true],
-    ["non-numeric recovery suffix", "jules:plan-review:v2:issue-985:session-985:revision-29:luna:recovery:one", false],
-    ["zero recovery suffix", "jules:plan-review:v2:issue-985:session-985:revision-29:luna:recovery:0", false],
-  ])("%s is accepted only when it is a bounded recovery key", (_label, idempotencyKey, accepted) => {
+    "jules:plan-review:v2:issue-985:session-985:revision-29:luna:recovery:1",
+    "jules:plan-review:v2:issue-985:session-985:revision-29:luna:recovery:one",
+    "jules:plan-review:v2:issue-985:session-985:revision-29:luna:recovery:0",
+  ])("does not accept recovery-suffixed v2 key %s", (idempotencyKey) => {
     const observation = parsePlanReviewInteraction(v2Card({ idempotencyKey }), identity);
-    expect(observation.kind === "v2").toBe(accepted);
+    expect(observation).toMatchObject({ kind: "unrecognized" });
   });
 
   it("accepts only a complete verdict for the declared plan item", () => {
     const card = v2Card({
       status: "answered",
+      resolvedByAgentId: "luna-1",
       result: { outcome: "resolved", complete: true, items: [{ id: "plan", verdict: "approve" }] },
     });
     expect(parsePlanReviewInteraction(card, identity)).toMatchObject({
@@ -77,12 +85,27 @@ describe("typed Jules plan-review protocol", () => {
     });
   });
 
+  it("does not treat a board-resolved v2 card as the addressed reviewer's verdict", () => {
+    const card = v2Card({
+      status: "answered",
+      resolvedByUserId: "local-board",
+      result: { outcome: "resolved", complete: true, items: [{ id: "plan", verdict: "reject", reason: "Not a reviewer decision." }] },
+    });
+
+    expect(parsePlanReviewInteraction(card, identity)).toEqual({
+      kind: "untrusted",
+      reason: "v2 answered card was not resolved by the addressed reviewer",
+      interactionId: "card-v2",
+      identity,
+    });
+  });
+
   it.each([
     ["missing reason", { outcome: "resolved", complete: true, items: [{ id: "plan", verdict: "reject" }] }],
     ["wrong item", { outcome: "resolved", complete: true, items: [{ id: "pull_request", verdict: "approve" }] }],
     ["partial result", { outcome: "resolved", complete: false, items: [{ id: "plan", verdict: "approve" }] }],
   ] as const)("does not turn %s into a decision", (_label, result) => {
-    expect(parsePlanReviewInteraction(v2Card({ status: "answered", result }), identity)).toMatchObject({
+    expect(parsePlanReviewInteraction(v2Card({ status: "answered", resolvedByAgentId: "luna-1", result }), identity)).toMatchObject({
       kind: "unrecognized",
     });
   });

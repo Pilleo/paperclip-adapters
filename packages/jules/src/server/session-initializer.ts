@@ -40,7 +40,17 @@ export async function persistSessionBestEffort(
       {
         ...(session.currentPrUrl ? { prUrl: session.currentPrUrl } : {}),
         ...(session.currentPrHeadSha ? { headSha: session.currentPrHeadSha } : {}),
+        ...(session.currentPrHeadRef ? { headRefName: session.currentPrHeadRef } : {}),
       },
+      {
+        ...(session.deliveredFeedbackActivityId ? { deliveredFeedbackActivityId: session.deliveredFeedbackActivityId } : {}),
+        ...(session.deliveredFeedbackInteractionId ? { deliveredFeedbackInteractionId: session.deliveredFeedbackInteractionId } : {}),
+      },
+      session.prRemediation ? {
+        originalSessionId: session.prRemediation.originalSessionId,
+        ...(session.prRemediation.recoverySessionId ? { recoverySessionId: session.prRemediation.recoverySessionId } : {}),
+        ...(session.prRemediation.reason ? { reason: session.prRemediation.reason } : {}),
+      } : undefined,
     );
   } catch (error) {
     if (onLog) {

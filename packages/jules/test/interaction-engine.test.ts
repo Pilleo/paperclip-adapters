@@ -5,9 +5,9 @@ import {
   extractFeedbackAnswer,
   recordFeedbackRelayed,
   recordPlanApprovalRelayed,
+  resumePlanReviewAfterQuestionResolution,
   isPlanApprovalRequired,
   determinePaperclipIssueStatus,
-  fingerprintPlanSteps,
 } from "../src/server/interaction-engine.js";
 import { JulesAdapterSessionV1 } from "../src/server/session.js";
 import { PaperclipInteraction } from "../src/server/paperclip-client.js";
@@ -53,11 +53,23 @@ describe("interaction-engine pure reducer", () => {
 
   describe("AWAITING_USER_FEEDBACK transitions", () => {
     it("delegates a provider question to the strong-reviewer lane", () => {
-      const action = evaluateInteractionAction(baseSession, "AWAITING_USER_FEEDBACK", [], "What is next?");
+      const action = evaluateInteractionAction(
+        baseSession,
+        "AWAITING_USER_FEEDBACK",
+        [],
+        "What is next?",
+        "activity-question-1",
+      );
       expect(action.type).toBe("CREATE_AGENT_ADJUDICATION");
       if (action.type === "CREATE_AGENT_ADJUDICATION") {
         expect(action.question).toBe("What is next?");
       }
+    });
+
+    it("keeps polling when Jules reports feedback without an immutable question activity", () => {
+      expect(evaluateInteractionAction(baseSession, "AWAITING_USER_FEEDBACK")).toEqual({
+        type: "CONTINUE_POLLING",
+      });
     });
 
     it("does not reopen a question whose Jules activity was already answered", () => {
@@ -140,7 +152,13 @@ describe("interaction-engine pure reducer", () => {
         ...baseSession,
         deliveredFeedbackInteractionId: "inter-old-1",
       };
-      const action = evaluateInteractionAction(sessionWithDelivered, "AWAITING_USER_FEEDBACK", [answeredOld], "Second question from Jules?");
+      const action = evaluateInteractionAction(
+        sessionWithDelivered,
+        "AWAITING_USER_FEEDBACK",
+        [answeredOld],
+        "Second question from Jules?",
+        "activity-question-2",
+      );
       expect(action.type).toBe("CREATE_AGENT_ADJUDICATION");
       if (action.type === "CREATE_AGENT_ADJUDICATION") {
         expect(action.question).toBe("Second question from Jules?");
@@ -149,17 +167,41 @@ describe("interaction-engine pure reducer", () => {
   });
 
   describe("AWAITING_PLAN_APPROVAL transitions", () => {
-    it("fingerprints typed plan steps deterministically and ignores ordering", () => {
-      expect(fingerprintPlanSteps([
-        { index: 2, title: " Run tests ", description: "Verify" },
-        { index: 1, title: "Implement", description: "Code" },
-      ])).toBe(fingerprintPlanSteps([
-        { index: 1, title: "Implement", description: "Code" },
-        { index: 2, title: "Run tests", description: "Verify" },
-      ]));
-      expect(fingerprintPlanSteps([{ index: 1, title: "Other" }])).not.toBe(
-        fingerprintPlanSteps([{ index: 1, title: "Implement" }]),
+    it("does not let historical confirmation cards approve a new provider plan", () => {
+      const action = evaluateInteractionAction(
+        baseSession,
+        "AWAITING_PLAN_APPROVAL",
+        [{
+          id: "old-completion-card",
+          kind: "request_confirmation",
+          status: "accepted",
+          idempotencyKey: "jules:no-pr-completion:issue-123:old-session",
+        }],
+        "Fresh immutable provider plan",
+        "plan-activity-2",
       );
+
+      expect(action).toEqual({
+        type: "CREATE_PLAN_CARD",
+        planMarkdown: "Fresh immutable provider plan",
+        revisionNumber: 1,
+      });
+    });
+
+    it("reopens the same pending plan after its superseding provider question is answered", () => {
+      const resumed = resumePlanReviewAfterQuestionResolution({
+        ...baseSession,
+        supersededPlanActivityId: "plan-1",
+        unresolvedProviderQuestionActivityId: "question-1",
+      });
+
+      expect(resumed.supersededPlanActivityId).toBeUndefined();
+      expect(resumed.unresolvedProviderQuestionActivityId).toBeUndefined();
+      expect(isPlanApprovalRequired({
+        requirePlanApproval: true,
+        planActivityId: "plan-1",
+        supersededPlanActivityId: resumed.supersededPlanActivityId,
+      })).toBe(true);
     });
 
     it.each([
@@ -177,18 +219,10 @@ describe("interaction-engine pure reducer", () => {
       })).toBe(expected);
     });
 
-    it("does not reopen an exact plan fingerprint after rejection", () => {
+    it("requires review for a later provider activity even when its plan steps are unchanged", () => {
       expect(isPlanApprovalRequired({
         requirePlanApproval: true,
         planActivityId: "new-activity",
-        planFingerprint: "same-plan",
-        supersededPlanFingerprint: "same-plan",
-      })).toBe(false);
-      expect(isPlanApprovalRequired({
-        requirePlanApproval: true,
-        planActivityId: "new-activity",
-        planFingerprint: "changed-plan",
-        supersededPlanFingerprint: "same-plan",
       })).toBe(true);
     });
 
@@ -230,19 +264,15 @@ describe("interaction-engine pure reducer", () => {
       }
     });
 
-    it("relays an accepted plan card even when pendingInteraction was lost", () => {
+    it("creates a fresh typed plan card when the legacy pointer was lost", () => {
       const accepted: PaperclipInteraction = {
         id: "plan-inter-lost",
         kind: "request_confirmation",
         status: "accepted",
         result: { planRevisionId: "rev-lost" },
       };
-      const action = evaluateInteractionAction(baseSession, "AWAITING_PLAN_APPROVAL", [accepted]);
-      expect(action.type).toBe("RELAY_PLAN_APPROVAL");
-      if (action.type === "RELAY_PLAN_APPROVAL") {
-        expect(action.planRevisionId).toBe("rev-lost");
-        expect(action.interactionId).toBe("plan-inter-lost");
-      }
+      expect(evaluateInteractionAction(baseSession, "AWAITING_PLAN_APPROVAL", [accepted], "Fresh plan"))
+        .toEqual({ type: "CREATE_PLAN_CARD", planMarkdown: "Fresh plan", revisionNumber: 1 });
     });
 
     it("returns WAIT_FOR_HUMAN when plan was already approved", () => {

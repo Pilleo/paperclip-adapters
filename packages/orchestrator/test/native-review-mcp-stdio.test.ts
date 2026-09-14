@@ -56,13 +56,12 @@ describe("native reviewer stdio MCP process", () => {
 
     const child = spawn(process.execPath, ["--import", "tsx", serverScript], {
       cwd: path.resolve(testDir, ".."),
-      env: {
-        ...process.env,
+      env: nativeReviewTestEnv({
         PAPERCLIP_API_URL: `http://127.0.0.1:${address.port}/api`,
         PAPERCLIP_API_KEY: "run-token",
         PAPERCLIP_TASK_ID: "issue-1",
         PAPERCLIP_AGENT_ID: "luna-1",
-      },
+      }),
       stdio: ["pipe", "pipe", "pipe"],
     });
     children.push(child);
@@ -109,13 +108,12 @@ describe("native reviewer stdio MCP process", () => {
 
     const child = spawn(process.execPath, ["--import", "tsx", serverScript], {
       cwd: path.resolve(testDir, ".."),
-      env: {
-        ...process.env,
+      env: nativeReviewTestEnv({
         PAPERCLIP_API_URL: `http://127.0.0.1:${address.port}/api`,
         PAPERCLIP_API_KEY: "run-token",
         PAPERCLIP_TASK_ID: "issue-1",
         PAPERCLIP_AGENT_ID: "luna-1",
-      },
+      }),
       stdio: ["pipe", "pipe", "pipe"],
     });
     children.push(child);
@@ -125,7 +123,7 @@ describe("native reviewer stdio MCP process", () => {
     await expect(exit).resolves.toBe(1);
   });
 
-  it("recovers its non-secret review identity from the dedicated CODEX_HOME when Paperclip strips MCP env", async () => {
+  it("refuses a persistent reviewer home as a source of task identity", async () => {
     const home = await fs.mkdtemp(path.join(os.tmpdir(), "native-review-runtime-"));
     temporaryHomes.push(home);
     const received: string[] = [];
@@ -152,7 +150,7 @@ describe("native reviewer stdio MCP process", () => {
 
     const child = spawn(process.execPath, ["--import", "tsx", serverScript], {
       cwd: path.resolve(testDir, ".."),
-      env: { ...process.env, CODEX_HOME: home },
+      env: nativeReviewTestEnv({ CODEX_HOME: home }),
       stdio: ["pipe", "pipe", "pipe"],
     });
     children.push(child);
@@ -168,8 +166,64 @@ describe("native reviewer stdio MCP process", () => {
     child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "submit_native_review_verdict", arguments: { verdict: "approve" } } })}\n`);
     await waitFor(() => responses.some((response) => response.id === 1));
 
+    expect(responses[0]).toMatchObject({
+      result: { isError: true, structuredContent: { code: "missing_runtime_context" } },
+    });
+    expect(received).toEqual([]);
+  });
+
+  it("resolves exactly one owned card from the static reviewer company when Codex omits task env from MCP children", async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "native-review-runtime-"));
+    temporaryHomes.push(home);
+    const received: string[] = [];
+    const api = createServer((request, response) => {
+      received.push(`${request.method} ${request.url}`);
+      response.setHeader("content-type", "application/json");
+      if (request.url?.startsWith("/api/companies/company-1/issues")) {
+        response.end(JSON.stringify([{ id: "issue-1" }]));
+        return;
+      }
+      if (request.method === "GET") {
+        response.end(JSON.stringify([{
+          id: "card-1", kind: "request_item_verdicts", status: "pending", addresseeAgentId: "luna-1",
+          payload: { items: [{ id: "review" }] },
+        }]));
+        return;
+      }
+      response.end(JSON.stringify({
+        id: "card-1", status: "answered", result: { items: [{ id: "review", verdict: "approve" }] },
+      }));
+    });
+    servers.push(api);
+    api.listen(0, "127.0.0.1");
+    await once(api, "listening");
+    const address = api.address();
+    if (!address || typeof address === "string") throw new Error("test server has no TCP address");
+    await fs.writeFile(path.join(home, "paperclip-native-review-runtime.json"), JSON.stringify({
+      apiBase: `http://127.0.0.1:${address.port}/api`, agentId: "luna-1", companyId: "company-1",
+    }));
+
+    const child = spawn(process.execPath, ["--import", "tsx", serverScript], {
+      cwd: path.resolve(testDir, ".."),
+      env: nativeReviewTestEnv({ CODEX_HOME: home }),
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    children.push(child);
+    const responses: Array<{ id?: number; result?: unknown }> = [];
+    let pending = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      pending += chunk;
+      const lines = pending.split("\n");
+      pending = lines.pop() ?? "";
+      for (const line of lines) if (line.trim()) responses.push(JSON.parse(line));
+    });
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "submit_native_review_verdict", arguments: { verdict: "approve" } } })}\n`);
+
+    await waitFor(() => responses.some((response) => response.id === 1));
     expect(responses[0]).toMatchObject({ result: { isError: false, structuredContent: { verdict: "approve" } } });
     expect(received).toEqual([
+      "GET /api/companies/company-1/issues?assigneeAgentId=luna-1&status=todo%2Cin_progress%2Cin_review%2Cblocked",
       "GET /api/issues/issue-1/interactions",
       "POST /api/issues/issue-1/interactions/card-1/verdicts",
     ]);
@@ -182,4 +236,15 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<voi
     if (Date.now() >= deadline) throw new Error("timed out waiting for MCP response");
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
+}
+
+/**
+ * A reviewer test can itself execute inside a Paperclip heartbeat. Never let
+ * its spawned MCP child inherit that real run's credentials or task identity:
+ * every test must use only the environment declared in its fixture.
+ */
+function nativeReviewTestEnv(overrides: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const inherited = Object.fromEntries(Object.entries(process.env)
+    .filter(([key]) => !key.startsWith("PAPERCLIP_")));
+  return { ...inherited, ...overrides };
 }

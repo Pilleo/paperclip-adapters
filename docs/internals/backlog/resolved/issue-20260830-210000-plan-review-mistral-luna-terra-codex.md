@@ -2,7 +2,7 @@
 title: "Plan review ladder: Mistral first, Luna if missing, Terra is Codex"
 severity: "HIGH"
 priority: "high"
-status: "done"
+status: "resolved"
 orchestrator_managed: true
 component: "orchestrator"
 target_modules: ["packages/jules", "@pilleo/paperclip-jules-adapter"]

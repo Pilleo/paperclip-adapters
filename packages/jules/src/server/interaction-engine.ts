@@ -7,21 +7,6 @@ import { JulesAdapterSessionV1, SessionPhase } from "./session.js";
 import { PaperclipInteraction } from "./paperclip-client.js";
 import { formatCardSummary, SafeCardPrompt, SafeCardSummary } from "./card-prompt.js";
 import { parsePlanReviewVerdictResult } from "./plan-review-protocol.js";
-import { createHash } from "node:crypto";
-
-export type PlanStepFingerprintInput = {
-  readonly index?: number | undefined;
-  readonly title?: string | undefined;
-  readonly description?: string | undefined;
-};
-
-/** Fingerprints only typed plan steps; generated prose and review comments are excluded. */
-export function fingerprintPlanSteps(steps: readonly PlanStepFingerprintInput[]): string {
-  const canonical = [...steps]
-    .map((step) => ({ index: step.index ?? null, title: step.title?.trim() ?? "", description: step.description?.trim() ?? "" }))
-    .sort((left, right) => (left.index ?? Number.MAX_SAFE_INTEGER) - (right.index ?? Number.MAX_SAFE_INTEGER));
-  return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
-}
 
 export type InteractionAction =
   | { type: "RELAY_FEEDBACK"; answer: string; interactionId: string }
@@ -94,7 +79,15 @@ export function evaluateInteractionAction(
 
   // 1. Jules is awaiting plan approval
   if (effectiveState === "AWAITING_PLAN_APPROVAL") {
-    if (session.planApprovedAt) {
+    // A legacy relay can leave planApprovedAt behind after it failed before
+    // creating a v2 card. For the current branch-bound recovery session that
+    // value is only stale history until the typed ladder records `approved`.
+    // Do not let it suppress the first Luna card.
+    const hasUnapprovedBranchBoundRecovery =
+      session.prRemediation?.recoverySessionId === session.julesSessionId &&
+      session.planReviewOutcome !== "approved" &&
+      session.pendingInteraction?.type !== "plan_native_review";
+    if (session.planApprovedAt && !hasUnapprovedBranchBoundRecovery) {
       return {
         type: "WAIT_FOR_HUMAN",
         summary: `Jules session ${session.julesSessionId} is processing plan approval.`,
@@ -123,28 +116,11 @@ export function evaluateInteractionAction(
       }
     }
 
-    const anyPending = existingInteractions.find(
-      (i) => i.kind === "request_confirmation" && i.status === "pending"
-    );
-    if (anyPending) {
-      return {
-        type: "WAIT_FOR_HUMAN",
-        interactionId: anyPending.id,
-        summary: `Jules session ${session.julesSessionId} awaits plan approval in Paperclip.`,
-      };
-    }
-
-    const acceptedPlan = existingInteractions.find(
-      (i) => i.kind === "request_confirmation" && i.status === "accepted"
-    );
-    if (acceptedPlan) {
-      return {
-        type: "RELAY_PLAN_APPROVAL",
-        planRevisionId:
-          (acceptedPlan.result as { planRevisionId?: string } | undefined)?.planRevisionId ?? "accepted",
-        interactionId: acceptedPlan.id,
-      };
-    }
+    // A parent issue accumulates confirmations from completion, old plan
+    // revisions, and unrelated recovery generations.  They are not evidence
+    // for this provider plan.  The exact pendingInteraction pointer (or the
+    // v2 recovery bridge reconstructed by the caller) is the only authority
+    // allowed to wait for or relay a legacy plan decision.
 
     return {
       type: "CREATE_PLAN_CARD",
@@ -209,7 +185,15 @@ export function evaluateInteractionAction(
       };
     }
 
-    return { type: "CREATE_AGENT_ADJUDICATION", question: rawQuestionText ?? "Jules is awaiting user feedback." };
+    // A coarse provider state is not a question protocol. A visible card must
+    // always be attributable to one immutable Jules activity; otherwise a
+    // transient status such as AWAITING_USER_FEEDBACK consumes reviewer/human
+    // capacity with a fabricated prompt and can hide actionable PR recovery.
+    if (!rawQuestionActivityId || !rawQuestionText?.trim()) {
+      return { type: "CONTINUE_POLLING" };
+    }
+
+    return { type: "CREATE_AGENT_ADJUDICATION", question: rawQuestionText };
   }
 
   // 3. Terminal / Success states
@@ -256,6 +240,24 @@ export function recordFeedbackRelayed(
 }
 
 /**
+ * A provider question temporarily preempts a native plan gate. Once its typed
+ * answer reaches Jules, the provider can still await approval for that exact
+ * plan. Clear only the preemption markers so it gets one fresh native review;
+ * a rejection fingerprint remains intact and continues to suppress a rejected
+ * plan.
+ */
+export function resumePlanReviewAfterQuestionResolution(
+  session: JulesAdapterSessionV1,
+): JulesAdapterSessionV1 {
+  const {
+    supersededPlanActivityId: _supersededPlanActivityId,
+    unresolvedProviderQuestionActivityId: _unresolvedProviderQuestionActivityId,
+    ...resumed
+  } = session;
+  return resumed;
+}
+
+/**
  * Pure state updater: records that plan approval was sent to Jules.
  */
 export function recordPlanApprovalRelayed(
@@ -283,12 +285,9 @@ export function isPlanApprovalRequired(input: {
   planApprovedAt?: string | undefined;
   planApprovedActivityId?: string | undefined;
   supersededPlanActivityId?: string | undefined;
-  planFingerprint?: string | undefined;
-  supersededPlanFingerprint?: string | undefined;
 }): boolean {
   if (!input.requirePlanApproval || !input.planActivityId) return false;
   if (input.supersededPlanActivityId === input.planActivityId) return false;
-  if (input.planFingerprint && input.supersededPlanFingerprint === input.planFingerprint) return false;
   if (!input.planApprovedAt) return true;
   if (!input.planApprovedActivityId) return false;
   return input.planApprovedActivityId !== input.planActivityId;

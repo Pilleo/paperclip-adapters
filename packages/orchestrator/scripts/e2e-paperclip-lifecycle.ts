@@ -49,7 +49,9 @@ async function createAdapterContext(
       backlogDirectory: backlogDir,
       resolvedDirectory: resolvedDir,
       requireApproval: true,
-      maxConcurrentJules: 15,
+      // New Jules starts are admission-rate limited. Once a session exists,
+      // Jules owns its provider queue and concurrency.
+      maxNewJulesSessionsPerHeartbeat: 3,
       maxConcurrentVibe: 2,
       // The lifecycle harness creates only the workers it needs. Fleet
       // provisioning is a separate production concern and would make this
@@ -169,16 +171,16 @@ status: "open"
 orchestrator_managed: true
 priority: high
 has_side_effects: false
-component: "enforcer"
-target_modules: [":enforcer"]
-target_files: ["enforcer/src/main/kotlin/io/mazewall/seccomp/PureJavaBpfEngine.kt"]
-target_symbols: ["PureJavaBpfEngine#installFilter"]
+component: "orchestrator"
+target_modules: ["packages/orchestrator"]
+target_files: ["packages/orchestrator/src/server/execute.ts"]
+target_symbols: ["executeProject"]
 open_questions: false
 ---
 
-# 🔴 [Severity: HIGH]: E2E Test: Support ARM64 BPF Downcall Compilation
-**Context:** ARM64 instruction downcall verification.
-**Needed:** Add downcall compilation unit test for PureJavaBpfEngine.
+# 🔴 [Severity: HIGH]: E2E Test: Execute project lifecycle
+**Context:** Deterministic project-level orchestration verification.
+**Needed:** Add execution lifecycle verification for executeProject.
 `;
     fs.writeFileSync(issueFileA, issueMarkdownA, "utf8");
 
@@ -260,16 +262,16 @@ status: "open"
 orchestrator_managed: true
 priority: high
 has_side_effects: false
-component: "enforcer"
-target_modules: [":enforcer"]
-target_files: ["enforcer/src/main/kotlin/io/mazewall/seccomp/BpfNativeCache.kt"]
-target_symbols: ["PureJavaBpfEngine#setNoNewPrivs"]
+component: "orchestrator"
+target_modules: ["packages/orchestrator"]
+target_files: ["packages/orchestrator/src/core/github-sync.ts"]
+target_symbols: ["matchPrToIssue"]
 open_questions: false
 ---
 
-# 🔴 [Severity: HIGH]: E2E Test: Support X86 BPF Downcall Compilation
-**Context:** X86 instruction downcall verification.
-**Needed:** Add downcall compilation unit test for PureJavaBpfEngine setNoNewPrivs.
+# 🔴 [Severity: HIGH]: E2E Test: Match pull requests to issues
+**Context:** Deterministic work-product correlation verification.
+**Needed:** Add a unit test for matchPrToIssue.
 `;
     fs.writeFileSync(issueFileB, issueMarkdownB, "utf8");
 
@@ -282,16 +284,16 @@ status: "open"
 orchestrator_managed: true
 priority: high
 has_side_effects: false
-component: "enforcer"
-target_modules: [":enforcer"]
-target_files: ["enforcer/src/main/kotlin/io/mazewall/seccomp/PureJavaBpfEngine.kt"]
-target_symbols: ["PureJavaBpfEngine#installFilter"]
+component: "orchestrator"
+target_modules: ["packages/orchestrator"]
+target_files: ["packages/orchestrator/src/server/execute.ts"]
+target_symbols: ["executeProject"]
 open_questions: false
 ---
 
-# 🔴 [Severity: HIGH]: E2E Test: Conflicting Install Filter Refactor
+# 🔴 [Severity: HIGH]: E2E Test: Conflicting executeProject refactor
 **Context:** Overlapping method target.
-**Needed:** Refactor installFilter.
+**Needed:** Refactor executeProject.
 `;
     fs.writeFileSync(issueFileC, issueMarkdownC, "utf8");
 
@@ -310,11 +312,11 @@ open_questions: false
     const issueB = await (await fetch(`${PAPERCLIP_API}/api/issues/${idB}`)).json();
     const issueC = await (await fetch(`${PAPERCLIP_API}/api/issues/${idC}`)).json();
 
-    // Task B touches disjoint method (setNoNewPrivs) -> must be in_progress
+    // Task B touches a disjoint symbol -> must be in_progress.
     if (issueB.status !== "in_progress") {
       throw new Error(`Expected disjoint Task B to run in parallel ('in_progress'), but got '${issueB.status}'`);
     }
-    // Task C touches overlapping method (installFilter) while Task A is in_progress -> must be blocked in 'todo' or 'backlog'
+    // Task C overlaps executeProject while Task A is in_progress -> it remains held.
     if (issueC.status !== "todo" && issueC.status !== "backlog") {
       throw new Error(`Expected conflicting Task C to be held in 'todo' or 'backlog', but got '${issueC.status}'`);
     }
@@ -326,8 +328,8 @@ open_questions: false
     await log("PHASE 5", "RUNNING", "Validating Codanna Symbol Research and Jules Cloud Prompt Synthesis...");
     const rawPlan = synthesizeDeterministicPlan(issueMarkdownA, "issue-arm64", WORKSPACE_PATH);
     const enrichedPlan = enrichPlanWithSymbolResearch(rawPlan, WORKSPACE_PATH);
-    if (!enrichedPlan.semanticSymbolContext || !enrichedPlan.semanticSymbolContext.includes("installFilter")) {
-      throw new Error("Codanna symbol research failed to retrieve PureJavaBpfEngine#installFilter");
+    if (!enrichedPlan.semanticSymbolContext || !enrichedPlan.semanticSymbolContext.includes("executeProject")) {
+      throw new Error("Codanna symbol research failed to retrieve executeProject");
     }
 
     const julesPrompt = buildPrompt(
@@ -340,15 +342,15 @@ open_questions: false
         workspacePath: WORKSPACE_PATH,
       },
       {
-        source: "Pilleo/mazewall",
+        source: "Pilleo/paperclip-adapters",
         baseBranch: "master",
       }
     );
 
-    if (!julesPrompt.includes("installFilter") || !julesPrompt.includes("Implementation plan") || !julesPrompt.includes(paperclipIssueIdA)) {
+    if (!julesPrompt.includes("executeProject") || !julesPrompt.includes("Implementation plan") || !julesPrompt.includes(paperclipIssueIdA)) {
       throw new Error("Jules prompt missing the task target, implementation plan, or Paperclip identity");
     }
-    await log("PHASE 5", "PASS", "Jules prompt synthesized with exact Codanna type signature, AST outline, and sandbox guidelines");
+    await log("PHASE 5", "PASS", "Jules prompt synthesized with exact Codanna symbol context, AST outline, and sandbox guidelines");
 
     // -------------------------------------------------------------------------
     // Phase 6: Autonomous Clarification Loop (Codebase Research First)
@@ -461,6 +463,11 @@ This issue is created and owned by the isolated E2E company.
     const canaryContext = await createAdapterContext(orchAgent.id, testCompanyId, tempBacklogDir, tempResolvedDir, {
       julesAgentId: julesAgent.id,
       vibeAgentId: vibeAgent.id,
+      // These phases model an already-existing provider PR. New-work approval
+      // admission is exercised above; applying it here lets the generic
+      // dispatcher reclaim the recovery subject after the lifecycle has
+      // correctly promoted it.
+      requireApproval: false,
     });
     await runOrchestrator(canaryContext as any);
     const canaryFrontmatter = parseMarkdownFrontmatter<Record<string, unknown>>(fs.readFileSync(canaryIssueFile, "utf8"));
@@ -511,7 +518,8 @@ This issue is created and owned by the isolated E2E company.
     const previousPath = process.env["PATH"];
     fs.writeFileSync(fakeGhPath, `#!/bin/sh
 case "$*" in
-  *"pr list"*) printf '%s\\n' '[{"number":991,"title":"${canaryMarker}","state":"OPEN","headRefName":"canary","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","baseRefName":"main","mergedAt":null,"url":"${canaryPrUrl}","files":[]}]' ;;
+  *"pr list"*) printf '%s\\n' '[{"number":991,"title":"${canaryMarker}","state":"OPEN","headRefName":"canary","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","baseRefName":"main","mergedAt":null,"url":"${canaryPrUrl}","files":[]},{"number":992,"title":"${canaryMarker}-red-ci","state":"OPEN","headRefName":"canary-red","headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","baseRefName":"main","mergedAt":null,"url":"https://github.com/e2e/paperclip-canary/pull/992","files":[]}]' ;;
+  *"pr checks 992"*) printf '%s\\n' '[{"state":"FAILURE","bucket":"fail","name":"canary"}]' ;;
   *"pr checks"*) printf '%s\\n' '[{"state":"SUCCESS","bucket":"pass","name":"canary"}]' ;;
   *) exit 1 ;;
 esac
@@ -536,6 +544,79 @@ esac
         throw new Error("Canary recovery was not idempotent across heartbeats");
       }
       await log("PHASE 7", "PASS", "Blocked Jules issue recovered once, stale children closed, and repeat heartbeat was idempotent");
+
+      // -----------------------------------------------------------------------
+      // Phase 8: Native Red-CI Jules PR Recovery Canary
+      // -----------------------------------------------------------------------
+      // A failed check is implementation work.  It must return ownership to
+      // Jules and must not create a review card.  This is deliberately paired
+      // with Phase 7: the same immutable work-product correlation produces a
+      // review only when CI is green.
+      await log("PHASE 8", "RUNNING", "Testing red CI routes the existing Jules PR back to Jules, not review...");
+      const redMarker = `${canaryMarker}-red-ci`;
+      const redIssueFile = path.join(tempBacklogDir, `${redMarker}.md`);
+      fs.writeFileSync(redIssueFile, `---
+title: "${redMarker}"
+severity: "HIGH"
+status: "open"
+orchestrator_managed: true
+priority: high
+component: "e2e"
+target_modules: [":e2e"]
+target_files: ["${redMarker}.txt"]
+target_symbols: []
+open_questions: false
+---
+
+# E2E failed-CI Jules PR recovery canary
+`, "utf8");
+      await runOrchestrator(canaryContext as any);
+      const redFrontmatter = parseMarkdownFrontmatter<Record<string, unknown>>(fs.readFileSync(redIssueFile, "utf8"));
+      const redIssueId = String(redFrontmatter.frontmatter["paperclip_issue_id"] || "");
+      if (!redIssueId) throw new Error("Failed-CI canary issue was not imported into Paperclip");
+      const redPrUrl = "https://github.com/e2e/paperclip-canary/pull/992";
+      await jsonRequest(`${PAPERCLIP_API}/api/issues/${redIssueId}/work-products`, "POST", {
+        type: "pull_request",
+        provider: "github",
+        title: "Jules failed-CI canary pull request",
+        url: redPrUrl,
+        externalId: redPrUrl,
+        status: "ready_for_review",
+        isPrimary: true,
+        metadata: { source: "jules", producer: "paperclip-jules-adapter", schemaVersion: 1 },
+      });
+      await jsonRequest(`${PAPERCLIP_API}/api/issues/${redIssueId}/documents/jules-session`, "PUT", {
+        title: "Jules session",
+        format: "markdown",
+        body: [
+          "julesSessionId: e2e-red-ci-session-992",
+          "url: https://jules.google.com/session/e2e-red-ci-session-992",
+          `prUrl: ${redPrUrl}`,
+          "prHeadSha: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "prHeadRef: canary-red",
+        ].join("\n"),
+        changeSummary: "E2E durable provider handoff",
+        baseRevisionId: null,
+      });
+      await jsonRequest(`${PAPERCLIP_API}/api/issues/${redIssueId}`, "PATCH", {
+        status: "backlog",
+        assigneeAgentId: orchAgent.id,
+      });
+      await runOrchestrator(canaryContext as any);
+      const redRecovered = await jsonRequest(`${PAPERCLIP_API}/api/issues/${redIssueId}`, "GET");
+      if (redRecovered.status !== "in_progress" || redRecovered.assigneeAgentId !== julesAgent.id) {
+        throw new Error(`Failed-CI canary was not returned to Jules: ${JSON.stringify({ status: redRecovered.status, assigneeAgentId: redRecovered.assigneeAgentId })}`);
+      }
+      const redInteractions = await jsonRequest(`${PAPERCLIP_API}/api/issues/${redIssueId}/interactions`, "GET");
+      if (redInteractions.some((interaction: { kind?: unknown }) => interaction.kind === "request_item_verdicts")) {
+        throw new Error("Failed-CI canary incorrectly created a native review card");
+      }
+      await runOrchestrator(canaryContext as any);
+      const redRepeated = await jsonRequest(`${PAPERCLIP_API}/api/issues/${redIssueId}`, "GET");
+      if (redRepeated.status !== "in_progress" || redRepeated.assigneeAgentId !== julesAgent.id) {
+        throw new Error("Failed-CI recovery was not idempotent across heartbeats");
+      }
+      await log("PHASE 8", "PASS", "Failed CI retained the canonical PR and returned implementation ownership to Jules without review spam");
     } finally {
       if (previousPath === undefined) delete process.env["PATH"];
       else process.env["PATH"] = previousPath;
@@ -543,7 +624,7 @@ esac
     }
 
     console.log("\n================================================================================");
-    console.log("  🎉 ALL 7 DEEP E2E LIFECYCLE PHASES PASSED WITH ZERO SHORTCUTS!");
+    console.log("  🎉 ALL 8 DEEP E2E LIFECYCLE PHASES PASSED WITH ZERO SHORTCUTS!");
     console.log("================================================================================\n");
   } finally {
     // -------------------------------------------------------------------------

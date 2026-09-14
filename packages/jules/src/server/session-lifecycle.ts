@@ -1,5 +1,6 @@
 import { JulesAdapterSessionV1 } from "./session.js";
-import { PaperclipId, asJulesSessionId } from "./brands.js";
+import { PaperclipId, asJulesSessionId, asPrUrl } from "./brands.js";
+import type { JulesSessionHandle } from "./jules-session-handle.js";
 
 export type StartupActionType =
   | "RESUME_EXISTING"
@@ -78,6 +79,203 @@ export function shouldReadIssueSessionHandle(input: {
   return !input.hasSession && !input.hasCanonicalSessionId && !input.hasStoredRecoverySession;
 }
 
+/**
+ * Paperclip execution configuration is ephemeral: a freshness refresh can
+ * replay an older sessionParams envelope while the same Jules session remains
+ * active.  These fields, in contrast, are identity-keyed coordination facts
+ * about that provider session.  Keep their recovery independent of adapter
+ * configuration so a config refresh cannot resend feedback or recreate a
+ * native form that has already been resolved.
+ *
+ * Deliberate clearing is safe: a normal execution persists the cleared value
+ * to the local recovery record before the next replay.  This merge only fills
+ * absent values from a record for the exact same issue and Jules session.
+ */
+export function mergeDurableSessionCheckpoints(
+  replayed: JulesAdapterSessionV1,
+  recovered: JulesAdapterSessionV1,
+): JulesAdapterSessionV1 {
+  return {
+    ...replayed,
+    scopeDriftFingerprint: replayed.scopeDriftFingerprint ?? recovered.scopeDriftFingerprint,
+    deliveredFeedbackActivityId: replayed.deliveredFeedbackActivityId ?? recovered.deliveredFeedbackActivityId,
+    deliveredFeedbackInteractionId: replayed.deliveredFeedbackInteractionId ?? recovered.deliveredFeedbackInteractionId,
+    terminalFeedbackActivityId: replayed.terminalFeedbackActivityId ?? recovered.terminalFeedbackActivityId,
+    terminalFeedbackInteractionId: replayed.terminalFeedbackInteractionId ?? recovered.terminalFeedbackInteractionId,
+    deliveredActivityIds: replayed.deliveredActivityIds ?? recovered.deliveredActivityIds,
+    relayedReviewCommentIds: replayed.relayedReviewCommentIds ?? recovered.relayedReviewCommentIds,
+    pendingInteraction: replayed.pendingInteraction ?? recovered.pendingInteraction,
+    deferredPlanReview: replayed.deferredPlanReview ?? recovered.deferredPlanReview,
+    workerFeedbackDeliveryId: replayed.workerFeedbackDeliveryId ?? recovered.workerFeedbackDeliveryId,
+    providerContinuation: replayed.providerContinuation ?? recovered.providerContinuation,
+    // The terminal activity cursor is durable progress, not a derived cache.
+    // Config refreshes otherwise restart a deep oldest-first scan at page one
+    // on every heartbeat and starve terminal question recovery indefinitely.
+    terminalActivityScan: replayed.terminalActivityScan ?? recovered.terminalActivityScan,
+    // A PR URL and its head SHA are one immutable handoff identity. A
+    // Paperclip configuration refresh can replay a sparse session envelope;
+    // restoring only the SHA strands a completed provider session because the
+    // adapter can neither inspect CI nor route the PR into native review.
+    // Only fill an absent URL from the same issue/session recovery record.
+    currentPrUrl: replayed.currentPrUrl ?? recovered.currentPrUrl,
+    currentPrHeadSha: replayed.currentPrHeadSha ?? recovered.currentPrHeadSha,
+    currentPrHeadRef: replayed.currentPrHeadRef ?? recovered.currentPrHeadRef,
+    prRemediation: replayed.prRemediation ?? recovered.prRemediation,
+    ...(replayed.planApprovedAt ?? recovered.planApprovedAt
+      ? { planApprovedAt: replayed.planApprovedAt ?? recovered.planApprovedAt }
+      : {}),
+    planApprovedActivityId: replayed.planApprovedActivityId ?? recovered.planApprovedActivityId,
+    planReviewRevisionId: replayed.planReviewRevisionId ?? recovered.planReviewRevisionId,
+    planReviewOutcome: replayed.planReviewOutcome ?? recovered.planReviewOutcome,
+    pendingPlanRevisionRequest: replayed.pendingPlanRevisionRequest ?? recovered.pendingPlanRevisionRequest,
+    supersededPlanActivityId: replayed.supersededPlanActivityId ?? recovered.supersededPlanActivityId,
+    unresolvedProviderQuestionActivityId: replayed.unresolvedProviderQuestionActivityId ?? recovered.unresolvedProviderQuestionActivityId,
+  };
+}
+
+/**
+ * Recover an immutable PR handoff when an older generic retry overwrote the
+ * `jules-session` document with its own provider ID. The primary Paperclip
+ * work product is authoritative for the issue; it is not inferred from prose
+ * or from a provider activity. A complete GitHub identity is required so the
+ * caller can fail closed rather than retrying from the base branch.
+ */
+export function recoverPrIdentityFromWorkProduct(
+  session: JulesAdapterSessionV1,
+  workProduct: { readonly url: string; readonly headSha: string; readonly headRefName: string },
+): JulesAdapterSessionV1 {
+  return {
+    ...session,
+    currentPrUrl: workProduct.url as JulesAdapterSessionV1["currentPrUrl"],
+    currentPrHeadSha: workProduct.headSha,
+    currentPrHeadRef: workProduct.headRefName,
+    prRegisteredOnBoard: true,
+  };
+}
+
+/**
+ * Restore the one allowed branch-bound remediation from Paperclip's durable
+ * session handle. Local recovery files can be discarded during an ownership
+ * transition, so the handle is the durable fence against duplicate Jules work
+ * on the same immutable PR branch.
+ *
+ * Partial handles are ignored: the adapter never infers immutable branch
+ * identity from prose, a URL alone, or a different provider session.
+ */
+export function restoreBranchBoundRemediationFromHandle(
+  session: JulesAdapterSessionV1,
+  handle: JulesSessionHandle | null,
+  startedAt: string,
+): JulesAdapterSessionV1 {
+  const remediation = handle?.remediation;
+  if (!remediation || remediation.recoverySessionId !== session.julesSessionId ||
+      !handle?.prUrl || !handle.headSha || !handle.headRefName) {
+    return session;
+  }
+  const {
+    pendingInteraction: _pendingInteraction,
+    planApprovedAt: _planApprovedAt,
+    planApprovedActivityId: _planApprovedActivityId,
+    planReviewOutcome: _planReviewOutcome,
+    deliveredFeedbackActivityId: _deliveredFeedbackActivityId,
+    deliveredFeedbackInteractionId: _deliveredFeedbackInteractionId,
+    terminalFeedbackActivityId: _terminalFeedbackActivityId,
+    unresolvedProviderQuestionActivityId: _unresolvedProviderQuestionActivityId,
+    pendingPlanRevisionRequest: _pendingPlanRevisionRequest,
+    ...sessionWithoutReviewCache
+  } = session;
+  return {
+    ...sessionWithoutReviewCache,
+    // The issue handle is the durable source for provider/PR identity, not
+    // reviewer state. A local session can survive an ownership transfer with
+    // a deleted or superseded native-card pointer; restoring it would relay a
+    // historical verdict to the recovery session. The execute path
+    // reconstructs a real v2 card from its exact session/activity identity,
+    // or creates one when none exists.
+    currentPrUrl: asPrUrl(handle.prUrl),
+    currentPrHeadSha: handle.headSha,
+    currentPrHeadRef: handle.headRefName,
+    prRegisteredOnBoard: true,
+    prRemediation: {
+      originalSessionId: remediation.originalSessionId,
+      recoverySessionId: remediation.recoverySessionId,
+      reason: remediation.reason,
+      prUrl: asPrUrl(handle.prUrl),
+      headSha: handle.headSha,
+      headRefName: handle.headRefName,
+      startedAt,
+    },
+  };
+}
+
+/**
+ * Paperclip can promote an existing PR to `in_review` while a branch-bound
+ * recovery still owns a pending typed provider form.  That promotion has no
+ * assignee and would otherwise make the executor release the very session
+ * whose form has not been resolved.  Reclaim only this exact, durable shape;
+ * an ordinary review handoff or any non-Jules interaction remains untouched.
+ */
+export function shouldReclaimBranchBoundRecovery(input: {
+  session: JulesAdapterSessionV1;
+  issue: { status?: string | null; assigneeAgentId?: string | null };
+  interactions: readonly { status?: string | null; idempotencyKey?: string | null }[];
+}): boolean {
+  if (input.session.prRemediation?.recoverySessionId !== input.session.julesSessionId ||
+      input.issue.status !== "in_review" || input.issue.assigneeAgentId) return false;
+  const prefix = `jules:agent-adjudication:${input.session.paperclipIssueId}:${input.session.julesSessionId}:`;
+  return input.interactions.some((interaction) =>
+    interaction.status === "pending" && interaction.idempotencyKey?.startsWith(prefix),
+  );
+}
+
+/**
+ * A runtime session envelope is a cache, while a complete branch-bound
+ * remediation handle is a single-flight coordination record. Prefer the
+ * latter when an old retry envelope names another provider session: otherwise
+ * a cancelled owner run can resurrect duplicate work after restart.
+ */
+export function preferBranchBoundRecoveryHandle(
+  session: JulesAdapterSessionV1 | null,
+  handle: JulesSessionHandle | null,
+  config: { repository: string; source: string; baseBranch: string; taskId: PaperclipId },
+  createdAt: string,
+): JulesAdapterSessionV1 | null {
+  const remediation = handle?.remediation;
+  if (!remediation || !handle?.prUrl || !handle.headSha || !handle.headRefName ||
+      (session?.julesSessionId === remediation.recoverySessionId)) {
+    return session;
+  }
+  const recoverySessionId = asJulesSessionId(remediation.recoverySessionId);
+  return {
+    version: 1,
+    paperclipIssueId: config.taskId,
+    promptHash: session?.promptHash ?? "",
+    repository: config.repository,
+    source: config.source,
+    baseBranch: config.baseBranch,
+    phase: "RUNNING",
+    sessionId: recoverySessionId,
+    julesSessionId: recoverySessionId,
+    julesSessionUrl: handle.sessionUrl ?? `https://jules.google.com/session/${recoverySessionId}`,
+    attempt: session?.attempt ?? 1,
+    failedSessions: session?.failedSessions ?? [],
+    createdAt,
+    currentPrUrl: asPrUrl(handle.prUrl),
+    currentPrHeadSha: handle.headSha,
+    currentPrHeadRef: handle.headRefName,
+    prRegisteredOnBoard: true,
+    prRemediation: {
+      originalSessionId: remediation.originalSessionId,
+      recoverySessionId: remediation.recoverySessionId,
+      reason: remediation.reason,
+      prUrl: asPrUrl(handle.prUrl),
+      headSha: handle.headSha,
+      headRefName: handle.headRefName,
+      startedAt: createdAt,
+    },
+  };
+}
+
 export function evaluateSessionStartup(
   rawContext: Record<string, unknown>,
   decodedSession: JulesAdapterSessionV1 | null,
@@ -125,20 +323,8 @@ export function evaluateSessionStartup(
 
   if (session && storedSession &&
       session.paperclipIssueId === storedSession.paperclipIssueId &&
-      session.julesSessionId === storedSession.julesSessionId &&
-      sessionMatchesConfig(storedSession, config)) {
-    session = {
-      ...session,
-      scopeDriftFingerprint: session.scopeDriftFingerprint ?? storedSession.scopeDriftFingerprint,
-      deliveredFeedbackActivityId: session.deliveredFeedbackActivityId ?? storedSession.deliveredFeedbackActivityId,
-      deliveredFeedbackInteractionId: session.deliveredFeedbackInteractionId ?? storedSession.deliveredFeedbackInteractionId,
-      deliveredActivityIds: session.deliveredActivityIds ?? storedSession.deliveredActivityIds,
-      relayedReviewCommentIds: session.relayedReviewCommentIds ?? storedSession.relayedReviewCommentIds,
-      pendingInteraction: session.pendingInteraction ?? storedSession.pendingInteraction,
-      workerFeedbackDeliveryId: session.workerFeedbackDeliveryId ?? storedSession.workerFeedbackDeliveryId,
-      providerContinuation: session.providerContinuation ?? storedSession.providerContinuation,
-      currentPrHeadSha: session.currentPrHeadSha ?? storedSession.currentPrHeadSha,
-    };
+      session.julesSessionId === storedSession.julesSessionId) {
+    session = mergeDurableSessionCheckpoints(session, storedSession);
   }
 
   if (!session && canonicalSessionId) {

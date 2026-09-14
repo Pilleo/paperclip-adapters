@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canPromoteJulesPrToReview, isAuthoritativeJulesMonitor } from "../src/core/jules-monitor-state.js";
+import { classifyJulesPrReviewDisposition, isAuthoritativeJulesMonitor } from "../src/core/jules-monitor-state.js";
 
 describe("Jules monitor authority", () => {
   it("accepts a Jules monitor stored in executionPolicy", () => {
@@ -15,20 +15,24 @@ describe("Jules monitor authority", () => {
     expect(isAuthoritativeJulesMonitor({ monitor: { serviceName: "vibe", externalRef: "session-1" } })).toBe(false);
   });
 
-  it("allows recovery when only the stale executionState projection remains", () => {
-    expect(canPromoteJulesPrToReview({
-      ciGreen: true,
+  it("classifies a clear provider state as eligible for PR review", () => {
+    expect(classifyJulesPrReviewDisposition({
       currentHeadRejected: false,
       executionPolicy: undefined,
-    })).toBe(true);
+    })).toEqual({ kind: "eligible_for_review" });
   });
 
-  it("still blocks a rejected head or an authoritative provider monitor", () => {
-    expect(canPromoteJulesPrToReview({ ciGreen: true, currentHeadRejected: true })).toBe(false);
-    expect(canPromoteJulesPrToReview({
-      ciGreen: true,
+  it("keeps a Jules-owned PR with an authoritative provider monitor", () => {
+    expect(classifyJulesPrReviewDisposition({
       currentHeadRejected: false,
       executionPolicy: { monitor: { serviceName: "jules", externalRef: "session-1" } },
-    })).toBe(false);
+    })).toEqual({ kind: "await_provider" });
+  });
+
+  it("recovers a rejected PR whose provider monitor was lost", () => {
+    expect(classifyJulesPrReviewDisposition({
+      currentHeadRejected: true,
+      executionPolicy: undefined,
+    })).toEqual({ kind: "recover_provider" });
   });
 });

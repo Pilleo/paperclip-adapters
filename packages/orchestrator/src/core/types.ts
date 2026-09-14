@@ -38,6 +38,8 @@ export interface ParsedIssueMetadata {
   readonly identifier?: string | null | undefined;
   readonly issueNumber?: number | null | undefined;
   readonly title: string;
+  /** Original task contract used to ground native reviewer decisions. */
+  readonly description?: string | null | undefined;
   readonly status: IssueState;
   readonly priority: TaskPriority;
   readonly priorityRank: number;
@@ -90,23 +92,15 @@ export interface MultiLaneOptions {
   readonly julesRunningCount?: number | undefined;
   readonly vibeRunningCount?: number | undefined;
   readonly julesCapacity?: number | undefined;
+  /** Fresh provider-session starts allowed in this tick; provider-owned sessions do not consume it. */
+  readonly julesNewSessionBudget?: number | undefined;
   readonly vibeCapacity?: number | undefined;
   readonly maxToSelect?: number | undefined;
   readonly extraLockedFiles?: ReadonlySet<string> | undefined;
   /** Already-approved starts outrank merely pending resource contenders. */
   readonly preferredIssueIds?: ReadonlySet<string> | undefined;
-}
-
-export interface JulesQuotaStatus {
-  readonly activeSessionsCount: number;
-  readonly sessionsLast24hCount: number;
-  readonly maxConcurrent: number;
-  readonly maxDaily: number;
-  readonly availableConcurrentSlots: number;
-  readonly availableDailySlots: number;
-  readonly effectiveAvailableCapacity: number;
-  readonly fetchedLive: boolean;
-  readonly error?: string | undefined;
+  /** Recoverable provider sessions may resume only on the Jules lane. */
+  readonly julesOnlyIssueIds?: ReadonlySet<string> | undefined;
 }
 
 export interface GitHubPullRequest {

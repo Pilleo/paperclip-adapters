@@ -2,7 +2,7 @@
 title: "Planning linter accepts npm workspaces, not only mazewall Gradle modules"
 severity: "HIGH"
 priority: "high"
-status: "open"
+status: "resolved"
 orchestrator_managed: true
 component: "tools"
 target_modules: ["packages/common", "@pilleo/paperclip-adapter-common"]

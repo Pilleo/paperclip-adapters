@@ -29,6 +29,35 @@ export function reconcileProviderState(input: {
   }
 }
 
+/**
+ * A completed Jules session does not necessarily repeat its PR handoff in the
+ * final polling payload. The persisted URL is safe only for a terminal remote
+ * state, where it is the same session's durable handoff identity. Live states
+ * must never reuse it: a resumed provider can be working on a new turn.
+ */
+export function selectTerminalPullRequestUrl<T extends string>(input: {
+  readonly state: JulesSessionState;
+  readonly discovered: T | undefined;
+  readonly persisted: T | undefined;
+}): T | undefined {
+  if (input.discovered) return input.discovered;
+  switch (input.state) {
+    case "COMPLETED":
+    case "FAILED":
+      return input.persisted;
+    case "QUEUED":
+    case "PLANNING":
+    case "IN_PROGRESS":
+    case "AWAITING_USER_FEEDBACK":
+    case "AWAITING_PLAN_APPROVAL":
+    case "CANCELLED":
+    case "UNKNOWN":
+      return undefined;
+    default:
+      return assertNever(input.state);
+  }
+}
+
 function assertNever(value: never): never {
   throw new Error(`Unhandled Jules provider state: ${String(value)}`);
 }

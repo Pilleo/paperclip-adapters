@@ -169,23 +169,50 @@ export interface JulesSession {
     rawOutputs?: unknown[] | undefined;
 }
 
-export function extractPullRequestUrl(session: JulesSession, activities?: JulesActivity[]): PrUrl | undefined {
-    if (session.rawOutputs && Array.isArray(session.rawOutputs)) {
-        for (const output of session.rawOutputs) {
-            const parsed = PullRequestOutputSchema.safeParse(output);
-            if (parsed.success && parsed.data.pullRequest.url) {
-                return asPrUrl(parsed.data.pullRequest.url);
-            }
-            const str = JSON.stringify(output);
-            const m = str.match(/https:\/\/github\.com\/[^"'\s]+\/pull\/\d+/);
-            if (m) return asPrUrl(m[0]);
+function isPullRequestForRepository(prUrl: string, repository: string | undefined): boolean {
+    if (!repository) return true;
+    const expectedRepository = repository.trim().match(/^([^/\s]+)\/([^/\s]+)$/);
+    // Older adapter configurations could carry a local shorthand such as
+    // "test" instead of an owner/repository identity. They cannot safely
+    // authorize an embedded-text fallback, but must retain support for the
+    // provider's structured pullRequest output.
+    if (!expectedRepository) return true;
+    try {
+        const url = new URL(prUrl);
+        const [owner, repo, marker, pullNumber] = url.pathname.split('/').filter(Boolean);
+        return url.hostname.toLowerCase() === 'github.com' &&
+            marker === 'pull' && /^\d+$/.test(pullNumber ?? '') &&
+            `${owner}/${repo}`.toLowerCase() === `${expectedRepository[1]}/${expectedRepository[2]}`.toLowerCase();
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * A Jules activity may include arbitrary command output and source diffs. A
+ * PR-shaped URL in that text is not a provider handoff unless it is bound to
+ * this task's configured repository. This prevents test fixtures or quoted
+ * documentation from replacing the task's real PR identity.
+ */
+export function extractPullRequestUrl(session: JulesSession, repository?: string): PrUrl | undefined {
+    if (!session.rawOutputs || !Array.isArray(session.rawOutputs)) return undefined;
+
+    // The structured provider handoff is authoritative. A changeset can quote
+    // a valid URL for this repository (for example, a test fixture) before
+    // the terminal `pullRequest` output is emitted, so do not let text search
+    // preempt a later typed handoff.
+    for (const output of session.rawOutputs) {
+        const parsed = PullRequestOutputSchema.safeParse(output);
+        if (parsed.success && parsed.data.pullRequest.url) {
+            return asPrUrl(parsed.data.pullRequest.url);
         }
     }
-    if (activities && Array.isArray(activities)) {
-        for (const act of activities) {
-            const str = JSON.stringify(act);
-            const m = str.match(/https:\/\/github\.com\/[^"'\s]+\/pull\/\d+/);
-            if (m) return asPrUrl(m[0]);
+
+    if (!repository?.trim().match(/^([^/\s]+)\/([^/\s]+)$/)) return undefined;
+    for (const output of session.rawOutputs) {
+        const text = JSON.stringify(output);
+        for (const match of text.matchAll(/https:\/\/github\.com\/[^/"'\s]+\/[^/"'\s]+\/pull\/\d+/g)) {
+            if (isPullRequestForRepository(match[0], repository)) return asPrUrl(match[0]);
         }
     }
     return undefined;

@@ -21,6 +21,8 @@ export interface ReviewInteractionIdentity {
   readonly stage: PrReviewStage;
   readonly reviewerAgentId?: string | undefined;
   readonly attempt?: number | undefined;
+  /** Immutable task contract supplied to the reviewer; never infer it from the PR alone. */
+  readonly reviewContractMarkdown?: string | undefined;
 }
 
 export interface NativeReviewInteraction {
@@ -31,6 +33,18 @@ export interface NativeReviewInteraction {
   readonly continuationPolicy?: string | undefined;
   readonly addresseeAgentId?: string | null | undefined;
   readonly result?: unknown;
+}
+
+/** A compact deterministic discriminator for a task contract revision. */
+function reviewContractFingerprint(markdown: string | undefined): string | undefined {
+  const normalized = markdown?.trim();
+  if (!normalized) return undefined;
+  let hash = 2166136261;
+  for (let index = 0; index < normalized.length; index += 1) {
+    hash ^= normalized.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
 }
 
 /**
@@ -145,12 +159,14 @@ export function reviewInteractionIdempotencyKey(identity: ReviewInteractionIdent
   // after a card expires or is cancelled. This generation carries the
   // non-superseding review-card contract, plus the explicit structured
   // response instructions needed by ACP agents.
-  const base = `pr-review:${NATIVE_REVIEW_CARD_PROTOCOL_VERSION}:${identity.issueId}:${identity.prUrl}:${identity.headSha}:${identity.stage}`;
+  const contractFingerprint = reviewContractFingerprint(identity.reviewContractMarkdown);
+  const base = `pr-review:${NATIVE_REVIEW_CARD_PROTOCOL_VERSION}:${identity.issueId}:${identity.prUrl}:${identity.headSha}:${identity.stage}${contractFingerprint ? `:contract:${contractFingerprint}` : ""}`;
   return identity.attempt && identity.attempt > 0 ? `${base}:attempt:${identity.attempt}` : base;
 }
 
 export function reviewInteractionKeyPrefix(identity: ReviewInteractionIdentity): string {
-  return `pr-review:${NATIVE_REVIEW_CARD_PROTOCOL_VERSION}:${identity.issueId}:${identity.prUrl}:${identity.headSha}:${identity.stage}`;
+  const contractFingerprint = reviewContractFingerprint(identity.reviewContractMarkdown);
+  return `pr-review:${NATIVE_REVIEW_CARD_PROTOCOL_VERSION}:${identity.issueId}:${identity.prUrl}:${identity.headSha}:${identity.stage}${contractFingerprint ? `:contract:${contractFingerprint}` : ""}`;
 }
 
 /**
@@ -159,7 +175,7 @@ export function reviewInteractionKeyPrefix(identity: ReviewInteractionIdentity):
  * exactly-once fence; suffix checks such as `endsWith(":terra")` lose them.
  */
 export function isCanonicalReviewCardKey(key: string | undefined): boolean {
-  return Boolean(key && /^pr-review:v13:.*:(?:luna|terra)(?::attempt:[1-9]\d*)?$/.test(key));
+  return Boolean(key && /^pr-review:v13:.*:(?:luna|terra)(?::contract:[a-z0-9]+)?(?::attempt:[1-9]\d*)?$/.test(key));
 }
 
 /** Select the pending attempt, or the next unused attempt after cancellations. */
@@ -247,10 +263,15 @@ export function hasNativeRejectionForHead(
   interactions: readonly NativeReviewInteraction[],
   issueId: string,
   headSha: string,
+  reviewContractMarkdown?: string,
 ): boolean {
+  const contractFingerprint = reviewContractFingerprint(reviewContractMarkdown);
   return interactions.some((interaction) => {
     const key = interaction.idempotencyKey || "";
-    if (!new RegExp(`^pr-review:v\\d+:${issueId}:.*:${headSha}:(?:luna|terra)(?::attempt:[1-9]\\d*)?$`, "i").test(key)) return false;
+    if (!new RegExp(`^pr-review:v\\d+:${issueId}:.*:${headSha}:(?:luna|terra)(?::contract:[a-z0-9]+)?(?::attempt:[1-9]\\d*)?$`, "i").test(key)) return false;
+    // A changed task contract is a new review turn even at the same immutable
+    // PR head. Legacy cards have no contract discriminator and must not veto it.
+    if (contractFingerprint && !key.includes(`:contract:${contractFingerprint}`)) return false;
     return reviewVerdictFromInteraction(interaction, interaction.id)?.decision === "needs_work";
   });
 }
@@ -289,6 +310,7 @@ export function shouldWakeAssignedReview(input: {
 }
 
 export function buildReviewInteractionRequest(identity: ReviewInteractionIdentity): ReviewInteractionRequest {
+  const taskContract = identity.reviewContractMarkdown?.trim();
   return {
     kind: "request_item_verdicts",
     idempotencyKey: reviewInteractionIdempotencyKey(identity),
@@ -299,7 +321,7 @@ export function buildReviewInteractionRequest(identity: ReviewInteractionIdentit
     payload: {
       version: 1,
       prompt: "Review this pull request and choose a disposition.",
-      detailsMarkdown: `**PR:** ${identity.prUrl}\n\nChoose approve only when the PR is ready. Reject requires a concrete reason.\n\nThis is a native Paperclip review card. The structured interaction verdict is the only review decision. Submit it with POST \`$PAPERCLIP_API_BASE/api/issues/$PAPERCLIP_TASK_ID/interactions/<INTERACTION_ID>/verdicts\` using JSON \`{\"verdicts\":[{\"id\":\"pull_request\",\"verdict\":\"approve\"}]}\` (use \`verdict: \"reject\"\` plus \`reason\` for requested changes). Replace \`<INTERACTION_ID>\` with the actual interaction id from the wake message. Do not PATCH issue status or assignment and do not post a plain issue comment as a fallback. The orchestrator owns the state transition after it observes the verdict. If a write returns HTTP 409, re-fetch the issue and interaction; do not retry the locked mutation or emit a prose substitute.`,
+      detailsMarkdown: `**PR:** ${identity.prUrl}${taskContract ? `\n\n## Task contract\n\n${taskContract}` : ""}\n\nChoose approve only when the PR satisfies the declared task contract. Reject requires a concrete reason tied to that contract.\n\nThis is a native Paperclip review card. The structured interaction verdict is the only review decision. Submit it with POST \`$PAPERCLIP_API_BASE/api/issues/$PAPERCLIP_TASK_ID/interactions/<INTERACTION_ID>/verdicts\` using JSON \`{\"verdicts\":[{\"id\":\"pull_request\",\"verdict\":\"approve\"}]}\` (use \`verdict: \"reject\"\` plus \`reason\` for requested changes). Replace \`<INTERACTION_ID>\` with the actual interaction id from the wake message. Do not PATCH issue status or assignment and do not post a plain issue comment as a fallback. The orchestrator owns the state transition after it observes the verdict. If a write returns HTTP 409, re-fetch the issue and interaction; do not retry the locked mutation or emit a prose substitute.`,
       items: [{ id: "pull_request", label: "Pull request", description: identity.prUrl }],
       verdicts: ["approve", "reject"],
       requireReasonOn: ["reject"],

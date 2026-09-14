@@ -45,7 +45,7 @@ Runs **Google Antigravity** pair-programming agent sessions via the Agent Client
 | **Model** | Select Gemini model (\`gemini-pro-agent\`, \`gemini-3-flash-agent\`, \`gemini-3.5-flash-low\`, etc.) | \`gemini-pro-agent\` |
 | **Server Path** | Path to the \`agy\` or \`antigravity\` binary | \`~/.local/bin/agy\` |
 | **Permission Mode** | Tool execution policy (\`approve-all\`, \`prompt-on-write\`, \`read-only\`) | \`approve-all\` |
-| **UID / Debug** | Optional user ID isolation and ACP debug trace flags | \`--uid=\` |
+| **ACP launch flags** | The installed AGY ACP CLI is launched without legacy UID/debug flags | none |
 `;
 
 const rawAcpExecutor = createAcpxEngineExecutor({ adapterType: "antigravity" });
@@ -69,9 +69,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     rawServer.includes("/") || rawServer.startsWith(".")
       ? path.resolve(rawServer)
       : rawServer;
-  const debugArg = config.debug ? " --debug" : "";
-  const uidArg = config.uid !== undefined && config.uid !== null ? ` --uid=${config.uid}` : " --uid=";
-  const agentCommand = `${serverPath}${uidArg}${debugArg}`;
+  // Current AGY releases reject the historic `--uid` and `--debug` flags
+  // before ACP initialization. Keep accepting those legacy config fields for
+  // persisted agent compatibility, but never forward them to the executable.
+  const agentCommand = serverPath;
   const normalizedModel = normalizeAntigravityModel(config.model);
 
   const acpConfig: Record<string, unknown> = {

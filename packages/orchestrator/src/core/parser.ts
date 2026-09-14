@@ -221,6 +221,7 @@ export function extractIssueMetadata(issue: {
     identifier: identifier ?? null,
     issueNumber: issue.issueNumber ?? null,
     title: issue.title,
+    description: issue.description ?? null,
     status: normalizeIssueStatus(issue.status),
     priority,
     priorityRank: rank,

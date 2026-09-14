@@ -3,6 +3,7 @@ import { JulesSessionId, PaperclipId, JulesActivityId, PrUrl, asJulesSessionId, 
 import { AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { MutationCheckpointSchema, MutationCheckpoint } from "./mutation-checkpoint.js";
 import type { ProviderContinuation } from "./provider-continuation.js";
+import { PlanRevisionRequestSchema, type PlanRevisionRequest } from "./plan-revision-request.js";
 
 export const JULES_SESSION_STATES = [
   "QUEUED",
@@ -75,6 +76,28 @@ const LegacyAgentAdjudicationSchema = z.object({
   createdAt: z.string(),
 });
 
+/** Minimal, typed provider evidence retained while a terminal activity scan resumes. */
+export const TerminalActivityEvidenceSchema = z.object({
+  id: z.string().min(1),
+  createTime: z.string().optional(),
+  agentMessaged: z.object({ agentMessage: z.string().optional() }).optional(),
+  sessionCompleted: z.unknown().optional(),
+  planGenerated: z.unknown().optional(),
+});
+
+export const TerminalActivityScanSchema = z.object({
+  sessionId: z.string().min(1),
+  nextPageToken: z.string().min(1).optional(),
+  completion: TerminalActivityEvidenceSchema.optional(),
+  latestAgentMessage: TerminalActivityEvidenceSchema.optional(),
+  latestPlan: TerminalActivityEvidenceSchema.optional(),
+  postCompletionQuestion: TerminalActivityEvidenceSchema.optional(),
+  complete: z.boolean(),
+});
+
+export type TerminalActivityEvidence = z.infer<typeof TerminalActivityEvidenceSchema>;
+export type TerminalActivityScan = z.infer<typeof TerminalActivityScanSchema>;
+
 export type NativeAgentAdjudication = z.infer<typeof NativeAgentAdjudicationSchema>;
 export type LegacyAgentAdjudication = z.infer<typeof LegacyAgentAdjudicationSchema>;
 
@@ -127,6 +150,7 @@ export const PendingInteractionSchema = z.union([
     planDocumentId: z.string().min(1),
     reviewerAgentId: z.string().min(1),
     stage: z.enum(["luna", "terra"]),
+    reviewerChildIssueId: z.string().min(1).optional(),
     createdAt: z.string(),
   }),
   z.object({
@@ -172,6 +196,22 @@ export const JulesAdapterSessionV1Schema = z.object({
   currentPrUrl: z.string().optional(),
   /** Immutable GitHub head observed when Jules handed this PR to review. */
   currentPrHeadSha: z.string().min(1).optional(),
+  /** Immutable GitHub branch that owns the registered PR head. */
+  currentPrHeadRef: z.string().min(1).optional(),
+  /**
+   * One bounded remediation session for a failed provider that has already
+   * delivered a PR. The original PR remains the sole work product.
+   */
+  prRemediation: z.object({
+    originalSessionId: z.string().min(1),
+    prUrl: z.string().url(),
+    headSha: z.string().min(1),
+    headRefName: z.string().min(1),
+    /** Why the immutable PR branch needs a fresh provider session. */
+    reason: z.enum(["ci_failure", "terminal_plan_revision_unavailable"]).optional(),
+    recoverySessionId: z.string().min(1).optional(),
+    startedAt: z.string().datetime(),
+  }).optional(),
   prRegisteredOnBoard: z.boolean().optional(),
   pendingInteraction: PendingInteractionSchema.optional(),
   /** Internal plan review temporarily suspended while Jules asks a question. */
@@ -184,13 +224,11 @@ export const JulesAdapterSessionV1Schema = z.object({
   /** Exact Jules planGenerated activity approved by the provider. */
   planApprovedActivityId: z.string().min(1).optional(),
   planReviewRevisionId: z.string().optional(),
-  /** Bounded suffix used only when restoring an adapter-withdrawn plan card. */
-  planReviewRecoveryAttempt: z.number().int().min(0).max(3).optional(),
   planReviewOutcome: z.enum(["approved", "revision_requested", "human_escalation", "superseded_terminal", "superseded_provider_question", "superseded_pr_rejection"]).optional(),
+  /** Durable outbox command for a terminal native plan-review card. */
+  pendingPlanRevisionRequest: PlanRevisionRequestSchema.optional(),
   /** Exact plan activity withdrawn because a newer provider question took priority. */
   supersededPlanActivityId: z.string().min(1).optional(),
-  /** Typed plan fingerprint suppressed after a reviewer rejection. */
-  supersededPlanFingerprint: z.string().min(1).optional(),
   /** Provider question retained across the preemption heartbeat handoff. */
   unresolvedProviderQuestionActivityId: z.string().min(1).optional(),
   feedbackInteractionAttempt: z.number().int().min(0).optional(),
@@ -203,10 +241,19 @@ export const JulesAdapterSessionV1Schema = z.object({
   deliveredFeedbackInteractionId: z.string().optional(),
   /** Jules activity ID whose reply was sent; prevents stale remote state reopening it. */
   deliveredFeedbackActivityId: z.string().optional(),
+  /**
+   * A resolved Paperclip answer that arrived after the provider session became
+   * terminal. Jules accepts messages only for active sessions, so this is an
+   * explicit non-delivery checkpoint rather than a false delivery record.
+   */
+  terminalFeedbackActivityId: z.string().optional(),
+  terminalFeedbackInteractionId: z.string().optional(),
   deliveredActivityIds: z.array(z.string().min(1)).max(200).optional(),
   relayedReviewCommentIds: z.array(z.string()).optional(),
   /** Stable key for the last PR scope-drift notification sent to Jules. */
   scopeDriftFingerprint: z.string().optional(),
+  /** Immutable PR head for which failing CI was already relayed to Jules. */
+  ciFailureFingerprint: z.string().optional(),
   /** Last native reviewer rejection delivered to the Jules provider. */
   workerFeedbackDeliveryId: z.string().optional(),
   providerContinuation: z.discriminatedUnion("state", [
@@ -221,11 +268,20 @@ export const JulesAdapterSessionV1Schema = z.object({
       sentAt: z.string().datetime(),
       acknowledgedActivityId: z.string().min(1),
     }),
+    z.object({
+      deliveryId: z.string().min(1),
+      state: z.literal("terminal_revision_reminder_sent"),
+      sentAt: z.string().datetime(),
+      acknowledgedActivityId: z.string().min(1),
+      remindedAt: z.string().datetime(),
+    }),
   ]).optional(),
   activityCheckpoint: z.object({
     createTime: z.string().datetime(),
     id: z.string().min(1),
   }).optional(),
+  /** Bounded oldest-first scan used only to recover terminal provider questions. */
+  terminalActivityScan: TerminalActivityScanSchema.optional(),
   lastActivityId: z.string().optional(),
   lastWatchdogNudgeAt: z.string().optional(),
   watchdogNudgeCount: z.number().int().min(0).optional(),
@@ -290,6 +346,19 @@ export interface JulesAdapterSessionV1 {
   }>;
   currentPrUrl?: PrUrl | undefined;
   currentPrHeadSha?: string | undefined;
+  /** Branch of currentPrUrl; remediation must start here, never at baseBranch. */
+  currentPrHeadRef?: string | undefined;
+  prRemediation?: {
+    originalSessionId: string;
+    prUrl: PrUrl;
+    headSha: string;
+    headRefName: string;
+    reason?: "ci_failure" | "terminal_plan_revision_unavailable" | undefined;
+    recoverySessionId?: string | undefined;
+    startedAt: string;
+  } | undefined;
+  /** Immutable PR head for which failing CI was already relayed to Jules. */
+  ciFailureFingerprint?: string | undefined;
   prRegisteredOnBoard?: boolean | undefined;
   /** Monotonic key suffix used when a feedback card must be re-opened. */
   feedbackInteractionAttempt?: number | undefined;
@@ -298,14 +367,15 @@ export interface JulesAdapterSessionV1 {
   missingParentBridgeRepairAttempt?: number | undefined;
   deliveredFeedbackInteractionId?: string | undefined;
   deliveredFeedbackActivityId?: string | undefined;
+  terminalFeedbackActivityId?: string | undefined;
+  terminalFeedbackInteractionId?: string | undefined;
   planApprovedAt?: string;
   /** Exact Jules planGenerated activity approved by the provider. */
   planApprovedActivityId?: string | undefined;
   planReviewRevisionId?: string | undefined;
-  planReviewRecoveryAttempt?: number | undefined;
   planReviewOutcome?: "approved" | "revision_requested" | "human_escalation" | "superseded_terminal" | "superseded_provider_question" | "superseded_pr_rejection" | undefined;
+  pendingPlanRevisionRequest?: PlanRevisionRequest | undefined;
   supersededPlanActivityId?: string | undefined;
-  supersededPlanFingerprint?: string | undefined;
   unresolvedProviderQuestionActivityId?: string | undefined;
   standingChannelId?: string | undefined;
   relayNextAnswerToJules?: boolean | undefined;
@@ -381,6 +451,8 @@ export interface JulesAdapterSessionV1 {
         planDocumentId: string;
         reviewerAgentId: string;
         stage: "luna" | "terra";
+        /** Reviewer-owned child that hosts the executable typed verdict form. */
+        reviewerChildIssueId?: string | undefined;
         createdAt: string;
       }
     | undefined;
@@ -407,6 +479,7 @@ export interface JulesAdapterSessionV1 {
   providerContinuation?: ProviderContinuation | undefined;
   /** High-water mark for the normalized Jules activity stream. */
   activityCheckpoint?: { createTime: string; id: string } | undefined;
+  terminalActivityScan?: TerminalActivityScan | undefined;
   lastActivityId?: string | undefined;
   lastWatchdogNudgeAt?: string | undefined;
   watchdogNudgeCount?: number | undefined;

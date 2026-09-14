@@ -177,7 +177,48 @@ target_files: ["enforcer/src/main/kotlin/io/mazewall/BpfFilter.kt"]
   });
 });
 
-describe("Multi-Lane Concurrency & Jules Quota Selection", () => {
+describe("Multi-Lane Admission & Jules Provider Queue Selection", () => {
+  it("uses fresh-session admission budget even when provider sessions are already active", () => {
+    const tasks = ["one", "two"].map((id) => extractIssueMetadata({
+      id,
+      title: `Queued provider work ${id}`,
+      status: "todo",
+      description: `---\npriority: high\ntarget_files: [\"${id}.ts\"]\n---`,
+    }));
+
+    const selections = selectNextTasksMultiLane(tasks, calculateConflictMatrix(tasks), {
+      julesAgentId: "jules",
+      julesCapacity: 0,
+      julesRunningCount: 99,
+      julesNewSessionBudget: 2,
+      maxToSelect: 2,
+    });
+
+    expect(selections.map((selection) => selection.issue.id)).toEqual(["one", "two"]);
+  });
+
+  it("never reroutes a recoverable Jules session to Vibe when Jules is full", () => {
+    const task = extractIssueMetadata({
+      id: "recoverable-jules-session",
+      title: "Resume Jules canary",
+      status: "todo",
+      description: "---\npriority: high\ntarget_files:\n  - packages/orchestrator/scripts/e2e-jules-recovery.ts\n---",
+    });
+
+    const selections = selectNextTasksMultiLane([task], calculateConflictMatrix([task]), {
+      julesAgentId: "jules",
+      vibeAgentId: "vibe",
+      julesCapacity: 1,
+      julesRunningCount: 1,
+      vibeCapacity: 1,
+      vibeRunningCount: 0,
+      maxToSelect: 1,
+      julesOnlyIssueIds: new Set([task.id]),
+    });
+
+    expect(selections).toEqual([]);
+  });
+
   it("dispatches up to Jules capacity across non-colliding tasks", () => {
     const task1 = extractIssueMetadata({
       id: "task-1",

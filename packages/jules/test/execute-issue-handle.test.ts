@@ -2,7 +2,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { execute } from "../src/server/execute";
 import { JulesClient } from "../src/server/jules-client";
-import { readJulesSessionHandle } from "../src/server/paperclip-client";
+import { readJulesSessionHandle, readJulesSessionHandleState } from "../src/server/paperclip-client";
+import { sessionCodec } from "../src/server/session";
 import { loadStoredSession } from "../src/server/session-store";
 
 vi.mock("../src/server/jules-client", async (importOriginal) => {
@@ -25,6 +26,7 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
     listIssueComments: vi.fn().mockResolvedValue([]),
     getPaperclipInteraction: vi.fn(),
     readJulesSessionHandle: vi.fn(),
+    readJulesSessionHandleState: vi.fn(),
     scheduleJulesSessionMonitor: vi.fn().mockResolvedValue(undefined),
     upsertJulesSessionHandle: vi.fn().mockResolvedValue(undefined),
   };
@@ -105,5 +107,96 @@ describe("Paperclip issue session handle restore", () => {
     expect(result.clearSession).toBe(false);
     expect(result.sessionDisplayId).toBe("2024763132299585220");
     expect(result.summary).toBeUndefined();
+  });
+
+  it("restores the existing branch-bound remediation instead of scheduling a second provider session", async () => {
+    vi.mocked(loadStoredSession).mockResolvedValue(null);
+    vi.mocked(readJulesSessionHandle).mockResolvedValue("recovery-42");
+    vi.mocked(readJulesSessionHandleState).mockResolvedValue({
+      sessionId: "recovery-42",
+      prUrl: "https://github.com/Pilleo/paperclip-adapters/pull/11",
+      headSha: "ded4b31084904b1302fd74bd2ef70818164a3c8b",
+      headRefName: "jules-42-fix-ci",
+      remediation: {
+        originalSessionId: "terminal-41",
+        recoverySessionId: "recovery-42",
+        reason: "ci_failure",
+      },
+    });
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({
+      id: "recovery-42",
+      state: "IN_PROGRESS",
+    } as never);
+
+    const result = await execute({
+      agent: {
+        id: "jules-1",
+        companyId: "c-1",
+        name: "Jules",
+        adapterType: "jules",
+        adapterConfig: { repository: "owner/repo", source: "sources/github/owner/repo", baseBranch: "main" },
+      },
+      config: { env: { JULES_API_KEY: "test-key" } },
+      context: { task: { id: "issue-822", title: "Recover immutable PR" } },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null },
+      runId: "run-remediation-handle",
+      authToken: "token",
+      onLog: vi.fn(),
+    } as AdapterExecutionContext);
+
+    expect(JulesClient.prototype.createSession).not.toHaveBeenCalled();
+    expect(sessionCodec.decode(result.sessionParams!)?.prRemediation).toMatchObject({
+      originalSessionId: "terminal-41",
+      recoverySessionId: "recovery-42",
+      reason: "ci_failure",
+    });
+  });
+
+  it("prefers the durable branch-bound recovery over a stale runtime retry session", async () => {
+    vi.mocked(loadStoredSession).mockResolvedValue(null);
+    vi.mocked(readJulesSessionHandleState).mockResolvedValue({
+      sessionId: "recovery-42",
+      prUrl: "https://github.com/Pilleo/paperclip-adapters/pull/11",
+      headSha: "ded4b31084904b1302fd74bd2ef70818164a3c8b",
+      headRefName: "jules-42-fix-ci",
+      remediation: {
+        originalSessionId: "terminal-41",
+        recoverySessionId: "recovery-42",
+        reason: "ci_failure",
+      },
+    });
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ id: "recovery-42", state: "IN_PROGRESS" } as never);
+
+    await execute({
+      agent: {
+        id: "jules-1", companyId: "c-1", name: "Jules", adapterType: "jules",
+        adapterConfig: { repository: "owner/repo", source: "sources/github/owner/repo", baseBranch: "main" },
+      },
+      config: { env: { JULES_API_KEY: "test-key" } },
+      context: { task: { id: "issue-823", title: "Reject stale retry session" } },
+      runtime: {
+        sessionId: "stale-generic-retry",
+        sessionParams: sessionCodec.encode({
+          version: 1,
+          paperclipIssueId: "issue-823",
+          promptHash: "stale",
+          repository: "owner/repo",
+          source: "sources/github/owner/repo",
+          baseBranch: "main",
+          phase: "RUNNING",
+          sessionId: "stale-generic-retry",
+          julesSessionId: "stale-generic-retry",
+          attempt: 1,
+          failedSessions: [],
+          createdAt: "2026-09-14T00:00:00.000Z",
+        }),
+      },
+      runId: "run-stale-retry",
+      authToken: "token",
+      onLog: vi.fn(),
+    } as AdapterExecutionContext);
+
+    expect(JulesClient.prototype.getSession).toHaveBeenCalledWith("recovery-42");
+    expect(JulesClient.prototype.createSession).not.toHaveBeenCalled();
   });
 });

@@ -1,7 +1,7 @@
 ---
 title: "Add a clean server-backed Jules recovery canary to CI"
 severity: "HIGH"
-status: "open"
+status: "resolved"
 orchestrator_managed: true
 priority: high
 dependencies:
@@ -21,17 +21,19 @@ open_questions: false
 has_side_effects: true
 
 
-paperclip_issue_id: "fa3232a3-5299-4f05-bba4-73c40133677d"
-paperclip_identifier: "JUL-12"
+paperclip_issue_id: "3df30c8d-e982-4295-b179-0d221d49d71a"
+paperclip_identifier: "MAZ-1457"
 ---
 
 # 🔴 [Severity: HIGH]: Add a clean server-backed Jules recovery canary to CI
 
-## Context
+**Context:**
 
 PR #4 attempted this canary but used an obsolete lifecycle harness and a nonexistent `paperclip-server` npm package. The replacement must test the actual external adapter boundary against a disposable Paperclip instance and must be safe even on a runner with GitHub or Jules credentials.
 
-## Needed:
+**Superseded:** This legacy task and its pending task-start approval are retired in favor of `issue-20260913-160435-801-rebuild-the-server-backed-jules-recovery-canary-fr`, which starts cleanly from current `master` and does not reuse conflicted PR #8.
+
+**Needed:**
 
 1. Add the disposable Paperclip server-backed recovery canary and CI wiring described below.
 2. Run the focused E2E canary plus the required build, typecheck, and package tests.

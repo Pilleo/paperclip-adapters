@@ -115,4 +115,58 @@ Updated source contract.
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("never reclaims an active provider lifecycle during backlog synchronization", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "backlog-sync-"));
+    const backlog = path.join(root, "docs/internals/backlog/testing");
+    fs.mkdirSync(backlog, { recursive: true });
+    const filePath = path.join(backlog, "issue-active-provider.md");
+    fs.writeFileSync(filePath, `---
+id: "issue-active-provider"
+title: "Managed task"
+status: "open"
+priority: high
+orchestrator_managed: true
+paperclip_issue_id: "paperclip-issue"
+paperclip_identifier: "MAZ-999"
+---
+
+Stable source contract.
+`);
+
+    const originalFetch = globalThis.fetch;
+    const patches: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "PATCH") {
+        patches.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+        return new Response("{}", { status: 200 });
+      }
+      expect(url).toBe("http://paperclip.test/api/companies/company-1/issues?limit=2000");
+      return new Response(JSON.stringify([{
+        id: "paperclip-issue",
+        identifier: "MAZ-999",
+        title: "[issue-active-provider] Managed task",
+        description: "Stable source contract.\n",
+        status: "in_progress",
+        assigneeAgentId: "jules-1",
+        projectId: "project-1",
+      }]), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      await syncBacklogMarkdownToPaperclip({
+        workspacePath: root,
+        companyId: "company-1",
+        apiUrl: "http://paperclip.test",
+        projectId: "project-1",
+        orchestratorAgentId: "orchestrator-1",
+      });
+
+      expect(patches).not.toContainEqual({ status: "backlog", assigneeAgentId: "orchestrator-1" });
+    } finally {
+      globalThis.fetch = originalFetch;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

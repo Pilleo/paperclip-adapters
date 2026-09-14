@@ -18,8 +18,8 @@ autonomy: "autonomous"
 open_questions: false
 has_side_effects: true
 
-paperclip_issue_id: "831321df-1c14-4a03-b311-abf552228d62"
-paperclip_identifier: "JUL-11"
+paperclip_issue_id: "14731e72-acfc-4c71-8b40-26740998a9a5"
+paperclip_identifier: "MAZ-1499"
 ---
 
 # 🔴 [Severity: HIGH]: Add negative recovery cases to the Paperclip Jules canary

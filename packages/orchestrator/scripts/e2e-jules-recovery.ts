@@ -1,5 +1,6 @@
 import path from "node:path";
 import { projectRecoveryCanaryState } from "../src/core/recovery-canary-state.js";
+import { isCanonicalReviewCardKey } from "../src/core/review-interaction-state.js";
 
 /**
  * Fast, destructive-by-design E2E canary for the Jules open-PR recovery path.
@@ -77,6 +78,13 @@ function pendingReviewCards(value: Json): Record<string, any>[] {
     interaction && typeof interaction === "object" &&
     interaction.kind === "request_item_verdicts" && interaction.status === "pending",
   ) as Record<string, any>[];
+}
+
+/** Keep the canary aligned with the adapter's immutable v13 card grammar. */
+function isPendingNativeStageCard(card: Record<string, any>, stage: "luna" | "terra"): boolean {
+  const key = String(card.idempotencyKey || "");
+  return isCanonicalReviewCardKey(key) &&
+    new RegExp(`:${stage}(?::contract:[a-z0-9]+)?(?::attempt:[1-9]\\d*)?$`).test(key);
 }
 
 async function submitReviewVerdict(issueId: string, interactionId: string, verdict: "approve" | "reject", reason?: string): Promise<void> {
@@ -168,12 +176,12 @@ async function main(): Promise<void> {
     // identities explicitly so this canary tests review routing, not fleet
     // authorization policy. Disable their scheduled heartbeats; the canary
     // asserts card binding and duplicate suppression before a model is woken.
-    const luna = requireObject(await request(`/api/companies/${companyId}/agents`, "POST", {
+    const requestedLuna = requireObject(await request(`/api/companies/${companyId}/agents`, "POST", {
       name: "[Orchestrated] Luna Fast Reviewer", role: "qa", adapterType: "codex_local",
       reportsTo: orch.id, runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: false } },
       metadata: { managedBy: "paperclip-orchestrator", workerKey: "luna_reviewer" },
     }), "Luna reviewer");
-    const terra = requireObject(await request(`/api/companies/${companyId}/agents`, "POST", {
+    const requestedTerra = requireObject(await request(`/api/companies/${companyId}/agents`, "POST", {
       name: "[Orchestrated] Terra Strong Reviewer", role: "qa", adapterType: "codex_local",
       reportsTo: orch.id, runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: false } },
       metadata: { managedBy: "paperclip-orchestrator", workerKey: "terra_reviewer" },
@@ -183,8 +191,8 @@ async function main(): Promise<void> {
         reconcileFleet: true,
         apiUrl,
         backlogDirectory: ".paperclip-canary-empty",
-        lunaReviewerAgentId: luna.id,
-        terraReviewerAgentId: terra.id,
+        lunaReviewerAgentId: requestedLuna.id,
+        terraReviewerAgentId: requestedTerra.id,
       },
     });
     // Canonicalize the managed fleet before introducing the PR. The bootstrap
@@ -201,6 +209,29 @@ async function main(): Promise<void> {
     const bootstrapRunId = String(bootstrapWake.id || "");
     if (!bootstrapRunId) throw new Error(`Paperclip bootstrap wake did not return a heartbeat run: ${JSON.stringify(bootstrapWake)}`);
     await waitForIssueExecution("", bootstrapRunId, "Fleet bootstrap");
+    // Reconciliation is allowed to replace a stale explicit reviewer when its
+    // native-decision capability cannot be repaired in place. The review
+    // canary must exercise the identities the orchestrator actually resolved,
+    // not the placeholders created before that reconciliation.
+    const fleetAfterBootstrap = await request(`/api/companies/${companyId}/agents`, "GET");
+    const findCanonicalReviewer = (workerKey: "luna_reviewer" | "terra_reviewer") => {
+      const agent = (Array.isArray(fleetAfterBootstrap) ? fleetAfterBootstrap : []).find((candidate) =>
+        candidate && typeof candidate === "object" &&
+        (candidate as Record<string, any>).metadata?.workerKey === workerKey &&
+        (candidate as Record<string, any>).metadata?.structuredDecisionCapability?.decisionKinds?.includes("pull_request_review"),
+      );
+      if (!agent || typeof agent !== "object") {
+        throw new Error(`Fleet bootstrap did not produce canonical ${workerKey}: ${JSON.stringify(fleetAfterBootstrap)}`);
+      }
+      return agent as Record<string, any>;
+    };
+    const luna = findCanonicalReviewer("luna_reviewer");
+    const terra = findCanonicalReviewer("terra_reviewer");
+    for (const reviewer of [luna, terra]) {
+      if (!["idle", "running", "busy"].includes(String(reviewer.status))) {
+        throw new Error(`Canary reviewer is not invokable after fleet bootstrap: ${JSON.stringify(reviewer)}`);
+      }
+    }
     for (const nonExecutableAgent of [jules, luna, terra]) {
       await request(`/api/agents/${nonExecutableAgent.id}`, "PATCH", {
         runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: false, maxConcurrentRuns: 1 } },
@@ -266,13 +297,15 @@ async function main(): Promise<void> {
       .filter((interaction) => interaction && typeof interaction === "object" &&
         interaction.kind === "request_item_verdicts" && interaction.status === "pending");
     const lunaCard = pendingCards.find((interaction) =>
-      String(interaction.idempotencyKey || "").endsWith(":luna") &&
+      isPendingNativeStageCard(interaction, "luna") &&
       interaction.addresseeAgentId === luna.id &&
       interaction.continuationPolicy === "none",
     );
     if (recovered.status !== "in_review" || recovered.assigneeAgentId !== luna.id || pendingCards.length !== 1 || !lunaCard) {
       const canaryAgents = await request(`/api/companies/${companyId}/agents`, "GET");
       const canaryComments = await request(`/api/issues/${issueId}/comments`, "GET");
+      const canaryRun = await request(`/api/heartbeat-runs/${runId}`, "GET");
+      const recoveryActions = await request(`/api/issues/${issueId}/recovery-actions`, "GET");
       throw new Error(`Canary did not enter native review: ${JSON.stringify({
         status: recovered.status,
         assigneeAgentId: recovered.assigneeAgentId,
@@ -288,6 +321,8 @@ async function main(): Promise<void> {
         expectedLunaAgentId: luna.id,
         executionPolicy: recovered.executionPolicy ?? null,
         executionState: recovered.executionState ?? null,
+        orchestratorRun: canaryRun,
+        recoveryActions,
         agents: canaryAgents,
         comments: canaryComments,
       })}`);
@@ -397,7 +432,7 @@ async function main(): Promise<void> {
     // orchestrator sees the answered card and advances exactly one stage.
     const firstCards = pendingReviewCards(idempotentInteractions);
     const answeredLunaCard = firstCards.find((card) =>
-      String(card.idempotencyKey || "").endsWith(":luna") &&
+      isPendingNativeStageCard(card, "luna") &&
       card.addresseeAgentId === luna.id,
     );
     if (!answeredLunaCard) throw new Error("Canary did not create a Luna review card addressed to Luna");
@@ -408,7 +443,7 @@ async function main(): Promise<void> {
     await waitForIssueExecution(issueId, String(lunaWake.id), "Luna verdict");
     const afterLuna = await request(`/api/issues/${issueId}/interactions`, "GET");
     const terraCards = pendingReviewCards(afterLuna).filter((card) =>
-      String(card.idempotencyKey || "").endsWith(":terra") &&
+      isPendingNativeStageCard(card, "terra") &&
       card.addresseeAgentId === terra.id &&
       card.continuationPolicy === "none",
     );

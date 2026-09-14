@@ -21,15 +21,18 @@ describe("native review recovery", () => {
     });
   });
 
-  it("assigns the addressed reviewer before waking a card-bound recovery", async () => {
-    const calls: string[] = [];
-    const patchIssue = vi.fn(async () => { calls.push("patch"); return { ok: true, status: 200, text: "{}" }; });
-    const wakeup = vi.fn(async () => { calls.push("wake"); return { ok: true, status: 202, text: "{}" }; });
+  it("fails closed when ownership restoration would queue an unbound reviewer run", async () => {
+    const patchIssue = vi.fn(async () => ({ ok: true, status: 200, text: "{}" }));
+    const wakeup = vi.fn(async () => ({ ok: true, status: 202, text: "{}" }));
 
-    await expect(prepareAndWakeNativeReview({ paperclip: { patchIssue, wakeup } as never, ...base })).resolves.toMatchObject({ ok: true });
+    await expect(prepareAndWakeNativeReview({ paperclip: { patchIssue, wakeup } as never, ...base })).resolves.toMatchObject({
+      ok: false,
+      status: 409,
+      code: "host_card_requeue_required",
+    });
 
-    expect(calls).toEqual(["patch", "wake"]);
-    expect(patchIssue).toHaveBeenCalledWith("issue-1", { status: "in_review", assigneeAgentId: "luna-1" });
+    expect(patchIssue).not.toHaveBeenCalled();
+    expect(wakeup).not.toHaveBeenCalled();
   });
 
   it.each([

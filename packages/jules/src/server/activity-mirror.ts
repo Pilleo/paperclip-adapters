@@ -1,10 +1,60 @@
 import { JulesActivity, JulesClient } from "./jules-client.js";
-import { JulesAdapterSessionV1 } from "./session.js";
+import type { JulesAdapterSessionV1, TerminalActivityEvidence, TerminalActivityScan } from "./session.js";
 import { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { formatActivityForLog, activityComment, MAX_COMMENT_LENGTH } from "./activity-formatter.js";
 import { normalizeActivities } from "./activity-checkpoint.js";
 import { advanceActivityCursor, selectUndeliveredActivities } from "./activity-reconciliation.js";
 import { addJulesActivityComment } from "./paperclip-client.js";
+
+function terminalEvidence(activity: JulesActivity): TerminalActivityEvidence {
+  return {
+    id: activity.id,
+    ...(activity.createTime ? { createTime: activity.createTime } : {}),
+    ...(activity.agentMessaged ? { agentMessaged: { agentMessage: activity.agentMessaged.agentMessage } } : {}),
+    ...(activity.sessionCompleted !== undefined ? { sessionCompleted: activity.sessionCompleted } : {}),
+    ...(activity.planGenerated !== undefined ? { planGenerated: activity.planGenerated } : {}),
+  };
+}
+
+/** Convert persisted terminal evidence back into the provider shape used by question routing. */
+export function terminalEvidenceActivity(evidence: TerminalActivityEvidence): JulesActivity {
+  return evidence as JulesActivity;
+}
+
+/** Advance the oldest-first terminal scan without retaining provider history. */
+export function reduceTerminalActivityScan(input: {
+  readonly sessionId: string;
+  readonly prior?: TerminalActivityScan;
+  readonly activities: readonly JulesActivity[];
+  readonly nextPageToken?: string;
+}): TerminalActivityScan {
+  const prior = input.prior?.sessionId === input.sessionId ? input.prior : undefined;
+  let completion = prior?.completion;
+  let latestAgentMessage = prior?.latestAgentMessage;
+  let latestPlan = prior?.latestPlan;
+  let postCompletionQuestion = prior?.postCompletionQuestion;
+  for (const activity of normalizeActivities([...input.activities])) {
+    if (activity.sessionCompleted !== undefined) {
+      completion = terminalEvidence(activity);
+      // Only a message after the latest completion is a terminal question.
+      postCompletionQuestion = undefined;
+    }
+    if (activity.agentMessaged?.agentMessage?.trim()) {
+      latestAgentMessage = terminalEvidence(activity);
+      if (completion) postCompletionQuestion = latestAgentMessage;
+    }
+    if (activity.planGenerated !== undefined) latestPlan = terminalEvidence(activity);
+  }
+  return {
+    sessionId: input.sessionId,
+    ...(input.nextPageToken ? { nextPageToken: input.nextPageToken } : {}),
+    ...(completion ? { completion } : {}),
+    ...(latestAgentMessage ? { latestAgentMessage } : {}),
+    ...(latestPlan ? { latestPlan } : {}),
+    ...(postCompletionQuestion ? { postCompletionQuestion } : {}),
+    complete: !input.nextPageToken,
+  };
+}
 
 /**
  * Jules activity pages are newest-first but provider questions can be older
@@ -20,24 +70,17 @@ export const MAX_ACTIVITY_PAGES = 20;
 const ACTIVITY_PAGE_SIZE = 100;
 
 /**
- * A stored adjudication owns a specific provider question already. During that
- * wait, only a recent page is needed for liveness/progress; replaying the
- * complete historical transcript burns the heartbeat budget and can prevent
- * the scheduled poll from completing. Deep scans remain necessary only when
- * discovering an unowned provider question.
+ * Every recovery poll scans the bounded provider history, including while a
+ * stored adjudication exists. Jules pagination is not a reliable "recent
+ * first" contract in practice: a one-page scan can see an old answered bridge
+ * while missing a later agent question. Trusting that stale bridge can relay
+ * its answer into the cloud session and lose the real question. The 20-page
+ * cap remains the cost and timeout boundary; correctness requires the full
+ * bounded scan before any stored bridge is allowed to send feedback.
  */
 export function activityScanPageLimit(session: JulesAdapterSessionV1): number {
-  switch (session.pendingInteraction?.type) {
-    case "agent_adjudication":
-      return 1;
-    case "user_feedback":
-    case "plan_approval":
-    case "plan_agent_review":
-    case "plan_native_review":
-    case "completion_confirmation":
-    case undefined:
-      return MAX_ACTIVITY_PAGES;
-  }
+  void session;
+  return MAX_ACTIVITY_PAGES;
 }
 
 /**
@@ -94,9 +137,22 @@ export async function mirrorNewActivities(
   maxPages = MAX_ACTIVITY_PAGES,
 ): Promise<JulesActivity[]> {
   const activities = await listAllActivities(client, session.julesSessionId!, maxPages);
+  return mirrorActivities(activities, session, taskId, authToken, runId, onLog);
+}
+
+/** Mirror an already-fetched provider snapshot without issuing another provider request. */
+export async function mirrorActivities(
+  activities: readonly JulesActivity[],
+  session: JulesAdapterSessionV1,
+  taskId: string,
+  authToken: string | undefined,
+  runId: string | undefined,
+  onLog: AdapterExecutionContext["onLog"] | undefined,
+): Promise<JulesActivity[]> {
+  const normalizedActivities = normalizeActivities([...activities]);
   const delivered = new Set(session.deliveredActivityIds ?? []);
   const deliveredThisRun: JulesActivity[] = [];
-  for (const activity of selectUndeliveredActivities(activities, session.activityCheckpoint, [...delivered])) {
+  for (const activity of selectUndeliveredActivities(normalizedActivities, session.activityCheckpoint, [...delivered])) {
     // `sendMessage` is reflected by Jules as a userMessaged activity. It is
     // our own outbound command, not provider progress and must not be copied
     // back into the Paperclip issue on the next poll. Checkpoint it so old
@@ -138,5 +194,5 @@ export async function mirrorNewActivities(
   session.activityCheckpoint = advanceActivityCursor(session.activityCheckpoint, deliveredThisRun);
   const deliveredIds = Array.from(delivered);
   session.deliveredActivityIds = deliveredIds.slice(Math.max(0, deliveredIds.length - 200));
-  return activities;
+  return normalizedActivities;
 }

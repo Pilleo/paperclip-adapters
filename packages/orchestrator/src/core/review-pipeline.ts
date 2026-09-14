@@ -247,13 +247,20 @@ export function evaluateReviewPipelineProgress(
     };
   }
 
+  // A review contract is part of the immutable review epoch. Card creation
+  // already fingerprints it, so every reader must reconstruct the same
+  // identity; otherwise an answered contract-scoped verdict is invisible and
+  // a heartbeat allocates another reviewer attempt for the same PR revision.
+  const identityFor = (stage: PrReviewStage) => ({
+    issueId: issue.id,
+    prUrl: prUrl || `pr-${prNumber || "unknown"}`,
+    headSha: reviewHeadSha || "unknown",
+    stage,
+    reviewContractMarkdown: issue.description || undefined,
+  }) as const;
+
   const verdictFor = (stage: PrReviewStage) => {
-    const identity = {
-      issueId: issue.id,
-      prUrl: prUrl || `pr-${prNumber || "unknown"}`,
-      headSha: reviewHeadSha || "unknown",
-      stage,
-    } as const;
+    const identity = identityFor(stage);
     const exactKeys = reviewInteractionIdempotencyKeys(identity);
     // Paperclip/GitHub integrations have historically returned the same PR
     // as both its web URL and API URL. The immutable identity is the issue,
@@ -286,15 +293,11 @@ export function evaluateReviewPipelineProgress(
   // usable verdict. A missing card is the sole repair case: the caller may
   // create one card for the already-active stage, after which this guard holds.
   const activeStageHasCard = (stage: PrReviewStage): boolean => {
-    const expectedKey = reviewInteractionIdempotencyKey({
-      issueId: issue.id,
-      prUrl: prUrl || `pr-${prNumber || "unknown"}`,
-      headSha: reviewHeadSha || "unknown",
-      stage,
-    });
+    const identity = identityFor(stage);
+    const expectedKey = reviewInteractionIdempotencyKey(identity);
     return interactions.some((interaction) => {
       if (interaction.status !== "pending" && interaction.status !== "answered") return false;
-      if (interaction.idempotencyKey === expectedKey || interaction.idempotencyKey?.startsWith(`${reviewInteractionKeyPrefix({ issueId: issue.id, prUrl: prUrl || `pr-${prNumber || "unknown"}`, headSha: reviewHeadSha || "unknown", stage })}:attempt:`)) return true;
+      if (interaction.idempotencyKey === expectedKey || interaction.idempotencyKey?.startsWith(`${reviewInteractionKeyPrefix(identity)}:attempt:`)) return true;
       // GitHub head lookup may be temporarily unavailable. A pending card
       // carrying a real SHA is still the same immutable review identity; do
       // not redispatch merely because this heartbeat has an `unknown` head.
@@ -305,12 +308,7 @@ export function evaluateReviewPipelineProgress(
     });
   };
   const cardFor = (stage: PrReviewStage) => {
-    const identity = {
-      issueId: issue.id,
-      prUrl: prUrl || `pr-${prNumber || "unknown"}`,
-      headSha: reviewHeadSha || "unknown",
-      stage,
-    } as const;
+    const identity = identityFor(stage);
     const prefix = reviewInteractionKeyPrefix(identity);
     const exactKeys = reviewInteractionIdempotencyKeys(identity);
     return [...interactions].reverse().find((interaction) =>
@@ -341,10 +339,7 @@ export function evaluateReviewPipelineProgress(
     const finishedRun = boundRuns.find((run) => !activeRun && !failedRun);
     const verdict = verdictFor(stage);
     return reduceReviewEpoch({
-      issueId: issue.id,
-      prUrl: prUrl || `pr-${prNumber || "unknown"}`,
-      headSha: reviewHeadSha || "unknown",
-      stage,
+      ...identityFor(stage),
       nextStage: stage === "luna" ? "terra" : null,
       reviewerAgentId,
       card: card

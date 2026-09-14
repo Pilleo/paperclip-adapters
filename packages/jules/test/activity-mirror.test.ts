@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { activityScanPageLimit, listAllActivities, mirrorNewActivities } from "../src/server/activity-mirror.js";
+import { activityScanPageLimit, listAllActivities, mirrorNewActivities, reduceTerminalActivityScan } from "../src/server/activity-mirror.js";
 import { JulesClient } from "../src/server/jules-client.js";
 import { JulesAdapterSessionV1 } from "../src/server/session.js";
 
@@ -7,7 +7,60 @@ const addComment = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 vi.mock("../src/server/paperclip-client.js", () => ({ addJulesActivityComment: addComment }));
 
 describe("activity-mirror", () => {
-  it("uses one recent activity page while a Jules question already has an adjudication owner", () => {
+  it("retains only a message that follows the latest terminal completion across pages", () => {
+    const first = reduceTerminalActivityScan({
+      sessionId: "session-1",
+      activities: [
+        { id: "question-before-completion", createTime: "2026-09-09T10:00:00.000Z", agentMessaged: { agentMessage: "Old question" } },
+        { id: "completion", createTime: "2026-09-09T10:01:00.000Z", sessionCompleted: {} },
+      ],
+      nextPageToken: "page-2",
+    });
+
+    const result = reduceTerminalActivityScan({
+      sessionId: "session-1",
+      prior: first,
+      activities: [
+        { id: "post-completion-question", createTime: "2026-09-09T10:02:00.000Z", agentMessaged: { agentMessage: "New question" } },
+      ],
+    });
+
+    expect(result.completion?.id).toBe("completion");
+    expect(result.latestAgentMessage?.id).toBe("post-completion-question");
+    expect(result.postCompletionQuestion?.id).toBe("post-completion-question");
+  });
+
+  it("clears an earlier post-completion question when a later completion supersedes it", () => {
+    const result = reduceTerminalActivityScan({
+      sessionId: "session-1",
+      prior: {
+        sessionId: "session-1",
+        completion: { id: "completion-1", createTime: "2026-09-09T10:01:00.000Z", sessionCompleted: {} },
+        postCompletionQuestion: { id: "question-after-completion-1", createTime: "2026-09-09T10:02:00.000Z", agentMessaged: { agentMessage: "Old question" } },
+        complete: false,
+      },
+      activities: [
+        { id: "completion-2", createTime: "2026-09-09T10:03:00.000Z", sessionCompleted: {} },
+      ],
+    });
+
+    expect(result.completion?.id).toBe("completion-2");
+    expect(result.postCompletionQuestion).toBeUndefined();
+  });
+
+  it("retains the latest plan needed to recover a lost native review pointer", () => {
+    const result = reduceTerminalActivityScan({
+      sessionId: "session-1",
+      activities: [{
+        id: "plan-2",
+        planGenerated: { plan: { steps: [{ index: 0, title: "Run tests" }] } },
+      }] as never,
+    });
+
+    expect(result.latestPlan?.id).toBe("plan-2");
+  });
+
+  it("keeps the deep bounded scan while a Jules question has an adjudication owner", () => {
     const session = {
       pendingInteraction: {
         type: "agent_adjudication",
@@ -15,7 +68,7 @@ describe("activity-mirror", () => {
       },
     } as JulesAdapterSessionV1;
 
-    expect(activityScanPageLimit(session)).toBe(1);
+    expect(activityScanPageLimit(session)).toBe(20);
   });
 
   it("keeps the deep bounded scan when no provider question is already owned", () => {

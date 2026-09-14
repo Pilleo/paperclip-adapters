@@ -20,7 +20,7 @@ export type PlanGateProviderState =
   | "UNKNOWN";
 
 export interface PlanGateInteraction {
-  readonly status: "pending" | "answered" | "cancelled" | "unknown";
+  readonly status: "pending" | "answered" | "cancelled" | "expired" | "unknown";
   readonly cancellationReason?: string | undefined;
 }
 
@@ -28,19 +28,17 @@ export interface PlanGateObservation {
   readonly providerState: PlanGateProviderState;
   readonly hasUnresolvedProviderQuestion: boolean;
   readonly matchingInteraction?: PlanGateInteraction | undefined;
-  /** A cancelled card consumes an immutable idempotency key; bound reopen attempts. */
-  readonly recoveryAttempts?: number | undefined;
 }
 
 export type PlanGateDecision =
-  | { readonly action: "restore" }
+  | { readonly action: "request_provider_plan_revision"; readonly terminalCard: "cancelled" | "expired" }
   | { readonly action: "await_card" }
   | { readonly action: "await_provider" }
   | { readonly action: "await_provider_question" }
   | { readonly action: "manual_recovery_required" };
 
 /** Reasons written exclusively by adapter control flow, never reviewer prose. */
-export const RESTORABLE_PLAN_GATE_CANCELLATION_REASONS = new Set<string>([
+export const REPLAN_REQUIRED_PLAN_GATE_CANCELLATION_REASONS = new Set<string>([
   "Superseded by structured PR rejection for the same Jules session and immutable PR head.",
   "Superseded plan-review card: an immutable matching PR review card is the active native review authority.",
 ]);
@@ -60,62 +58,92 @@ interface RawPlanGateCard {
   kind?: unknown; status?: unknown; id?: unknown; idempotencyKey?: unknown; addresseeAgentId?: unknown;
   result?: unknown; payload?: unknown;
 }
+interface RawPlanGatePayload {
+  target?: unknown;
+  detailsMarkdown?: unknown;
+  /** Immutable Jules activity that produced the reviewed plan. */
+  providerActivityId?: unknown;
+}
 interface RawPlanTarget {
   type?: unknown; issueId?: unknown; key?: unknown; documentId?: unknown; revisionId?: unknown; revisionNumber?: unknown;
 }
 
 /**
- * Rebuilds a lost local pointer from the immutable fields of one cancelled
- * native card. This is intentionally narrower than general interaction
- * discovery: the card must be the exact session's v2 key, have a typed plan
- * target, and carry one adapter-owned cancellation reason.
+ * Rebuilds a lost local pointer from one exact native card.  A persisted
+ * session ID can survive an owner-run cancellation while the transient
+ * session envelope (and therefore its pending-card pointer) does not. A card
+ * is recoverable only when its payload proves the exact Jules plan activity.
+ * Session identity alone is insufficient: a reviewer may have answered an
+ * older revision before Jules generated a replacement plan.
+ *
+ * This is intentionally narrower than general interaction discovery: the
+ * card must carry the exact session's v2 key and typed plan target, and there
+ * must be exactly one eligible candidate.  Ambiguous, user-cancelled, and
+ * malformed cards fail closed.
  */
 export function recoverMissingPlanGatePointer(input: {
   readonly issueId: string;
   readonly sessionId: string;
   readonly latestPlanActivityId: string;
   readonly interactions: readonly unknown[];
+  /** A later provider plan proves older answered cards are historical. */
+  readonly allowAnswered?: boolean | undefined;
 }): RecoveredPlanGatePointer | null {
   const prefix = `jules:plan-review:v2:${input.issueId}:${input.sessionId}:`;
   const candidates = input.interactions.flatMap((value): RecoveredPlanGatePointer[] => {
     if (!value || typeof value !== "object") return [];
     const card = value as RawPlanGateCard;
-    if (card.kind !== "request_item_verdicts" || card.status !== "cancelled" || typeof card.id !== "string" ||
+    const recoverableStatus = card.status === "cancelled" ||
+      (card.status === "answered" && input.allowAnswered !== false);
+    if (card.kind !== "request_item_verdicts" || !recoverableStatus || typeof card.id !== "string" ||
         typeof card.idempotencyKey !== "string" || !card.idempotencyKey.startsWith(prefix) ||
         typeof card.addresseeAgentId !== "string") return [];
     const result = card.result && typeof card.result === "object" ? card.result as { reason?: unknown } : undefined;
-    if (!result || typeof result.reason !== "string" || !RESTORABLE_PLAN_GATE_CANCELLATION_REASONS.has(result.reason)) return [];
-    const payload = card.payload && typeof card.payload === "object" ? card.payload as { target?: unknown; detailsMarkdown?: unknown } : undefined;
+    if (card.status === "cancelled" &&
+        (!result || typeof result.reason !== "string" || !REPLAN_REQUIRED_PLAN_GATE_CANCELLATION_REASONS.has(result.reason))) return [];
+    const payload = card.payload && typeof card.payload === "object" ? card.payload as RawPlanGatePayload : undefined;
     const target = payload?.target && typeof payload.target === "object" ? payload.target as RawPlanTarget : undefined;
     const question = payload?.detailsMarkdown;
+    const providerActivityId = payload?.providerActivityId;
     const keyParts = card.idempotencyKey.split(":");
     const stage = keyParts.at(6);
     if (!target || target.type !== "issue_document" || target.issueId !== input.issueId || target.key !== "plan" ||
         typeof target.documentId !== "string" || typeof target.revisionId !== "string" ||
-        !Number.isInteger(target.revisionNumber) || (stage !== "luna" && stage !== "terra") || typeof question !== "string") return [];
-    return [{ interactionId: card.id, activityId: input.latestPlanActivityId, question, documentId: target.documentId,
+        !Number.isInteger(target.revisionNumber) || (stage !== "luna" && stage !== "terra") || typeof question !== "string" ||
+        typeof providerActivityId !== "string" || providerActivityId !== input.latestPlanActivityId) return [];
+    return [{ interactionId: card.id, activityId: providerActivityId, question, documentId: target.documentId,
       revisionId: target.revisionId, revisionNumber: target.revisionNumber as number, reviewerAgentId: card.addresseeAgentId, stage }];
   });
   return candidates.length === 1 ? candidates[0]! : null;
 }
 
 export function decidePlanGateRecovery(input: PlanGateObservation): PlanGateDecision {
-  if (input.providerState !== "AWAITING_PLAN_APPROVAL") return { action: "await_provider" };
   if (input.hasUnresolvedProviderQuestion) return { action: "await_provider_question" };
   if (!input.matchingInteraction) return { action: "manual_recovery_required" };
 
   switch (input.matchingInteraction.status) {
-    case "pending":
-    case "answered":
-      return { action: "await_card" };
+    case "expired":
+      // A native v2 card is an immutable review cycle. An expiry has no
+      // reviewer decision, so recovery needs a fresh provider plan activity,
+      // never a second card for the same revision.
+      return input.providerState === "AWAITING_PLAN_APPROVAL" || input.providerState === "COMPLETED"
+        ? { action: "request_provider_plan_revision", terminalCard: "expired" }
+        : { action: "await_provider" };
     case "cancelled":
-      return input.recoveryAttempts !== undefined && input.recoveryAttempts >= 3
-        ? { action: "manual_recovery_required" }
-        : RESTORABLE_PLAN_GATE_CANCELLATION_REASONS.has(input.matchingInteraction.cancellationReason ?? "")
-        ? { action: "restore" }
+      if (input.providerState !== "AWAITING_PLAN_APPROVAL" && input.providerState !== "COMPLETED") {
+        return { action: "await_provider" };
+      }
+      return REPLAN_REQUIRED_PLAN_GATE_CANCELLATION_REASONS.has(
+        input.matchingInteraction.cancellationReason ?? "",
+      )
+        ? { action: "request_provider_plan_revision", terminalCard: "cancelled" }
         : { action: "manual_recovery_required" };
     case "unknown":
       return { action: "manual_recovery_required" };
+    case "pending":
+    case "answered":
+      if (input.providerState !== "AWAITING_PLAN_APPROVAL") return { action: "await_provider" };
+      return { action: "await_card" };
     default:
       return assertNever(input.matchingInteraction.status);
   }

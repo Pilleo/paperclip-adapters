@@ -12,10 +12,35 @@ export function isAuthoritativeJulesMonitor(executionPolicy: unknown): boolean {
   return record["serviceName"] === "jules" && typeof record["externalRef"] === "string" && (record["externalRef"] as string).trim().length > 0;
 }
 
-export function canPromoteJulesPrToReview(input: {
-  readonly ciGreen: boolean;
+export type JulesPrReviewDisposition =
+  | { readonly kind: "await_provider" }
+  | { readonly kind: "recover_provider" }
+  | { readonly kind: "eligible_for_review" };
+
+/**
+ * Keep the two non-review states separate. A live monitor means the provider
+ * owns the next action; a rejected head without that monitor means ownership
+ * was lost and must be reattached before this PR can make progress again.
+ */
+export function classifyJulesPrReviewDisposition(input: {
   readonly currentHeadRejected: boolean;
   readonly executionPolicy?: unknown;
-}): boolean {
-  return input.ciGreen && !input.currentHeadRejected && !isAuthoritativeJulesMonitor(input.executionPolicy);
+}): JulesPrReviewDisposition {
+  const monitorState: "authoritative" | "absent" = isAuthoritativeJulesMonitor(input.executionPolicy)
+    ? "authoritative"
+    : "absent";
+
+  switch (monitorState) {
+    case "authoritative":
+      return { kind: "await_provider" };
+    case "absent": {
+      const rejectionState: "rejected" | "clear" = input.currentHeadRejected ? "rejected" : "clear";
+      switch (rejectionState) {
+        case "rejected":
+          return { kind: "recover_provider" };
+        case "clear":
+          return { kind: "eligible_for_review" };
+      }
+    }
+  }
 }

@@ -1,4 +1,4 @@
-import { reviewInteractionKeyPrefix } from "./review-interaction-state.js";
+import { isCanonicalReviewCardKey, reviewInteractionKeyPrefix } from "./review-interaction-state.js";
 import type { HeartbeatRunSummary } from "./session-continuation.js";
 
 export interface RecoverableNativeReviewCard {
@@ -52,8 +52,14 @@ function isCanonicalPrCard(
   if (!key) return false;
   const lunaPrefix = reviewInteractionKeyPrefix({ issueId, prUrl: prIdentity.url, headSha: prIdentity.headSha, stage: "luna" });
   const terraPrefix = reviewInteractionKeyPrefix({ issueId, prUrl: prIdentity.url, headSha: prIdentity.headSha, stage: "terra" });
-  return key === lunaPrefix || key.startsWith(`${lunaPrefix}:attempt:`) ||
-    key === terraPrefix || key.startsWith(`${terraPrefix}:attempt:`);
+  const matchesStagePrefix = (prefix: string) =>
+    key === prefix || key.startsWith(`${prefix}:attempt:`) || key.startsWith(`${prefix}:contract:`);
+  // Contract-scoped cards retain the same immutable issue/PR/head/stage
+  // identity. Validate their complete v13 grammar before accepting the
+  // prefix, so a restart cannot leave a stale Jules card beside the one
+  // authoritative PR verdict card.
+  return (matchesStagePrefix(lunaPrefix) || matchesStagePrefix(terraPrefix)) &&
+    isCanonicalReviewCardKey(key);
 }
 
 /**

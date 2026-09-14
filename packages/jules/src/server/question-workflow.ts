@@ -33,6 +33,58 @@ export type NativeQuestionReviewState =
   | { readonly state: "answered"; readonly decision: QuestionReviewFormDecision }
   | { readonly state: "answered"; readonly decision: "malformed" };
 
+export type TerminalQuestionDisposition =
+  | { readonly action: "not_terminal" }
+  | { readonly action: "retain" }
+  | { readonly action: "resolved" }
+  | { readonly action: "retire" };
+
+/**
+ * Provider activity ordering, rather than a coarse terminal state, decides
+ * whether terminal cleanup may retire a question. A post-completion question
+ * is new provider work and must remain answerable through a typed card.
+ */
+export function evaluateTerminalQuestionDisposition(input: {
+  readonly terminal: boolean;
+  readonly followsCompletion: boolean;
+  readonly terminalAnswerRecorded: boolean;
+}): TerminalQuestionDisposition {
+  if (!input.terminal) return { action: "not_terminal" };
+  if (input.terminalAnswerRecorded) return { action: "resolved" };
+  if (input.followsCompletion) return { action: "retain" };
+  return { action: "retire" };
+}
+
+export type TerminalQuestionRecoveryCard = "cancelled_terminal" | "cancelled_other" | "pending_generation_one" | "none";
+export type TerminalQuestionRecoveryDecision =
+  | { readonly action: "recover_generation_one" }
+  | { readonly action: "retain_pending" }
+  | { readonly action: "resolved" }
+  | { readonly action: "retire" }
+  | { readonly action: "human_escalation" }
+  | { readonly action: "ignore" };
+
+export function evaluateTerminalQuestionRecovery(input: {
+  readonly terminal: boolean;
+  readonly followsCompletion: boolean;
+  readonly answerRecorded: boolean;
+  readonly card: TerminalQuestionRecoveryCard;
+}): TerminalQuestionRecoveryDecision {
+  if (!input.terminal) return { action: "ignore" };
+  if (input.answerRecorded) return { action: "resolved" };
+  if (!input.followsCompletion) return { action: "retire" };
+  switch (input.card) {
+    case "cancelled_terminal": return { action: "recover_generation_one" };
+    case "pending_generation_one": return { action: "retain_pending" };
+    case "cancelled_other": return { action: "human_escalation" };
+    case "none": return { action: "ignore" };
+    default: {
+      const impossible: never = input.card;
+      return impossible;
+    }
+  }
+}
+
 /**
  * Parse only Paperclip's structured ask_user_questions result. Reviewer prose
  * in comments is intentionally not a fallback protocol.

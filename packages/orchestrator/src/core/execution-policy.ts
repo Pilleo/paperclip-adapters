@@ -177,8 +177,10 @@ export function shouldRecoverNativePrReview(input: {
   readonly orchestratorManaged: boolean;
   readonly merged: boolean;
   readonly hasUnreviewedReadyPullRequest: boolean;
+  /** A red or unverifiable CI gate belongs to the implementation lane, never review. */
+  readonly ciGreen: boolean;
 }): boolean {
-  if (!input.orchestratorManaged || input.merged || !input.hasUnreviewedReadyPullRequest) return false;
+  if (!input.orchestratorManaged || input.merged || !input.hasUnreviewedReadyPullRequest || !input.ciGreen) return false;
   switch (input.status) {
     case "blocked":
     case "backlog":

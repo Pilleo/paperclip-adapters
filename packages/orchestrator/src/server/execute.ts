@@ -17,7 +17,6 @@ const reconciledOperatorGates = new Set<string>();
 import { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { extractIssueMetadata, normalizeGitHubOwnerRepo, resolvePaperclipProject, resolveProjectWorkspace, type PaperclipProjectRecord } from "../core/parser.js";
 import { calculateConflictMatrix, selectNextTasksMultiLane } from "../core/dispatcher.js";
-import { fetchJulesQuota } from "../core/jules-quota.js";
 import { checkWorkspaceConsistency } from "../core/consistency.js";
 import { fetchGitHubPullRequests, hasUnreviewedReadyPullRequest, matchPrToIssue, registeredPullRequestFromIssue, checkPrCiIsGreen, fetchPullRequestHeadSha } from "../core/github-sync.js";
 import { evaluateIssueTransition } from "../core/state-machine.js";
@@ -70,23 +69,26 @@ import {
   selectJulesSupervisorIssueIdsToClose,
 } from "../core/jules-supervisor.js";
 import { capabilityCircuit, fleetCapabilityCircuitKey } from "../core/capability-circuit.js";
-import { evaluateStructuredReviewerEligibility, isReviewerEligibilityFailure } from "../core/reviewer-eligibility.js";
+import { isReviewerEligibilityFailure, planNativeReviewDispatch } from "../core/reviewer-eligibility.js";
 import { buildReviewWaitState, isReviewWaitState } from "../core/review-wait-state.js";
 import { isSameReviewerUnavailableRecovery, reviewerUnavailableRecoveryPayload } from "../core/review-recovery.js";
-import { canPromoteJulesPrToReview, isAuthoritativeJulesMonitor } from "../core/jules-monitor-state.js";
+import { classifyJulesPrReviewDisposition, isAuthoritativeJulesMonitor } from "../core/jules-monitor-state.js";
 import { decideIssueLifecycleReconciliation } from "../core/issue-lifecycle-reconciliation.js";
 import { ConvergenceGuard } from "../core/convergence-guard.js";
 import { planTerminalParentBarrier } from "../core/terminal-parent-barrier.js";
-import { buildJulesMonitorReattachment, decideJulesMonitorReconciliation } from "../core/jules-monitor-reconciliation.js";
+import { buildJulesMonitorReattachment, decideJulesMonitorReconciliation, resolveJulesMonitorSessionId } from "../core/jules-monitor-reconciliation.js";
+import { resolvedJulesPlanVerdict } from "../core/jules-plan-verdict-continuation.js";
 import { needsFullIssueRecord } from "../core/issue-enrichment-policy.js";
 import { planBoardReconciliation, type BoardIssueSnapshot } from "../core/board-reconciliation.js";
 import { decideBlockedManagedWork, decideRecoveryArtifact } from "../core/recovery-artifact.js";
 import { allocateProjectCapacity } from "../core/project-capacity.js";
+import { allocateCompanyJulesAdmissions, julesAdmissionRotationOffset } from "../core/jules-admission.js";
 import { isProjectWorkspaceDirectory } from "../core/project-workspaces.js";
 import { IncidentDeduper } from "../core/incident-deduper.js";
 import { runProjectWorkerPool } from "../core/project-worker-pool.js";
 import { planOrphanReviewRecovery } from "../core/orphan-review-recovery.js";
 import { decideReviewSession } from "../core/review-session-state.js";
+import { parseJulesPrHandoffHandle, planPrHandoffRegistration } from "../core/pr-handoff-registration.js";
 import type { IssueState } from "../core/types.js";
 import { selectStaleJulesReviewChildren } from "../core/stale-review-artifacts.js";
 import { executePaperclipCommand } from "@pilleo/paperclip-adapter-common";
@@ -112,7 +114,11 @@ const nativeReviewRecoveryConvergenceGuard = new ConvergenceGuard();
 const agentIncidentDeduper = new IncidentDeduper();
 
 export interface OrchestratorAdapterConfig {
+  /** Freeze performs no control-plane I/O. */
+  readonly reconciliationMode?: "active" | "freeze" | undefined;
   readonly maxConcurrentJules?: number | undefined;
+  /** Company-wide rate limit for creating new Jules sessions; existing sessions are provider-owned. */
+  readonly maxNewJulesSessionsPerHeartbeat?: number | undefined;
   readonly maxConcurrentVibe?: number | undefined;
   readonly julesAgentId?: string | undefined;
   readonly vibeAgentId?: string | undefined;
@@ -186,10 +192,23 @@ export async function executeAllProjects(
   }
 
   const rawConfig = (context.config as Record<string, unknown> | undefined) || {};
+  const configuredNewJulesSessions = typeof rawConfig["maxNewJulesSessionsPerHeartbeat"] === "number"
+    ? rawConfig["maxNewJulesSessionsPerHeartbeat"]
+    : typeof rawConfig["maxConcurrentJules"] === "number"
+      ? rawConfig["maxConcurrentJules"]
+      : 3;
+  if (rawConfig["maxNewJulesSessionsPerHeartbeat"] === undefined && rawConfig["maxConcurrentJules"] !== undefined) {
+    await context.onLog?.("stderr", "[ORCHESTRATOR] maxConcurrentJules is deprecated; use maxNewJulesSessionsPerHeartbeat. It now limits new session creation, not provider concurrency.\n");
+  }
   const projectCapacity = allocateProjectCapacity({
     projectIds: runnableProjects.map((project) => project.id),
-    maxConcurrentJules: typeof rawConfig["maxConcurrentJules"] === "number" ? rawConfig["maxConcurrentJules"] : 15,
+    maxConcurrentJules: 0,
     maxConcurrentVibe: typeof rawConfig["maxConcurrentVibe"] === "number" ? rawConfig["maxConcurrentVibe"] : 1,
+  });
+  const julesAdmissions = allocateCompanyJulesAdmissions({
+    projectIds: runnableProjects.map((project) => project.id),
+    maxNewSessions: configuredNewJulesSessions,
+    rotationOffset: julesAdmissionRotationOffset(context.runId, runnableProjects.length),
   });
   // Fleet configuration is company-scoped, while project execution is
   // concurrent. Claim reconciliation synchronously before the first project
@@ -201,13 +220,15 @@ export async function executeAllProjects(
     typeof rawConfig["maxConcurrentProjects"] === "number" ? rawConfig["maxConcurrentProjects"] : 2,
     async (project) => {
     const capacity = projectCapacity.find((item) => item.projectId === project.id);
+    const julesAdmission = julesAdmissions.find((item) => item.projectId === project.id);
     const reconcileFleet = rawConfig["reconcileFleet"] !== false && !fleetReconciliationClaimed;
     if (reconcileFleet) fleetReconciliationClaimed = true;
     return runProject({
       ...context,
       config: {
         ...rawConfig,
-        ...(capacity ? { maxConcurrentJules: capacity.jules, maxConcurrentVibe: capacity.vibe } : {}),
+        ...(capacity ? { maxConcurrentVibe: capacity.vibe } : {}),
+        ...(julesAdmission ? { maxNewJulesSessionsPerHeartbeat: julesAdmission.newSessionBudget } : {}),
         // Respect an explicit test/manual opt-out. Without this guard an
         // isolated canary still attempts fleet provisioning and emits noisy
         // agents:create denials even though it only needs existing workers.
@@ -238,6 +259,12 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
   const rawContext = (context.context as Record<string, unknown> | undefined) || {};
   const companyId = (context.agent?.companyId || (rawContext["companyId"] as string) || "") as string;
   const config = (context.config || {}) as OrchestratorAdapterConfig;
+  if (config.reconciliationMode === "freeze") {
+    const summary = "Lifecycle reconciliation frozen; no control-plane I/O was attempted.";
+    console.log(`[ORCHESTRATOR] ${summary}`);
+    await context.onLog?.("stdout", `[ORCHESTRATOR] ${summary}\n`).catch(() => {});
+    return { exitCode: 0, signal: null, timedOut: false, summary };
+  }
   const envMap = process.env;
   const apiUrl = config.apiUrl || envMap["PAPERCLIP_API_URL"] || "http://127.0.0.1:3100";
   const workspaceFromCtx =
@@ -371,11 +398,10 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
           authSource: path.join(process.env["CODEX_HOME"]?.trim() || path.join(os.homedir(), ".codex"), "auth.json"),
           nodePath: process.execPath,
           serverPath: fileURLToPath(new URL("./native-review-mcp-stdio.js", import.meta.url)),
-          runtimeContext: {
+          staticContext: {
             apiBase: apiUrl,
-            issueId: issueId || "",
             agentId,
-            runId,
+            companyId,
           },
         });
       } catch (error) {
@@ -688,20 +714,6 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     );
   }
 
-  // 5. Fetch live Jules quota
-  const configEnv = context.config ? (context.config["env"] as Record<string, unknown> | undefined) : undefined;
-  const julesApiKey =
-    (configEnv ? (configEnv["JULES_API_KEY"] as string | undefined) : undefined) ||
-    (context.config ? (context.config["julesApiKey"] as string | undefined) : undefined) ||
-    envMap["JULES_API_KEY"];
-
-  const julesQuota = await fetchJulesQuota(julesApiKey);
-  if (julesQuota.fetchedLive) {
-    await log(
-      `[ORCHESTRATOR] Live Jules Quota: active_sessions=${julesQuota.activeSessionsCount}/${julesQuota.maxConcurrent}, last_24h=${julesQuota.sessionsLast24hCount}/${julesQuota.maxDaily}, available_slots=${julesQuota.effectiveAvailableCapacity}`
-    );
-  }
-
   if (ghStatus.error) {
     await log(`[ORCHESTRATOR] 🚨 GITHUB ACCESS UNAVAILABLE: ${ghStatus.error}. Remote PR reconciliation is degraded; reviews and merges remain safety-paused until GitHub access recovers.`);
   }
@@ -908,6 +920,11 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
   // GitHub confirms its checks are green; the normal native review pipeline
   // then owns reviewer dispatch. This replaces the old external timer bridge.
   const openPrRecoveryIds = new Set<string>();
+  // This is deliberately scoped to one heartbeat. A failed CI result has
+  // already assigned the immutable PR back to Jules; later generic board
+  // reconciliation must not reinterpret the same in-progress work product as
+  // ready for review before Jules has produced a new, green head.
+  const ciRemediationIssueIds = new Set<string>();
   if (!ghStatus.error) {
     for (const issue of parsedIssues) {
       // A board approval can cause Paperclip to normalize the linked issue to
@@ -916,7 +933,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       // recovery must not depend on the stale lifecycle projection.
       if (!issue.orchestratorManaged || !["backlog", "todo", "in_progress", "in_review", "blocked"].includes(issue.status)) continue;
       const rawProducts = issue.rawIssue["workProducts"] ?? issue.rawIssue["work_products"];
-      const julesProduct = Array.isArray(rawProducts)
+      let julesProduct = Array.isArray(rawProducts)
         ? rawProducts.find((product) => {
             if (!product || typeof product !== "object") return false;
             const candidate = product as Record<string, unknown>;
@@ -924,8 +941,71 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
               (candidate["metadata"] as Record<string, unknown> | undefined)?.["source"] === "jules";
           })
         : undefined;
+      let matchingPr = ghStatus.openPrs.find((pr) => matchPrToIssue(pr, issue));
+      if (!julesProduct) {
+        // A terminal Jules session writes this immutable handle before its
+        // work-product mutation. If that mutation was interrupted, recover
+        // only when GitHub independently confirms the exact PR URL and head.
+        // This adapters-only bridge is required until Paperclip can atomically
+        // persist a provider's PR handoff with its terminal run result.
+        let sessionHandle;
+        try {
+          const documents = asArray<Record<string, unknown>>(await pc.getJson<unknown>(`/api/issues/${encodeURIComponent(issue.id)}/documents`));
+          sessionHandle = parseJulesPrHandoffHandle(documents.find((document) => document["key"] === "jules-session")?.["body"]);
+        } catch (err: unknown) {
+          await log(`[ORCHESTRATOR] Deferring Jules PR-handoff recovery for [${issue.identifier || issue.id}]: could not read the durable session handle (${String(err)}).`);
+          continue;
+        }
+        if (!sessionHandle) continue;
+        matchingPr = ghStatus.openPrs.find((pr) =>
+          pr.url.replace(/\/$/, "").toLowerCase() === sessionHandle!.prUrl.replace(/\/$/, "").toLowerCase(),
+        );
+        if (!matchingPr?.headRefOid) continue;
+        const ci = await checkPrCiIsGreen(matchingPr.number, workspacePath, matchingPr.url);
+        const handoff = planPrHandoffRegistration({
+          issueId: issue.id,
+          managed: true,
+          registered: false,
+          ciGreen: ci.isGreen,
+          pr: { number: matchingPr.number, url: matchingPr.url, headSha: matchingPr.headRefOid },
+          sessionHandle,
+        });
+        switch (handoff.action) {
+          case "register_from_session_handle": {
+            const registered = await pc.sendJson(`/api/issues/${encodeURIComponent(issue.id)}/work-products`, "POST", {
+              type: "pull_request",
+              provider: "github",
+              title: "Jules pull request",
+              url: handoff.pr.url,
+              externalId: handoff.pr.url,
+              status: "ready_for_review",
+              isPrimary: true,
+              metadata: {
+                source: "jules",
+                producer: "paperclip-jules-adapter",
+                schemaVersion: 1,
+                headSha: handoff.pr.headSha,
+                recoveredFromSessionId: handoff.sessionId,
+              },
+              idempotencyKey: handoff.key,
+            });
+            if (!registered.ok) {
+              await log(`[ORCHESTRATOR] Could not register recovered Jules PR for [${issue.identifier || issue.id}] (${registered.status}): ${registered.text}`);
+              continue;
+            }
+            julesProduct = registered.data ?? { type: "pull_request", metadata: { source: "jules" } };
+            await log(`[ORCHESTRATOR] Recovered canonical Jules PR handoff for [${issue.identifier || issue.id}] from session ${handoff.sessionId}.`);
+            break;
+          }
+          case "wait":
+          case "refuse":
+          case "no_action":
+          case "register":
+          case "update":
+            continue;
+        }
+      }
       if (!julesProduct) continue;
-      const matchingPr = ghStatus.openPrs.find((pr) => matchPrToIssue(pr, issue));
       if (!matchingPr) continue;
       // Open/green cannot override a structured rejection for this immutable
       // head, nor can it steal an issue whose Jules monitor is resumable.
@@ -946,19 +1026,118 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
             status: typeof interaction["status"] === "string" ? interaction["status"] : undefined,
             idempotencyKey: typeof interaction["idempotencyKey"] === "string" ? interaction["idempotencyKey"] : undefined,
             result: interaction["result"],
-          })), issue.id, matchingPr.headRefOid);
+          })), issue.id, matchingPr.headRefOid, issue.description || undefined);
         }
       } catch (err: unknown) {
         await log(`[ORCHESTRATOR] Deferring open Jules PR recovery for [${issue.identifier || issue.id}]: could not verify monitor/review state (${String(err)}).`);
         continue;
       }
-      if (!canPromoteJulesPrToReview({ ciGreen: true, currentHeadRejected, executionPolicy: authoritativeExecutionPolicy })) {
-        await log(`[ORCHESTRATOR] Keeping [${issue.identifier || issue.id}] with Jules: current PR head is rejected or its provider monitor is resumable.`);
-        continue;
+      const reviewDisposition = classifyJulesPrReviewDisposition({
+        currentHeadRejected,
+        executionPolicy: authoritativeExecutionPolicy,
+      });
+      switch (reviewDisposition.kind) {
+        case "await_provider":
+          await log(`[ORCHESTRATOR] Keeping [${issue.identifier || issue.id}] with Jules: its provider monitor remains authoritative.`);
+          continue;
+        case "recover_provider": {
+          if (!julesAgentId || !managedIds.has(julesAgentId)) {
+            await log(`[ORCHESTRATOR] Refusing rejected-head recovery for [${issue.identifier || issue.id}]: managed Jules worker is unavailable.`);
+            continue;
+          }
+          let recoveryPolicy: Record<string, unknown>;
+          try {
+            const documents = asArray<Record<string, unknown>>(await pc.getJson<unknown>(`/api/issues/${encodeURIComponent(issue.id)}/documents`));
+            const handle = parseJulesPrHandoffHandle(documents.find((document) => document["key"] === "jules-session")?.["body"]);
+            if (!handle) {
+              await log(`[ORCHESTRATOR] Deferring rejected-head recovery for [${issue.identifier || issue.id}]: the durable Jules session handle is missing or incomplete.`);
+              continue;
+            }
+            recoveryPolicy = buildJulesMonitorReattachment({ mode: "normal", stages: [] }, handle.sessionId, Date.now());
+          } catch (error: unknown) {
+            await log(`[ORCHESTRATOR] Deferring rejected-head recovery for [${issue.identifier || issue.id}]: could not read the durable Jules session handle (${String(error)}).`);
+            continue;
+          }
+          const recoveryKey = `jules-rejected-head-recovery:${issue.id}:${matchingPr.url}:${matchingPr.headRefOid || "unknown"}`;
+          await lifecycleConvergenceGuard.runOnce(recoveryKey, async () => {
+            const resumed = await pc.patchIssue(issue.id, {
+              status: "in_progress",
+              assigneeAgentId: julesAgentId,
+              executionPolicy: recoveryPolicy,
+              executionState: null,
+            });
+            if (!resumed.ok) {
+              await log(`[ORCHESTRATOR] Could not recover rejected Jules PR for [${issue.identifier || issue.id}] (${resumed.status}): ${resumed.text}`);
+              return;
+            }
+            statusOverrides.set(issue.id, "in_progress");
+            ciRemediationIssueIds.add(issue.id);
+            await managedWakeup(
+              julesAgentId,
+              `Resume existing Jules session for rejected PR #${matchingPr.number}`,
+              issue.id,
+              { idempotencyKey: recoveryKey },
+            );
+            wokeThisTick.add(`${julesAgentId}:${issue.id}`);
+            await log(`[ORCHESTRATOR] Reattached [${issue.identifier || issue.id}] to its existing Jules session after a lost rejected-head monitor.`);
+          });
+          continue;
+        }
+        case "eligible_for_review":
+          break;
       }
       const ci = await checkPrCiIsGreen(matchingPr.number, workspacePath, matchingPr.url);
       if (!ci.isGreen) {
-        await log(`[ORCHESTRATOR] Deferring open Jules PR recovery for [${issue.identifier || issue.id}]: CI is ${ci.status}.`);
+        if (!julesAgentId || !managedIds.has(julesAgentId)) {
+          await log(`[ORCHESTRATOR] Refusing open Jules PR remediation for [${issue.identifier || issue.id}]: managed Jules worker is unavailable while CI is ${ci.status}.`);
+          continue;
+        }
+        // Re-establish an authoritative native monitor before waking Jules.
+        // Without it, the next heartbeat observes only an in-progress issue
+        // with an open PR and incorrectly promotes a still-red head to review.
+        // The session document is adapter-owned durable identity; do not infer
+        // a provider session from PR prose or a redacted projection.
+        let remediationPolicy: Record<string, unknown>;
+        try {
+          const documents = asArray<Record<string, unknown>>(await pc.getJson<unknown>(`/api/issues/${encodeURIComponent(issue.id)}/documents`));
+          const handle = parseJulesPrHandoffHandle(documents.find((document) => document["key"] === "jules-session")?.["body"]);
+          if (!handle) {
+            await log(`[ORCHESTRATOR] Deferring failed-CI remediation for [${issue.identifier || issue.id}]: the durable Jules session handle is missing or incomplete.`);
+            continue;
+          }
+          remediationPolicy = buildJulesMonitorReattachment({ mode: "normal", stages: [] }, handle.sessionId, Date.now());
+        } catch (error: unknown) {
+          await log(`[ORCHESTRATOR] Deferring failed-CI remediation for [${issue.identifier || issue.id}]: could not read the durable Jules session handle (${String(error)}).`);
+          continue;
+        }
+        // Red CI is implementation work, never a review wait. The provider
+        // alone knows whether its source session is still live (one bounded
+        // feedback relay) or terminal (one branch-bound remediation session).
+        // Keep the key stable across issue projections: updatedAt/status are
+        // expected to change after this patch and must not create wake spam.
+        const remediationKey = `jules-pr-remediation:${issue.id}:${matchingPr.url}:${matchingPr.headRefOid || "unknown"}`;
+        await lifecycleConvergenceGuard.runOnce(remediationKey, async () => {
+          const resumed = await pc.patchIssue(issue.id, {
+            status: "in_progress",
+            assigneeAgentId: julesAgentId,
+            executionPolicy: remediationPolicy,
+            executionState: null,
+          });
+          if (!resumed.ok) {
+            await log(`[ORCHESTRATOR] Could not route failed Jules PR CI for [${issue.identifier || issue.id}] to Jules (${resumed.status}): ${resumed.text}`);
+            return;
+          }
+          statusOverrides.set(issue.id, "in_progress");
+          ciRemediationIssueIds.add(issue.id);
+          await managedWakeup(
+            julesAgentId,
+            `Reconcile failed CI for existing Jules PR #${matchingPr.number}`,
+            issue.id,
+            { idempotencyKey: remediationKey },
+          );
+          wokeThisTick.add(`${julesAgentId}:${issue.id}`);
+          await log(`[ORCHESTRATOR] Routed failed Jules PR CI for [${issue.identifier || issue.id}] to Jules remediation on its existing branch.`);
+        });
         continue;
       }
       // The same PR may need recovery again if Paperclip asynchronously
@@ -1024,6 +1203,60 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     const timeoutAt = typeof monitorRecord?.["timeoutAt"] === "string" ? monitorRecord["timeoutAt"] : null;
     const serviceName = typeof monitorRecord?.["serviceName"] === "string" ? monitorRecord["serviceName"] : null;
     const externalRef = monitorRecord?.["externalRef"];
+    // The monitor projection can redact its external reference after a
+    // lifecycle cleanup. Recovering from that display value would create an
+    // invalid provider monitor, so obtain the immutable handle written by the
+    // Jules adapter before considering a repair.
+    let sessionHandleBody: unknown;
+    if (serviceName === "jules") {
+      try {
+        const documents = asArray<Record<string, unknown>>(await pc.getJson<unknown>(`/api/issues/${encodeURIComponent(issue.id)}/documents`));
+        sessionHandleBody = documents.find((document) => document["key"] === "jules-session")?.["body"];
+      } catch (error: unknown) {
+        await log(`[ORCHESTRATOR] Deferring Jules monitor recovery for [${issue.identifier || issue.id}]: could not read its durable session handle (${String(error)}).`);
+      }
+    }
+    const providerSessionId = resolveJulesMonitorSessionId({
+      monitorExternalRef: externalRef,
+      sessionHandleBody,
+    });
+    // The Jules adapter deliberately clears its parent monitor while the
+    // addressed reviewer owns a native plan form. Paperclip's built-in
+    // wake_assignee then wakes that child reviewer, not the Jules parent.
+    // Reattach only after an exact v2 resolved verdict proves the child,
+    // parent, session, and document revision all agree. This is an
+    // adapter-only compatibility bridge until Paperclip supports a typed
+    // parent-continuation policy for child interactions.
+    let planVerdictContinuation: ReturnType<typeof resolvedJulesPlanVerdict> = null;
+    let planVerdictChild: typeof lifecycleIssues[number] | null = null;
+    if (monitorClearReason === "manual" && providerSessionId &&
+        (issue.status === "backlog" || issue.status === "blocked") &&
+        issue.assigneeAgentId === julesAgentId) {
+      const reviewChildren = lifecycleIssues.filter((candidate) =>
+        candidate.parentId === issue.id &&
+        isDelegatedReviewChild(candidate) &&
+        // Retain an answered done child for one recovery pass: a process can
+        // die after terminalizing the child but before resuming Jules. The
+        // versioned card identity below still rejects stale/cross-task forms.
+        candidate.status !== "cancelled",
+      );
+      for (const child of reviewChildren) {
+        try {
+          const interactions = asArray<Record<string, unknown>>(await pc.listInteractions(child.id));
+          planVerdictContinuation = resolvedJulesPlanVerdict({
+            parentId: issue.id,
+            parentSessionId: providerSessionId,
+            interactions,
+          });
+          if (planVerdictContinuation) {
+            planVerdictChild = child;
+            break;
+          }
+        } catch (error: unknown) {
+          await log(`[ORCHESTRATOR] Deferring resolved native plan verdict recovery for [${issue.identifier || issue.id}]: could not read child interaction (${String(error)}).`);
+        }
+      }
+    }
     const executionPolicy = executionPolicyRecord;
     // Compatibility bridge: Paperclip can drop executionPolicy while its
     // durable projection still says that Jules owns an active monitor. Such
@@ -1032,8 +1265,10 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     // never infer it from provider prose or a PR alone.
     const monitorDetached = executionPolicyRecord === null &&
       serviceName === "jules" &&
-      typeof externalRef === "string" && externalRef.trim().length > 0 &&
-      (monitorStatus === "triggered" || monitorStatus === null);
+      providerSessionId !== null &&
+      (monitorStatus === "triggered" || monitorStatus === null ||
+        (monitorStatus === "cleared" && monitorClearReason === "invalid_status") ||
+        (monitorStatus === "cleared" && monitorClearReason === "manual" && planVerdictContinuation !== null));
     const nativePolicyMonitor = executionPolicy?.["monitor"];
     const canReattachNativeMonitor = Boolean(
       nativePolicyMonitor && typeof nativePolicyMonitor === "object" && !Array.isArray(nativePolicyMonitor) &&
@@ -1047,9 +1282,10 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       monitorStatus,
       monitorClearReason,
       timeoutAt,
-      hasProviderSession: typeof externalRef === "string" && externalRef.trim().length > 0,
+      hasProviderSession: providerSessionId !== null,
       monitorCanBeReattached: canReattachNativeMonitor,
       monitorDetached,
+      resolvedNativePlanVerdict: planVerdictContinuation !== null,
       assigneeIsJules: issue.assigneeAgentId === julesAgentId,
     }, Date.now());
     if (monitorDecision.action === "return_to_todo") {
@@ -1066,7 +1302,39 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       continue;
     }
     if (monitorDecision.action !== "resume_provider") continue;
-    const key = `jules-monitor-resume:${issue.id}:${timeoutAt}`;
+    if (!julesAgentId) {
+      await log(`[ORCHESTRATOR] Refusing Jules monitor reattachment for [${issue.identifier || issue.id}]: managed Jules worker is unavailable.`);
+      continue;
+    }
+    if (planVerdictContinuation && planVerdictChild && planVerdictChild.status !== "done") {
+      // Paperclip can retain the parent-blocking edge even after the adapter
+      // requested blockParentUntilDone:false for this internal child. Close
+      // only the exact child that owns the verified v2 verdict before the
+      // parent transition. This adapters-only bridge is required until
+      // Paperclip makes interaction resolution and child completion atomic.
+      const childCompletionKey = `jules:plan-verdict-child-complete:${issue.id}:${planVerdictContinuation.interactionId}`;
+      const childCompleted = await lifecycleConvergenceGuard.runOnce(childCompletionKey, async () => {
+        const completed = await pc.patchIssue(planVerdictChild.id, {
+          status: "done",
+          blockParentUntilDone: false,
+        });
+        if (!completed.ok) {
+          await log(`[ORCHESTRATOR] Could not complete resolved Jules plan-review child [${planVerdictChild.identifier || planVerdictChild.id}] (${completed.status}): ${completed.text}`);
+          return false;
+        }
+        return true;
+      });
+      if (!childCompleted) {
+        // ConvergenceGuard records normal returns. Clear after it settles so
+        // a transient control-plane failure is retried next heartbeat rather
+        // than converting this typed continuation into a permanent stall.
+        lifecycleConvergenceGuard.clear(childCompletionKey);
+        continue;
+      }
+    }
+    const key = planVerdictContinuation
+      ? `jules-monitor-resume:${issue.id}:${planVerdictContinuation.interactionId}`
+      : `jules-monitor-resume:${issue.id}:${timeoutAt}`;
     // Paperclip's invalid-assignee cleanup can leave the legacy projection
     // (`executionState.monitor`) cleared while dropping `executionPolicy`.
     // That is a recoverable state, but it can persist across several ticks if
@@ -1076,24 +1344,47 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     if (monitorStatus === "cleared" && monitorClearReason === "invalid_assignee" && !canReattachNativeMonitor) {
       lifecycleConvergenceGuard.clear(key);
     }
-    await lifecycleConvergenceGuard.runOnce(key, async () => {
+    const resumedThisTick = await lifecycleConvergenceGuard.runOnce(key, async () => {
       const invalidAssigneeRepair = (issue.status === "in_progress" || issue.status === "blocked" || issue.status === "todo") &&
         monitorStatus === "cleared" && monitorClearReason === "invalid_assignee" &&
         issue.assigneeAgentId === julesAgentId;
-      if ((!executionPolicy && !invalidAssigneeRepair && !monitorDetached) || (!canReattachNativeMonitor && !invalidAssigneeRepair && !monitorDetached) || typeof externalRef !== "string") {
+      if ((!executionPolicy && !invalidAssigneeRepair && !monitorDetached) || (!canReattachNativeMonitor && !invalidAssigneeRepair && !monitorDetached) || !providerSessionId) {
         await log(`[ORCHESTRATOR] Refusing Jules monitor reattachment for [${issue.identifier || issue.id}]: native monitor payload is incomplete.`);
-        return;
+        return false;
       }
-      const reattachedPolicy = buildJulesMonitorReattachment(executionPolicy ?? { mode: "normal", stages: [] }, externalRef, Date.now());
-      const resumed = await pc.patchIssue(issue.id, { status: "in_progress", executionPolicy: reattachedPolicy });
+      const reattachedPolicy = buildJulesMonitorReattachment(executionPolicy ?? { mode: "normal", stages: [] }, providerSessionId, Date.now());
+      // `wake_owner` resumes the issue assignee. A failed worker run may have
+      // returned ownership to the orchestrator, so restoring only the monitor
+      // would schedule a no-op orchestrator wake instead of polling Jules.
+      // Reassign atomically with the recovered policy to keep the provider
+      // continuation single-owned and eligible on its first due tick.
+      const resumed = await pc.patchIssue(issue.id, {
+        status: "in_progress",
+        assigneeAgentId: julesAgentId,
+        executionPolicy: reattachedPolicy,
+      });
       if (!resumed.ok) {
         await log(`[ORCHESTRATOR] Could not resume expired Jules monitor for [${issue.identifier || issue.id}] (${resumed.status}): ${resumed.text}`);
-        return;
+        return false;
       }
       statusOverrides.set(issue.id, "in_progress");
       reattachedJulesMonitorIssueIds.add(issue.id);
       await log(`[ORCHESTRATOR] Resumed expired Jules monitor for [${issue.identifier || issue.id}].`);
+      if (planVerdictContinuation && !wokeThisTick.has(`${julesAgentId}:${issue.id}`)) {
+        await managedWakeup(
+          julesAgentId,
+          // Closed cross-adapter protocol signal, consumed by Jules before
+          // its advisory-wake throttle. The verdict id stays in the durable
+          // idempotency key below rather than becoming prose to classify.
+          "synchronize_provider_plan_ready",
+          issue.id,
+          { idempotencyKey: `jules:plan-verdict-continuation:${issue.id}:${planVerdictContinuation.interactionId}` },
+        );
+        wokeThisTick.add(`${julesAgentId}:${issue.id}`);
+      }
+      return true;
     });
+    if (!resumedThisTick) lifecycleConvergenceGuard.clear(key);
   }
 
   // A Jules revision can be observed by several overlapping/restarted worker
@@ -1163,6 +1454,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       monitorExpired: reattachedJulesMonitorIssueIds.has(issue.id) ? false : monitorExpired,
       nativeReviewInteraction,
       registeredOpenPullRequest,
+      ciRemediationInProgress: ciRemediationIssueIds.has(issue.id),
       hasPullRequest: issue.status === "in_review" && !ghStatus.error && Boolean(ghStatus.openPrs.find((pr) => matchPrToIssue(pr, issue))),
       parentId: issue.parentId || null,
       reviewGateKey,
@@ -1718,14 +2010,46 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
     });
   }
 
-  const reviewRecoveryIssues = overlayedIssues.filter((issue) =>
-    !nativeReviewRecoveryIds.has(issue.id) && shouldRecoverNativePrReview({
+  // This generic repair is intentionally CI-gated too. The Jules-specific
+  // recovery above already checks CI, but it can legitimately defer a red
+  // provider PR. Without this second gate, this broader reconciliation could
+  // immediately erase that ownership and strand the issue in `in_review`
+  // without a worker or a native verdict card.
+  const reviewRecoveryIssues: ParsedIssueMetadata[] = [];
+  for (const issue of overlayedIssues) {
+    const isRecoveryCandidate = !nativeReviewRecoveryIds.has(issue.id) && shouldRecoverNativePrReview({
       status: issue.status,
       orchestratorManaged: issue.orchestratorManaged,
       merged: mergedIssueIds.has(issue.id),
       hasUnreviewedReadyPullRequest: hasUnreviewedReadyPullRequest(issue),
-    }),
-  );
+      // The policy predicate requires an explicit CI decision. The actual
+      // decision is made below after we resolve the authoritative GitHub PR.
+      ciGreen: true,
+    });
+    if (!isRecoveryCandidate) continue;
+
+    if (ghStatus.error) {
+      await log(`[ORCHESTRATOR] Deferring native PR review recovery for [${issue.identifier || issue.id}]: GitHub PR/CI state is unavailable.`);
+      continue;
+    }
+    const matchingPr = ghStatus.openPrs.find((pr) => matchPrToIssue(pr, issue));
+    if (!matchingPr) {
+      await log(`[ORCHESTRATOR] Deferring native PR review recovery for [${issue.identifier || issue.id}]: no authoritative open GitHub PR was found.`);
+      continue;
+    }
+    const ci = await checkPrCiIsGreen(matchingPr.number, workspacePath, matchingPr.url);
+    if (!shouldRecoverNativePrReview({
+      status: issue.status,
+      orchestratorManaged: issue.orchestratorManaged,
+      merged: mergedIssueIds.has(issue.id),
+      hasUnreviewedReadyPullRequest: hasUnreviewedReadyPullRequest(issue),
+      ciGreen: ci.isGreen,
+    })) {
+      await log(`[ORCHESTRATOR] Deferring native PR review recovery for [${issue.identifier || issue.id}]: CI is ${ci.status}.`);
+      continue;
+    }
+    reviewRecoveryIssues.push(issue);
+  }
   for (const issue of reviewRecoveryIssues) {
     await log(
       `[ORCHESTRATOR] Recovering [${issue.identifier || issue.id}] from ${issue.status}: its registered PR is still ready_for_review and has no review verdict.`,
@@ -1770,16 +2094,11 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
   const julesRunning = inProgressIssues.filter((i) => i.assigneeAgentId === julesAgentId).length;
   const vibeRunning = inProgressIssues.filter((i) => i.assigneeAgentId === vibeAgentId).length;
 
-  const julesCapacity = julesQuota.fetchedLive
-    ? Math.min(
-        config.maxConcurrentJules ?? julesQuota.effectiveAvailableCapacity + julesRunning,
-        julesQuota.effectiveAvailableCapacity + julesRunning
-      )
-    : 0;
+  const julesNewSessionBudget = Math.max(0, config.maxNewJulesSessionsPerHeartbeat ?? config.maxConcurrentJules ?? 3);
   const vibeCapacity = config.maxConcurrentVibe ?? 1;
 
   await log(
-    `[ORCHESTRATOR] Backlog: total=${parsedIssues.length}, in_review=${inReviewIssues.length} | Jules running=${julesRunning}/${julesCapacity}, Vibe running=${vibeRunning}/${vibeCapacity}, conflict_edges=${conflictResult.conflictEdges.length}`
+    `[ORCHESTRATOR] Backlog: total=${parsedIssues.length}, in_review=${inReviewIssues.length} | Jules provider sessions=${julesRunning}, new Jules admissions=${julesNewSessionBudget}, Vibe running=${vibeRunning}/${vibeCapacity}, conflict_edges=${conflictResult.conflictEdges.length}`
   );
 
   let existingApprovals: PaperclipApprovalSummary[] = [];
@@ -2132,13 +2451,20 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
         }
 
         try {
-          if (!targetAgentId) {
-            await log(`[ORCHESTRATOR] Refusing to route review without a target agent`);
-            continue;
-          }
-          if (targetAgentId && !managedIds.has(targetAgentId)) {
-            await log(`[ORCHESTRATOR] Refusing to route review to unmanaged agent ${targetAgentId}`);
-            continue;
+          const dispatchPlan = planNativeReviewDispatch({
+            targetAgentId,
+            managedAgentIds: managedIds,
+            status: targetAgentId ? managedAgentStatuses.get(targetAgentId) : undefined,
+            capability: targetAgentId ? agentStructuredDecisionCapabilities.get(targetAgentId) : undefined,
+          });
+          switch (dispatchPlan.kind) {
+            case "dispatch":
+            case "reviewer_unavailable":
+              break;
+            case "missing_target":
+            case "unmanaged_target":
+              await log(`[ORCHESTRATOR] 🚨 Native review configuration blocked for [${reviewTask.identifier || reviewTask.id}]: ${dispatchPlan.reason}.`);
+              continue;
           }
           let reviewInteractionId: string | undefined;
           let dialogCreated = false;
@@ -2149,6 +2475,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
             headSha: reviewHeadSha,
             stage,
             reviewerAgentId: targetAgentId,
+            reviewContractMarkdown: reviewTask.description || undefined,
           };
           // Cancelled Paperclip interactions retain their idempotency keys
           // forever. Allocate a monotonic attempt so a cancelled native card
@@ -2159,17 +2486,12 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
             attempt: selectReviewAttempt(reviewIdentityBase, reviewInteractions),
           } as const;
           const reviewCircuitKey = `review-card:${companyId}:${reviewTask.id}:${stage}:${reviewHeadSha}:${targetAgentId}`;
-          const reviewerEligibility = evaluateStructuredReviewerEligibility(
-            managedAgentStatuses.get(targetAgentId),
-            agentStructuredDecisionCapabilities.get(targetAgentId),
-            "pull_request_review",
-          );
-          if (reviewerEligibility.kind === "unavailable") {
+          if (dispatchPlan.kind === "reviewer_unavailable") {
             const status = managedAgentStatuses.get(targetAgentId);
             const circuitState = capabilityCircuit.record(reviewCircuitKey, {
               ok: false,
               status: 422,
-              text: `Reviewer ${targetAgentId} is not invokable: ${reviewerEligibility.reason}`,
+              text: `Reviewer ${targetAgentId} is not invokable: ${dispatchPlan.reason}`,
             });
             if (circuitState === "opened") {
               await log(
@@ -2184,7 +2506,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
               stage,
               reviewerAgentId: targetAgentId,
               reviewerStatus: status || "unknown",
-              reason: reviewerEligibility.reason,
+              reason: dispatchPlan.reason,
               circuitKey: reviewCircuitKey,
             });
             // Publish the wait as a Paperclip recovery action. Unlike the
@@ -2203,7 +2525,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
                     stage,
                     reviewerAgentId: targetAgentId,
                     reviewerStatus: status || "unknown",
-                    reason: reviewerEligibility.reason,
+                    reason: dispatchPlan.reason,
                     circuitKey: reviewCircuitKey,
                   }),
                 );
@@ -2533,31 +2855,40 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
   const dispatchIssues = overlayedIssues.filter((issue) => issue.orchestratorManaged).map((issue) =>
     statusOverrides.has(issue.id) ? { ...issue, status: statusOverrides.get(issue.id) as IssueState } : issue
   );
+  // Paperclip can briefly lose the monitor projection after a Jules heartbeat.
+  // The heartbeat record remains durable evidence of provider ownership for the
+  // same window used by stale-session recovery, so routing must keep it Jules-only.
+  const julesOnlyIssueIds = liveHeartbeatIssueIds(
+    heartbeatRuns.filter((run) => managedJulesIds.has(run.agentId)),
+    nowMs,
+    julesThresholdMs,
+  );
   const conflictForDispatch = calculateConflictMatrix(dispatchIssues);
 
   // 10. PHASE 4: Multi-Lane Implementation Dispatching
   const candidateSelections = selectNextTasksMultiLane(dispatchIssues, conflictForDispatch, {
     julesAgentId,
     vibeAgentId,
-    julesCapacity,
+    julesNewSessionBudget,
     vibeCapacity,
     julesRunningCount: julesRunning,
     vibeRunningCount: vibeRunning,
     // A project may receive zero capacity when the company has more runnable
     // projects than slots. Never turn that safe allocation into a dispatch.
-    maxToSelect: Math.max(0, julesCapacity - julesRunning + (vibeCapacity - vibeRunning)),
+    maxToSelect: Math.max(0, julesNewSessionBudget + (vibeCapacity - vibeRunning)),
     extraLockedFiles: ghStatus.openPrFiles,
     preferredIssueIds: new Set(
       dispatchIssues
         .filter((issue) => findTaskStartApproval(existingApprovals, issue.id)?.status === "approved")
         .map((issue) => issue.id),
     ),
+    julesOnlyIssueIds,
   });
 
   if (candidateSelections.length === 0) {
     const reason =
-      julesRunning >= julesCapacity && vibeRunning >= vibeCapacity
-        ? `Worker lanes at full capacity (Jules: ${julesRunning}/${julesCapacity}, Vibe: ${vibeRunning}/${vibeCapacity})`
+      julesNewSessionBudget === 0 && vibeRunning >= vibeCapacity
+        ? `No new worker admissions available this heartbeat (Jules: 0 new sessions, Vibe: ${vibeRunning}/${vibeCapacity})`
         : "No unblocked implementation tasks ready in backlog/todo";
 
     await log(`[ORCHESTRATOR] Implementation dispatch: ${reason}.`);
@@ -2704,9 +3035,8 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
     inReviewCount: inReviewIssues.length,
     resolvedCount: parsedIssues.filter((i) => i.status === "done").length,
     todoCount: parsedIssues.filter((i) => i.status === "todo" || i.status === "backlog").length,
-    julesQuota,
     julesRunning,
-    julesCapacity,
+    julesNewSessionBudget,
     vibeRunning,
     vibeCapacity,
     ghStatus,

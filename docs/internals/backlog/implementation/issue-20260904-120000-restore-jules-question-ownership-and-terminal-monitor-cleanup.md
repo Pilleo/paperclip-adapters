@@ -27,11 +27,11 @@ paperclip_identifier: "JUL-8"
 
 # 🔴 [Severity: HIGH]: Restore Jules native-question ownership and terminal-monitor cleanup
 
-## Context
+**Context:**
 
 MAZ-955 accumulated duplicate review cards and hundreds of monitor attempts because a provider question could remain pending after the source issue lost its assignee. The provider question must be represented by one native Paperclip card and one durable adjudicator execution. Provider completion and PR handoff must also terminate the Jules monitor instead of leaving a stale external timer active.
 
-## Needed:
+**Needed:**
 
 1. Add the typed question-ownership and terminal-monitor state-machine behavior described below.
 2. Add the required regression tests and run the focused Jules/orchestrator suites.

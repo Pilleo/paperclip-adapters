@@ -149,9 +149,13 @@ adapter's `dist/index.js`, then allow an Orchestrator heartbeat to reconcile
 managed reviewer configuration. Do not wake a reviewer while it still has an
 active run from the old configuration.
 
-### Q: A native review card is pending after a reviewer crash. Can I retry it?
-**A:** Yes, but only after confirming the card is the sole pending card for that
-stage and the addressed reviewer has no queued or running heartbeat. Reuse the
-same card through the native recovery helper; never create a replacement card
-or leave a normal comment as a decision. The next successful reviewer run must
-resolve the original card to `answered`.
+### Q: A native review card is pending or terminal after a reviewer crash. Can I retry it?
+**A:** A pending card may be re-woken only after confirming it is the sole
+pending card for its stage and the addressed reviewer has no queued or running
+heartbeat. Reuse that exact card; never create a replacement or leave a normal
+comment as a decision. An `answered`, `cancelled`, or `expired` v2 card is
+terminal: the adapter asks Jules to publish a new plan activity, and only that
+new immutable activity may enter a new Luna → Terra review cycle. If Jules is
+already terminal after accepting that request, the adapter starts one new
+provider session on the existing PR branch; it must publish its fresh plan
+before implementation. Never reopen the terminal card or substitute a comment.

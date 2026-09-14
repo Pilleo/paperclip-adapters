@@ -3,7 +3,8 @@ import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
 
-export type CiCheckStatus = "success" | "pending" | "failed" | "unknown";
+export type CiCheckStatus = "success" | "pending" | "stalled" | "failed" | "unknown";
+export const CI_STALL_TIMEOUT_MS = 90 * 60 * 1_000;
 export type PullRequestState = "OPEN" | "MERGED" | "CLOSED" | "UNKNOWN";
 
 export interface CheckItem {
@@ -11,6 +12,7 @@ export interface CheckItem {
   state?: string;
   bucket?: string;
   workflow?: string;
+  startedAt?: string;
 }
 
 export type MergeableStatus = "mergeable" | "conflicting" | "unknown";
@@ -22,14 +24,17 @@ export interface PullRequestDetails {
   mergeableStatus?: MergeableStatus;
   /** Immutable GitHub head used to fence review decisions to one revision. */
   headSha?: string;
+  /** PR branch that remediation must continue on instead of the repository default branch. */
+  headRefName?: string;
 }
 
-export function evaluateChecks(checks: CheckItem[]): CiCheckStatus {
+export function evaluateChecks(checks: CheckItem[], now = Date.now()): CiCheckStatus {
   if (!Array.isArray(checks) || checks.length === 0) {
     return "pending";
   }
 
   let hasPending = false;
+  let hasFreshPending = false;
   for (const check of checks) {
     const bucket = (check.bucket || "").toLowerCase();
     const state = (check.state || "").toUpperCase();
@@ -39,9 +44,12 @@ export function evaluateChecks(checks: CheckItem[]): CiCheckStatus {
     }
     if (bucket === "pending" || state === "PENDING" || state === "IN_PROGRESS" || state === "QUEUED") {
       hasPending = true;
+      const startedAt = typeof check.startedAt === "string" ? Date.parse(check.startedAt) : NaN;
+      if (!Number.isFinite(startedAt) || now - startedAt < CI_STALL_TIMEOUT_MS) hasFreshPending = true;
     }
   }
 
+  if (hasPending && !hasFreshPending) return "stalled";
   if (hasPending) return "pending";
   return "success";
 }
@@ -81,11 +89,12 @@ export async function getPullRequestDetails(
   let prState: PullRequestState = "UNKNOWN";
   let isMerged = false;
   let prHeadSha: string | undefined;
+  let prHeadRefName: string | undefined;
 
   // 1. Check PR State via gh CLI
   try {
     const { stdout } = await execAsync(
-      `gh pr view "${prUrl}" --json state,mergedAt,mergeable,mergeStateStatus,headRefOid`,
+      `gh pr view "${prUrl}" --json state,mergedAt,mergeable,mergeStateStatus,headRefOid,headRefName`,
       { cwd: cwd || process.cwd(), timeout: 3_000 },
     );
     const parsed = JSON.parse(stdout.trim());
@@ -107,6 +116,9 @@ export async function getPullRequestDetails(
         };
       }
       prHeadSha = headSha;
+      prHeadRefName = typeof parsed.headRefName === "string" && parsed.headRefName.trim()
+        ? parsed.headRefName.trim()
+        : undefined;
     }
   } catch {
     // Fall back to checks or REST API
@@ -115,7 +127,7 @@ export async function getPullRequestDetails(
   // 2. Check CI Checks via gh CLI
   try {
     const { stdout } = await execAsync(
-      `gh pr checks "${prUrl}" --json bucket,state,name,workflow`,
+      `gh pr checks "${prUrl}" --json bucket,state,name,workflow,startedAt`,
       { cwd: cwd || process.cwd(), timeout: 3_000 },
     );
     const parsed = JSON.parse(stdout.trim());
@@ -126,6 +138,7 @@ export async function getPullRequestDetails(
         ciStatus: evaluateChecks(parsed),
         mergeableStatus: (typeof (parsed as any).mergeableStatus === "string" ? (parsed as any).mergeableStatus : undefined),
         ...(prHeadSha ? { headSha: prHeadSha } : {}),
+        ...(prHeadRefName ? { headRefName: prHeadRefName } : {}),
       };
     }
   } catch {
@@ -153,6 +166,7 @@ export async function getPullRequestDetails(
             merged: Boolean(prData?.merged),
             ciStatus: "success",
             ...(typeof prData?.head?.sha === "string" ? { headSha: prData.head.sha } : {}),
+            ...(typeof prData?.head?.ref === "string" ? { headRefName: prData.head.ref } : {}),
           };
         }
         const headSha = prData?.head?.sha;
@@ -165,18 +179,21 @@ export async function getPullRequestDetails(
             const checkData: any = await checkRunsRes.json();
             const checkRuns = checkData?.check_runs || [];
             if (checkRuns.length === 0) {
-              return { state: "OPEN", merged: false, ciStatus: "pending", headSha };
+              return { state: "OPEN", merged: false, ciStatus: "pending", headSha,
+                ...(typeof prData?.head?.ref === "string" ? { headRefName: prData.head.ref } : {}) };
             }
             const items: CheckItem[] = checkRuns.map((cr: any) => ({
               name: cr.name,
               state: (cr.conclusion || cr.status || "").toUpperCase(),
               bucket: cr.conclusion === "success" ? "pass" : cr.status === "completed" ? "fail" : "pending",
+              startedAt: cr.started_at,
             }));
             return {
               state: "OPEN",
               merged: false,
               ciStatus: evaluateChecks(items),
               headSha,
+              ...(typeof prData?.head?.ref === "string" ? { headRefName: prData.head.ref } : {}),
             };
           }
         }

@@ -138,6 +138,17 @@ describe("mazewall execution policy builder", () => {
       orchestratorManaged: true,
       merged: false,
       hasUnreviewedReadyPullRequest: true,
+      ciGreen: true,
     })).toBe(expected);
+  });
+
+  it("does not recover a ready PR into review while its CI gate is red", () => {
+    expect(shouldRecoverNativePrReview({
+      status: "backlog",
+      orchestratorManaged: true,
+      merged: false,
+      hasUnreviewedReadyPullRequest: true,
+      ciGreen: false,
+    })).toBe(false);
   });
 });

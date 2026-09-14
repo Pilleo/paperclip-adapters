@@ -21,12 +21,28 @@ describe("jules session handle", () => {
     const body = formatJulesSessionHandleBody("sess-42", "https://jules.google.com/session/sess-42", {
       prUrl: "https://github.com/Pilleo/paperclip-adapters/pull/5",
       headSha: "ab4a4f2c3fcd498c2c4ca67b8f299225330574d5",
+      headRefName: "jules-42-fix-ci",
+    }, {
+      deliveredFeedbackActivityId: "activity-42",
+      deliveredFeedbackInteractionId: "interaction-42",
+    }, {
+      originalSessionId: "session-original",
+      recoverySessionId: "sess-42",
+      reason: "ci_failure",
     });
     expect(parseJulesSessionHandle(body)).toEqual({
       sessionId: "sess-42",
       sessionUrl: "https://jules.google.com/session/sess-42",
       prUrl: "https://github.com/Pilleo/paperclip-adapters/pull/5",
       headSha: "ab4a4f2c3fcd498c2c4ca67b8f299225330574d5",
+      headRefName: "jules-42-fix-ci",
+      deliveredFeedbackActivityId: "activity-42",
+      deliveredFeedbackInteractionId: "interaction-42",
+      remediation: {
+        originalSessionId: "session-original",
+        recoverySessionId: "sess-42",
+        reason: "ci_failure",
+      },
     });
     expect(parseJulesSessionHandle("julesSessionId: legacy\nurl: https://jules.google.com/session/legacy")).toEqual({
       sessionId: "legacy",

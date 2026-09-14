@@ -15,6 +15,21 @@ export interface JulesSessionHandle {
   readonly sessionUrl?: string;
   readonly prUrl?: string;
   readonly headSha?: string;
+  /** Immutable GitHub branch for branch-bound PR remediation. */
+  readonly headRefName?: string;
+  readonly deliveredFeedbackActivityId?: string;
+  readonly deliveredFeedbackInteractionId?: string;
+  /**
+   * A branch-bound recovery is a durable single-flight fence, not transient
+   * runtime state.  Without it a status/ownership replay can forget that a
+   * remediation session already exists and start a second Jules session for
+   * the same immutable PR branch.
+   */
+  readonly remediation?: {
+    readonly originalSessionId: string;
+    readonly recoverySessionId: string;
+    readonly reason: "ci_failure" | "terminal_plan_revision_unavailable";
+  };
 }
 
 export function extractJulesSessionId(text: string | null | undefined): string | null {
@@ -34,13 +49,25 @@ export function julesSessionUrl(sessionId: string, existingUrl?: string | null):
 export function formatJulesSessionHandleBody(
   sessionId: string,
   url?: string | null,
-  pr?: { readonly prUrl?: string | null; readonly headSha?: string | null },
+  pr?: { readonly prUrl?: string | null; readonly headSha?: string | null; readonly headRefName?: string | null },
+  delivery?: { readonly deliveredFeedbackActivityId?: string | null; readonly deliveredFeedbackInteractionId?: string | null },
+  remediation?: {
+    readonly originalSessionId?: string | null;
+    readonly recoverySessionId?: string | null;
+    readonly reason?: "ci_failure" | "terminal_plan_revision_unavailable" | null;
+  },
 ): string {
   return [
     `julesSessionId: ${sessionId}`,
     `url: ${julesSessionUrl(sessionId, url)}`,
     ...(pr?.prUrl ? [`prUrl: ${pr.prUrl}`] : []),
     ...(pr?.headSha ? [`prHeadSha: ${pr.headSha}`] : []),
+    ...(pr?.headRefName ? [`prHeadRef: ${pr.headRefName}`] : []),
+    ...(delivery?.deliveredFeedbackActivityId ? [`deliveredFeedbackActivityId: ${delivery.deliveredFeedbackActivityId}`] : []),
+    ...(delivery?.deliveredFeedbackInteractionId ? [`deliveredFeedbackInteractionId: ${delivery.deliveredFeedbackInteractionId}`] : []),
+    ...(remediation?.originalSessionId ? [`prRemediationOriginalSessionId: ${remediation.originalSessionId}`] : []),
+    ...(remediation?.recoverySessionId ? [`prRemediationRecoverySessionId: ${remediation.recoverySessionId}`] : []),
+    ...(remediation?.reason ? [`prRemediationReason: ${remediation.reason}`] : []),
   ].join("\n");
 }
 
@@ -55,11 +82,29 @@ export function parseJulesSessionHandle(text: string | null | undefined): JulesS
   const sessionUrl = lineValue(text, "url");
   const prUrl = lineValue(text, "prUrl");
   const headSha = lineValue(text, "prHeadSha");
+  const headRefName = lineValue(text, "prHeadRef");
+  const deliveredFeedbackActivityId = lineValue(text, "deliveredFeedbackActivityId");
+  const deliveredFeedbackInteractionId = lineValue(text, "deliveredFeedbackInteractionId");
+  const remediationOriginalSessionId = lineValue(text, "prRemediationOriginalSessionId");
+  const remediationRecoverySessionId = lineValue(text, "prRemediationRecoverySessionId");
+  const remediationReason = lineValue(text, "prRemediationReason");
+  const remediation: JulesSessionHandle["remediation"] = remediationOriginalSessionId && remediationRecoverySessionId &&
+    (remediationReason === "ci_failure" || remediationReason === "terminal_plan_revision_unavailable")
+    ? {
+        originalSessionId: remediationOriginalSessionId,
+        recoverySessionId: remediationRecoverySessionId,
+        reason: remediationReason,
+      }
+    : undefined;
   return {
     sessionId,
     ...(sessionUrl ? { sessionUrl } : {}),
     ...(prUrl ? { prUrl } : {}),
     ...(headSha ? { headSha } : {}),
+    ...(headRefName ? { headRefName } : {}),
+    ...(deliveredFeedbackActivityId ? { deliveredFeedbackActivityId } : {}),
+    ...(deliveredFeedbackInteractionId ? { deliveredFeedbackInteractionId } : {}),
+    ...(remediation ? { remediation } : {}),
   };
 }
 

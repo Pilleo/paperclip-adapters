@@ -61,7 +61,7 @@ To run Jules successfully, ensure the following 3 requirements are met:
 |---|---|---|
 | **HTTP 401 / 403** | Invalid or missing \`JULES_API_KEY\` | Verify key in Paperclip Settings → Secrets → Secret Bindings. |
 | **HTTP 404 on Session Create** | Target repo not connected to Jules | Install the GitHub App at [github.com/apps/google-jules](https://github.com/apps/google-jules). |
-| **HTTP 429 Quota Exceeded** | 15 concurrent / 100 daily limit reached | The Orchestrator will automatically queue tasks until slots free up. |
+| **HTTP 429 Rate Limited** | Jules temporarily rejects a new session | The adapter persists provider retry timing; Paperclip keeps the task queued without recreating a session. |
 `;
 
 export function createServerAdapter(): ServerAdapterModule {

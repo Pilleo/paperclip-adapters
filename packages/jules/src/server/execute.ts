@@ -11,10 +11,10 @@ import {
   planMarkdown,
   rejectionReason,
 } from "./activity-formatter.js";
-import { evaluateSessionStartup, isInteractionWake, sessionMatchesConfig, shouldReadIssueSessionHandle } from "./session-lifecycle.js";
+import { evaluateSessionStartup, isInteractionWake, preferBranchBoundRecoveryHandle, recoverPrIdentityFromWorkProduct, restoreBranchBoundRemediationFromHandle, sessionMatchesConfig, shouldReadIssueSessionHandle, shouldReclaimBranchBoundRecovery } from "./session-lifecycle.js";
 import { isLiveJulesRemoteState } from "./jules-live-state.js";
 import { evaluateSessionWatchdog } from "./watchdog.js";
-import { activityScanPageLimit, listAllActivities, mirrorNewActivities } from "./activity-mirror.js";
+import { MAX_ACTIVITY_PAGES, activityScanPageLimit, listAllActivities, mirrorActivities, mirrorNewActivities, reduceTerminalActivityScan, terminalEvidenceActivity } from "./activity-mirror.js";
 import { reconcileProviderContinuation } from "./provider-continuation.js";
 import { persistSessionBestEffort } from "./session-initializer.js";
 import { evaluatePlanClarity, composePlanForReview, createCheapReviewer, createTerraCodexReviewer, defaultCheapReviewer } from "./plan-reviewer.js";
@@ -26,8 +26,8 @@ import {
   extractPlanReviewVerdict,
   recordFeedbackRelayed,
   recordPlanApprovalRelayed,
+  resumePlanReviewAfterQuestionResolution,
   isPlanApprovalRequired,
-  fingerprintPlanSteps,
   determinePaperclipIssueStatus,
 } from "./interaction-engine.js";
 import { formatCardPrompt, formatCardSummary } from "./card-prompt.js";
@@ -36,9 +36,16 @@ import { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/ad
 import { AdapterConfig, validateConfig, requireJulesApiKey, resolveJulesBaseUrl, discoverLocalGitRepository, discoverLocalGitDefaultBranch } from "./config.js";
 import { isGhCliAuthenticated, createRemoteGitHubRepo } from "./git-remote-creator.js";
 import { JulesAdapterSessionV1, normalizeJulesState, sessionCodec, serializeSession } from "./session.js";
-import { parsePlanReviewInteraction } from "./plan-review-protocol.js";
+import { parsePlanReviewInteraction, parsePlanReviewVerdictResult } from "./plan-review-protocol.js";
+import { hasNativeReviewVerdictAttestation } from "./native-review-attestation.js";
 import { decidePlanGateRecovery, recoverMissingPlanGatePointer } from "./plan-gate-state.js";
-import { reconcileProviderState } from "./provider-reconciliation.js";
+import {
+  createPlanRevisionRequest,
+  decidePlanRevisionRequestDelivery,
+  planRevisionRequestPrompt,
+} from "./plan-revision-request.js";
+import { reconcileProviderState, selectTerminalPullRequestUrl } from "./provider-reconciliation.js";
+import { decideTerminalPrLifecycle } from "./terminal-pr-lifecycle.js";
 import { JulesActivity, JulesClient, JulesClientError, extractPullRequestUrl, ownerRepoFromJulesSource } from "./jules-client.js";
 import { buildPrompt, hashPromptIdentity, PROMPT_IDENTITY_HASH_VERSION } from "./prompt-builder.js";
 import { handleJulesState } from "./state-machine.js";
@@ -68,7 +75,7 @@ import {
   answerJulesAgentAdjudicationInteraction,
   resolveJulesAgentAdjudicationInteraction,
   createJulesPlanApprovalInteraction,
-  createJulesPlanReviewInteraction,
+  createJulesPlanReviewChildInteraction,
   saveJulesPlanDocument,
   getPaperclipInteraction,
   listPaperclipApprovals,
@@ -99,16 +106,85 @@ import {
 } from "./paperclip-client.js";
 import { evaluateQuestionAdjudicationChild } from "./question-adjudication-state.js";
 import { parseQuestionAdjudication } from "./question-adjudication.js";
-import { classifyNativeQuestionReview, isExpiredQuestionBridge } from "./question-workflow.js";
+import { classifyNativeQuestionReview, evaluateTerminalQuestionDisposition, evaluateTerminalQuestionRecovery, isExpiredQuestionBridge } from "./question-workflow.js";
 import { isNativeAgentAdjudication } from "./session.js";
 import { createJulesPlanReviewChild } from "./plan-review-client.js";
 import { parsePlanAdjudication } from "./plan-adjudication.js";
 import { createTelemetry } from "./telemetry.js";
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled Jules adapter state: ${String(value)}`);
+}
 import { evaluateJulesIssueOwnership } from "./session-ownership.js";
 import { evaluateIssueScopedRun } from "./issue-scoped-run.js";
 
 const JULES_CONTINUATION_DELAY_MS = 60 * 1000;
 const JULES_INITIAL_ACTIVITY_CHECK_DELAY_MS = 5 * 1000;
+
+async function nativePlanVerdictIsAttested(input: {
+  readonly companyId: string | undefined;
+  readonly reviewerAgentId: string;
+  readonly reviewerChildIssueId: string | undefined;
+  readonly interactionId: string;
+  readonly verdict: "approve" | "reject";
+  readonly authToken: string | undefined;
+  readonly runId: string | undefined;
+}): Promise<boolean> {
+  const reviewerChildIssueId = input.reviewerChildIssueId;
+  if (!input.companyId || !reviewerChildIssueId) return false;
+  try {
+    const summaries = await getPaperclipJson<unknown[]>(
+      `/api/companies/${encodeURIComponent(input.companyId)}/heartbeat-runs?agentId=${encodeURIComponent(input.reviewerAgentId)}&limit=50`,
+      input.authToken,
+      input.runId,
+    );
+    const candidateIds = summaries.flatMap((summary) => {
+      if (!summary || typeof summary !== "object" || Array.isArray(summary)) return [];
+      const record = summary as Record<string, unknown>;
+      const context = record["contextSnapshot"];
+      const taskId = context && typeof context === "object" && !Array.isArray(context)
+        ? (context as Record<string, unknown>)["taskId"]
+        : undefined;
+      return record["agentId"] === input.reviewerAgentId && record["status"] === "succeeded" &&
+          taskId === reviewerChildIssueId && typeof record["id"] === "string"
+        ? [record["id"]]
+        : [];
+    });
+    for (const runId of candidateIds) {
+      const run = await getPaperclipJson<unknown>(`/api/heartbeat-runs/${encodeURIComponent(runId)}`, input.authToken, input.runId);
+      if (hasNativeReviewVerdictAttestation({
+        reviewerAgentId: input.reviewerAgentId,
+        reviewerChildIssueId,
+        interactionId: input.interactionId,
+        verdict: input.verdict,
+        runs: [run],
+      })) return true;
+    }
+  } catch {
+    // The interaction's actor identity remains mandatory when run evidence is
+    // temporarily unavailable.  Do not turn a transient read failure into a
+    // human override.
+  }
+  return false;
+}
+
+/**
+ * A reviewer rejection asks Jules to publish a replacement plan, not to do a
+ * normal long-running coding turn.  Keep that narrow handoff responsive so a
+ * provider can neither finish nor supersede the new plan before Paperclip
+ * creates its next native review card. This is a provider poll only: it does
+ * not add issue comments or send another provider prompt.
+ */
+function liveSessionPollDelayMs(
+  session: JulesAdapterSessionV1,
+  initialActivityCheck: boolean,
+  normalDelayMs: number,
+): number {
+  if (initialActivityCheck) return JULES_INITIAL_ACTIVITY_CHECK_DELAY_MS;
+  return session.planReviewOutcome === "revision_requested"
+    ? JULES_CONTINUATION_DELAY_MS
+    : normalDelayMs;
+}
 
 function readContextString(context: Record<string, unknown>, key: string): string | null {
   const value = context[key];
@@ -131,7 +207,71 @@ function isAdvisoryOnDemandWake(rawContext: Record<string, unknown>): boolean {
   const paperclipWake = readContextRecord(rawContext, "paperclipWake");
   const wakeSource = readContextString(rawContext, "wakeSource") ??
     readContextString(paperclipWake, "wakeSource");
+  // This is deliberately a closed allowlist, not a heuristic over arbitrary
+  // board comments. It is the one operator-issued event that means the
+  // provider was read independently and has a plan ready to synchronize.
+  // Generic on-demand wakes remain advisory and cannot spend provider polls.
+  if (isProviderPlanSynchronizationWake(rawContext)) return false;
   return wakeSource === "on_demand" && !isInteractionWake(rawContext);
+}
+
+/** An operator-confirmed provider-plan event invalidates any completed activity cache. */
+function isProviderPlanSynchronizationWake(rawContext: Record<string, unknown>): boolean {
+  const paperclipWake = readContextRecord(rawContext, "paperclipWake");
+  return (readContextString(rawContext, "wakeReason") ??
+    readContextString(paperclipWake, "wakeReason")) === "synchronize_provider_plan_ready";
+}
+
+type MonitoredJulesSession = JulesAdapterSessionV1 & {
+  readonly julesSessionId: NonNullable<JulesAdapterSessionV1["julesSessionId"]>;
+};
+
+type AdvisoryMonitorWakeDecision =
+  | { readonly action: "execute" }
+  | { readonly action: "defer_to_monitor"; readonly session: MonitoredJulesSession };
+
+/**
+ * A future monitor can suppress only an advisory duplicate wake. A persisted
+ * retry is an execution command: it may be the one opportunity to replace a
+ * terminal provider session on its already-created PR branch. Treating it as
+ * advisory causes an infinite loop in which Paperclip repeatedly restores the
+ * terminal session and Jules never receives the recovery prompt.
+ */
+function decideAdvisoryMonitorWake(input: {
+  readonly workerFeedbackPresent: boolean;
+  readonly rawContext: Record<string, unknown>;
+  readonly session: JulesAdapterSessionV1 | null;
+}): AdvisoryMonitorWakeDecision {
+  const session = input.session;
+  if (
+    input.workerFeedbackPresent ||
+    !session?.julesSessionId ||
+    !isAdvisoryOnDemandWake(input.rawContext)
+  ) {
+    return { action: "execute" };
+  }
+  // Re-materialize the session with its checked identity required. This keeps
+  // the deferred branch unable to accidentally serialize or poll an undefined
+  // provider id under exact optional-property checking.
+  const monitoredSession: MonitoredJulesSession = {
+    ...session,
+    julesSessionId: session.julesSessionId,
+  };
+
+  switch (session.phase) {
+    case "RETRY_SCHEDULED":
+      return { action: "execute" };
+    case "STARTING":
+    case "RUNNING":
+    case "WAITING_FOR_FEEDBACK":
+    case "WAITING_FOR_PLAN_APPROVAL":
+    case "PR_CREATED":
+    case "COMPLETED":
+    case "FAILED":
+      return { action: "defer_to_monitor", session: monitoredSession };
+    default:
+      return assertNever(session.phase);
+  }
 }
 
 async function runCheckpointedMutation<T>(input: {
@@ -217,9 +357,11 @@ function createPendingResult(
   initialActivityCheck = false,
   reattachDelayMs?: number,
 ): AdapterExecutionResult {
-    const delayMs = initialActivityCheck
-      ? JULES_INITIAL_ACTIVITY_CHECK_DELAY_MS
-      : (reattachDelayMs ?? JULES_CONTINUATION_DELAY_MS);
+    const delayMs = liveSessionPollDelayMs(
+      session,
+      initialActivityCheck,
+      reattachDelayMs ?? JULES_CONTINUATION_DELAY_MS,
+    );
     return {
       exitCode: 0,
       signal: null,
@@ -527,7 +669,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       current.pendingInteraction?.type === "plan_approval" ||
       current.pendingInteraction?.type === "completion_confirmation";
     if (humanWait || !current.julesSessionId) return { ok: true };
-    const delayMs = initialActivityCheck ? JULES_INITIAL_ACTIVITY_CHECK_DELAY_MS : reattachDelayMs;
+    const delayMs = liveSessionPollDelayMs(current, initialActivityCheck, reattachDelayMs);
     const timeoutAt = new Date(
       new Date(current.createdAt).getTime() + config.sessionDeadlineMinutes * 60_000,
     ).toISOString();
@@ -604,6 +746,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   // EARLY CHECK: Check if this issue already has an attached PR on GitHub that is merged.
   let earlyPrUrl = session?.currentPrUrl;
+  let earlyPrDetails: Awaited<ReturnType<typeof getPullRequestDetails>> | undefined;
   if (!earlyPrUrl && !process.env["VITEST"]) {
     try {
       const existing = await listWorkProducts(taskId, ctx.authToken, ctx.runId).catch(() => []);
@@ -615,6 +758,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (earlyPrUrl) {
     try {
       const prDetails = await getPullRequestDetails(earlyPrUrl);
+      earlyPrDetails = prDetails;
       if (prDetails.merged) {
         if (ctx.onLog) {
           await ctx.onLog("stdout", `[jules] Pull request ${earlyPrUrl} is already merged on GitHub. Completing task as done.\n`);
@@ -642,6 +786,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     storedRecoverySession = await loadStoredSession(taskId, config.source, config.baseBranch);
   } catch {}
 
+  let durableIssueHandle = null;
+  try {
+    durableIssueHandle = await readJulesSessionHandleState(taskId, ctx.authToken, ctx.runId);
+  } catch (error) {
+    await ctx.onLog?.("stderr", `[jules] Could not read durable Paperclip session handle: ${sanitizeError(error)}\n`);
+  }
+
   let issueHandleSessionId: string | null = null;
   if (shouldReadIssueSessionHandle({
     hasSession: Boolean(session),
@@ -649,7 +800,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     hasStoredRecoverySession: Boolean(storedRecoverySession),
   })) {
     try {
-      issueHandleSessionId = await readJulesSessionHandle(taskId, ctx.authToken, ctx.runId);
+      issueHandleSessionId = durableIssueHandle?.sessionId ?? await readJulesSessionHandle(taskId, ctx.authToken, ctx.runId);
     } catch (error) {
       if (ctx.onLog) {
         await ctx.onLog("stderr", `[jules] Could not read Paperclip session handle: ${sanitizeError(error)}\n`);
@@ -671,19 +822,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     await deleteStoredSession(taskId, config.source, config.baseBranch).catch(() => {});
   } else {
     session = startupDecision.session;
+    session = preferBranchBoundRecoveryHandle(
+      session,
+      durableIssueHandle,
+      { repository: config.repository, source: config.source, baseBranch: config.baseBranch, taskId },
+      session?.createdAt ?? new Date().toISOString(),
+    );
     // A wake contains routing data, not arbitrary adapter payload.  Recover
     // the immutable identity from Jules' own issue document before scanning
     // native verdicts, so a restart cannot turn a valid rejection into an
     // ambiguous URL-only match.  Never merge a head from another PR.
-    if (session && !session.currentPrHeadSha) {
+    if (session) {
       try {
-        const handle = await readJulesSessionHandleState(taskId, ctx.authToken, ctx.runId);
+        const handle = durableIssueHandle;
+        if (handle && handle.sessionId === session.julesSessionId) {
+          const restored = restoreBranchBoundRemediationFromHandle(session, handle, session.createdAt);
+          if (restored !== session) {
+            session = restored;
+            await ctx.onLog?.("stdout", "[jules] Restored branch-bound remediation fence from the Jules session handle.\n");
+          }
+        }
         // A complete handle is written by the Jules assignee and binds the
         // session to an immutable PR identity. It therefore also repairs a
         // legacy local checkpoint whose PR URL was a historical placeholder.
         // A partial handle never overrides runtime state.
         if (handle && handle.sessionId === session.julesSessionId &&
-            handle.prUrl && handle.headSha) {
+            handle.prUrl && handle.headSha &&
+            (session.currentPrUrl !== asPrUrl(handle.prUrl) || session.currentPrHeadSha !== handle.headSha)) {
           session = {
             ...session,
             currentPrUrl: asPrUrl(handle.prUrl),
@@ -691,8 +856,32 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           };
           await ctx.onLog?.("stdout", `[jules] Restored immutable PR head from the Jules session handle.\n`);
         }
+        if (handle && handle.sessionId === session.julesSessionId &&
+            (!session.deliveredFeedbackActivityId || !session.deliveredFeedbackInteractionId) &&
+            handle.deliveredFeedbackActivityId && handle.deliveredFeedbackInteractionId) {
+          session = {
+            ...session,
+            deliveredFeedbackActivityId: session.deliveredFeedbackActivityId ?? asJulesActivityId(handle.deliveredFeedbackActivityId),
+            deliveredFeedbackInteractionId: session.deliveredFeedbackInteractionId ?? handle.deliveredFeedbackInteractionId,
+          };
+          await ctx.onLog?.("stdout", `[jules] Restored typed feedback delivery checkpoint from the Jules session handle.\n`);
+        }
       } catch (error) {
         await ctx.onLog?.("stderr", `[jules] Could not restore PR identity from the Jules session handle: ${sanitizeError(error)}\n`);
+      }
+      // An early generic recovery used to overwrite the durable session
+      // document with its replacement provider ID, even though the issue had
+      // already registered a primary PR. Rehydrate only an absent identity
+      // from that primary work product; an existing identity remains fenced
+      // by its own URL and immutable head.
+      if (!session.currentPrUrl && earlyPrUrl && earlyPrDetails?.headSha && earlyPrDetails.headRefName) {
+        session = recoverPrIdentityFromWorkProduct(session, {
+          url: earlyPrUrl,
+          headSha: earlyPrDetails.headSha,
+          headRefName: earlyPrDetails.headRefName,
+        });
+        await persistSessionBestEffort(session, ctx.onLog, { authToken: ctx.authToken, runId: ctx.runId });
+        await ctx.onLog?.("stdout", `[jules] Rehydrated immutable PR handoff from the primary Paperclip work product.\n`);
       }
     }
     if (session && session.julesSessionId && !sessionMatchesConfig(session, config)) {
@@ -734,6 +923,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     } else if (session && issueHandleSessionId && session.julesSessionId === issueHandleSessionId && ctx.onLog) {
       await ctx.onLog("stdout", "[jules] Restored session " + session.julesSessionId + " from the Paperclip issue handle.\n");
     }
+  }
+
+  if (session?.terminalActivityScan && isProviderPlanSynchronizationWake(rawContext)) {
+    // An operator only emits this typed wake after observing a provider plan.
+    // Older recovery records can otherwise retain a completed scan from before
+    // the plan was published and permanently hide it. Persist before polling so
+    // a configuration refresh cannot restore that stale cache mid-recovery.
+    session.terminalActivityScan = undefined;
+    await persistSessionBestEffort(session, ctx.onLog, { authToken: ctx.authToken, runId: ctx.runId });
+    await ctx.onLog?.("stdout", "[jules] Cleared terminal activity cache for explicit provider-plan synchronization.\n");
   }
 
   await ctx.onLog?.("stdout", `[jules] Reconciled session checkpoint: pending=${session?.pendingInteraction?.type ?? "none"}, questionTransport=${session?.pendingInteraction?.type === "agent_adjudication" && "transport" in session.pendingInteraction ? session.pendingInteraction.transport ?? "legacy" : "n/a"}, questionReviewer=${config.questionAdjudicatorAgentId ?? config.questionReviewerAgentId ?? "none"}.\n`);
@@ -862,9 +1061,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       await ctx.onLog?.("stderr", `[jules] Could not recover native review rejection: ${sanitizeError(error)}\n`);
     }
   }
-  if (!workerFeedback && session?.julesSessionId && isAdvisoryOnDemandWake(rawContext)) {
+  const advisoryMonitorWake = decideAdvisoryMonitorWake({
+    workerFeedbackPresent: Boolean(workerFeedback),
+    rawContext,
+    session,
+  });
+  if (advisoryMonitorWake.action === "defer_to_monitor") {
+    const monitoredSession = advisoryMonitorWake.session;
     try {
-      if (await hasFutureJulesSessionMonitor(taskId, session.julesSessionId, ctx.authToken, ctx.runId)) {
+      if (await hasFutureJulesSessionMonitor(taskId, monitoredSession.julesSessionId, ctx.authToken, ctx.runId)) {
         await ctx.onLog?.(
           "stdout",
           `[jules] Deferring advisory on-demand wake to the existing Jules monitor; no cloud poll was needed.\n`,
@@ -873,8 +1078,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           exitCode: 0,
           signal: null,
           timedOut: false,
-          sessionParams: serializeSession(session),
-          sessionDisplayId: session.julesSessionId,
+          sessionParams: serializeSession(monitoredSession),
+          sessionDisplayId: monitoredSession.julesSessionId,
           resultJson: {
             provider: "jules",
             issueId: taskId,
@@ -962,8 +1167,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // completed session cannot be resurrected on every heartbeat.
   if (session && process.env["NODE_ENV"] !== "test") {
     let ownership = evaluateJulesIssueOwnership({ julesAgentId: ctx.agent.id });
+    let currentIssue: Awaited<ReturnType<typeof getPaperclipIssue>> | null = null;
     try {
-      const currentIssue = await getPaperclipIssue(taskId, ctx.authToken, ctx.runId);
+      currentIssue = await getPaperclipIssue(taskId, ctx.authToken, ctx.runId);
       ownership = evaluateJulesIssueOwnership({
         issue: {
           ...(currentIssue.assigneeAgentId !== undefined ? { assigneeAgentId: currentIssue.assigneeAgentId } : {}),
@@ -977,6 +1183,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         julesAgentId: ctx.agent.id,
       });
       if (ownership === "unknown") throw error;
+    }
+    if ((ownership === "transferred" || ownership === "missing") && currentIssue &&
+        shouldReclaimBranchBoundRecovery({
+          session,
+          issue: currentIssue,
+          interactions: await listPaperclipInteractions(taskId, ctx.authToken, ctx.runId).catch(() => []),
+        })) {
+      await moveIssueToInProgress(
+        taskId,
+        ctx.authToken,
+        "Restored the branch-bound Jules recovery while its exact typed provider form remains pending.",
+        ctx.runId,
+      );
+      ownership = "owned";
+      await ctx.onLog?.("stdout", `[jules] Reclaimed branch-bound recovery ownership for its pending typed provider form.\n`);
     }
     if (ownership === "transferred" || ownership === "missing") {
       await deleteStoredSession(taskId, config.source, config.baseBranch).catch(() => {});
@@ -1013,8 +1234,38 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ? session.pendingInteraction : null;
       let pendingNativePlanReview = session?.pendingInteraction?.type === "plan_native_review"
         ? session.pendingInteraction : null;
-      const isCompletionResolution = interactionKind === "request_confirmation" &&
-    (interactionStatus === "accepted" || interactionStatus === "rejected");
+  let completionResolutionStatus: "accepted" | "rejected" | null =
+    interactionKind === "request_confirmation" &&
+      (interactionStatus === "accepted" || interactionStatus === "rejected")
+      ? interactionStatus
+      : null;
+
+  // Continuation recovery can wake the assignee with only generic issue
+  // context. The persisted native card is authoritative in that case. Without
+  // this read, a rejected completion card is mistaken for an unresolved one
+  // and the terminal poll repeats `moveIssueToBlocked`, which Paperclip
+  // correctly rejects after the card is no longer pending.
+  if (pendingCompletion && !completionResolutionStatus) {
+    try {
+      const persistedCompletion = await getPaperclipInteraction(
+        taskId,
+        pendingCompletion.paperclipInteractionId,
+        ctx.authToken,
+        ctx.runId,
+      );
+      switch (persistedCompletion?.status) {
+        case "accepted":
+        case "rejected":
+          completionResolutionStatus = persistedCompletion.status;
+          break;
+        default:
+          break;
+      }
+    } catch (error) {
+      return paperclipInteractionFailure(session!, error);
+    }
+  }
+  const isCompletionResolution = completionResolutionStatus !== null;
 
   // A previous buggy heartbeat could create a no-PR confirmation before the
   // provider's final question was visible.  Do not consume that confirmation
@@ -1064,7 +1315,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   if (pendingCompletion && isCompletionResolution && !supersededCompletion) {
-    if (interactionId !== pendingCompletion.paperclipInteractionId) {
+    // A generic continuation wake has no interaction id. Once the persisted
+    // card above proves it terminal, absence is not a mismatch; only an
+    // explicitly different id is stale.
+    if (interactionId && interactionId !== pendingCompletion.paperclipInteractionId) {
       return {
         exitCode: 0,
         signal: null,
@@ -1078,7 +1332,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     try {
       await deleteStoredSession(taskId, config.source, config.baseBranch);
-      if (interactionStatus === "accepted") {
+      if (completionResolutionStatus === "accepted") {
         await moveIssueToDone(
           taskId,
           session!.julesSessionId!,
@@ -1093,7 +1347,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           true,
         );
       }
-      await moveIssueToBlocked(taskId, ctx.authToken, ctx.runId);
+      // The pending confirmation was created only after the first terminal
+      // poll had already moved this issue to blocked. Rejecting it consumes
+      // the session checkpoint; repeating the same transition after the card
+      // is resolved violates Paperclip's blocker invariant (422).
       return completionInteractionResult(
         session!,
         "blocked",
@@ -1231,8 +1488,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         if (providerInteractionStatus === "rejected") {
           const reason = storedPendingInteraction ? rejectionReason(storedPendingInteraction.result) : null;
           // A rejection is actionable provider feedback, not a terminal dead
-          // end. Jules uses sendMessage to regenerate the plan; retain the
-          // issue's blocked disposition until it publishes the replacement.
+          // end. Keep the Jules assignee and monitor alive while it publishes
+          // the replacement plan; moving the parent to blocked clears that
+          // ownership and strands the native-review recovery path.
           await client.sendMessage(
             session!.julesSessionId!,
             { prompt: `The Paperclip plan review rejected the current plan.${reason ? ` Feedback: ${reason}` : " Please regenerate the plan with the requested changes."}` },
@@ -1240,7 +1498,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           session!.pendingInteraction = undefined;
           session!.phase = "RUNNING";
           await persistSessionBestEffort(session!, ctx.onLog);
-          await moveIssueToBlocked(taskId, ctx.authToken, ctx.runId);
+          await moveIssueToInProgress(
+            taskId,
+            ctx.authToken,
+            "Jules received plan-revision feedback and will regenerate the plan.",
+            ctx.runId,
+          );
+          await scheduleLiveSessionMonitor(session!, true);
           return {
             exitCode: 0,
             signal: null,
@@ -1248,7 +1512,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             sessionParams: serializeSession(session!),
             sessionDisplayId: session!.julesSessionId ?? null,
             summary: "Jules received the plan rejection feedback and will regenerate its plan asynchronously.",
-            resultJson: { provider: "jules", issueStatus: "blocked" },
+            resultJson: { provider: "jules", issueStatus: "in_progress" },
             clearSession: false,
           };
         }
@@ -1361,7 +1625,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           .filter((url): url is string => Boolean(url)),
     };
 
-    const prompt = buildPrompt(promptContext, config);
+    const remediation = isRetry ? session?.prRemediation : undefined;
+    const prompt = remediation
+      ? `${buildPrompt(promptContext, config)}\n\n${remediation.reason === "terminal_plan_revision_unavailable"
+        ? `This is plan-cycle recovery for existing pull request ${remediation.prUrl} on branch ${remediation.headRefName}. The prior Jules session was terminal and could not publish its requested revision. Do not create a new pull request. Publish a fresh plan activity before implementation so Paperclip can run a new typed review cycle.`
+        : `This is PR remediation. Continue the existing pull request ${remediation.prUrl} on branch ${remediation.headRefName}. Do not create a new pull request.`}`
+      : buildPrompt(promptContext, config);
     const pHash = hashPromptIdentity(promptContext, config);
 
     if (session?.julesSessionId) {
@@ -1396,7 +1665,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           sourceContext: {
               source,
               githubRepoContext: {
-                  startingBranch: config.baseBranch
+                  // A terminal provider failure after a PR handoff is not a
+                  // fresh task. Jules must resume the PR branch; starting at
+                  // baseBranch can only produce an unrelated replacement PR.
+                  startingBranch: remediation?.headRefName ?? config.baseBranch
               }
           },
           requirePlanApproval: config.requirePlanApproval,
@@ -1425,6 +1697,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
 
       session = {
+        ...(remediation ? {
+          currentPrUrl: remediation.prUrl,
+          currentPrHeadSha: remediation.headSha,
+          currentPrHeadRef: remediation.headRefName,
+          prRegisteredOnBoard: true,
+          prRemediation: { ...remediation, recoverySessionId: julesSession.id },
+        } : {}),
         version: 1,
         paperclipIssueId: taskId,
         promptHash: pHash,
@@ -1499,6 +1778,38 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     outcome?: { summary?: string; resultJson?: Record<string, unknown> },
   ): Promise<AdapterExecutionResult> => {
     await persistSessionBestEffort(current, ctx.onLog, { authToken: ctx.authToken, runId: ctx.runId });
+    // A native plan verdict is owned by its addressed reviewer. Scheduling a
+    // Jules monitor here reasserts the worker as parent assignee and can
+    // cancel the queued reviewer run as `issue_assignee_changed`. The typed
+    // card's continuation is the sole owner until it resolves.
+    if (current.pendingInteraction?.type === "plan_native_review") {
+      // A monitor scheduled before the card was created survives an adapter
+      // restart. Remove that stale owner marker as well: merely declining to
+      // schedule a replacement still lets its due callback reclaim Jules and
+      // race the reviewer.
+      try {
+        await clearJulesSessionMonitor(taskId, ctx.authToken, ctx.runId);
+      } catch (error) {
+        // Once Paperclip transfers the parent issue into native review, the
+        // reviewer owns its continuation and the Jules assignee is no longer
+        // authorized to mutate the parent monitor. The card remains the
+        // authoritative wake path, so this expected ownership boundary must
+        // not fail the otherwise healthy provider heartbeat.
+        if (error instanceof PaperclipClientError && error.status === 403) {
+          const pending = createPendingResult(current, initialActivityCheck, reattachDelayMs);
+          return {
+            ...pending,
+            resultJson: {
+              ...(pending.resultJson as Record<string, unknown>),
+              continuation: "native_plan_review",
+              monitorAuthorizationFallback: true,
+            },
+          };
+        }
+        throw error;
+      }
+      return createPendingResult(current, initialActivityCheck, reattachDelayMs);
+    }
     // Human interactions have their own Paperclip continuation. Internal
     // reviewer children still need the native monitor so this adapter can
     // observe both reviewer decisions and new provider activity.
@@ -1551,19 +1862,112 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   };
 
-  // Compatibility migration for sessions created before strong approval was
-  // allowed to satisfy the `required` plan gate. Re-evaluate that exact plan
-  // revision once; never repeatedly spend reviewer calls on the same card.
+  /**
+   * CI remediation is provider feedback, never a review verdict. Keeping it
+   * in one identity-keyed path prevents a coarse Jules state from creating a
+   * fabricated question card or repeatedly sending the same instruction.
+   */
+  const relayCiRemediationOnce = async (
+    prUrl: string,
+    headSha: string | undefined,
+    ciStatus: "failed" | "stalled",
+  ): Promise<AdapterExecutionResult> => {
+    const current = session;
+    if (!current) throw new Error("Missing Jules session while relaying CI remediation");
+    const ciFailureFingerprint = `${prUrl}:${headSha ?? "unknown"}:${ciStatus}`;
+    if (current.ciFailureFingerprint !== ciFailureFingerprint) {
+      await client.sendMessage(current.julesSessionId!, {
+        prompt: ciStatus === "stalled"
+          ? "The existing pull request CI has stalled beyond the bounded wait. Inspect the currently running GitHub check, fix the command or lifecycle condition that prevents it from completing, run the focused verification, and push an update to the same PR. Do not open a new session or pull request."
+          : "The existing pull request has CI failed. Inspect the failing GitHub check, fix only the reported failure on the current branch, run the focused verification, and push an update to the same PR. Do not open a new session or pull request.",
+      });
+      current.ciFailureFingerprint = ciFailureFingerprint;
+      await persistSessionBestEffort(current, ctx.onLog, { authToken: ctx.authToken, runId: ctx.runId });
+    }
+    await ctx.onLog?.("stderr", `[jules] Pull request ${prUrl} CI build checks ${ciStatus}.\n`);
+    current.phase = "RUNNING";
+    return await yieldHeartbeat(current);
+  };
+
+  /**
+   * A terminal provider can no longer accept CI feedback. Schedule one new
+   * session on the immutable PR branch instead. This deliberately fails
+   * closed when GitHub did not return the branch identity: generic retries
+   * start at baseBranch and would create a second PR.
+   */
+  const scheduleTerminalPrRemediation = async (
+    reason: "ci_failure" | "terminal_plan_revision_unavailable" = "ci_failure",
+  ): Promise<AdapterExecutionResult> => {
+    const current = session;
+    if (!current?.currentPrUrl || !current.julesSessionId) {
+      throw new Error("Missing terminal PR identity while scheduling remediation");
+    }
+    const headSha = current.currentPrHeadSha;
+    const headRefName = current.currentPrHeadRef;
+    if (!headSha || !headRefName) {
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorCode: "jules_pr_remediation_identity_missing",
+        errorFamily: null,
+        errorMessage: "Jules delivered a PR but GitHub did not provide its immutable head SHA and branch; refusing to start a generic retry from the base branch.",
+        sessionParams: serializeSession(current),
+        clearSession: false,
+      };
+    }
+    current.prRemediation = {
+      originalSessionId: current.julesSessionId,
+      prUrl: current.currentPrUrl,
+      headSha,
+      headRefName,
+      reason,
+      startedAt: new Date().toISOString(),
+    };
+    current.phase = "RETRY_SCHEDULED";
+    await persistSessionBestEffort(current, ctx.onLog, { authToken: ctx.authToken, runId: ctx.runId });
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: reason === "terminal_plan_revision_unavailable"
+        ? "jules_terminal_plan_recovery_scheduled"
+        : "jules_pr_remediation_scheduled",
+      errorFamily: "transient_upstream",
+      errorMessage: reason === "terminal_plan_revision_unavailable"
+        ? "Jules remained terminal after accepting a plan-revision request; scheduling one branch-bound plan-cycle recovery session."
+        : "Jules reached a terminal state after delivering a PR; scheduling one branch-bound remediation session.",
+      retryNotBefore: new Date(getRetryNotBefore(current.attempt)).toISOString(),
+      sessionParams: serializeSession(current),
+      clearSession: false,
+    };
+  };
+
+  // Compatibility migration for sessions created before the native review
+  // ladder. A legacy human card is not a native verdict; create the one
+  // reviewer-owned native card directly rather than briefly creating a
+  // parent-owned form and migrating it again on the next heartbeat.
   if (
     pendingProviderInteraction?.type === "plan_approval" &&
     storedPendingInteraction?.status === "pending" &&
     config.planReviewerAgentId && config.planStrongReviewerAgentId
   ) {
-    // Migrate legacy human cards to the native ACP ladder. This is deliberately
-    // checked before the legacy direct-API compatibility reviewer so existing
-    // blocked tasks recover without requiring any reviewer API key.
     if (config.planReviewerAgentId && config.planStrongReviewerAgentId) {
-      const nativeReview = await createJulesPlanReviewInteraction(
+      const reviewerChild = await createJulesQuestionAdjudication(
+        taskId,
+        pendingProviderInteraction.question,
+        config.planReviewerAgentId,
+        ctx.authToken,
+        ctx.runId,
+        ctx.agent.companyId,
+        pendingProviderInteraction.julesActivityId,
+        session.julesSessionId,
+        0,
+        true,
+        "plan",
+      );
+      const nativeReview = await createJulesPlanReviewChildInteraction(
+        reviewerChild.id,
         taskId,
         session.julesSessionId!,
         {
@@ -1576,7 +1980,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         config.planReviewerAgentId,
         ctx.authToken,
         ctx.runId,
+        pendingProviderInteraction.julesActivityId,
       );
+      await activateInternalReviewIssue(reviewerChild.id, config.planReviewerAgentId, ctx.authToken, ctx.runId);
       if (pendingProviderInteraction.paperclipInteractionId) {
         await withdrawPaperclipInteraction(taskId, pendingProviderInteraction.paperclipInteractionId, "Replaced by native ACP plan-review ladder", ctx.authToken, ctx.runId).catch(() => undefined);
       }
@@ -1591,6 +1997,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         paperclipInteractionId: nativeReview.id,
         reviewerAgentId: config.planReviewerAgentId,
         stage: "luna",
+        reviewerChildIssueId: reviewerChild.id,
         createdAt: new Date().toISOString(),
       };
       session.planReviewRevisionId = pendingProviderInteraction.planRevisionId;
@@ -1669,6 +2076,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const julesSession = await client.getSession(session.julesSessionId);
       const state = normalizeJulesState(julesSession.state);
       const terminalProviderState = state === "COMPLETED" || state === "FAILED";
+      // A terminal PR handoff has one authoritative PR snapshot per poll.
+      // Re-probing CI later can disagree with that snapshot or hang after the
+      // provider has completed, which keeps the Jules monitor alive and
+      // prevents the orchestrator from claiming the native review workflow.
+      let terminalPrDetails: Awaited<ReturnType<typeof getPullRequestDetails>> | undefined;
       let scopeDriftSummary: string | undefined;
       let scopeDriftIsNew = false;
       session.julesState = state;
@@ -1697,22 +2109,65 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (julesSession.url) {
           session.julesSessionUrl = julesSession.url;
       }
-      let prUrl = extractPullRequestUrl(julesSession);
+      const discoveredPrUrl = extractPullRequestUrl(julesSession, config.repository);
+      const prUrl = selectTerminalPullRequestUrl({
+        state,
+        discovered: discoveredPrUrl,
+        persisted: session.currentPrUrl,
+      });
       // Activity is the provider protocol boundary. Capture it before any
       // GitHub/PR inspection so a slow or unavailable PR lookup cannot hide a
       // Jules question. The same immutable snapshot is reused below.
       const deliveredActivityIdsBeforePoll = new Set(session.deliveredActivityIds ?? []);
       let activities: JulesActivity[] = [];
       try {
-        activities = await mirrorNewActivities(
-          client,
-          session,
-          taskId,
-          ctx.authToken,
-          ctx.runId,
-          ctx.onLog,
-          activityScanPageLimit(session),
-        );
+        if (terminalProviderState) {
+          // Terminal questions and the terminal PR/CI disposition share one
+          // activity boundary. Scan the same bounded history budget used by
+          // live activity reconciliation in this heartbeat; yielding after
+          // each page can postpone a known terminal question or CI failure by
+          // hours on long-lived Jules sessions.
+          let next = session.terminalActivityScan;
+          const scannedThisHeartbeat: JulesActivity[] = [];
+          for (let pageCount = 0; (!next?.complete) && pageCount < MAX_ACTIVITY_PAGES; pageCount += 1) {
+            const page = await client.getActivities(session.julesSessionId, next?.nextPageToken, 100);
+            scannedThisHeartbeat.push(...page.activities);
+            next = reduceTerminalActivityScan({
+              sessionId: session.julesSessionId,
+              ...(next ? { prior: next } : {}),
+              activities: page.activities,
+              ...(page.nextPageToken ? { nextPageToken: page.nextPageToken } : {}),
+            });
+          }
+          if (!next) throw new Error("Terminal Jules activity scan did not produce a checkpoint");
+          session.terminalActivityScan = next;
+          // The scan stores only two durable witnesses; restore their actual
+          // provider order before every downstream state-machine predicate.
+          // Inserting completion first would falsely make any historical
+          // message look post-completion and reopen its reviewer bridge.
+          const terminalWitnesses = normalizeActivities([next.completion, next.latestPlan, next.latestAgentMessage]
+            .filter((item): item is NonNullable<typeof item> => Boolean(item))
+            .map(terminalEvidenceActivity));
+          await mirrorActivities(
+            normalizeActivities([...scannedThisHeartbeat, ...terminalWitnesses]),
+            session,
+            taskId,
+            ctx.authToken,
+            ctx.runId,
+            ctx.onLog,
+          );
+          // Mirroring intentionally returns only newly delivered activities.
+          // Terminal control flow also needs the current durable witnesses:
+          // after a plan rejection, a revised plan may already be mirrored by
+          // the recovery heartbeat that found it. Do not let that delivery
+          // checkpoint erase the plan from the later native-review decision.
+          activities = terminalWitnesses;
+          await persistSessionBestEffort(session, ctx.onLog);
+          if (!next.complete) return await yieldHeartbeat(session);
+        } else {
+          session.terminalActivityScan = undefined;
+          activities = await mirrorNewActivities(client, session, taskId, ctx.authToken, ctx.runId, ctx.onLog, activityScanPageLimit(session));
+        }
       } catch (mirrorError) {
         await ctx.onLog?.(
           'stderr',
@@ -1730,6 +2185,31 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           await persistSessionBestEffort(session, ctx.onLog);
         }
       }
+      // A native rejection can be accepted by Jules, followed by a terminal
+      // session that exposes neither a fresh PR handoff nor a new provider
+      // question. That is unfinished execution, not a second review of the
+      // rejected immutable head. Send one identity-keyed continuation to the
+      // same session and retain its monitor; a second terminal poll cannot
+      // repeat the message because the continuation state is durable.
+      // This branch intentionally tests the raw provider handoff, not the
+      // terminal fallback: a rejected PR needs one reminder only when Jules
+      // has completed without publishing a new handoff.
+      if (terminalProviderState && !discoveredPrUrl && session.currentPrUrl &&
+          session.providerContinuation?.state === "provider_acknowledged" &&
+          session.workerFeedbackDeliveryId === session.providerContinuation.deliveryId) {
+        await client.sendMessage(session.julesSessionId, {
+          prompt: "The requested PR revision has not reached a new pull-request handoff. Continue the existing task: finish the scoped changes, run the relevant tests, commit and push them to the existing PR. Do not create a new session or pull request.",
+        });
+        session.providerContinuation = {
+          ...session.providerContinuation,
+          state: "terminal_revision_reminder_sent",
+          remindedAt: new Date().toISOString(),
+        };
+        session.phase = "RUNNING";
+        await persistSessionBestEffort(session, ctx.onLog);
+        await ctx.onLog?.("stdout", `[jules] Sent one terminal revision reminder for rejected PR ${session.currentPrUrl}.\n`);
+        return await yieldHeartbeat(session);
+      }
       const latestPreflightActivity = [...activities].reverse().find(
         (activity) => Boolean(activity.agentMessaged?.agentMessage?.trim()),
       );
@@ -1745,15 +2225,106 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ((state === "AWAITING_USER_FEEDBACK" && session.deliveredFeedbackActivityId !== latestPreflightActivity.id) ||
           ((state === "COMPLETED" || state === "FAILED") &&
             !deliveredActivityIdsBeforePoll.has(latestPreflightActivity.id) &&
+            session.terminalFeedbackActivityId !== latestPreflightActivity.id &&
             latestPreflightIndex > completionPreflightIndex)),
       );
+      // The resumable scan itself establishes the ordering invariant. Do not
+      // re-infer it from a compact activity snapshot: historical messages
+      // before completion must never delay a terminal PR handoff.
+      const scannedPostCompletionQuestion = terminalProviderState &&
+        session.terminalActivityScan?.complete &&
+        session.terminalActivityScan.postCompletionQuestion &&
+        session.terminalFeedbackActivityId !== session.terminalActivityScan.postCompletionQuestion.id
+        ? terminalEvidenceActivity(session.terminalActivityScan.postCompletionQuestion)
+        : undefined;
+      // Jules can reach COMPLETED without an activity-level sessionCompleted
+      // witness. The newest unread agent message is then the only durable
+      // terminal boundary. It must outrank an older resolved no-PR card:
+      // mirroring an activity is not the same as relaying its typed answer.
+      const unresolvedTerminalMessageWithoutCompletionBoundary = Boolean(
+        terminalProviderState &&
+        completionPreflightIndex < 0 &&
+        latestPreflightActivity &&
+        session.deliveredFeedbackActivityId !== latestPreflightActivity.id &&
+        session.terminalFeedbackActivityId !== latestPreflightActivity.id,
+      );
+
+      // A no-PR confirmation belongs to the terminal provider session, not to
+      // whichever plan card happened to be checkpointed most recently.  An
+      // older native plan gate can survive a configuration refresh after the
+      // no-PR card has already been rejected.  Resolve that exact, stable
+      // card before deriving another plan wait; otherwise a completed Jules
+      // session is resurrected and keeps polling forever.  A provider question
+      // after completion remains higher priority and is never discarded here.
+      if (state === "COMPLETED" && !prUrl && !preflightQuestion && !scannedPostCompletionQuestion &&
+          !unresolvedTerminalMessageWithoutCompletionBoundary) {
+        const completionKey = `jules:no-pr-completion:${taskId}:${session.julesSessionId}`;
+        const interactions = await listPaperclipInteractions(taskId, ctx.authToken, ctx.runId).catch(() => []);
+        const resolvedCompletion = interactions.find((interaction) =>
+          interaction.kind === "request_confirmation" &&
+          interaction.idempotencyKey === completionKey &&
+          (interaction.status === "accepted" || interaction.status === "rejected"),
+        );
+        if (resolvedCompletion) {
+          await deleteStoredSession(taskId, config.source, config.baseBranch);
+          if (resolvedCompletion.status === "accepted") {
+            await moveIssueToDone(
+              taskId,
+              session.julesSessionId,
+              ctx.authToken,
+              ctx.runId,
+              `Confirmed Jules session ${session.julesSessionId} completed without a PR; marked the Paperclip issue done.`,
+            );
+            return completionInteractionResult(
+              session,
+              "done",
+              `Confirmed Jules session ${session.julesSessionId} completed without a PR; marked the Paperclip issue done.`,
+              true,
+            );
+          }
+          return completionInteractionResult(
+            session,
+            "blocked",
+            `Rejected completion of Jules session ${session.julesSessionId}; discarded its terminal checkpoint for a fresh Paperclip recovery run.`,
+            true,
+          );
+        }
+      }
+
+      // Jules occasionally exposes only the coarse awaiting-feedback state
+      // after publishing a PR, with no new agent-message activity to answer.
+      // That state is not a human question. If the known PR is red, recover
+      // through the ordinary one-per-head CI feedback path instead of
+      // fabricating an adjudication card and parking the session indefinitely.
+      const awaitingFeedbackWithoutQuestion = state === "AWAITING_USER_FEEDBACK" && !preflightQuestion;
+      const skipCi =
+        (ctx.agent.adapterConfig as Record<string, unknown> | undefined)?.["ciPolicy"] === "skip" ||
+        (ctx.config as Record<string, unknown> | undefined)?.["ciPolicy"] === "skip";
+      if (prUrl && !session.pendingInteraction && awaitingFeedbackWithoutQuestion && !skipCi &&
+          ["failed", "stalled"].includes(await getPullRequestCiStatus(prUrl))) {
+        const prDetails = await getPullRequestDetails(prUrl).catch(() => null);
+        const ciStatus = prDetails?.ciStatus;
+        return await relayCiRemediationOnce(prUrl, prDetails?.headSha, ciStatus === "stalled" ? "stalled" : "failed");
+      }
 
       // Jules keeps historical outputs for the lifetime of a session.  A PR
       // URL in that history is not a current handoff while the provider is
       // still planning or awaiting feedback: otherwise a config-recovered
       // stale checkpoint can be cleared above and immediately recreated here.
       // Only a terminal provider state may promote a discovered PR to review.
-      if (prUrl && terminalProviderState && !preflightQuestion) {
+      // PR reconciliation precedes the terminal plan reducer below. A
+      // branch-bound recovery may have already reached COMPLETED with its
+      // first replacement plan, so hold that PR path until the typed Luna →
+      // Terra gate records an approval. Without this fence, an older build's
+      // stale `planApprovedActivityId` can send the issue to review before a
+      // native card exists. This is deliberately based on session/activity
+      // identities and a typed outcome, never plan or comment prose.
+      const branchBoundRecoveryNeedsPlanGate = terminalProviderState &&
+        session.prRemediation?.recoverySessionId === session.julesSessionId &&
+        session.planReviewOutcome !== "approved" &&
+        activities.some((activity) => Boolean(activity.planGenerated));
+      if (prUrl && terminalProviderState && !preflightQuestion && !scannedPostCompletionQuestion &&
+          !branchBoundRecoveryNeedsPlanGate) {
           if (session.currentPrUrl !== prUrl || !session.prRegisteredOnBoard) {
             session.currentPrUrl = prUrl;
             if (ctx.onLog) {
@@ -1777,11 +2348,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
           await persistSessionBestEffort(session, ctx.onLog);
           const prDetails = await getPullRequestDetails(prUrl);
+          terminalPrDetails = prDetails;
           if (prDetails.headSha && session.currentPrHeadSha !== prDetails.headSha) {
             session.currentPrHeadSha = prDetails.headSha;
             // Persist before any review/card transition. This is the durable
             // identity used to recover a typed verdict after a payload-less
             // Paperclip wake or a process restart.
+            await persistSessionBestEffort(session, ctx.onLog, { authToken: ctx.authToken, runId: ctx.runId });
+          }
+          if (prDetails.headRefName && session.currentPrHeadRef !== prDetails.headRefName) {
+            session.currentPrHeadRef = prDetails.headRefName;
             await persistSessionBestEffort(session, ctx.onLog, { authToken: ctx.authToken, runId: ctx.runId });
           }
           const changedFiles = await listPullRequestChangedFiles(prUrl).catch(() => [] as string[]);
@@ -1800,7 +2376,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               isMerged: prDetails.merged,
               ...(prDetails.mergeableStatus ? { mergeableStatus: prDetails.mergeableStatus } : {}),
             },
-            ciStatus: prDetails.ciStatus === "unknown" ? "pending" : prDetails.ciStatus,
+            // The lifecycle reducer only decides PR terminality. A stalled
+            // check is non-terminal there and is remediated through the
+            // provider-feedback branch below.
+            ciStatus: prDetails.ciStatus === "unknown" || prDetails.ciStatus === "stalled"
+              ? "pending"
+              : prDetails.ciStatus,
           });
 
           if (lifecycle.phase === "COMPLETED_AND_MERGED") {
@@ -1897,6 +2478,30 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const latestAgentActivityIndex = latestAgentActivity
         ? activities.findIndex((activity) => activity.id === latestAgentActivity.id)
         : -1;
+      const planActivities = activities.filter((activity) => Boolean(activity.planGenerated));
+      const latestPlanActivity = planActivities.at(-1);
+      // A plan prompt may follow a replacement plan while the provider still
+      // reports AWAITING_USER_FEEDBACK. It is safe to keep it in the plan lane
+      // only when nothing but provider progress separates the replacement plan
+      // from that message. A completion, user message, another plan, or an
+      // earlier agent message is a protocol boundary: a later agent message
+      // after such a boundary is an independent provider question and must be
+      // mirrored to the typed reviewer form.
+      const latestPlanActivityIndex = latestPlanActivity
+        ? activities.findIndex((activity) => activity.id === latestPlanActivity.id)
+        : -1;
+      const activitiesBetweenLatestPlanAndMessage = latestPlanActivityIndex >= 0 && latestAgentActivityIndex > latestPlanActivityIndex
+        ? activities.slice(latestPlanActivityIndex + 1, latestAgentActivityIndex)
+        : [];
+      const revisedPlanPrompt = Boolean(
+        state === "AWAITING_USER_FEEDBACK" &&
+        latestAgentActivity &&
+        latestPlanActivity &&
+        planActivities.length > 1 &&
+        latestPlanActivityIndex >= 0 &&
+        latestAgentActivityIndex > latestPlanActivityIndex &&
+        activitiesBetweenLatestPlanAndMessage.every((activity) => Boolean(activity.progressUpdated)),
+      );
       const completionActivityIndex = activities.reduce(
         (latestIndex, activity, index) => activity.sessionCompleted !== undefined ? index : latestIndex,
         -1,
@@ -1907,6 +2512,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // the prompt's wording is deliberately never classified.
       const messageFollowsCompletion = completionActivityIndex >= 0 &&
         latestAgentActivityIndex > completionActivityIndex;
+      // Jules can report a terminal session state without emitting a matching
+      // `sessionCompleted` activity. In that provider shape there is no
+      // ordering boundary with which to prove that the newest unread agent
+      // message is historical. Preserve the message for the strong-reviewer
+      // protocol rather than manufacturing a no-PR confirmation card. This
+      // is intentionally identity/state based: it does not inspect or parse
+      // the provider's prose to decide whether it is a question.
+      const terminalMessageWithoutCompletionBoundary =
+        unresolvedTerminalMessageWithoutCompletionBoundary;
+      const terminalMessageRequiresAdjudication =
+        messageFollowsCompletion || terminalMessageWithoutCompletionBoundary;
+      const postCompletionQuestion = scannedPostCompletionQuestion;
       // Mirroring and answering are separate checkpoints. A previous adapter
       // may have copied a question to Paperclip before it crashed or stopped
       // polling; that activity must still enter adjudication until Jules has
@@ -1934,19 +2551,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         session.pendingInteraction?.type === "agent_adjudication" &&
         isNativeAgentAdjudication(session.pendingInteraction) &&
         session.pendingInteraction.julesActivityId === latestAgentActivity.id &&
-        session.deliveredFeedbackActivityId !== latestAgentActivity.id,
+        session.deliveredFeedbackActivityId !== latestAgentActivity.id &&
+        // A terminal scan retains an old bridge only as evidence. It remains
+        // actionable at terminal state solely when its provider activity is
+        // after the final completion boundary; otherwise the PR handoff wins.
+        (!terminalProviderState || terminalMessageRequiresAdjudication),
       );
-      const latestProviderQuestion = latestAgentActivity &&
+      const latestProviderQuestion = latestAgentActivity && !revisedPlanPrompt &&
         ((state === "AWAITING_USER_FEEDBACK" && session.deliveredFeedbackActivityId !== latestAgentActivity.id) ||
           ((state === "COMPLETED" || state === "FAILED") &&
-            !deliveredActivityIdsBeforePoll.has(latestAgentActivity.id) && messageFollowsCompletion) ||
+            !deliveredActivityIdsBeforePoll.has(latestAgentActivity.id) &&
+            session.terminalFeedbackActivityId !== latestAgentActivity.id && terminalMessageRequiresAdjudication) ||
           freshMessageWhilePlanReviewing ||
           persistedNativeQuestion ||
           session.unresolvedProviderQuestionActivityId === latestAgentActivity.id)
         ? latestAgentActivity
         : undefined;
       const hasProviderQuestion = Boolean(latestProviderQuestion);
-      const hasUnresolvedProviderQuestion = Boolean(
+      let hasUnresolvedProviderQuestion = Boolean(
         latestProviderQuestion &&
         session.deliveredFeedbackActivityId !== latestProviderQuestion.id,
       );
@@ -1958,10 +2580,48 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         session.unresolvedProviderQuestionActivityId = latestProviderQuestion.id;
       }
 
-      // A historical crash could persist the provider's plan state but lose
-      // the local pointer to its native card. Recover only one exact
-      // adapter-cancelled v2 card; ambiguity and user cancellation stay inert.
-      if (!pendingNativePlanReview && state === "AWAITING_PLAN_APPROVAL" && !hasUnresolvedProviderQuestion) {
+      // Older builds could manufacture a human card from the coarse provider
+      // state while losing the text of the activity it named. If the same
+      // immutable activity is now available with a concrete question, that
+      // card is semantically invalid: retire only this exact generic pointer
+      // and re-enter the normal strong-reviewer protocol. Never withdraw a
+      // human card whose stored prompt matches the provider activity.
+      const pendingLegacyFeedback = session.pendingInteraction?.type === "user_feedback"
+        ? session.pendingInteraction
+        : undefined;
+      const recoveredQuestion = latestAgentActivity ? extractQuestionText(latestAgentActivity) : "";
+      if (pendingLegacyFeedback &&
+          pendingLegacyFeedback.question === "Jules is awaiting user feedback." &&
+          latestAgentActivity?.id === pendingLegacyFeedback.julesActivityId &&
+          recoveredQuestion.trim().length > 0 &&
+          recoveredQuestion !== pendingLegacyFeedback.question) {
+        const legacyInteractionId = pendingLegacyFeedback.paperclipInteractionId;
+        if (!legacyInteractionId) {
+          throw new Error("Generic Jules feedback checkpoint is missing its Paperclip interaction ID");
+        }
+        await withdrawPaperclipInteraction(
+          taskId,
+          legacyInteractionId,
+          "Superseded generic Jules feedback card by the recovered provider activity.",
+          ctx.authToken,
+          ctx.runId,
+        );
+        session.pendingInteraction = undefined;
+        session.unresolvedProviderQuestionActivityId = latestAgentActivity.id;
+        hasUnresolvedProviderQuestion = true;
+        await persistSessionBestEffort(session, ctx.onLog);
+        await ctx.onLog?.("stdout", `[jules] Replaced generic feedback card with recovered provider activity ${latestAgentActivity.id}.\n`);
+      }
+
+      // A historical crash or an owner-run cancellation can persist the
+      // provider session ID but lose the transient pointer to its native plan
+      // card.  Recover one exact v2 card while Jules awaits approval, and
+      // also when the provider has already become terminal: an answered
+      // rejection is a durable decision that must still be relayed.  Ambiguous
+      // and user-cancelled cards stay inert.
+      if (!pendingNativePlanReview &&
+          (state === "AWAITING_PLAN_APPROVAL" || terminalProviderState) &&
+          !hasUnresolvedProviderQuestion) {
         const currentPlan = latestPlan(activities);
         if (currentPlan?.id) {
           const recovered = recoverMissingPlanGatePointer({
@@ -1969,6 +2629,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             sessionId: session.julesSessionId!,
             latestPlanActivityId: currentPlan.id,
             interactions: await listPaperclipInteractions(taskId, ctx.authToken, ctx.runId).catch(() => []),
+            // A second plan activity is a replacement revision.  Replaying an
+            // answered card from the first revision would duplicate its
+            // rejection and bind it to the wrong provider plan.
+            allowAnswered: planActivities.length <= 1,
           });
           if (recovered) {
             pendingNativePlanReview = {
@@ -1989,17 +2653,59 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // exact activity to the already-created visible card and strong-review
       // child before evaluating the state machine. This is identity-based;
       // no comment or question wording is used for correlation.
-      if (!session.pendingInteraction && (state === "AWAITING_USER_FEEDBACK" ||
-          (state !== "COMPLETED" && state !== "FAILED" && session.deliveredFeedbackActivityId &&
+      if (!session.pendingInteraction && (state === "AWAITING_USER_FEEDBACK" || terminalProviderState ||
+          (!terminalProviderState && session.deliveredFeedbackActivityId &&
             !session.deliveredFeedbackInteractionId)) &&
           (config.questionAdjudicatorAgentId ?? config.questionReviewerAgentId)) {
         if (!session.julesSessionId) return await yieldHeartbeat(session);
         const questionReviewerAgentId = config.questionAdjudicatorAgentId ?? config.questionReviewerAgentId;
         if (!questionReviewerAgentId) return await yieldHeartbeat(session);
         const visibleInteractions = await listPaperclipInteractions(taskId, ctx.authToken, ctx.runId, 5000).catch(() => []);
+        const answeredParent = [...activities].reverse().map((activity) => ({
+          activity,
+          interaction: visibleInteractions.find((item) => item.kind === "ask_user_questions" &&
+            item.status === "answered" &&
+            item.idempotencyKey === `jules:agent-adjudication:${taskId}:${session!.julesSessionId}:${activity.id}`),
+        })).find((candidate) => {
+          if (!candidate.interaction) return false;
+          // On a terminal provider poll, only the scan-proven post-completion
+          // message remains actionable. Jules can also omit sessionCompleted;
+          // in that shape the newest unread agent activity is the sole durable
+          // boundary. Reconnecting any older answered form here would yield
+          // before a PR handoff on every heartbeat.
+          const isTerminalActionableActivity =
+            candidate.activity.id === scannedPostCompletionQuestion?.id ||
+            (terminalMessageWithoutCompletionBoundary && candidate.activity.id === latestAgentActivity?.id);
+          return !terminalProviderState || isTerminalActionableActivity;
+        });
+        if (answeredParent?.interaction) {
+          // The parent interaction is the durable typed decision. A restart
+          // may lose the child pointer after the parent has already been
+          // answered; recreating a reviewer child in that state spends quota
+          // and can never improve on the authoritative verdict.
+          const formState = classifyNativeQuestionReview(
+            answeredParent.interaction.status,
+            answeredParent.interaction.result,
+          );
+          const answeredDecision = formState.state === "answered" && formState.decision !== "malformed"
+            ? formState.decision
+            : null;
+          if (answeredDecision?.kind === "ANSWER") {
+            if (session.deliveredFeedbackActivityId !== answeredParent.activity.id) {
+              await client.sendMessage(session.julesSessionId, { prompt: answeredDecision.answer });
+            }
+            session.deliveredFeedbackActivityId = answeredParent.activity.id;
+            session.deliveredFeedbackInteractionId = answeredParent.interaction.id;
+            session.phase = "RUNNING";
+            await persistSessionBestEffort(session, ctx.onLog);
+            await ctx.onLog?.("stdout", `[jules] Relayed recovered typed question answer for activity ${answeredParent.activity.id}.\n`);
+            return await yieldHeartbeat(session);
+          }
+        }
         // The card is the durable identity when a process restart lost the
         // session pointer. Scan provider activities by idempotency key rather
         // than assuming the latest activity or a particular provider state.
+        let recoveryGeneration = 0;
         let candidate = [...activities].reverse().find((activity) => {
           const key = `jules:agent-adjudication:${taskId}:${session!.julesSessionId}:${activity.id}`;
           return visibleInteractions.some((item) => item.kind === "ask_user_questions" &&
@@ -2016,12 +2722,58 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             );
           }
         }
-        const visibleInteraction = candidate
+        // A prior build could cancel the only typed parent during terminal
+        // cleanup even though this exact provider activity followed completion.
+        // Re-open only that adapter-owned cancellation, on one generation-keyed
+        // card; a board cancellation remains authoritative.
+        if (!candidate && postCompletionQuestion) {
+          const baseKey = `jules:agent-adjudication:${taskId}:${session!.julesSessionId}:${postCompletionQuestion.id}`;
+          const cancelled = visibleInteractions.find((item) => item.kind === "ask_user_questions" &&
+            item.status === "cancelled" && item.idempotencyKey === baseKey &&
+            item.result && typeof item.result === "object" &&
+            (item.result as Record<string, unknown>)["reason"] === "Superseded by terminal Jules completion");
+          const generationOne = visibleInteractions.find((item) => item.kind === "ask_user_questions" &&
+            item.status === "pending" && item.idempotencyKey === `${baseKey}:generation:1`);
+          const recovery = evaluateTerminalQuestionRecovery({
+            terminal: terminalProviderState,
+            followsCompletion: true,
+            answerRecorded: false,
+            card: generationOne ? "pending_generation_one" : cancelled ? "cancelled_terminal" : "none",
+          });
+          if (recovery.action === "recover_generation_one") {
+            candidate = postCompletionQuestion;
+            recoveryGeneration = 1;
+          } else if (recovery.action === "retain_pending") {
+            candidate = postCompletionQuestion;
+            recoveryGeneration = 1;
+          }
+        }
+        let visibleInteraction = candidate
           ? visibleInteractions.find((item) => item.kind === "ask_user_questions" && item.status === "pending" &&
-              item.idempotencyKey === `jules:agent-adjudication:${taskId}:${session!.julesSessionId}:${candidate.id}`)
+              item.idempotencyKey === `jules:agent-adjudication:${taskId}:${session!.julesSessionId}:${candidate.id}` +
+                (recoveryGeneration > 0 ? `:generation:${recoveryGeneration}` : ""))
           : undefined;
+        if (!visibleInteraction && candidate && recoveryGeneration > 0) {
+          visibleInteraction = await createJulesAgentAdjudicationInteraction(
+            taskId, session.julesSessionId!, candidate.id, extractQuestionText(candidate),
+            questionReviewerAgentId, ctx.authToken, ctx.runId, recoveryGeneration,
+          );
+        }
         if (visibleInteraction && candidate) {
-          const reviewerChild = await createJulesQuestionAdjudication(
+          // The checkpoint can be lost after a reviewer has already completed
+          // its typed form. Correlation is the durable identity, including
+          // terminal children; creating again would spend quota and hide the
+          // authoritative verdict behind a duplicate form.
+          const recoveredChild = await findJulesQuestionAdjudication(
+            taskId,
+            ctx.agent.companyId,
+            questionReviewerAgentId,
+            session.julesSessionId,
+            candidate.id,
+            ctx.authToken,
+            ctx.runId,
+          );
+          const reviewerChild = recoveredChild ?? await createJulesQuestionAdjudication(
             taskId,
             questionReviewerAgentId,
             extractQuestionText(candidate),
@@ -2043,12 +2795,93 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             ctx.authToken,
             ctx.runId,
           );
+          // A restart can discover the durable parent card after the reviewer
+          // has already submitted the child form.  Do not reconstruct the
+          // bridge and yield in that state: the next restart would erase the
+          // local pointer again, leaving the answered typed verdict stranded
+          // forever.  Consume the same structured decision through the normal
+          // parent audit card before scheduling any further poll.
+          const recoveredChildState = classifyNativeQuestionReview(
+            reviewerInteraction.status,
+            reviewerInteraction.result,
+          );
+          const recoveredChildDecision = recoveredChildState.state === "answered" &&
+            recoveredChildState.decision !== "malformed"
+            ? recoveredChildState.decision
+            : null;
+          if (recoveredChildDecision) {
+            switch (recoveredChildDecision.kind) {
+              case "ANSWER":
+                await resolveJulesAgentAdjudicationInteraction(
+                  taskId,
+                  visibleInteraction.id,
+                  "answer",
+                  recoveredChildDecision.answer,
+                  ctx.authToken,
+                  ctx.runId,
+                );
+                await completeInternalReviewIssue(reviewerChild.id, ctx.authToken, ctx.runId).catch(() => undefined);
+                if (session.deliveredFeedbackActivityId !== candidate.id) {
+                  await client.sendMessage(session.julesSessionId!, { prompt: recoveredChildDecision.answer });
+                }
+                session.deliveredFeedbackActivityId = asJulesActivityId(candidate.id);
+                session.deliveredFeedbackInteractionId = visibleInteraction.id;
+                session.pendingInteraction = session.deferredPlanReview;
+                session.deferredPlanReview = undefined;
+                session.phase = "RUNNING";
+                session = resumePlanReviewAfterQuestionResolution(session);
+                await persistSessionBestEffort(session, ctx.onLog);
+                await ctx.onLog?.("stdout", `[jules] Relayed recovered typed question answer for activity ${candidate.id}.\n`);
+                return await yieldHeartbeat(session);
+              case "ESCALATE": {
+                await resolveJulesAgentAdjudicationInteraction(
+                  taskId,
+                  visibleInteraction.id,
+                  "escalate",
+                  recoveredChildDecision.reason,
+                  ctx.authToken,
+                  ctx.runId,
+                );
+                await completeInternalReviewIssue(reviewerChild.id, ctx.authToken, ctx.runId).catch(() => undefined);
+                const interaction = await runCheckpointedMutation({
+                  session,
+                  key: `jules:human-escalation:${taskId}:${session.julesSessionId}:${candidate.id}`,
+                  operation: "create_human_escalation_interaction",
+                  issueId: taskId,
+                  sessionId: session.julesSessionId,
+                  activityId: candidate.id,
+                  persist: () => persistSessionBestEffort(session!, ctx.onLog),
+                  run: () => createJulesHumanEscalationInteraction(
+                    taskId,
+                    session!.julesSessionId!,
+                    candidate.id,
+                    extractQuestionText(candidate),
+                    recoveredChildDecision.reason,
+                    ctx.authToken,
+                    ctx.runId,
+                  ),
+                });
+                session.pendingInteraction = {
+                  type: "user_feedback",
+                  julesActivityId: asJulesActivityId(candidate.id),
+                  paperclipInteractionId: interaction.id,
+                  question: extractQuestionText(candidate),
+                  createdAt: new Date().toISOString(),
+                };
+                session.phase = "WAITING_FOR_FEEDBACK";
+                await persistSessionBestEffort(session, ctx.onLog);
+                return await yieldHeartbeat(session);
+              }
+            }
+          }
           // The child must not become runnable until its only valid decision
           // channel exists. Activating first lets a fast reviewer complete it
           // from prose, which immediately expires the form.
-          await activateInternalReviewIssue(
-            reviewerChild.id, questionReviewerAgentId, ctx.authToken, ctx.runId,
-          );
+          if (reviewerChild.status !== "done" && reviewerChild.status !== "cancelled") {
+            await activateInternalReviewIssue(
+              reviewerChild.id, questionReviewerAgentId, ctx.authToken, ctx.runId,
+            );
+          }
           session.pendingInteraction = {
             type: "agent_adjudication",
             julesActivityId: asJulesActivityId(candidate.id),
@@ -2059,6 +2892,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             transport: "child_form_bridge",
             reviewerChildIssueId: reviewerChild.id,
             reviewerInteractionId: reviewerInteraction.id,
+            ...(recoveryGeneration > 0 ? { adjudicationGeneration: recoveryGeneration } : {}),
             createdAt: new Date().toISOString(),
           };
           await persistSessionBestEffort(session, ctx.onLog);
@@ -2166,62 +3000,155 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // session after creating the card, leaving a terminal session with an
       // unresolved reviewer gate. Migrate/consume the typed card before the
       // terminal PR handoff instead of abandoning that visible decision.
+      if (!session) {
+        throw new Error("Native plan-review lifecycle requires a persisted Jules session.");
+      }
+      const nativePlanSession = session;
+      const requestFreshPlanRevision = async (
+        interactionId: string,
+        planActivityId: string,
+        reviewerFeedback?: string,
+      ) => {
+        const request = createPlanRevisionRequest({ interactionId, planActivityId, reviewerFeedback });
+        // `sendMessage` has no provider idempotency key. Persisting this
+        // prepared command before its only attempted delivery lets a restart
+        // wait for the typed userMessaged echo instead of spamming Jules.
+        nativePlanSession.pendingPlanRevisionRequest = request;
+        await saveStoredSession(nativePlanSession);
+        await client.sendMessage(nativePlanSession.julesSessionId!, {
+          prompt: planRevisionRequestPrompt(request),
+        });
+        nativePlanSession.pendingPlanRevisionRequest = { ...request, state: "delivered" };
+        nativePlanSession.pendingInteraction = undefined;
+        nativePlanSession.supersededPlanActivityId = planActivityId;
+        nativePlanSession.planReviewOutcome = "revision_requested";
+        nativePlanSession.terminalActivityScan = undefined;
+        await saveStoredSession(nativePlanSession);
+        await persistSessionBestEffort(nativePlanSession, ctx.onLog);
+        return await yieldHeartbeat(nativePlanSession);
+      };
+
+      if (session.pendingPlanRevisionRequest) {
+        const request = session.pendingPlanRevisionRequest;
+        const latestRequestPlan = latestPlan(activities);
+        if (latestRequestPlan && latestRequestPlan.id !== request.planActivityId) {
+          // A new typed provider plan proves the command took effect, even if
+          // a restart happened before Jules mirrored its userMessaged echo.
+          session.pendingPlanRevisionRequest = undefined;
+          session.pendingInteraction = undefined;
+          pendingNativePlanReview = null;
+          await persistSessionBestEffort(session, ctx.onLog);
+        } else {
+          const delivery = decidePlanRevisionRequestDelivery({ request, activities, terminalProviderState });
+          switch (delivery.action) {
+            case "record_delivery": {
+              session.pendingPlanRevisionRequest = { ...request, state: "delivered" };
+              session.pendingInteraction = undefined;
+              session.supersededPlanActivityId = request.planActivityId;
+              session.planReviewOutcome = "revision_requested";
+              session.terminalActivityScan = undefined;
+              await saveStoredSession(session);
+              await persistSessionBestEffort(session, ctx.onLog);
+              return await yieldHeartbeat(session);
+            }
+            case "await_echo":
+              return await yieldHeartbeat(session);
+            case "await_provider_progress":
+              return await yieldHeartbeat(session);
+            case "start_branch_bound_recovery":
+              return await scheduleTerminalPrRemediation("terminal_plan_revision_unavailable");
+            default:
+              return assertNever(delivery);
+          }
+        }
+      }
+
       if (pendingNativePlanReview) {
         const nativePlanReview = pendingNativePlanReview;
-        const interactions = await listPaperclipInteractions(taskId, ctx.authToken, ctx.runId).catch(() => []);
+        const reviewIssueId = nativePlanReview.reviewerChildIssueId ?? taskId;
+        const latestPlanActivity = latestPlan(activities);
+        // The provider activity is the immutable review target. Retire an
+        // orphaned or answered card before reading its child issue, because
+        // Paperclip may compact that child after resolution. Otherwise an old
+        // pointer can survive forever and hide the newer plan from review.
+        if (latestPlanActivity && latestPlanActivity.id !== nativePlanReview.julesActivityId) {
+          session.supersededPlanActivityId = nativePlanReview.julesActivityId;
+          session.planReviewOutcome = "revision_requested";
+          session.pendingInteraction = undefined;
+          await persistSessionBestEffort(session, ctx.onLog);
+          return await yieldHeartbeat(session);
+        }
+        const interactions = await listPaperclipInteractions(reviewIssueId, ctx.authToken, ctx.runId).catch(() => []);
         const interaction = interactions.find((candidate) => candidate.id === nativePlanReview.paperclipInteractionId);
-        if (!interaction) return await yieldHeartbeat(session);
+        if (!interaction) {
+          // A reviewer child can be compacted or a legacy repair can leave a
+          // stale local pointer after the card itself has gone away. Waiting
+          // with that pointer would keep a terminal recovery plan pending
+          // forever: there is no card for its reviewer to answer. Retire only
+          // the missing pointer and continue this heartbeat so the normal
+          // typed Luna card is rebuilt from the immutable provider activity
+          // and plan document before Paperclip can park the parent again.
+          session.pendingInteraction = undefined;
+          await persistSessionBestEffort(session, ctx.onLog);
+          pendingNativePlanReview = null;
+        } else {
+        // v2 initially placed its form on the Jules-owned parent. Paperclip
+        // does not dispatch a cross-assignee form there, so migrate that exact
+        // pending card to a reviewer-owned child before waiting again.
+        if (!nativePlanReview.reviewerChildIssueId && interaction.status === "pending" && !hasUnresolvedProviderQuestion) {
+          await withdrawPaperclipInteraction(taskId, interaction.id,
+            "Migrating the parent-owned plan form to the reviewer-owned typed form.", ctx.authToken, ctx.runId);
+          const child = await createJulesQuestionAdjudication(
+            taskId, nativePlanReview.reviewerAgentId, nativePlanReview.question,
+            ctx.authToken, ctx.runId, ctx.agent.companyId, nativePlanReview.julesActivityId,
+            session.julesSessionId, 0, true, "plan",
+          );
+          const bridged = await createJulesPlanReviewChildInteraction(
+            child.id, taskId, session.julesSessionId!,
+            { documentId: nativePlanReview.planDocumentId, revisionId: nativePlanReview.planRevisionId, revisionNumber: nativePlanReview.planRevisionNumber },
+            nativePlanReview.question, nativePlanReview.stage, nativePlanReview.reviewerAgentId,
+            ctx.authToken, ctx.runId, nativePlanReview.julesActivityId,
+          );
+          await activateInternalReviewIssue(child.id, nativePlanReview.reviewerAgentId, ctx.authToken, ctx.runId);
+          session.pendingInteraction = { ...nativePlanReview, protocolVersion: 2, paperclipInteractionId: bridged.id, reviewerChildIssueId: child.id };
+          await persistSessionBestEffort(session, ctx.onLog);
+          return await yieldHeartbeat(session);
+        }
         const withdrawalReason = interaction.result && typeof interaction.result === "object"
           ? (interaction.result as Record<string, unknown>)["reason"]
           : undefined;
-        const latestPlanActivity = latestPlan(activities);
         const planGateDecision = decidePlanGateRecovery({
           providerState: state,
           hasUnresolvedProviderQuestion,
-          ...(session.planReviewRecoveryAttempt !== undefined ? { recoveryAttempts: session.planReviewRecoveryAttempt } : {}),
           matchingInteraction: {
-            status: interaction.status === "pending" || interaction.status === "answered" || interaction.status === "cancelled"
+            status: interaction.status === "pending" || interaction.status === "answered" || interaction.status === "cancelled" || interaction.status === "expired"
               ? interaction.status
               : "unknown",
             ...(typeof withdrawalReason === "string" ? { cancellationReason: withdrawalReason } : {}),
           },
         });
-        if (planGateDecision.action === "restore" && latestPlanActivity?.id === pendingNativePlanReview.julesActivityId) {
-          // Recreate only an adapter-owned cancellation for the exact provider
-          // plan Jules is still awaiting. User cancellations, unknown causes,
-          // newer questions, and mismatched activity identities deliberately
-          // remain fail-closed rather than guessing a review decision.
-          const recoveryAttempt = (session.planReviewRecoveryAttempt ?? 0) + 1;
-          const restored = await createJulesPlanReviewInteraction(
-            taskId,
-            session.julesSessionId!,
-            {
-              documentId: pendingNativePlanReview.planDocumentId,
-              revisionId: pendingNativePlanReview.planRevisionId,
-              revisionNumber: pendingNativePlanReview.planRevisionNumber,
-            },
-            pendingNativePlanReview.question,
-            pendingNativePlanReview.stage,
-            pendingNativePlanReview.reviewerAgentId,
-            ctx.authToken,
-            ctx.runId,
-            recoveryAttempt,
-          );
-          session.planReviewRecoveryAttempt = recoveryAttempt;
-          session.pendingInteraction = {
-            ...pendingNativePlanReview,
-            protocolVersion: 2,
-            paperclipInteractionId: restored.id,
-          };
-          await persistSessionBestEffort(session, ctx.onLog);
-          return await yieldHeartbeat(session);
+        if (planGateDecision.action === "request_provider_plan_revision" &&
+            nativePlanReview.protocolVersion === 2 &&
+            latestPlanActivity?.id === pendingNativePlanReview.julesActivityId) {
+          return await requestFreshPlanRevision(interaction.id, pendingNativePlanReview.julesActivityId);
         }
         // Native plan reviews are coordination gates, not provider work. A
         // newer typed Jules question must take precedence so it can reach the
         // strong reviewer lane instead of being hidden behind this card.
-        if (hasUnresolvedProviderQuestion && interaction.status === "pending") {
+        const planReviewActivityId = pendingNativePlanReview?.julesActivityId;
+        const planActivity = planReviewActivityId
+          ? activities.find((activity) => activity.id === planReviewActivityId)
+          : undefined;
+        const questionIsNewerThanPlan = (() => {
+          const questionAt = latestAgentActivity?.createTime ? Date.parse(latestAgentActivity.createTime) : Number.NaN;
+          const planAt = planActivity?.createTime ? Date.parse(planActivity.createTime) : Number.NaN;
+          // A missing timestamp must not cancel an already-visible plan gate:
+          // replayed provider history is common after a session resumes.
+          return Number.isFinite(questionAt) && Number.isFinite(planAt) && questionAt > planAt;
+        })();
+        if (hasUnresolvedProviderQuestion && questionIsNewerThanPlan && interaction.status === "pending") {
           await withdrawPaperclipInteraction(
-            taskId,
+            reviewIssueId,
             interaction.id,
             "Superseded by a newer Jules provider question; resume plan review only for a new plan activity.",
             ctx.authToken,
@@ -2245,7 +3172,37 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           stage: pendingNativePlanReview.stage,
           reviewerAgentId: pendingNativePlanReview.reviewerAgentId,
         } as const;
-        const parsedPlanInteraction = parsePlanReviewInteraction(interaction, planIdentity);
+        let parsedPlanInteraction = parsePlanReviewInteraction(interaction, planIdentity);
+        if (parsedPlanInteraction.kind === "untrusted") {
+          const rawVerdict = parsePlanReviewVerdictResult(interaction.result);
+          const attested = rawVerdict && await nativePlanVerdictIsAttested({
+            companyId: ctx.agent.companyId,
+            reviewerAgentId: nativePlanReview.reviewerAgentId,
+            reviewerChildIssueId: nativePlanReview.reviewerChildIssueId,
+            interactionId: interaction.id,
+            verdict: rawVerdict.kind,
+            authToken: ctx.authToken,
+            runId: ctx.runId,
+          });
+          if (attested) {
+            // Paperclip's current native-MCP transport stores the board
+            // principal on the interaction.  The exact heartbeat receipt
+            // above is the narrower, durable reviewer attribution.
+            parsedPlanInteraction = parsePlanReviewInteraction({
+              ...interaction,
+              resolvedByAgentId: nativePlanReview.reviewerAgentId,
+            }, planIdentity);
+          }
+        }
+        if (parsedPlanInteraction.kind === "untrusted") {
+          // Paperclip currently permits a human override for any addressed
+          // agent card. That is useful for board operations but cannot become
+          // a synthetic Luna/Terra decision: it would make the reviewer
+          // reviewer decision: a human override is not a Luna/Terra verdict.
+          // Request a fresh immutable provider plan rather than minting a
+          // second card for this already-terminal review cycle.
+          return await requestFreshPlanRevision(interaction.id, nativePlanReview.julesActivityId);
+        }
         // An answered native plan card is a durable reviewer decision and must
         // win over stale provider activity discovered in the same poll.  A
         // previous question can remain in Jules' terminal activity history;
@@ -2263,13 +3220,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           // withdrawn or replayed.
           if (parsedPlanInteraction.kind === "legacy" && parsedPlanInteraction.state === "pending") {
             await withdrawPaperclipInteraction(
-              taskId,
+              reviewIssueId,
               interaction.id,
               "Migrating the pending legacy plan review to the v2 typed verdict protocol.",
               ctx.authToken,
               ctx.runId,
             );
-            const migrated = await createJulesPlanReviewInteraction(
+            const child = await createJulesQuestionAdjudication(
+              taskId, pendingNativePlanReview.reviewerAgentId, pendingNativePlanReview.question,
+              ctx.authToken, ctx.runId, ctx.agent.companyId, pendingNativePlanReview.julesActivityId,
+              session.julesSessionId, 0, true, "plan",
+            );
+            const migrated = await createJulesPlanReviewChildInteraction(
+              child.id,
               taskId,
               session.julesSessionId!,
               {
@@ -2282,11 +3245,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               pendingNativePlanReview.reviewerAgentId,
               ctx.authToken,
               ctx.runId,
+              pendingNativePlanReview.julesActivityId,
             );
+            await activateInternalReviewIssue(child.id, pendingNativePlanReview.reviewerAgentId, ctx.authToken, ctx.runId);
             session.pendingInteraction = {
               ...pendingNativePlanReview,
               protocolVersion: 2,
               paperclipInteractionId: migrated.id,
+              reviewerChildIssueId: child.id,
             };
             await persistSessionBestEffort(session, ctx.onLog);
           }
@@ -2307,20 +3273,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             : null;
         if (!verdict) return await yieldHeartbeat(session);
         if (verdict.decision === "reject") {
-          await client.sendMessage(session.julesSessionId!, {
-            prompt: `The ${pendingNativePlanReview.stage} plan review found concrete issues. Revise the plan and publish a new plan activity.\n\n${verdict.reason}`,
-          });
-          session.pendingInteraction = undefined;
-          session.planReviewOutcome = "revision_requested";
-          const rejectedPlan = latestPlan(activities);
-          if (rejectedPlan?.planGenerated?.plan?.steps) {
-            session.supersededPlanFingerprint = fingerprintPlanSteps(rejectedPlan.planGenerated.plan.steps);
-          }
-          await persistSessionBestEffort(session, ctx.onLog);
-          return await yieldHeartbeat(session);
+          return await requestFreshPlanRevision(
+            interaction.id,
+            pendingNativePlanReview.julesActivityId,
+            verdict.reason,
+          );
         }
         if (pendingNativePlanReview.stage === "luna" && config.planStrongReviewerAgentId) {
-          const next = await createJulesPlanReviewInteraction(
+          const nextChild = await createJulesQuestionAdjudication(
+            taskId, config.planStrongReviewerAgentId, pendingNativePlanReview.question,
+            ctx.authToken, ctx.runId, ctx.agent.companyId, pendingNativePlanReview.julesActivityId,
+            session.julesSessionId, 0, true, "plan",
+          );
+          const next = await createJulesPlanReviewChildInteraction(
+            nextChild.id,
             taskId,
             session.julesSessionId!,
             { documentId: pendingNativePlanReview.planDocumentId, revisionId: pendingNativePlanReview.planRevisionId, revisionNumber: pendingNativePlanReview.planRevisionNumber },
@@ -2329,7 +3295,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             config.planStrongReviewerAgentId,
             ctx.authToken,
             ctx.runId,
+            pendingNativePlanReview.julesActivityId,
           );
+          await activateInternalReviewIssue(nextChild.id, config.planStrongReviewerAgentId, ctx.authToken, ctx.runId);
           session.pendingInteraction = {
             ...pendingNativePlanReview,
             type: "plan_native_review",
@@ -2337,6 +3305,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             paperclipInteractionId: next.id,
             reviewerAgentId: config.planStrongReviewerAgentId,
             stage: "terra",
+            reviewerChildIssueId: nextChild.id,
           };
           await persistSessionBestEffort(session, ctx.onLog);
           return await yieldHeartbeat(session);
@@ -2351,6 +3320,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           return await yieldHeartbeat(session);
         }
         return await yieldHeartbeat(session);
+        }
       }
 
       if (pendingPlanAgentReview && !hasUnresolvedProviderQuestion && !terminalProviderState) {
@@ -2439,7 +3409,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // Completion is terminal authority. Do not recreate or retain a question
       // adjudication after Jules has produced its PR: it would mask the PR
       // handoff and keep the external-session monitor alive indefinitely.
-      if (terminalProviderState && session.pendingInteraction?.type === "agent_adjudication") {
+      const terminalQuestionDisposition = session.pendingInteraction?.type === "agent_adjudication"
+        ? evaluateTerminalQuestionDisposition({
+          terminal: terminalProviderState,
+          followsCompletion: session.pendingInteraction.julesActivityId === latestAgentActivity?.id && terminalMessageRequiresAdjudication,
+          terminalAnswerRecorded: session.terminalFeedbackActivityId === session.pendingInteraction.julesActivityId,
+        })
+        : { action: "not_terminal" } as const;
+      if (terminalQuestionDisposition.action === "retire" && session.pendingInteraction?.type === "agent_adjudication") {
         const staleAdjudication = session.pendingInteraction;
         const helperIssueId = isNativeAgentAdjudication(staleAdjudication)
           ? staleAdjudication.reviewerChildIssueId
@@ -2504,8 +3481,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             // Older builds could persist the child bridge after its visible
             // parent form had been deleted. Probe that parent only when the
             // current provider question proves this exact bridge remains live.
-            const nativeQuestionStillOpen = hasUnresolvedProviderQuestion &&
-              latestAgentActivity?.id === pending.julesActivityId;
+            const nativeQuestionStillOpen = latestAgentActivity === undefined ||
+              (hasUnresolvedProviderQuestion && latestAgentActivity.id === pending.julesActivityId);
             const parentForm = nativeQuestionStillOpen
               ? await getPaperclipInteraction(
                 taskId, pending.paperclipInteractionId, ctx.authToken, ctx.runId,
@@ -2521,7 +3498,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             const childDecision = childState.state === "answered" && childState.decision !== "malformed"
               ? childState.decision
               : null;
-            if (childDecision) {
+            if (childDecision && !nativeQuestionStillOpen) {
+              // The reviewer completed a bridge for an older provider
+              // activity. Never relay that answer after Jules has moved on:
+              // doing so answers the wrong question and hides the current one
+              // from the typed Paperclip review path. Retire only the stale
+              // local pointer, then let the current activity open its own
+              // structured reviewer card below.
+              await completeInternalReviewIssue(pending.reviewerChildIssueId, ctx.authToken, ctx.runId).catch(() => undefined);
+              session.pendingInteraction = session.deferredPlanReview;
+              session.deferredPlanReview = undefined;
+              session.phase = "RUNNING";
+              await persistSessionBestEffort(session, ctx.onLog);
+            } else if (childDecision) {
               await resolveJulesAgentAdjudicationInteraction(
                 taskId,
                 pending.paperclipInteractionId,
@@ -2539,6 +3528,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 session.pendingInteraction = session.deferredPlanReview;
                 session.deferredPlanReview = undefined;
                 session.phase = "RUNNING";
+                session = resumePlanReviewAfterQuestionResolution(session);
                 await persistSessionBestEffort(session, ctx.onLog);
                 return await yieldHeartbeat(session);
               }
@@ -2692,11 +3682,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             };
             await persistSessionBestEffort(session, ctx.onLog);
           }
-          return await yieldHeartbeat(session);
+          // A stale bridge was cleared above. Fall through in this same poll
+          // so the newer immutable provider activity opens its own typed
+          // reviewer card instead of waiting one whole polling interval.
+          if (session.pendingInteraction?.type === "agent_adjudication" &&
+              session.pendingInteraction.julesActivityId === pending.julesActivityId) {
+            return await yieldHeartbeat(session);
+          }
         }
         // Migration-only child protocol. A malformed legacy record must not
         // fall through into side effects with an unknown child identity.
-        if (isNativeAgentAdjudication(pending)) return await yieldHeartbeat(session);
+        if (isNativeAgentAdjudication(pending)) {
+          if (session.pendingInteraction?.type === "agent_adjudication") {
+            return await yieldHeartbeat(session);
+          }
+        } else {
         // A pre-fix session may contain an adjudication created from plan text
         // while Jules was asking a separate question in the same activity
         // window. Never send that stale answer to Jules. Drop the child and
@@ -2825,6 +3825,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           return await yieldHeartbeat(session);
         }
         }
+        }
       }
 
       const stateMachineRes = handleJulesState(state, !!session.currentPrUrl);
@@ -2838,32 +3839,95 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         session.phase = "WAITING_FOR_FEEDBACK";
       }
 
-      const unapprovedPlan = latestPlan(activities);
+      // The terminal scanner retains the newest plan as a durable witness.
+      // `mirrorActivities` may legitimately suppress already-delivered events,
+      // but delivery is not review completion. Recover the witness here so the
+      // plan gate always sees the provider's current plan.
+      const unapprovedPlan = latestPlan(activities) ??
+        (session.terminalActivityScan?.latestPlan
+          ? terminalEvidenceActivity(session.terminalActivityScan.latestPlan)
+          : undefined);
       const isPlanningTurnCompleted = isPlanApprovalRequired({
         requirePlanApproval: config.requirePlanApproval,
         planActivityId: unapprovedPlan?.id,
         planApprovedAt: session.planApprovedAt,
         planApprovedActivityId: session.planApprovedActivityId,
         supersededPlanActivityId: session.supersededPlanActivityId,
-        planFingerprint: unapprovedPlan?.planGenerated?.plan?.steps
-          ? fingerprintPlanSteps(unapprovedPlan.planGenerated.plan.steps)
-          : undefined,
-        supersededPlanFingerprint: session.supersededPlanFingerprint,
       });
+      // A typed native-plan rejection makes the next provider plan activity a
+      // mandatory new review cycle, even if a terminal-state heuristic or
+      // delivery checkpoint would otherwise classify it as historical. This is
+      // intentionally narrower than "any terminal plan": only the exact
+      // rejection continuation can defer an existing PR handoff.
+      const isCurrentBranchBoundRecovery =
+        session.prRemediation?.recoverySessionId === session.julesSessionId;
+      // The persisted phase can remain WAITING_FOR_PLAN_APPROVAL after a
+      // process loss even when Jules has completed. The provider observation,
+      // not that stale local phase, is the terminal authority for recovery.
+      const terminalReplacementPlan = terminalProviderState &&
+        Boolean(unapprovedPlan?.id) &&
+        (
+          // A branch-bound recovery can complete immediately after publishing
+          // its first plan, regardless of whether it was started for a plan
+          // revision or failed CI. That plan is a new provider contract and
+          // must reach Luna before the older PR's terminal CI state is allowed
+          // to consume the recovery. Do not consult planApprovedActivityId
+          // here: pre-v2 recovery code could persist a stale approval marker
+          // for the same provider activity while failing before it created the
+          // native card. The recovery-session identity is the durable fence.
+          isCurrentBranchBoundRecovery ||
+          (unapprovedPlan?.id !== session.planApprovedActivityId &&
+            session.planReviewOutcome === "revision_requested")
+        );
 
-      // A completed PR is durable evidence that the provider has finished its
-      // work, so it can supersede a stale question bridge.  Completion without
-      // a PR is different: a final provider question remains actionable and
-      // must reach the adjudicator before a completion-confirmation form.
-      const terminalPrHandoff = stateMachineRes.isTerminal && Boolean(session.currentPrUrl);
+      // A completed PR normally supersedes a stale question bridge. A newer,
+      // unapproved plan is different: it is durable evidence that a reviewer
+      // asked Jules to revise that exact PR handoff. Present that plan before
+      // PR remediation, otherwise the terminal path can fail the session while
+      // hiding the only actionable provider response.
+      const terminalPrHandoff = stateMachineRes.isTerminal &&
+        Boolean(session.currentPrUrl) && !terminalReplacementPlan;
       if (!terminalPrHandoff && hasUnresolvedProviderQuestion) {
         // A provider question is actionable work even when the same poll also
         // contains a planGenerated activity. Preserve the plan-review state in
         // deferredPlanReview and let the strong question reviewer run first.
         session.phase = "WAITING_FOR_FEEDBACK";
-      } else if (!terminalPrHandoff && isPlanningTurnCompleted) {
+      } else if (!terminalPrHandoff && (isPlanningTurnCompleted || terminalReplacementPlan)) {
         session.phase = "WAITING_FOR_PLAN_APPROVAL";
       } else if (stateMachineRes.isTerminal) {
+         if (session.currentPrUrl && (session.phase === "COMPLETED" || session.phase === "FAILED")) {
+           const skipCi =
+             (ctx.agent.adapterConfig as Record<string, unknown> | undefined)?.["ciPolicy"] === "skip" ||
+             (ctx.config as Record<string, unknown> | undefined)?.["ciPolicy"] === "skip";
+           const terminalPrDecision = decideTerminalPrLifecycle({
+             providerState: session.phase,
+             hasPr: true,
+             ciStatus: skipCi ? "success" : terminalPrDetails?.ciStatus ?? "unknown",
+             hasRecoverySession: Boolean(session.prRemediation?.recoverySessionId),
+           });
+           switch (terminalPrDecision.action) {
+             case "route_to_review":
+               break;
+             case "await_ci":
+               session.phase = "RUNNING";
+               return await yieldHeartbeat(session);
+             case "start_pr_remediation":
+               return await scheduleTerminalPrRemediation();
+             case "await_pr_remediation":
+               return {
+                 exitCode: 1,
+                 signal: null,
+                 timedOut: false,
+                 errorCode: "jules_pr_remediation_failed",
+                 errorFamily: null,
+                 errorMessage: "The single branch-bound Jules remediation session failed after the PR handoff.",
+                 sessionParams: serializeSession(session),
+                 clearSession: false,
+               };
+             default:
+               throw new Error(`Invalid terminal PR lifecycle action: ${terminalPrDecision.action}`);
+           }
+         }
          if (session.phase === 'COMPLETED') {
              if (!stateMachineRes.isSuccess) {
                  try {
@@ -2930,30 +3994,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                  }
              }
 
-             if (session.currentPrUrl) {
-               const skipCi =
-                 (ctx.agent.adapterConfig as Record<string, unknown> | undefined)?.["ciPolicy"] === "skip" ||
-                 (ctx.config as Record<string, unknown> | undefined)?.["ciPolicy"] === "skip";
-               const ciStatus = skipCi ? "success" : await getPullRequestCiStatus(session.currentPrUrl);
-               if (ciStatus === "pending") {
-                 if (ctx.onLog) {
-                   await ctx.onLog(
-                     "stdout",
-                     `[jules] Pull request ${session.currentPrUrl} is awaiting CI build checks to pass before moving to review...\n`,
-                   );
-                 }
-                 session.phase = "RUNNING";
-                 return await yieldHeartbeat(session);
-               }
-               if (ciStatus === "failed") {
-                 if (ctx.onLog) {
-                   await ctx.onLog(
-                     "stderr",
-                     `[jules] Pull request ${session.currentPrUrl} CI build checks failed.\n`,
-                   );
-                 }
-               }
-             }
              // A terminal PR handoff is no longer provider polling work. Clear
              // only Jules' native monitor before returning; the orchestrator
              // still owns the independent Paperclip review workflow. Without
@@ -3039,7 +4079,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
          }
       }
 
-      if (stateMachineRes.requiresReturn || isPlanningTurnCompleted || hasUnresolvedProviderQuestion) {
+      if (stateMachineRes.requiresReturn || isPlanningTurnCompleted || terminalReplacementPlan || hasUnresolvedProviderQuestion) {
         try {
           const existingInteractions = await listPaperclipInteractions(taskId, ctx.authToken, ctx.runId).catch(() => []);
           let rawQuestionText: string | undefined;
@@ -3066,7 +4106,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             session,
             hasUnresolvedProviderQuestion
                 ? "AWAITING_USER_FEEDBACK"
-                : isPlanningTurnCompleted
+                : isPlanningTurnCompleted || terminalReplacementPlan
                   ? "AWAITING_PLAN_APPROVAL"
                 : state,
             existingInteractions,
@@ -3210,13 +4250,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             case "CREATE_PLAN_CARD": {
               const activity = latestPlan(activities);
               const activityId = activity?.id ?? "awaiting-plan-approval";
-              const currentPlanFingerprint = activity?.planGenerated?.plan?.steps
-                ? fingerprintPlanSteps(activity.planGenerated.plan.steps)
-                : undefined;
-              if (currentPlanFingerprint && session.supersededPlanFingerprint === currentPlanFingerprint) {
-                return await yieldHeartbeat(session);
-              }
-              session.supersededPlanFingerprint = undefined;
               session.supersededPlanActivityId = undefined;
               const { plan: hostPlan, markdown: hostPlanMarkdown } = buildHostImplementationPlan(
                 taskDescription ?? "",
@@ -3235,6 +4268,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                   persist: () => persistSessionBestEffort(session!, ctx.onLog),
                   run: () => saveJulesPlanDocument(taskId, activityId, fullPlan, ctx.authToken, ctx.runId),
                 });
+                const reviewerChild = await createJulesQuestionAdjudication(
+                  taskId, config.planReviewerAgentId!, fullPlan, ctx.authToken, ctx.runId,
+                  ctx.agent.companyId, activityId, session.julesSessionId, 0, true, "plan",
+                );
                 const review = await runCheckpointedMutation({
                   session: session!,
                   key: `jules:plan-review:${taskId}:${revision.revisionId}:luna`,
@@ -3243,11 +4280,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                   sessionId: session!.julesSessionId,
                   activityId,
                   persist: () => persistSessionBestEffort(session!, ctx.onLog),
-                  run: () => createJulesPlanReviewInteraction(taskId, session!.julesSessionId!, revision, fullPlan, "luna", config.planReviewerAgentId!, ctx.authToken, ctx.runId),
+                  run: () => createJulesPlanReviewChildInteraction(reviewerChild.id, taskId, session!.julesSessionId!, revision, fullPlan, "luna", config.planReviewerAgentId!, ctx.authToken, ctx.runId, activityId),
                 });
+                await activateInternalReviewIssue(reviewerChild.id, config.planReviewerAgentId!, ctx.authToken, ctx.runId);
                 session.planReviewRevisionId = revision.revisionId;
                 session.planReviewOutcome = undefined;
-            session.pendingInteraction = { type: "plan_native_review", protocolVersion: 2, julesActivityId: asJulesActivityId(activityId), question: fullPlan, planDocumentId: revision.documentId, planRevisionId: revision.revisionId, planRevisionNumber: revision.revisionNumber, paperclipInteractionId: review.id, reviewerAgentId: config.planReviewerAgentId, stage: "luna", createdAt: new Date().toISOString() };
+            session.pendingInteraction = { type: "plan_native_review", protocolVersion: 2, julesActivityId: asJulesActivityId(activityId), question: fullPlan, planDocumentId: revision.documentId, planRevisionId: revision.revisionId, planRevisionNumber: revision.revisionNumber, paperclipInteractionId: review.id, reviewerAgentId: config.planReviewerAgentId, stage: "luna", reviewerChildIssueId: reviewerChild.id, createdAt: new Date().toISOString() };
                 await persistSessionBestEffort(session, ctx.onLog);
                 return await yieldHeartbeat(session);
               }

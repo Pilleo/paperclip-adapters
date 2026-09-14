@@ -13,3 +13,12 @@ dist-packages/
 .ENV
 .vibe/
 data/
+
+# Local semantic indexes and editor-specific agent projections. The reusable
+# cross-agent instructions live in .agents/ and are intentionally tracked.
+.codanna/
+.fastembed_cache/
+.zvec-grep/
+.claude/
+.codex/
+.grok/

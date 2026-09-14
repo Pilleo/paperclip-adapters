@@ -266,6 +266,57 @@ beforeAll(() => {
           });
           expect(url).toBeUndefined();
       });
+
+     it('does not treat a pull URL embedded in arbitrary tool output as a Jules PR handoff', () => {
+         const url = extractPullRequestUrl({
+             name: parseJulesSessionName('sessions/1'),
+             id: asJulesSessionId('1'),
+             rawOutputs: [{
+                 toolCall: {
+                     output: 'fixture URL: https://github.com/example/canary/pull/991',
+                 },
+             }],
+         }, 'Pilleo/paperclip-adapters');
+
+         expect(url).toBeUndefined();
+     });
+
+     it('accepts an embedded PR URL only when it is bound to the configured repository', () => {
+         const url = extractPullRequestUrl({
+             name: parseJulesSessionName('sessions/1'),
+             id: asJulesSessionId('1'),
+             rawOutputs: [{
+                 toolCall: {
+                     output: 'opened https://github.com/Pilleo/paperclip-adapters/pull/8',
+                 },
+             }],
+         }, 'Pilleo/paperclip-adapters');
+
+         expect(url).toBe('https://github.com/Pilleo/paperclip-adapters/pull/8');
+     });
+
+     it('prefers a later structured Jules PR handoff over an earlier repository-bound URL in a changeset', () => {
+         const url = extractPullRequestUrl({
+             name: parseJulesSessionName('sessions/1'),
+             id: asJulesSessionId('1'),
+             rawOutputs: [
+                 {
+                     changeSet: {
+                         gitPatch: {
+                             unidiffPatch: 'fixture: https://github.com/Pilleo/paperclip-adapters/pull/991',
+                         },
+                     },
+                 },
+                 {
+                     pullRequest: {
+                         url: 'https://github.com/Pilleo/paperclip-adapters/pull/10',
+                     },
+                 },
+             ],
+         }, 'Pilleo/paperclip-adapters');
+
+         expect(url).toBe('https://github.com/Pilleo/paperclip-adapters/pull/10');
+     });
   });
 });
 

@@ -3,8 +3,8 @@ import { execute } from '../src/server/execute';
 import { AdapterExecutionContext } from '@paperclipai/adapter-utils';
 import { JulesClient } from '../src/server/jules-client';
 import { sessionCodec } from '../src/server/session';
-import { getPaperclipIssue, moveIssueToReview } from '../src/server/paperclip-client';
-import { getPullRequestDetails } from '../src/server/ci-status';
+import { getPaperclipIssue, listPaperclipInteractions, moveIssueToReview } from '../src/server/paperclip-client';
+import { getPullRequestCiStatus, getPullRequestDetails } from '../src/server/ci-status';
 
 vi.mock('../src/server/jules-client', async (importOriginal) => {
   const mod = await importOriginal<typeof import('../src/server/jules-client')>();
@@ -155,6 +155,88 @@ beforeAll(() => {
     expect(res.resultJson?.issueStatus).toBe('in_review');
   });
 
+  it("schedules branch-bound remediation instead of messaging a terminal Jules session with red CI", async () => {
+    (JulesClient.prototype.getSession as any).mockResolvedValue({
+      state: "COMPLETED",
+      rawOutputs: [{ pullRequest: { url: "https://github.com/Pilleo/paperclip-adapters/pull/11" } }],
+    });
+    vi.mocked(getPullRequestDetails).mockResolvedValue({
+      state: "OPEN", merged: false, ciStatus: "failed", mergeableStatus: "mergeable",
+      headSha: "a".repeat(40), headRefName: "jules-18036993849073318863-b259ffba",
+    });
+
+    const result = await execute({
+      ...baseCtx,
+      runtime: {
+        ...baseCtx.runtime,
+        sessionParams: sessionCodec.encode({
+          version: 1, paperclipIssueId: "task-1", promptHash: "stable-hash", promptHashVersion: 2,
+          repository: "pilleo/test", source: "github", baseBranch: "master", phase: "RUNNING",
+          sessionId: "terminal-123", julesSessionId: "terminal-123", attempt: 1, failedSessions: [],
+          createdAt: new Date().toISOString(), currentPrUrl: "https://github.com/Pilleo/paperclip-adapters/pull/11",
+        } as never),
+      },
+      authToken: "jwt-token",
+    } as any);
+
+    expect(result.errorCode).toBe("jules_pr_remediation_scheduled");
+    expect(JulesClient.prototype.sendMessage).not.toHaveBeenCalled();
+    expect(sessionCodec.decode(result.sessionParams!)).toMatchObject({
+      phase: "RETRY_SCHEDULED",
+      currentPrHeadRef: "jules-18036993849073318863-b259ffba",
+      prRemediation: { originalSessionId: "terminal-123", headRefName: "jules-18036993849073318863-b259ffba" },
+    });
+  });
+
+  it('hands off a completed green PR without a second CI poll', async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({
+      state: 'COMPLETED',
+      rawOutputs: [{ pullRequest: { url: 'https://github.com/Pilleo/paperclip-adapters/pull/8' } }],
+    } as never);
+    vi.mocked(getPullRequestDetails).mockResolvedValue({
+      state: 'OPEN',
+      merged: false,
+      ciStatus: 'success',
+      mergeableStatus: 'mergeable',
+      headSha: 'b676f30f8dcfbaaebd8629e4cd0f1eb1622c88e8',
+    });
+    // This models the live failure: the independent follow-up probe can hang
+    // or report stale pending state after the authoritative details probe is green.
+    vi.mocked(getPullRequestCiStatus).mockResolvedValue('pending');
+
+    const res = await execute({
+      ...baseCtx,
+      runtime: {
+        ...baseCtx.runtime,
+        sessionParams: sessionCodec.encode({
+          version: 1,
+          paperclipIssueId: 'task-1',
+          promptHash: 'stable-hash',
+          promptHashVersion: 2,
+          repository: 'pilleo/test',
+          source: 'sources/github/pilleo/test',
+          baseBranch: 'master',
+          phase: 'RUNNING',
+          sessionId: '123',
+          julesSessionId: '123',
+          attempt: 1,
+          failedSessions: [],
+          createdAt: new Date().toISOString(),
+        } as never),
+      },
+      authToken: 'jwt-token',
+    } as any);
+
+    expect(res.resultJson?.issueStatus).toBe('in_review');
+    expect(moveIssueToReview).toHaveBeenCalledWith(
+      'task-1',
+      'https://github.com/Pilleo/paperclip-adapters/pull/8',
+      'jwt-token',
+      'run-1',
+    );
+    expect(getPullRequestCiStatus).not.toHaveBeenCalled();
+  });
+
   it('keeps an unresolved provider question ahead of PR handoff', async () => {
     vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({
       state: 'AWAITING_USER_FEEDBACK',
@@ -182,7 +264,7 @@ beforeAll(() => {
           promptHash: 'stable-hash',
           promptHashVersion: 2,
           repository: 'pilleo/test',
-          source: 'github',
+          source: 'sources/github/pilleo/test',
           baseBranch: 'master',
           phase: 'RUNNING',
           sessionId: '123',
@@ -365,6 +447,111 @@ beforeAll(() => {
     expect(res.resultJson?.issueStatus).toBe('in_review');
     expect(moveIssueToReview).toHaveBeenCalled();
     expect(getPaperclipIssue).not.toHaveBeenCalledWith('plan-review-1', expect.anything(), expect.anything());
+  });
+
+  it('moves a completed persisted PR to review when Jules later records a plan activity', async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValueOnce({
+      state: 'COMPLETED',
+      rawOutputs: [],
+    } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValueOnce({ activities: [
+      {
+        id: 'approved-plan',
+        createTime: '2026-09-13T13:00:00.000Z',
+        planGenerated: { plan: { steps: [{ index: 1, title: 'Approved work' }] } },
+      },
+      {
+        id: 'late-plan',
+        createTime: '2026-09-13T13:30:00.000Z',
+        planGenerated: { plan: { steps: [{ index: 1, title: 'Terminal summary plan' }] } },
+      },
+      { id: 'completed', createTime: '2026-09-13T14:00:00.000Z', sessionCompleted: {} },
+    ] } as never);
+
+    const res = await execute({
+      ...baseCtx,
+      agent: {
+        ...baseCtx.agent,
+        adapterConfig: { ...baseCtx.agent.adapterConfig, ciPolicy: 'skip' },
+      },
+      runtime: {
+        ...baseCtx.runtime,
+        sessionParams: sessionCodec.encode({
+          version: 1,
+          paperclipIssueId: 'task-1',
+          promptHash: 'stable-hash',
+          promptHashVersion: 2,
+          repository: 'pilleo/test',
+          source: 'sources/github/pilleo/test',
+          baseBranch: 'master',
+          phase: 'WAITING_FOR_PLAN_APPROVAL',
+          sessionId: '123',
+          julesSessionId: '123',
+          attempt: 1,
+          failedSessions: [],
+          createdAt: new Date().toISOString(),
+          currentPrUrl: 'https://github.com/Pilleo/paperclip-adapters/pull/10',
+          currentPrHeadSha: '270cd3338ebec40c79a74a2f05a652667ef4ec57',
+          planApprovedAt: '2026-09-13T13:01:00.000Z',
+          planApprovedActivityId: 'approved-plan',
+        } as never),
+      },
+      authToken: 'jwt-token',
+    } as any);
+
+    expect(res.resultJson?.issueStatus).toBe('in_review');
+    expect(moveIssueToReview).toHaveBeenCalledWith(
+      'task-1',
+      'https://github.com/Pilleo/paperclip-adapters/pull/10',
+      'jwt-token',
+      'run-1',
+    );
+  });
+
+  it('does not reconnect an answered pre-completion question ahead of a completed PR', async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValueOnce({ state: 'COMPLETED', rawOutputs: [] } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValueOnce({ activities: [
+      { id: 'answered-before-completion', createTime: '2026-09-13T13:28:11.983Z', agentMessaged: { agentMessage: 'May I proceed?' } },
+      { id: 'late-plan', createTime: '2026-09-13T13:58:28.173Z', planGenerated: { plan: { steps: [{ index: 1, title: 'Terminal summary plan' }] } } },
+      { id: 'completed', createTime: '2026-09-13T14:03:13.538Z', sessionCompleted: {} },
+    ] } as never);
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([{
+      id: 'answered-question-form',
+      kind: 'ask_user_questions',
+      status: 'answered',
+      idempotencyKey: 'jules:agent-adjudication:task-1:123:answered-before-completion',
+      result: {
+        answers: [
+          { questionId: 'resolution', optionIds: ['answer'] },
+          { questionId: 'response', otherText: 'Proceed with the approved scoped plan.' },
+        ],
+      },
+    }] as never);
+
+    const res = await execute({
+      ...baseCtx,
+      agent: {
+        ...baseCtx.agent,
+        adapterConfig: { ...baseCtx.agent.adapterConfig, ciPolicy: 'skip', requirePlanApproval: true },
+      },
+      runtime: {
+        ...baseCtx.runtime,
+        sessionParams: sessionCodec.encode({
+          version: 1, paperclipIssueId: 'task-1', promptHash: 'stable-hash', promptHashVersion: 2,
+          repository: 'pilleo/test', source: 'sources/github/pilleo/test', baseBranch: 'master', phase: 'WAITING_FOR_PLAN_APPROVAL',
+          sessionId: '123', julesSessionId: '123', attempt: 1, failedSessions: [], createdAt: new Date().toISOString(),
+          currentPrUrl: 'https://github.com/Pilleo/paperclip-adapters/pull/10',
+          currentPrHeadSha: '270cd3338ebec40c79a74a2f05a652667ef4ec57',
+          planApprovedAt: '2026-09-13T13:28:07.459Z', planApprovedActivityId: 'approved-plan',
+        } as never),
+      },
+      authToken: 'jwt-token',
+    } as any);
+
+    expect(res.resultJson?.issueStatus).toBe('in_review');
+    expect(moveIssueToReview).toHaveBeenCalledWith(
+      'task-1', 'https://github.com/Pilleo/paperclip-adapters/pull/10', 'jwt-token', 'run-1',
+    );
   });
 
   it('delegates a Jules question to the configured strong reviewer', async () => {

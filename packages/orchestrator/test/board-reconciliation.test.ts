@@ -13,6 +13,7 @@ const parent = (overrides: Partial<BoardIssueSnapshot> = {}): BoardIssueSnapshot
   monitorExpired: false,
   nativeReviewInteraction: false,
   registeredOpenPullRequest: false,
+  ciRemediationInProgress: false,
   hasPullRequest: false,
   parentId: null,
   reviewGateKey: null,
@@ -84,6 +85,14 @@ describe("board reconciliation planner", () => {
     expect(planBoardReconciliation([parent({ registeredOpenPullRequest: true, resumableMonitor: false })])).toEqual([
       expect.objectContaining({ action: "recover_to_review", issueId: "parent-836" }),
     ]);
+  });
+
+  it("does not promote a PR while the same heartbeat has returned failed CI to Jules", () => {
+    expect(planBoardReconciliation([parent({
+      registeredOpenPullRequest: true,
+      resumableMonitor: false,
+      ciRemediationInProgress: true,
+    })])).toEqual([]);
   });
 
   it("does not steal an open PR from a Jules issue with a resumable monitor", () => {

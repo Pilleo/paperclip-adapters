@@ -14,6 +14,15 @@ describe("evaluateChecks", () => {
     expect(evaluateChecks(checks)).toBe("pending");
   });
 
+  it("returns stalled when an in-progress check exceeds the bounded CI wait", () => {
+    const now = Date.parse("2026-09-09T10:00:00.000Z");
+    const checks: CheckItem[] = [
+      { name: "Start disposable Paperclip server", state: "IN_PROGRESS", bucket: "pending", startedAt: "2026-09-09T08:00:00.000Z" },
+    ];
+
+    expect(evaluateChecks(checks, now)).toBe("stalled");
+  });
+
   it("returns failed when any check failed", () => {
     const checks: CheckItem[] = [
       { name: "Build", state: "SUCCESS", bucket: "pass" },

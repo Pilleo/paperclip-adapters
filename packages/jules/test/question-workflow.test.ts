@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyNativeQuestionReview, isExpiredQuestionBridge, readQuestionReviewFormDecision, reduceQuestionWorkflow } from "../src/server/question-workflow.js";
+import { classifyNativeQuestionReview, evaluateTerminalQuestionDisposition, evaluateTerminalQuestionRecovery, isExpiredQuestionBridge, readQuestionReviewFormDecision, reduceQuestionWorkflow } from "../src/server/question-workflow.js";
 
 const base = (overrides: Record<string, unknown> = {}) => ({
   parentIssueId: "parent-1",
@@ -71,5 +71,25 @@ describe("Jules question workflow", () => {
 
   it("does not recreate a card after a parent relay has been checkpointed", () => {
     expect(reduceQuestionWorkflow(base({ parentCard: { state: "answered", id: "card-1" } }))).toMatchObject({ action: "complete" });
+  });
+
+  it.each([
+    ["retains an unanswered question published after completion", true, true, false, "retain"],
+    ["permits PR handling after a terminal typed answer", true, true, true, "resolved"],
+    ["retires a question that predates completion", true, false, false, "retire"],
+    ["does not apply terminal cleanup to a live session", false, true, false, "not_terminal"],
+  ] as const)("%s", (_name, terminal, followsCompletion, terminalAnswerRecorded, action) => {
+    expect(evaluateTerminalQuestionDisposition({ terminal, followsCompletion, terminalAnswerRecorded }))
+      .toEqual({ action });
+  });
+
+  it.each([
+    ["recovers the adapter-cancelled post-completion card even when mirrored", true, true, false, "cancelled_terminal", "recover_generation_one"],
+    ["does not recover an answered terminal question", true, true, true, "cancelled_terminal", "resolved"],
+    ["does not recover a question before completion", true, false, false, "cancelled_terminal", "retire"],
+    ["fails closed for a board cancellation", true, true, false, "cancelled_other", "human_escalation"],
+    ["reuses an existing recovery form", true, true, false, "pending_generation_one", "retain_pending"],
+  ] as const)("%s", (_name, terminal, followsCompletion, answerRecorded, card, action) => {
+    expect(evaluateTerminalQuestionRecovery({ terminal, followsCompletion, answerRecorded, card })).toEqual({ action });
   });
 });

@@ -54,10 +54,19 @@ describe('Package Load Test', () => {
         };
         expect(manifest.dependencies?.['@pilleo/paperclip-adapter-common']).toMatch(/^\^\d+\.\d+\.\d+$/);
 
+        // The fixture is intentionally isolated from the developer's package
+        // manager state. In sandboxed CI, ~/.npm may be read-only; keeping the
+        // cache here still exercises npm's real packed-archive resolver.
+        const npmCacheDir = path.join(fixtureDir, 'npm-cache');
+        fs.mkdirSync(npmCacheDir);
         await execFileAsync('npm', [
             'install', '--ignore-scripts', '--no-audit', '--no-fund', '--legacy-peer-deps',
             commonTarball, julesTarball,
-        ], { cwd: fixtureDir, timeout: PACKAGE_CONTRACT_TIMEOUT_MS });
+        ], {
+            cwd: fixtureDir,
+            env: { ...process.env, npm_config_cache: npmCacheDir },
+            timeout: PACKAGE_CONTRACT_TIMEOUT_MS,
+        });
     // This is a packaging integration contract, not an in-process unit hook:
     // it builds two publishable archives and installs their dependency graph.
     // Await subprocesses so Vitest's worker RPC remains responsive while the

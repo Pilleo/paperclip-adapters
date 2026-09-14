@@ -15,6 +15,13 @@ export interface BoardIssueSnapshot {
   readonly nativeReviewInteraction: boolean;
   /** A registered, open PR exists for this managed issue. */
   readonly registeredOpenPullRequest: boolean;
+  /**
+   * The current heartbeat has already routed failed CI for this immutable PR
+   * back to its provider. This is an intra-tick ownership fence, not durable
+   * board state: red CI is implementation work and cannot be promoted to
+   * native review by a later reconciliation pass.
+   */
+  readonly ciRemediationInProgress: boolean;
   readonly hasPullRequest: boolean;
   readonly parentId: string | null;
   readonly reviewGateKey: string | null;
@@ -31,6 +38,10 @@ export function planBoardReconciliation(issues: readonly BoardIssueSnapshot[]): 
   const commands: BoardReconciliationCommand[] = [];
   for (const issue of issues) {
     if (!issue.managed) continue;
+    // A same-tick failed-CI handoff is stronger than every generic lifecycle
+    // repair below. The next heartbeat re-evaluates the provider's new PR
+    // head; until then no board transition may replace Jules ownership.
+    if (issue.ciRemediationInProgress) continue;
     if (issue.status === "in_progress" && issue.registeredOpenPullRequest && !issue.resumableMonitor) {
       commands.push({
         action: "recover_to_review",

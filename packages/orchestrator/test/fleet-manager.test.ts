@@ -93,6 +93,7 @@ describe("Orchestrator Managed Fleet Manager", () => {
     expect(luna?.adapterConfig.env).toMatchObject({ CODEX_HOME: expect.stringContaining("native-review-mcp/luna_reviewer") });
     expect(createdCalls.find((call) => call.name === "[Orchestrated] Terra Strong Reviewer")?.adapterConfig.model).toBe("gpt-5.6-terra");
     const jules = createdCalls.find((call) => call.name === "[Orchestrated] Jules Async Worker");
+    expect(jules?.adapterConfig.ciPolicy).toBe("required");
     expect(jules?.adapterConfig.planReviewerAgentId).toBe(result.lunaReviewerAgentId);
     expect(jules?.adapterConfig.planStrongReviewerAgentId).toBe(result.terraReviewerAgentId);
     expect(jules?.adapterConfig.questionReviewerAgentId).toBe(result.terraAdjudicatorAgentId);
@@ -124,6 +125,7 @@ describe("Orchestrator Managed Fleet Manager", () => {
         reportsTo: null, // Misconfigured
         adapterConfig: {
           pollCadenceSeconds: 0,
+          ciPolicy: "skip",
           planReviewerAgentId: "old-luna",
           planStrongReviewerAgentId: "old-terra",
           questionReviewerAgentId: "old-terra",
@@ -161,6 +163,7 @@ describe("Orchestrator Managed Fleet Manager", () => {
     expect(patchCalls[0]?.body.status).toBeUndefined();
     expect(patchCalls[0]?.body.reportsTo).toBe("orch-1");
     expect(patchCalls[0]?.body.adapterConfig.pollCadenceSeconds).toBe(900);
+    expect(patchCalls[0]?.body.adapterConfig.ciPolicy).toBe("required");
     expect(patchCalls[0]?.body.runtimeConfig.heartbeat).toEqual({
       enabled: true,
       intervalSec: 900,

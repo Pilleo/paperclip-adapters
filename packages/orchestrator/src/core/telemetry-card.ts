@@ -1,5 +1,5 @@
 import { AgentHealthReport, formatAgentHealthAlertDigest } from "./agent-health-monitor.js";
-import { ConflictMatrixResult, JulesQuotaStatus, GitHubSyncStatus } from "./types.js";
+import { ConflictMatrixResult, GitHubSyncStatus } from "./types.js";
 import { DailyBudgetState, formatBudgetTelemetrySummary } from "./cost-tracker.js";
 
 export interface OrchestratorDashboardParams {
@@ -9,9 +9,8 @@ export interface OrchestratorDashboardParams {
   inReviewCount: number;
   resolvedCount: number;
   todoCount: number;
-  julesQuota: JulesQuotaStatus;
   julesRunning: number;
-  julesCapacity: number;
+  julesNewSessionBudget: number;
   vibeRunning: number;
   vibeCapacity: number;
   ghStatus: GitHubSyncStatus;
@@ -34,15 +33,8 @@ export function formatOrchestratorDashboardCard(params: OrchestratorDashboardPar
     const secs = remainingSec % 60;
     const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
     julesStatusStr = `⏸️ **Paused** (Rate limit cooldown: \`${timeStr}\` remaining)`;
-  } else if (params.julesQuota.fetchedLive) {
-    const capacityRemaining = params.julesQuota.effectiveAvailableCapacity;
-    const isExhausted = capacityRemaining <= 0;
-    const badge = isExhausted ? "⏸️ **Full/Exhausted**" : "⚡ **Active**";
-    julesStatusStr = `${badge} (\`${params.julesQuota.activeSessionsCount}/${params.julesQuota.maxConcurrent}\` concurrent, \`${params.julesQuota.sessionsLast24hCount}/${params.julesQuota.maxDaily}\` daily rolling)`;
-  } else if (params.julesQuota.error) {
-    julesStatusStr = `**Quota unavailable** — ${params.julesQuota.error} (dispatch capacity 0)`;
   } else {
-    julesStatusStr = `\`${params.julesRunning}/${params.julesCapacity}\` configured`;
+    julesStatusStr = `⚡ **Queueing** (\`${params.julesRunning}\` provider session(s) monitored, \`${params.julesNewSessionBudget}\` new starts/heartbeat)`;
   }
 
   const budgetRow = params.dailyBudget

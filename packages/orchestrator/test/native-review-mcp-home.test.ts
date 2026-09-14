@@ -23,15 +23,14 @@ describe("managed native reviewer MCP home", () => {
     })).toBe("/state/paperclip/default/companies/company-1/native-review-mcp/luna_reviewer");
   });
 
-  it("generates one stdio tool with run identity and no credential material", () => {
+  it("generates one stdio tool with static reviewer identity and no credential material", () => {
     const config = nativeReviewMcpConfigToml({
       nodePath: "/usr/bin/node",
       serverPath: "/adapter/dist/server/native-review-mcp-stdio.js",
-      runtimeContext: {
+      staticContext: {
         apiBase: "http://127.0.0.1:3100",
-        issueId: "issue-1",
         agentId: "agent-1",
-        runId: "run-1",
+        companyId: "company-1",
       },
     });
     expect(config).toContain('[mcp_servers.paperclip_review]');
@@ -41,14 +40,15 @@ describe("managed native reviewer MCP home", () => {
     expect(config).toContain('"/adapter/dist/server/native-review-mcp-stdio.js"');
     expect(config).toContain('[mcp_servers.paperclip_review.env]');
     expect(config).toContain('PAPERCLIP_API_URL = "http://127.0.0.1:3100"');
-    expect(config).toContain('PAPERCLIP_TASK_ID = "issue-1"');
     expect(config).toContain('PAPERCLIP_AGENT_ID = "agent-1"');
-    expect(config).toContain('PAPERCLIP_RUN_ID = "run-1"');
+    expect(config).toContain('PAPERCLIP_COMPANY_ID = "company-1"');
+    expect(config).not.toContain("PAPERCLIP_TASK_ID");
+    expect(config).not.toContain("PAPERCLIP_RUN_ID");
     expect(config).not.toContain("PAPERCLIP_API_KEY");
     expect(config).not.toContain("Authorization");
   });
 
-  it("provisions restrictive config and an auth symlink without copying the credential", async () => {
+  it("keeps a shared reviewer home independent of the most recently provisioned issue", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "native-review-home-"));
     cleanup.push(root);
     const authSource = path.join(root, "shared", "auth.json");
@@ -61,17 +61,39 @@ describe("managed native reviewer MCP home", () => {
       authSource,
       nodePath: "/usr/bin/node",
       serverPath: "/adapter/dist/server/native-review-mcp-stdio.js",
-      runtimeContext: {
+      staticContext: {
         apiBase: "http://127.0.0.1:3100",
-        issueId: "issue-1",
         agentId: "agent-1",
-        runId: "run-1",
+        companyId: "company-1",
       },
     });
 
-    expect(await fs.readFile(path.join(home, "config.toml"), "utf8")).toContain("paperclip_review");
+    const firstConfig = await fs.readFile(path.join(home, "config.toml"), "utf8");
+    const firstContext = await fs.readFile(nativeReviewRuntimeContextPath(home), "utf8");
+
+    await provisionNativeReviewMcpHome({
+      home,
+      authSource,
+      nodePath: "/usr/bin/node",
+      serverPath: "/adapter/dist/server/native-review-mcp-stdio.js",
+      staticContext: {
+        apiBase: "http://127.0.0.1:3100",
+        agentId: "agent-1",
+        companyId: "company-1",
+      },
+    });
+
+    const config = await fs.readFile(path.join(home, "config.toml"), "utf8");
+    const context = await fs.readFile(nativeReviewRuntimeContextPath(home), "utf8");
+    expect(config).toBe(firstConfig);
+    expect(context).toBe(firstContext);
+    expect(config).toContain("paperclip_review");
+    expect(config).not.toContain("issue-1");
+    expect(config).not.toContain("issue-2");
+    expect(config).not.toContain("run-1");
+    expect(config).not.toContain("run-2");
     expect(JSON.parse(await fs.readFile(nativeReviewRuntimeContextPath(home), "utf8"))).toEqual({
-      apiBase: "http://127.0.0.1:3100", issueId: "issue-1", agentId: "agent-1", runId: "run-1",
+      apiBase: "http://127.0.0.1:3100", agentId: "agent-1", companyId: "company-1",
     });
     expect((await fs.stat(nativeReviewRuntimeContextPath(home))).mode & 0o777).toBe(0o600);
     expect(await fs.readlink(path.join(home, "auth.json"))).toBe(authSource);

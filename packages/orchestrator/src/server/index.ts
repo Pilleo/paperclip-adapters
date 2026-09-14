@@ -11,7 +11,8 @@ export { execute };
 
 export const OrchestratorConfigSchema = z.object({
   maxConcurrentProjects: z.number().int().min(1).default(2),
-  maxConcurrentJules: z.number().int().min(1).default(15),
+  maxNewJulesSessionsPerHeartbeat: z.number().int().min(1).default(3),
+  maxConcurrentJules: z.number().int().min(1).optional(),
   maxConcurrentVibe: z.number().int().min(1).default(1),
   julesAgentId: z.string().optional(),
   vibeAgentId: z.string().optional(),
@@ -19,6 +20,7 @@ export const OrchestratorConfigSchema = z.object({
   reviewerAgentId: z.string().optional(),
   lunaReviewerAgentId: z.string().optional(),
   terraReviewerAgentId: z.string().optional(),
+  reconciliationMode: z.enum(["active", "freeze"]).default("active"),
   julesPlanApprovalPolicy: z.enum(["required", "trusted_opt_out"]).default("required"),
   apiUrl: z.string().optional(),
 });
@@ -34,12 +36,12 @@ export const orchestratorAdapterConfigSchema: AdapterConfigSchema = {
       hint: "Maximum project state machines running concurrently in one company heartbeat (default: 2)",
     },
     {
-      key: "maxConcurrentJules",
-      label: "Max Concurrent Jules Sessions",
+      key: "maxNewJulesSessionsPerHeartbeat",
+      label: "Max New Jules Sessions Per Heartbeat",
       type: "number",
       required: false,
-      default: 15,
-      hint: "Maximum simultaneous asynchronous Jules development sessions (default: 15)",
+      default: 3,
+      hint: "Company-wide rate limit for new Jules sessions. Jules queues accepted sessions itself (default: 3).",
     },
     {
       key: "maxConcurrentVibe",
@@ -78,6 +80,18 @@ export const orchestratorAdapterConfigSchema: AdapterConfigSchema = {
       hint: "Optional override for the managed read-only OpenAI Terra strong reviewer.",
     },
     {
+      key: "reconciliationMode",
+      label: "Lifecycle Reconciliation Mode",
+      type: "select",
+      required: false,
+      default: "active",
+      options: [
+        { value: "active", label: "Apply lifecycle effects" },
+        { value: "freeze", label: "Freeze reconciliation (no control-plane I/O)" },
+      ],
+      hint: "Freeze performs no control-plane I/O. Use only as an emergency stop.",
+    },
+    {
       key: "vibeReviewerAgentId",
       label: "Vibe Reviewer Agent ID",
       type: "text",
@@ -113,12 +127,12 @@ Executes an in-process, deterministic scheduling control plane on each heartbeat
 ---
 
 ## 🚀 Capabilities & Features
-- **Multi-Lane Dispatcher:** Routes tasks across **Jules** (up to 15 concurrent remote sessions) and **Vibe** (local kernel/enforcer tasks).
+- **Multi-Lane Dispatcher:** Admits up to three new Jules sessions per company heartbeat and lets Jules queue accepted work; Vibe remains locally capacity-bound.
 - **Two-Way Backlog Ingestion:** Scans \`docs/internals/backlog/*.md\`, registers board tasks, and synchronizes YAML frontmatter.
 - **Automated Archival:** Automatically moves completed/merged tasks to \`docs/internals/backlog/resolved/\` and updates the index.
 - **Vibe-Backed Clarification:** Automatically routes tasks with \`open_questions: true\` to Vibe to conduct task interviews before Jules begins execution.
 - **DAG Conflict Matrix:** Prevents race conditions by locking active in-flight files and enforcing explicit issue dependencies.
-- **Live Jules Quota:** Real-time quota integration against Google Jules API rate limits (15 concurrent, 100/day).
+- **Jules Admission Control:** Paperclip limits only fresh session creation. Provider queueing and provider \`429\` responses remain authoritative.
 - **Project-Owned Workspaces:** Each company project is processed independently; its configured workspace is the only checkout used for that project's tasks, PRs, locks, and backlog.
 - **Fail-Closed Scoping:** Issues without a valid project workspace are skipped and reported instead of falling back to the adapter process directory.
 `;

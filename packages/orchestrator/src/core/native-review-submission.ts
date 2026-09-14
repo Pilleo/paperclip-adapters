@@ -48,6 +48,7 @@ export type NativeReviewFailure = {
 export type NativeReviewSubmissionResult = NativeReviewSuccess | NativeReviewFailure;
 
 type ResolvedCard = { readonly card: NativeReviewCard; readonly item: { readonly id: string } };
+type NativeReviewFetcher = (url: string | URL, init?: RequestInit) => Promise<Response>;
 
 export function resolveNativeReviewCard(
   cards: readonly NativeReviewCard[],
@@ -79,10 +80,13 @@ export interface NativeReviewSubmissionInput {
   readonly cards: readonly NativeReviewCard[];
   readonly verdict: NativeReviewVerdict;
   readonly reason?: string;
-  readonly fetcher?: typeof fetch;
+  readonly fetcher?: NativeReviewFetcher;
 }
 
-export type NativeReviewRuntimeSubmissionInput = Omit<NativeReviewSubmissionInput, "cards">;
+export type NativeReviewRuntimeSubmissionInput = Omit<NativeReviewSubmissionInput, "cards" | "issueId"> & {
+  readonly issueId?: string;
+  readonly companyId?: string;
+};
 
 function isLoopbackApi(value: string): boolean {
   return /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?(?:\/|$)/i.test(value.trim());
@@ -114,7 +118,7 @@ export async function submitNativeReviewVerdict(input: NativeReviewSubmissionInp
   const resolved = resolveNativeReviewCard(input.cards, input.agentId);
   if (!resolved.ok) return resolved;
 
-  const fetcher = input.fetcher ?? nativeReviewFetch;
+  const fetcher: NativeReviewFetcher = input.fetcher ?? nativeReviewFetch;
   let response: Response;
   try {
     response = await fetcher(
@@ -152,11 +156,16 @@ export async function submitNativeReviewVerdict(input: NativeReviewSubmissionInp
 export async function submitNativeReviewVerdictFromRuntime(
   input: NativeReviewRuntimeSubmissionInput,
 ): Promise<NativeReviewSubmissionResult> {
-  if (!input.apiBase.trim() || !input.issueId.trim() || !input.agentId.trim()) {
+  if (!input.apiBase.trim() || !input.agentId.trim() || (!input.issueId?.trim() && !input.companyId?.trim())) {
     return fail("missing_runtime_context");
   }
   if (!input.token?.trim() && !isLoopbackApi(input.apiBase)) return fail("missing_runtime_auth");
   const fetcher = input.fetcher ?? nativeReviewFetch;
+  if (!input.issueId?.trim()) {
+    const companyId = input.companyId?.trim();
+    if (!companyId) return fail("missing_runtime_context");
+    return submitSingleOwnedCompanyCard({ ...input, companyId, fetcher });
+  }
   let response: Response;
   try {
     response = await fetcher(
@@ -169,7 +178,69 @@ export async function submitNativeReviewVerdictFromRuntime(
   if (!response.ok) return fail("list_http_error", response.status);
   const cards = await response.json().catch(() => null);
   if (!Array.isArray(cards)) return fail("list_invalid_response");
-  return submitNativeReviewVerdict({ ...input, cards: cards as NativeReviewCard[] });
+  return submitNativeReviewVerdict({ ...input, issueId: input.issueId, cards: cards as NativeReviewCard[] });
+}
+
+/**
+ * Compatibility for Codex MCP children: current Paperclip injects task scope
+ * into the Codex process but Codex does not pass that environment through to
+ * configured MCP servers. Search only the addressed reviewer's own live
+ * assignments, and proceed only when exactly one owned pending card exists.
+ *
+ * This is deliberately fail-closed. Paperclip should eventually pass the
+ * run's task/interaction binding directly to MCP subprocesses, letting this
+ * compatibility lookup be removed.
+ */
+async function submitSingleOwnedCompanyCard(
+  input: NativeReviewRuntimeSubmissionInput & { readonly companyId: string; readonly fetcher: NativeReviewFetcher },
+): Promise<NativeReviewSubmissionResult> {
+  let issueResponse: Response;
+  try {
+    const query = new URLSearchParams({
+      assigneeAgentId: input.agentId,
+      status: "todo,in_progress,in_review,blocked",
+    });
+    issueResponse = await input.fetcher(
+      `${apiRoot(input.apiBase)}/api/companies/${encodeURIComponent(input.companyId)}/issues?${query.toString()}`,
+      { headers: runtimeHeaders(input) },
+    );
+  } catch {
+    return fail("runtime_transport_error");
+  }
+  if (!issueResponse.ok) return fail("list_http_error", issueResponse.status);
+  const issues = await issueResponse.json().catch(() => null);
+  if (!Array.isArray(issues)) return fail("list_invalid_response");
+
+  const candidates: Array<{ issueId: string; cards: NativeReviewCard[] }> = [];
+  for (const issue of issues) {
+    const issueId = typeof issue === "object" && issue !== null && !Array.isArray(issue)
+      ? (issue as Record<string, unknown>)["id"]
+      : undefined;
+    if (typeof issueId !== "string" || !issueId.trim()) return fail("list_invalid_response");
+    let cardResponse: Response;
+    try {
+      cardResponse = await input.fetcher(
+        `${apiRoot(input.apiBase)}/api/issues/${encodeURIComponent(issueId)}/interactions`,
+        { headers: runtimeHeaders(input) },
+      );
+    } catch {
+      return fail("runtime_transport_error");
+    }
+    if (!cardResponse.ok) return fail("list_http_error", cardResponse.status);
+    const cards = await cardResponse.json().catch(() => null);
+    if (!Array.isArray(cards)) return fail("list_invalid_response");
+    if (cards.some((card) => card && typeof card === "object" && !Array.isArray(card) &&
+      (card as NativeReviewCard).kind === "request_item_verdicts" &&
+      (card as NativeReviewCard).status === "pending" &&
+      (card as NativeReviewCard).addresseeAgentId === input.agentId)) {
+      candidates.push({ issueId, cards: cards as NativeReviewCard[] });
+    }
+  }
+  if (candidates.length === 0) return fail("no_owned_pending_card");
+  if (candidates.length > 1) return fail("ambiguous_owned_pending_cards");
+  const candidate = candidates[0];
+  if (!candidate) return fail("no_owned_pending_card");
+  return submitNativeReviewVerdict({ ...input, issueId: candidate.issueId, cards: candidate.cards });
 }
 
 export function isResolvedNativeReviewCard(value: unknown): value is ResolvedCard {

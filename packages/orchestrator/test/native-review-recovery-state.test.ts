@@ -35,6 +35,21 @@ describe("native review recovery state", () => {
     });
   });
 
+  it("recovers a contract-scoped PR card and withdraws the stale Jules plan card", () => {
+    expect(decideNativeReviewRecovery({
+      issueId: "issue-1",
+      issueStatus: "backlog",
+      orchestratorManaged: true,
+      prIdentity: { url: "https://github.com/acme/repo/pull/1", headSha: "head-1" },
+      cards: [stalePlanCard, { ...prCard, idempotencyKey: `${prCard.idempotencyKey}:contract:170855u` }],
+      reviewerRuns: [],
+    })).toMatchObject({
+      action: "restore_and_recover",
+      interactionId: "pr-card",
+      withdrawInteractionIds: ["plan-card"],
+    });
+  });
+
   it("waits rather than waking again while the canonical card has a live reviewer run", () => {
     expect(decideNativeReviewRecovery({
       issueId: "issue-1",

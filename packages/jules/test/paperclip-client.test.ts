@@ -12,6 +12,7 @@ import {
   createJulesQuestionAdjudication,
   createJulesQuestionReviewInteraction,
   createJulesPlanApprovalInteraction,
+  createJulesPlanReviewChildInteraction,
   createNoPrCompletionInteraction,
   getPaperclipInteraction,
   getPaperclipIssue,
@@ -72,6 +73,22 @@ describe("native Jules plan review interaction", () => {
     expect(body.payload.items).toEqual([{ id: "plan", label: "Plan", description: "Plan revision 1" }]);
     expect(body.payload.verdicts).toEqual(["approve", "reject"]);
     expect(body.payload.target.revisionId).toBe("revision-1");
+    fetchMock.mockRestore();
+  });
+
+  it("binds a reviewer-owned plan verdict to its immutable Jules activity", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      id: "child-plan-review-1", status: "pending", kind: "request_item_verdicts",
+    }), { status: 201, headers: { "content-type": "application/json" } }));
+
+    await createJulesPlanReviewChildInteraction(
+      "child-1", "issue-1", "session-1",
+      { documentId: "document-1", revisionId: "revision-1", revisionNumber: 1 },
+      "# Plan", "luna", "reviewer-1", "token", "run-1", "activity-1",
+    );
+
+    const [, init] = fetchMock.mock.calls[0] ?? [];
+    expect(JSON.parse(String(init?.body)).payload.providerActivityId).toBe("activity-1");
     fetchMock.mockRestore();
   });
 
@@ -150,6 +167,19 @@ describe("Paperclip issue completion", () => {
         body: expect.stringContaining('"type":"pull_request"'),
       }),
     );
+  });
+
+  it("surfaces failed PR handoff registration instead of claiming review handoff", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => [] })
+      .mockResolvedValueOnce({ ok: false, status: 403, text: async () => "forbidden" });
+    global.fetch = fetchMock as unknown as typeof global.fetch;
+
+    await expect(moveIssueToReview(
+      "issue-1",
+      "https://github.com/example/repo/pull/1",
+      "jwt-token",
+    )).rejects.toBeInstanceOf(PaperclipClientError);
   });
 
   it("creates an idempotent no-PR completion confirmation", async () => {
@@ -693,6 +723,64 @@ describe("Paperclip issue completion", () => {
     expect(JSON.parse(fetchMock.mock.calls[1]![1]!.body as string)).toMatchObject({ baseRevisionId: "rev-1" });
   });
 
+  it("preserves an existing immutable PR handoff when a generic session becomes current", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          latestRevisionId: "rev-pr-1",
+          body: [
+            "julesSessionId: terminal-session",
+            "url: https://jules.google.com/session/terminal-session",
+            "prUrl: https://github.com/Pilleo/paperclip-adapters/pull/11",
+            "prHeadSha: immutable-head",
+            "prHeadRef: jules-terminal-fix-ci",
+          ].join("\n"),
+        }),
+      })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({}) });
+    global.fetch = fetchMock as unknown as typeof global.fetch;
+
+    await upsertJulesSessionHandle("issue-terminal-pr", "generic-retry", "https://jules.google.com/session/generic-retry", "jwt-token");
+
+    const saved = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body));
+    expect(saved.body).toContain("julesSessionId: generic-retry");
+    expect(saved.body).toContain("prUrl: https://github.com/Pilleo/paperclip-adapters/pull/11");
+    expect(saved.body).toContain("prHeadSha: immutable-head");
+    expect(saved.body).toContain("prHeadRef: jules-terminal-fix-ci");
+  });
+
+  it("keeps the branch-bound recovery session authoritative when a stale retry starts another provider session", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          latestRevisionId: "rev-recovery-1",
+          body: [
+            "julesSessionId: branch-bound-recovery",
+            "url: https://jules.google.com/session/branch-bound-recovery",
+            "prUrl: https://github.com/Pilleo/paperclip-adapters/pull/11",
+            "prHeadSha: immutable-head",
+            "prHeadRef: jules-terminal-fix-ci",
+            "prRemediationOriginalSessionId: terminal-session",
+            "prRemediationRecoverySessionId: branch-bound-recovery",
+            "prRemediationReason: ci_failure",
+          ].join("\n"),
+        }),
+      })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({}) });
+    global.fetch = fetchMock as unknown as typeof global.fetch;
+
+    await upsertJulesSessionHandle("issue-terminal-pr", "stale-generic-retry", "https://jules.google.com/session/stale-generic-retry", "jwt-token");
+
+    const saved = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body));
+    expect(saved.body).toContain("julesSessionId: branch-bound-recovery");
+    expect(saved.body).toContain("prRemediationRecoverySessionId: branch-bound-recovery");
+    expect(saved.body).not.toContain("julesSessionId: stale-generic-retry");
+  });
+
   it("posts links/comments, withdraws interactions, and schedules durable monitoring", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({ ok: true, status: 201 })
@@ -806,7 +894,7 @@ describe("Paperclip issue completion", () => {
     expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: "GET" });
   });
 
-  it("repairs and verifies a triggered Jules monitor whose execution policy was stripped", async () => {
+  it("repairs a triggered Jules monitor whose execution policy was stripped and accepts Paperclip's cleared audit state", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({
         ok: true,
@@ -825,7 +913,14 @@ describe("Paperclip issue completion", () => {
       .mockResolvedValueOnce({
         ok: true,
         status: 200,
-        json: async () => ({ id: "issue-1", executionPolicy: { mode: "normal" }, executionState: { monitor: null } }),
+        json: async () => ({
+          id: "issue-1",
+          executionPolicy: { mode: "normal" },
+          // Paperclip retains a cleared monitor as audit history. It is not a
+          // live continuation and must not turn a successful cleanup into a
+          // failed heartbeat.
+          executionState: { monitor: { status: "cleared", serviceName: "jules" } },
+        }),
       });
     global.fetch = fetchMock as unknown as typeof global.fetch;
 
@@ -841,6 +936,34 @@ describe("Paperclip issue completion", () => {
       stages: [],
       commentRequired: false,
     });
+  });
+
+  it("fails closed when compatibility cleanup leaves a live Jules monitor", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: "issue-1",
+          executionPolicy: null,
+          executionState: { monitor: { serviceName: "jules", externalRef: "s-1", timeoutAt: "2026-09-01T00:00:00Z" } },
+        }),
+      })
+      .mockResolvedValueOnce({ ok: true, status: 200 })
+      .mockResolvedValueOnce({ ok: true, status: 200 })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: "issue-1",
+          executionPolicy: { mode: "normal" },
+          executionState: { monitor: { status: "scheduled", serviceName: "jules" } },
+        }),
+      });
+    global.fetch = fetchMock as unknown as typeof global.fetch;
+
+    await expect(clearJulesSessionMonitor("issue-1", "jwt-token"))
+      .rejects.toThrow("Paperclip retained a stranded Jules monitor");
   });
 
   it("recovers an existing feedback interaction after an idempotency conflict", async () => {

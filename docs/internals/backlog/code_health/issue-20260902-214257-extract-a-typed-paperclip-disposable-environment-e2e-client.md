@@ -19,8 +19,8 @@ autonomy: "autonomous"
 open_questions: false
 has_side_effects: true
 
-paperclip_issue_id: "071909cf-01fe-4726-b2e4-712dedfd61cc"
-paperclip_identifier: "JUL-5"
+paperclip_issue_id: "95ad8b6e-3fa8-42ef-8d47-84466bc634d2"
+paperclip_identifier: "MAZ-1475"
 ---
 
 # 🟡 [Severity: MEDIUM]: Extract a typed Paperclip disposable-environment E2E client

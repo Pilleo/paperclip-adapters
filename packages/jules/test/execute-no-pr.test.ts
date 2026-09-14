@@ -5,10 +5,13 @@ import { JulesClient } from "../src/server/jules-client";
 import { sessionCodec } from "../src/server/session";
 import {
   createNoPrCompletionInteraction,
+  clearJulesSessionMonitor,
+  getPaperclipInteraction,
+  listPaperclipInteractions,
   moveIssueToBlocked,
   moveIssueToDone,
   PaperclipClientError,
-} from "../src/server/paperclip-client";
+} from "../src/server/paperclip-client.js";
 import { deleteStoredSession, saveStoredSession } from "../src/server/session-store";
 
 vi.mock("../src/server/jules-client", async (importOriginal) => {
@@ -20,11 +23,14 @@ vi.mock("../src/server/jules-client", async (importOriginal) => {
   return { ...mod, JulesClient: MockedJulesClient };
 });
 
-vi.mock("../src/server/paperclip-client", async (importOriginal) => {
-  const mod = await importOriginal<typeof import("../src/server/paperclip-client")>();
+vi.mock("../src/server/paperclip-client.js", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("../src/server/paperclip-client.js")>();
   return {
     ...mod,
     createNoPrCompletionInteraction: vi.fn(),
+    clearJulesSessionMonitor: vi.fn(),
+    getPaperclipInteraction: vi.fn(),
+    listPaperclipInteractions: vi.fn().mockResolvedValue([]),
     moveIssueToBlocked: vi.fn(),
     moveIssueToDone: vi.fn(),
     moveIssueToReview: vi.fn(),
@@ -95,7 +101,14 @@ describe("Jules completion without a PR", () => {
       state: "COMPLETED",
       url: "https://jules.google.com/session/session-1",
     } as never);
+    // clearAllMocks retains mock implementations. Reset the provider activity
+    // stream so a preceding plan-gate test cannot turn this no-PR fixture into
+    // a real plan-card request.
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [] } as never);
     vi.mocked(createNoPrCompletionInteraction).mockResolvedValue({ id: "interaction-1", status: "pending" });
+    vi.mocked(clearJulesSessionMonitor).mockResolvedValue();
+    vi.mocked(getPaperclipInteraction).mockResolvedValue({ id: "interaction-1", status: "pending" } as never);
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([]);
     vi.mocked(moveIssueToBlocked).mockResolvedValue();
     vi.mocked(moveIssueToDone).mockResolvedValue();
     vi.mocked(saveStoredSession).mockResolvedValue();
@@ -190,6 +203,84 @@ describe("Jules completion without a PR", () => {
     expect(deleteStoredSession).toHaveBeenCalledOnce();
     expect(moveIssueToDone).not.toHaveBeenCalled();
     expect(JulesClient.prototype.createSession).not.toHaveBeenCalled();
+    expect(result.clearSession).toBe(true);
+    expect(result.resultJson?.issueStatus).toBe("blocked");
+  });
+
+  it("consumes a rejected completion card when Paperclip wakes Jules without its resolved-card envelope", async () => {
+    const sessionParams = sessionCodec.encode({
+      ...baseSession,
+      phase: "COMPLETED",
+      pendingInteraction: {
+        type: "completion_confirmation",
+        paperclipInteractionId: "interaction-1",
+        question: "Complete?",
+        createdAt: "2026-08-07T00:00:00.000Z",
+      },
+    } as never);
+    vi.mocked(getPaperclipInteraction).mockResolvedValue({ id: "interaction-1", status: "rejected" } as never);
+
+    const result = await execute({
+      ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams },
+      // Continuation recovery currently omits interactionId/status even when
+      // the native confirmation has already been rejected.
+      context: baseContext.context,
+    });
+
+    expect(getPaperclipInteraction).toHaveBeenCalledWith("issue-1", "interaction-1", "jwt-token", "run-1");
+    expect(deleteStoredSession).toHaveBeenCalledOnce();
+    expect(moveIssueToBlocked).not.toHaveBeenCalled();
+    expect(moveIssueToDone).not.toHaveBeenCalled();
+    expect(result.clearSession).toBe(true);
+    expect(result.resultJson?.issueStatus).toBe("blocked");
+  });
+
+  it("clears a terminal session when an older rejected plan gate obscures its rejected no-PR card", async () => {
+    const sessionParams = sessionCodec.encode({
+      ...baseSession,
+      phase: "WAITING_FOR_PLAN_APPROVAL",
+      planApprovedAt: "2026-08-07T00:01:00.000Z",
+      planApprovedActivityId: "old-plan-activity",
+      pendingInteraction: {
+        type: "plan_native_review",
+        protocolVersion: 2,
+        julesActivityId: "old-plan-activity",
+        paperclipInteractionId: "old-plan-card",
+        question: "Old plan",
+        planDocumentId: "plan-doc-1",
+        planRevisionId: "plan-revision-1",
+        planRevisionNumber: 1,
+        reviewerAgentId: "reviewer-1",
+        stage: "luna",
+        reviewerChildIssueId: "plan-review-child-1",
+        createdAt: "2026-08-07T00:00:00.000Z",
+      },
+    } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({
+      activities: [{
+        id: "old-plan-activity",
+        createTime: "2026-08-07T00:00:00.000Z",
+        planGenerated: { plan: { steps: ["old step"] } },
+      }],
+    } as never);
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([{
+      id: "rejected-no-pr-card",
+      kind: "request_confirmation",
+      status: "rejected",
+      idempotencyKey: "jules:no-pr-completion:issue-1:session-1",
+      result: { outcome: "rejected" },
+    }] as never);
+
+    const result = await execute({
+      ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams },
+    });
+
+    expect(deleteStoredSession).toHaveBeenCalledOnce();
+    expect(getPaperclipInteraction).not.toHaveBeenCalledWith(
+      "plan-review-child-1", "old-plan-card", "jwt-token", "run-1",
+    );
     expect(result.clearSession).toBe(true);
     expect(result.resultJson?.issueStatus).toBe("blocked");
   });
