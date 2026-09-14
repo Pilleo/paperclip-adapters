@@ -42,6 +42,7 @@ import { reconcileProviderState } from "./provider-reconciliation.js";
 import { JulesActivity, JulesClient, JulesClientError, extractPullRequestUrl, ownerRepoFromJulesSource } from "./jules-client.js";
 import { buildPrompt, hashPromptIdentity, PROMPT_IDENTITY_HASH_VERSION } from "./prompt-builder.js";
 import { handleJulesState } from "./state-machine.js";
+import { decideTerminalDisposition } from "./terminal-disposition.js";
 import { evaluateJulesLifecycleState } from "./state-engine.js";
 import { evaluateScopeConformity } from "@pilleo/paperclip-adapter-common";
 import { classifyFailure, toErrorFamily, summarizeJulesFailure } from "./failure-classifier.js";
@@ -2850,6 +2851,44 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           : undefined,
         supersededPlanFingerprint: session.supersededPlanFingerprint,
       });
+      const terminalDisposition = stateMachineRes.isTerminal && (state === "COMPLETED" || state === "FAILED")
+        ? decideTerminalDisposition({
+          providerState: state,
+          // `auto` preserves the existing confirmation path: a repository or
+          // provider can legitimately decide there is no change to submit.
+          // Only `always` is an unconditional PR contract.
+          requiresPr: config.prPolicy === "always",
+          hasPr: Boolean(session.currentPrUrl),
+          hasUnapprovedPlan: isPlanningTurnCompleted,
+          hasPendingPlanReview: session.pendingInteraction?.type === "plan_native_review"
+            || session.pendingInteraction?.type === "plan_agent_review",
+        })
+        : undefined;
+
+      // A later structured plan is authoritative over a provider terminal
+      // state.  This specifically repairs a historical no-PR confirmation:
+      // it was created before the plan activity was observed and is invalid
+      // once the plan gate exists.  Withdraw via Paperclip's typed endpoint;
+      // never ask an operator to resolve a contradictory completion form.
+      if (terminalDisposition?.action === "create_plan_review"
+        || terminalDisposition?.action === "resume_pending_plan_review") {
+        const staleCompletionKey = `jules:no-pr-completion:${taskId}:${session.julesSessionId}`;
+        const interactions = await listPaperclipInteractions(taskId, ctx.authToken, ctx.runId, 5000).catch(() => []);
+        const staleCompletion = interactions.find(
+          (interaction) => interaction.kind === "request_confirmation"
+            && interaction.status === "pending"
+            && interaction.idempotencyKey === staleCompletionKey,
+        );
+        if (staleCompletion) {
+          await withdrawPaperclipInteraction(
+            taskId,
+            staleCompletion.id,
+            "Withdrawn because Jules published a newer unapproved plan that must be reviewed before terminal handling.",
+            ctx.authToken,
+            ctx.runId,
+          );
+        }
+      }
 
       // A completed PR is durable evidence that the provider has finished its
       // work, so it can supersede a stale question bridge.  Completion without
@@ -2865,7 +2904,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         session.phase = "WAITING_FOR_PLAN_APPROVAL";
       } else if (stateMachineRes.isTerminal) {
          if (session.phase === 'COMPLETED') {
-             if (!stateMachineRes.isSuccess) {
+             if (terminalDisposition?.action === "block_missing_pr") {
+               await moveIssueToBlocked(taskId, ctx.authToken, ctx.runId);
+               return completionInteractionResult(
+                 session,
+                 "blocked",
+                 `Jules session ${session.julesSessionId} completed without the required PR. No completion confirmation was created.`,
+                 false,
+               );
+             }
+             if (terminalDisposition?.action === "request_no_pr_confirmation") {
                  try {
                    let completion = session.pendingInteraction?.type === "completion_confirmation"
                      ? session.pendingInteraction
@@ -3041,7 +3089,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       if (stateMachineRes.requiresReturn || isPlanningTurnCompleted || hasUnresolvedProviderQuestion) {
         try {
-          const existingInteractions = await listPaperclipInteractions(taskId, ctx.authToken, ctx.runId).catch(() => []);
+          const existingInteractions = (await listPaperclipInteractions(taskId, ctx.authToken, ctx.runId).catch(() => []))
+            // The provider-terminal recovery above can withdraw a stale
+            // no-PR form in this same heartbeat. Do not let a stale read of
+            // that form suppress creation of the authoritative plan review.
+            .filter((interaction) => !(terminalDisposition?.action === "create_plan_review"
+              && interaction.idempotencyKey === `jules:no-pr-completion:${taskId}:${session!.julesSessionId}`));
           let rawQuestionText: string | undefined;
           let rawQuestionActivityId: string | undefined;
           if (hasUnresolvedProviderQuestion) {
@@ -3072,6 +3125,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             existingInteractions,
             rawQuestionText,
             rawQuestionActivityId,
+            isPlanningTurnCompleted,
           );
 
           switch (action.type) {

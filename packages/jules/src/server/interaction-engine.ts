@@ -85,6 +85,7 @@ export function evaluateInteractionAction(
   existingInteractions: PaperclipInteraction[] = [],
   rawQuestionText?: string,
   rawQuestionActivityId?: string,
+  planRequiresApproval = false,
 ): InteractionAction {
   // Plan availability is supplied by the provider activity/state machine.
   // Never infer a transition by matching Jules-generated prose: wording is
@@ -94,7 +95,11 @@ export function evaluateInteractionAction(
 
   // 1. Jules is awaiting plan approval
   if (effectiveState === "AWAITING_PLAN_APPROVAL") {
-    if (session.planApprovedAt) {
+    // Approval is scoped to a provider plan activity. A newer activity can
+    // require a fresh review even when the session remembers an older
+    // approval; treating approval as session-wide loses that new plan after a
+    // restart or terminal provider poll.
+    if (session.planApprovedAt && !planRequiresApproval) {
       return {
         type: "WAIT_FOR_HUMAN",
         summary: `Jules session ${session.julesSessionId} is processing plan approval.`,

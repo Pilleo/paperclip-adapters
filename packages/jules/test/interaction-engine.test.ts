@@ -259,6 +259,23 @@ describe("interaction-engine pure reducer", () => {
       const action = evaluateInteractionAction(sessionApproved, "AWAITING_PLAN_APPROVAL", [accepted]);
       expect(action.type).toBe("WAIT_FOR_HUMAN");
     });
+
+    it("opens a fresh card when a newer provider plan supersedes a recorded approval", () => {
+      const sessionApproved = {
+        ...baseSession,
+        planApprovedAt: "2026-08-27T18:00:00.000Z",
+        planApprovedActivityId: "older-plan",
+      };
+      const action = evaluateInteractionAction(
+        sessionApproved,
+        "AWAITING_PLAN_APPROVAL",
+        [],
+        "New provider plan",
+        "newer-plan",
+        true,
+      );
+      expect(action.type).toBe("CREATE_PLAN_CARD");
+    });
   });
 
   describe("Pure state updates", () => {

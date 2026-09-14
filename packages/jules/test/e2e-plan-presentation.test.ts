@@ -413,6 +413,43 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
     });
   });
 
+  it("recovers a completed no-PR session with a newer plan through one Luna form", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "COMPLETED", id: "session-141" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{
+      id: "newer-plan-after-terminal", createTime: "2026-09-14T10:00:00.000Z",
+      planGenerated: { plan: { steps: [{ index: 0, title: "Rework package loading", description: "Add the focused regression." }] } },
+    }] } as never);
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([{
+      id: "invalid-no-pr-confirmation", status: "pending", kind: "request_confirmation",
+      idempotencyKey: "jules:no-pr-completion:issue-141:session-141",
+    }]);
+    vi.mocked(createJulesPlanReviewInteraction).mockResolvedValue({
+      id: "recovered-luna-plan-card", status: "pending", kind: "request_item_verdicts",
+      planRevision: { documentId: "doc-3", revisionId: "rev-3", revisionNumber: 3 },
+    });
+
+    const result = await execute({
+      ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({
+        ...session,
+        phase: "WAITING_FOR_PLAN_APPROVAL",
+        planApprovedAt: "2026-09-14T09:00:00.000Z",
+        planApprovedActivityId: "older-approved-plan",
+      }) },
+    } as AdapterExecutionContext);
+
+    expect(withdrawPaperclipInteraction).toHaveBeenCalledWith(
+      "issue-141", "invalid-no-pr-confirmation", expect.stringContaining("newer unapproved plan"), "jwt-token", "run-1",
+    );
+    expect(createJulesPlanReviewInteraction).toHaveBeenCalledWith(
+      "issue-141", "session-141", expect.objectContaining({ revisionId: "rev-1" }),
+      expect.stringContaining("Rework package loading"), "luna", "00000000-0000-4000-8000-000000000001", "jwt-token", "run-1",
+    );
+    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
+      type: "plan_native_review", julesActivityId: "newer-plan-after-terminal", stage: "luna",
+    });
+  });
+
   it("relays an answered v2 rejection to a terminal Jules session", async () => {
     vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "COMPLETED", id: "session-141" } as never);
     vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [
