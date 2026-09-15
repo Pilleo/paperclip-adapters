@@ -20,7 +20,7 @@ open_questions: false
 has_side_effects: true
 
 paperclip_issue_id: "071909cf-01fe-4726-b2e4-712dedfd61cc"
-paperclip_identifier: "JUL-5"
+paperclip_identifier: ""
 ---
 
 # 🟡 [Severity: MEDIUM]: Extract a typed Paperclip disposable-environment E2E client

@@ -19,9 +19,10 @@ const lastSyncDisposition = new Map<string, string>();
 import { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { extractIssueMetadata, normalizeGitHubOwnerRepo, resolvePaperclipProject, resolveProjectWorkspace, resolveProjectMetadata, type PaperclipProjectRecord } from "../core/parser.js";
 import { calculateConflictMatrix, selectNextTasksMultiLane } from "../core/dispatcher.js";
-import { fetchJulesQuota } from "../core/jules-quota.js";
+import { fetchJulesQuota, resolveJulesDispatchCapacity } from "../core/jules-quota.js";
 import { checkWorkspaceConsistency } from "../core/consistency.js";
-import { fetchGitHubPullRequests, hasUnreviewedReadyPullRequest, matchPrToIssue, registeredPullRequestFromIssue, checkPrCiIsGreen, fetchPullRequestHeadSha } from "../core/github-sync.js";
+import { ensureManagedProjectCheckout, managedProjectCheckoutPath } from "../core/project-managed-checkout.js";
+import { fetchGitHubPullRequests, hasUnreviewedReadyPullRequest, matchPrToIssue, registeredPullRequestFromIssue, checkPrCiIsGreen, fetchPullRequestHeadSha, resolvePrCiGate } from "../core/github-sync.js";
 import { evaluateIssueTransition } from "../core/state-machine.js";
 import { readWorkspaceGitRemote, syncBacklogMarkdownToPaperclip } from "../core/backlog-sync.js";
 import { archiveResolvedBacklogFiles } from "../core/backlog-archiver.js";
@@ -39,8 +40,9 @@ import { formatOrchestratorDashboardCard } from "../core/telemetry-card.js";
 import { identifyStalledIssues } from "../core/stalled-session-reaper.js";
 import { hasDelegatedReviewChild, hasDelegatedReviewHistory, isDelegatedReviewChild } from "../core/recovery-eligibility.js";
 import { evaluateReviewPipelineProgress, hasStaleReviewerOwnership, isReviewDispatchDecision, operatorGateReconciliationPatch, reviewDispatchStage } from "../core/review-pipeline.js";
-import { buildReviewInteractionRequest, hasNativeRejectionForHead, isCanonicalReviewCardKey, isReviewInteractionForIssue, planReviewDialog, reviewInteractionIdempotencyKey, reviewInteractionIdempotencyKeys, selectReviewAttempt, selectReviewCardsToWithdrawAfterRejection, shouldDeferPrReviewDispatch, type PrReviewStage } from "../core/review-interaction-state.js";
+import { buildReviewInteractionRequest, hasCompletedNativeApprovalLadderForHead, hasNativeRejectionForHead, isCanonicalReviewCardKey, isReviewInteractionForIssue, planReviewDialog, reviewInteractionIdempotencyKey, reviewInteractionIdempotencyKeys, selectReviewAttempt, selectReviewCardsToWithdrawAfterRejection, selectReviewRunDispatch, shouldDeferPrReviewDispatch, type PrReviewStage } from "../core/review-interaction-state.js";
 import { findReviewCardBinding, nativeReviewRecoveryWakeKey } from "../core/review-session-state.js";
+import { prepareAndWakeNativeReview, selectNativeReviewWakeAnchor } from "../core/native-review-recovery.js";
 import {
   buildMazewallExecutionPolicy,
   NATIVE_PR_REVIEW_STAGE_IDS,
@@ -48,8 +50,8 @@ import {
   issueHasUnsafeVibeReviewParticipant,
   issueNeedsExecutionPolicyBackfill,
   nativePrReviewCleanupPatch,
-  nativePrReviewOwnershipPatch,
   nativePrReviewWaitPatch,
+  shouldTakeOverNativePrReview,
   shouldRecoverNativePrReview,
 } from "../core/execution-policy.js";
 import { rebasePrBranchLocally } from "../core/local-rebase.js";
@@ -93,8 +95,11 @@ import type { IssueState } from "../core/types.js";
 import { selectStaleJulesReviewChildren } from "../core/stale-review-artifacts.js";
 import { executePaperclipCommand } from "@pilleo/paperclip-adapter-common";
 import { provisionNativeReviewMcpHome, resolveNativeReviewMcpHome, type NativeReviewWorkerKey } from "../core/native-review-mcp-home.js";
-import { wakeNativeReview } from "../core/native-review-recovery.js";
-import { decideNativeReviewRecovery, nativeReviewRecoveryIssuePatch } from "../core/native-review-recovery-state.js";
+import {
+  decideJulesPlanNativeReviewRecovery,
+  decideNativeReviewRecovery,
+  nativeReviewRecoveryIssuePatch,
+} from "../core/native-review-recovery-state.js";
 
 // One orchestrator process can receive overlapping Paperclip heartbeats. Keep
 // merge effects single-flight so concurrent ticks cannot duplicate comments or
@@ -112,6 +117,11 @@ const reviewRejectionConvergenceGuard = new ConvergenceGuard();
 // from restoring/waking the same card more than once.
 const nativeReviewRecoveryConvergenceGuard = new ConvergenceGuard();
 const agentIncidentDeduper = new IncidentDeduper();
+
+// Give Paperclip's normal native-card dispatch one quiet heartbeat window
+// before taking the compatibility wake path. This is deliberately internal:
+// no status mutation, comment, or provider poll is emitted while waiting.
+const JULES_PLAN_NATIVE_REVIEW_RECOVERY_GRACE_MS = 60_000;
 
 export interface OrchestratorAdapterConfig {
   readonly maxConcurrentJules?: number | undefined;
@@ -178,7 +188,12 @@ export async function executeAllProjects(
 
   const runnableProjects = projects.filter((project) => {
     const resolution = resolveProjectWorkspace({ projectId: project.id, projects });
-    return resolution.ok && isProjectWorkspaceDirectory(resolution.workspacePath);
+    // Paperclip records a managed git path before an issue-scoped execution
+    // materializes it. The project runner validates that metadata first, then
+    // materializes only the exact host-owned path through the documented
+    // compatibility bridge below; filtering on host filesystem existence here
+    // would incorrectly drop a valid remote project before that step.
+    return resolution.ok;
   });
   const skippedProjects = projects.length - runnableProjects.length;
   if (runnableProjects.length === 0) {
@@ -267,7 +282,18 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     // never enable this fallback for non-loopback deployments.
     localTrustedBoardWrites: true,
   });
-  const explicitProjectId = typeof rawContext["projectId"] === "string" ? String(rawContext["projectId"]).trim() : "";
+  let explicitProjectId = typeof rawContext["projectId"] === "string" ? String(rawContext["projectId"]).trim() : "";
+  // Paperclip currently preserves issue scope in a heartbeat context but may
+  // omit the derived project scope. Resolve it from the authoritative issue
+  // record before workspace selection; never infer it from cwd or git remote.
+  if (!explicitProjectId && typeof rawContext["issueId"] === "string" && rawContext["issueId"].trim()) {
+    try {
+      const scopedIssue = await pc.getIssue<Record<string, unknown>>(rawContext["issueId"].trim());
+      explicitProjectId = typeof scopedIssue["projectId"] === "string" ? scopedIssue["projectId"].trim() : "";
+    } catch (error: unknown) {
+      console.error(`[ORCHESTRATOR] Could not resolve project from bound issue: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
   const orchestratorId = context.agent?.id || "";
   let managedIds = new Set<string>();
 
@@ -335,6 +361,33 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
         return { exitCode: 1, signal: null, timedOut: false, errorMessage: message, summary: message };
       }
       workspacePath = resolution.workspacePath;
+      const metadata = resolveProjectMetadata(project);
+      if (metadata.ok) {
+        const instanceRoot = resolvePaperclipInstanceRootForAdapter({
+          homeDir: process.env["PAPERCLIP_HOME"]?.trim() || path.join(os.homedir(), ".paperclip"),
+          instanceId: process.env["PAPERCLIP_INSTANCE_ID"]?.trim() || "default",
+          env: process.env,
+        });
+        const managedWorkspacePath = managedProjectCheckoutPath({
+          instanceRoot,
+          companyId,
+          projectId: explicitProjectId,
+          repoUrl: metadata.repoUrl,
+        });
+        if (path.resolve(workspacePath) === managedWorkspacePath) {
+          const preparation = await ensureManagedProjectCheckout({
+            instanceRoot,
+            companyId,
+            projectId: explicitProjectId,
+            workspacePath,
+            repoUrl: metadata.repoUrl,
+            defaultRef: metadata.defaultRef,
+          });
+          if (preparation.status === "materialized") {
+            await log(`[ORCHESTRATOR] Materialized Paperclip-managed checkout for project ${explicitProjectId}.`);
+          }
+        }
+      }
     } catch (err: unknown) {
       const message = `Could not resolve project ${explicitProjectId}: ${err instanceof Error ? err.message : String(err)}`;
       await log(`[ORCHESTRATOR] 🚨 ${message}`);
@@ -375,9 +428,10 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
           serverPath: fileURLToPath(new URL("./native-review-mcp-stdio.js", import.meta.url)),
           runtimeContext: {
             apiBase: apiUrl,
-            issueId: issueId || "",
+            companyId,
             agentId,
-            runId,
+            ...(issueId ? { issueId } : {}),
+            ...(options?.reviewInteractionId ? { interactionId: options.reviewInteractionId } : {}),
           },
         });
       } catch (error) {
@@ -388,6 +442,27 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     const idempotencyKey = options?.idempotencyKey ?? (options?.recoveryRunId && options.reviewInteractionId && issueId
       ? nativeReviewRecoveryWakeKey(agentId, issueId, options.reviewInteractionId, options.recoveryRunId)
       : `orchestrator:wakeup:${agentId}:${issueId || "company"}:${options?.reviewInteractionId || options?.resumeFromRunId || "current"}`);
+    const wakeNativeReviewCard = async () => {
+      let wakeCommentId: string | undefined;
+      try {
+        const comments = asArray<{ id?: unknown; body?: unknown }>(await pc.listComments(issueId!));
+        wakeCommentId = selectNativeReviewWakeAnchor(comments);
+      } catch (error) {
+        // The v831 compatibility path needs an existing durable comment. A
+        // comment-read outage must not invent a free-text anchor; retain the
+        // native dispatch fallback for newer hosts that preserve the card.
+        await log(`[ORCHESTRATOR] Native review wake anchor unavailable for ${issueId}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      return prepareAndWakeNativeReview({
+        paperclip: pc,
+        agentId,
+        issueId: issueId!,
+        interactionId: options!.reviewInteractionId!,
+        reason,
+        idempotencyKey,
+        ...(wakeCommentId ? { wakeCommentId } : {}),
+      });
+    };
     const result = await executePaperclipCommand(
       {
         key: idempotencyKey,
@@ -396,14 +471,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
         payload: { agentId, reason, ...options },
       },
       () => options?.reviewInteractionId && issueId
-        ? wakeNativeReview({
-            paperclip: pc,
-            agentId,
-            issueId,
-            interactionId: options.reviewInteractionId,
-            reason,
-            idempotencyKey,
-          })
+        ? wakeNativeReviewCard()
         : pc.wakeup(agentId, reason, issueId, { ...options, idempotencyKey }),
     );
     const normalizedResult = { ...result, text: result.text ?? "" };
@@ -435,14 +503,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
         if (cancelled.ok) {
           await log(`[ORCHESTRATOR] Cleared stale execution ${staleRunId} owned by ${staleOwnerId}; retrying delegated review wake.`);
           if (options.reviewInteractionId && issueId) {
-            await wakeNativeReview({
-              paperclip: pc,
-              agentId,
-              issueId,
-              interactionId: options.reviewInteractionId,
-              reason,
-              idempotencyKey,
-            });
+            await wakeNativeReviewCard();
           } else {
             await pc.wakeup(agentId, reason, issueId, { resumeFromRunId: options?.resumeFromRunId });
           }
@@ -475,6 +536,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
   let agentHealthReport: AgentHealthReport | undefined;
 
   let managedJulesIds = new Set<string>();
+  let managedJulesCiPolicy: unknown = undefined;
   let managedWorkerStates: ContinuationWorker[] = [];
   let managedAgentStatuses = new Map<string, string>();
   let agentStructuredDecisionCapabilities = new Map<string, unknown>();
@@ -594,6 +656,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     }
 
     const managedJules = agents.find((a) => a.id === julesAgentId);
+    managedJulesCiPolicy = managedJules?.adapterConfig?.["ciPolicy"];
     julesNeedsReattach = Boolean(
       managedJules &&
         (managedJules.status === "error" || (managedJules.errorReason || "").includes("Process lost"))
@@ -682,6 +745,14 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       metadataResolution.ok ? metadataResolution.repoUrl : undefined,
       metadataResolution.ok ? metadataResolution.defaultRef : undefined
     );
+
+    if (!metadataResolution.ok) {
+      await log(
+        `[ORCHESTRATOR] Project metadata rejected for ${workspaceProject.id}: ${metadataResolution.reason}; ` +
+        `primaryRepo=${String(workspaceProject.primaryWorkspace?.repoUrl ?? "")}; ` +
+        `codebaseRepo=${String(workspaceProject.codebase?.repoUrl ?? "")}`,
+      );
+    }
 
     isSyncHealthy = wsConsistency.status === "healthy";
     syncDispositionStatus = wsConsistency.status;
@@ -997,6 +1068,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       // Read the authoritative interactions/detail before deciding; the
       // compact issue list is allowed to omit both fields.
       let currentHeadRejected = false;
+      let currentHeadReviewComplete = false;
       let authoritativeExecutionPolicy: unknown = undefined;
       try {
         const detail = await pc.getIssue<Record<string, unknown>>(issue.id);
@@ -1012,16 +1084,26 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
             idempotencyKey: typeof interaction["idempotencyKey"] === "string" ? interaction["idempotencyKey"] : undefined,
             result: interaction["result"],
           })), issue.id, matchingPr.headRefOid);
+          currentHeadReviewComplete = hasCompletedNativeApprovalLadderForHead(rawInteractions.map((interaction) => ({
+            id: String(interaction["id"] ?? ""), kind: typeof interaction["kind"] === "string" ? interaction["kind"] : undefined,
+            status: typeof interaction["status"] === "string" ? interaction["status"] : undefined,
+            idempotencyKey: typeof interaction["idempotencyKey"] === "string" ? interaction["idempotencyKey"] : undefined,
+            result: interaction["result"],
+          })), issue.id, matchingPr.headRefOid);
         }
       } catch (err: unknown) {
         await log(`[ORCHESTRATOR] Deferring open Jules PR recovery for [${issue.identifier || issue.id}]: could not verify monitor/review state (${String(err)}).`);
         continue;
       }
+      if (currentHeadReviewComplete) continue;
       if (!canPromoteJulesPrToReview({ ciGreen: true, currentHeadRejected, executionPolicy: authoritativeExecutionPolicy })) {
         await log(`[ORCHESTRATOR] Keeping [${issue.identifier || issue.id}] with Jules: current PR head is rejected or its provider monitor is resumable.`);
         continue;
       }
-      const ci = await checkPrCiIsGreen(matchingPr.number, workspacePath, matchingPr.url);
+      const ci = resolvePrCiGate(
+        managedJulesCiPolicy,
+        await checkPrCiIsGreen(matchingPr.number, workspacePath, matchingPr.url),
+      );
       if (!ci.isGreen) {
         await log(`[ORCHESTRATOR] Deferring open Jules PR recovery for [${issue.identifier || issue.id}]: CI is ${ci.status}.`);
         continue;
@@ -1034,7 +1116,11 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       const recoveryKey = `jules-open-pr-recovery:${issue.id}:${matchingPr.url}:${issue.updatedAt || "unknown"}:${issue.status}:${issue.assigneeAgentId || "unassigned"}`;
       await lifecycleConvergenceGuard.runOnce(recoveryKey, async () => {
         await retireStaleJulesChildren(issue.id, issue.identifier || issue.id);
-        const recovered = await pc.patchIssue(issue.id, { status: "in_review", assigneeAgentId: null });
+        // Paperclip can still consider a host execution policy active when it
+        // reprojects this issue as `in_progress`. Clear that host-owned state
+        // atomically with the native review projection; a partial status patch
+        // is rejected with 422 and leaves an avoidable recovery warning.
+        const recovered = await pc.patchIssue(issue.id, nativePrReviewCleanupPatch());
         if (!recovered.ok) {
           await log(`[ORCHESTRATOR] Could not recover open Jules PR for [${issue.identifier || issue.id}] (${recovered.status}): ${recovered.text}`);
           return;
@@ -1685,12 +1771,86 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
       await log(`[ORCHESTRATOR] Warning: failed to contain orphaned review cards for ${issue.identifier || issue.id}: ${String(err)}`);
     }
   }
+  // Jules plan review cards have no PR/head identity, so they cannot enter the
+  // PR recovery loop below. Recover only one overdue, typed Luna/Terra card
+  // while retaining Jules as the issue owner; the plan gate is provider-owned.
+  const nativeReviewRecoveryIds = new Set<string>();
+  const planReviewRecoveryAgents = julesAgentId && lunaReviewerAgentId && terraReviewerAgentId
+    ? { jules: julesAgentId, reviewers: { luna: lunaReviewerAgentId, terra: terraReviewerAgentId } }
+    : null;
+  if (planReviewRecoveryAgents) {
+    for (const issue of overlayedIssues.filter((candidate) =>
+      candidate.orchestratorManaged && candidate.assigneeAgentId === planReviewRecoveryAgents.jules && !mergedIssueIds.has(candidate.id),
+    )) {
+      let interactions: Array<{ id: string; kind?: string; status?: string; idempotencyKey?: string; addresseeAgentId?: string | null; createdAt?: string }>;
+      try {
+        interactions = asArray<Record<string, unknown>>(await pc.listInteractions(issue.id))
+          .filter((interaction): interaction is Record<string, unknown> & { id: string } => typeof interaction["id"] === "string")
+          .map((interaction) => ({
+            id: interaction["id"],
+            ...(typeof interaction["kind"] === "string" ? { kind: interaction["kind"] } : {}),
+            ...(typeof interaction["status"] === "string" ? { status: interaction["status"] } : {}),
+            ...(typeof interaction["idempotencyKey"] === "string" ? { idempotencyKey: interaction["idempotencyKey"] } : {}),
+            ...(typeof interaction["addresseeAgentId"] === "string" ? { addresseeAgentId: interaction["addresseeAgentId"] } : {}),
+            ...(typeof interaction["createdAt"] === "string" ? { createdAt: interaction["createdAt"] } : {}),
+          }));
+      } catch (error) {
+        await log(`[ORCHESTRATOR] Warning: could not inspect Jules plan cards for ${issue.identifier || issue.id}: ${String(error)}`);
+        continue;
+      }
+
+      const recovery = decideJulesPlanNativeReviewRecovery({
+        issueId: issue.id,
+        orchestratorManaged: issue.orchestratorManaged,
+        issueAssigneeAgentId: issue.assigneeAgentId,
+        julesAgentId: planReviewRecoveryAgents.jules,
+        reviewerAgentIds: planReviewRecoveryAgents.reviewers,
+        nowMs,
+        graceMs: JULES_PLAN_NATIVE_REVIEW_RECOVERY_GRACE_MS,
+        cards: interactions,
+        reviewerRuns: heartbeatRuns,
+      });
+      switch (recovery.action) {
+        case "no_action":
+          continue;
+        case "await_run":
+          await log(`[ORCHESTRATOR] Preserving Jules plan card ${recovery.interactionId} for ${issue.identifier || issue.id}; reviewer run ${recovery.runId} is live.`);
+          continue;
+        case "retry_exhausted":
+          await log(`[ORCHESTRATOR] Jules plan review recovery exhausted for ${issue.identifier || issue.id}, card ${recovery.interactionId}; leaving its typed card pending without another wake.`);
+          continue;
+        case "protocol_failure":
+          await log(`[ORCHESTRATOR] Jules plan recovery refused for ${issue.identifier || issue.id}: ${recovery.reason}.`);
+          continue;
+        case "recover":
+          break;
+      }
+
+      const recoveryKey = `native-review-plan-recovery:${issue.id}:${recovery.interactionId}:${recovery.recoveryRunId || "initial"}`;
+      await nativeReviewRecoveryConvergenceGuard.runOnce(recoveryKey, async () => {
+        await managedWakeup(
+          recovery.reviewerAgentId,
+          `Recover Jules plan review interaction ${recovery.interactionId}; submit only its structured verdict.`,
+          issue.id,
+          {
+            recoverStaleExecution: true,
+            reviewInteractionId: recovery.interactionId,
+            forceFreshSession: true,
+            ...(recovery.recoveryRunId ? { recoveryRunId: recovery.recoveryRunId } : {}),
+            idempotencyKey: `native-review-plan-recovery:v1:${recovery.reviewerAgentId}:${issue.id}:${recovery.interactionId}:${recovery.recoveryRunId || "initial"}`,
+          },
+        );
+        await log(`[ORCHESTRATOR] Recovered Jules plan review for ${issue.identifier || issue.id} using card ${recovery.interactionId}.`);
+        return true;
+      });
+    }
+  }
+
   // Paperclip can interrupt a reviewer during hot reload and transiently
   // project its source issue as backlog or reassign it. Reconstruct only the
   // review lane proven by the immutable PR/head encoded in an addressed,
   // pending native card. This is deliberately before the older open-PR
   // fallback below: a generic ready PR cannot tell us which card is current.
-  const nativeReviewRecoveryIds = new Set<string>();
   for (const issue of overlayedIssues.filter((candidate) =>
     candidate.orchestratorManaged && !mergedIssueIds.has(candidate.id),
   )) {
@@ -1835,12 +1995,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
   const julesRunning = inProgressIssues.filter((i) => i.assigneeAgentId === julesAgentId).length;
   const vibeRunning = inProgressIssues.filter((i) => i.assigneeAgentId === vibeAgentId).length;
 
-  const julesCapacity = julesQuota.fetchedLive
-    ? Math.min(
-        config.maxConcurrentJules ?? julesQuota.effectiveAvailableCapacity + julesRunning,
-        julesQuota.effectiveAvailableCapacity + julesRunning
-      )
-    : 0;
+  const julesCapacity = resolveJulesDispatchCapacity(config.maxConcurrentJules, julesQuota, julesRunning);
   const vibeCapacity = config.maxConcurrentVibe ?? 1;
 
   await log(
@@ -1931,11 +2086,43 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
     // A registered Paperclip work product remains authoritative when gh is
     // unavailable. This keeps review routing alive in local-trusted installs;
     // GitHub REST is used below for the CI gate when possible.
-    const matchingPr = ghStatus.error
-      ? registeredPullRequestFromIssue(reviewTask)
-      : ghStatus.openPrs.find((pr) => matchPrToIssue(pr, reviewTask));
+    // Jules titles carry the immutable Paperclip UUID, while the company PR
+    // list traditionally matches the human identifier. Prefer that list when
+    // it matches, but fall back to the hydrated registered work product so a
+    // valid Jules PR cannot disappear merely because its title shape differs.
+    const registeredPr = registeredPullRequestFromIssue(reviewTask);
+    const matchingPr = !ghStatus.error
+      ? ghStatus.openPrs.find((pr) => matchPrToIssue(pr, reviewTask))
+        ?? ghStatus.openPrs.find((pr) => registeredPr && pr.url.replace(/\/$/, "") === registeredPr.url.replace(/\/$/, ""))
+        ?? registeredPr
+      : registeredPr;
     if (!matchingPr) {
       await log(`[ORCHESTRATOR] Ignoring in_review issue [${reviewTask.identifier || reviewTask.id}] without a registered PR.`);
+      continue;
+    }
+    // Paperclip v831 cannot advance an executionPolicy review stage from the
+    // adapter's addressed request_item_verdicts cards.  Transfer a managed
+    // ready PR to the native-card protocol before evaluating cards: allowing
+    // both state machines to coexist creates host recovery wakes after Luna
+    // and Terra have already submitted their typed decisions.
+    if (shouldTakeOverNativePrReview({
+      orchestratorManaged: reviewTask.orchestratorManaged,
+      hasReadyPullRequest: true,
+      nativeReviewConfigured: Boolean(lunaReviewerAgentId && terraReviewerAgentId),
+      rawIssue: reviewTask.rawIssue,
+    })) {
+      const ownership = await pc.patchIssue(reviewTask.id, nativePrReviewCleanupPatch());
+      if (!ownership.ok) {
+        await log(`[ORCHESTRATOR] Native PR-review ownership transfer failed for [${reviewTask.identifier || reviewTask.id}] (${ownership.status}): ${ownership.text}`);
+        continue;
+      }
+      const verified = await pc.getIssue<Record<string, unknown>>(reviewTask.id);
+      if (issueHasExecutionPolicy(verified)) {
+        await log(`[ORCHESTRATOR] Native PR-review ownership transfer for [${reviewTask.identifier || reviewTask.id}] has not converged; deferring card evaluation.`);
+        continue;
+      }
+      statusOverrides.set(reviewTask.id, "in_review");
+      await log(`[ORCHESTRATOR] Native PR-review ownership transferred for [${reviewTask.identifier || reviewTask.id}]; evaluating cards on the next heartbeat.`);
       continue;
     }
     // Provider-created coordination children are outside the review state
@@ -1970,7 +2157,10 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
         continue;
       }
     }
-    const ciCheck = await checkPrCiIsGreen(matchingPr.number, workspacePath, matchingPr.url);
+    const ciCheck = resolvePrCiGate(
+      managedJulesCiPolicy,
+      await checkPrCiIsGreen(matchingPr.number, workspacePath, matchingPr.url),
+    );
 
     let reviewInteractions: Array<{ id: string; kind?: string; status?: string; idempotencyKey?: string; continuationPolicy?: string; addresseeAgentId?: string | null; result?: unknown }> = [];
     try {
@@ -2141,6 +2331,16 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
       })(),
     });
 
+    // Every selected review item must leave one durable diagnostic breadcrumb.
+    // This is intentionally log-only: native cards and approvals remain the
+    // state-machine authority, while this records the exact reducer action
+    // when a host projection or an external provider makes a live heartbeat
+    // appear to stop after Jules-child reconciliation.
+    await log(
+      `[ORCHESTRATOR] [Review outcome] [${reviewTask.identifier || reviewTask.id}] ` +
+      `pipeline:${pipelineDecision.action} pr=${matchingPr.url} head=${reviewHeadSha}`,
+    );
+
     switch (pipelineDecision.action) {
       case "AWAIT_CI":
         if (ciCheck.accessProblem) {
@@ -2170,17 +2370,10 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
     }
 
     if (isReviewDispatchDecision(pipelineDecision)) {
-      if (!isSyncHealthy) {
-        // Find highest priority held task for human question (done later in phase 4 fallback if not here)
-        // Actually, we'll let Phase 4 handle emitting the exact one question for the highest priority held task across BOTH lanes
-        // Wait, dispatchIssues contains all held issues? No, inReviewIssues are separate.
-        // Let's defer it to Phase 4 so we have a unified point for the question. Wait, Phase 4 selects from `dispatchIssues`, which does not include `inReviewIssues`.
-        // I will add the task to a global `heldTasks` array.
-
-        await log(`[ORCHESTRATOR] ⚠️ Deferring PR review dispatch for [${reviewTask.identifier || reviewTask.id}]: workspace sync disposition is unhealthy (${syncDispositionObservation.type}).`);
-        continue;
-      }
-
+      // Workspace sync only protects backlog import and new implementation
+      // dispatch. A registered PR already has an immutable repository URL and
+      // native typed review cards, so blocking its review behind an unrelated
+      // local checkout turns a healthy PR into a permanent in_review stall.
       // Existing terminal verdicts still need to converge while a provider
       // question is pending, but starting another reviewer would create a
       // competing owner and spend quota on a revision awaiting clarification.
@@ -2370,22 +2563,17 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
             await log(`[ORCHESTRATOR] 🚨 Failed to create native review dialog for [${reviewTask.identifier || reviewTask.id}]: ${String(interactionError)}`);
             continue;
           }
-          // Adapter workaround: create the addressed card, then explicitly
-          // bind issue ownership to that reviewer before waking it.
-          // Paperclip 2026.831 otherwise cancels the queued run as
-          // `issue_assignee_changed`. No execution policy/currentParticipant is
-          // installed, so the host cannot launch a second generic reviewer.
-          if (reviewInteractionId && (dialogCreated || pipelineDecision.action === "RECOVER_REVIEW")) {
-            const ownership = await pc.patchIssue(
-              reviewTask.id,
-              nativePrReviewOwnershipPatch(targetAgentId),
-            );
-            if (!ownership.ok) {
-              await log(
-                `[ORCHESTRATOR] 🚨 Native review ownership handoff failed (${ownership.status}): ${ownership.text}`,
-              );
-              continue;
-            }
+          const runDispatch = selectReviewRunDispatch({
+            dialogCreated,
+            recovery: pipelineDecision.action === "RECOVER_REVIEW",
+            request: reviewRequest,
+          });
+          // A just-created addressed card starts one run natively. Do not
+          // change the issue owner or issue a second wake: Paperclip treats
+          // that extra run as an unbound review path after the first verdict.
+          // Recovery remains the sole explicit-wake path because it reuses an
+          // existing unanswered card whose original run is terminal.
+          if (reviewInteractionId && (runDispatch === "manual_wake" || runDispatch === "recovery_wake")) {
             await managedWakeup(
               targetAgentId,
               `Review PR #${matchingPr.number} for ${reviewTask.identifier || reviewTask.id}; respond to native review interaction ${reviewInteractionId}. This is a read-only review; do not modify files.`,

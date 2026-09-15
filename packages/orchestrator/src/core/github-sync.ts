@@ -168,6 +168,19 @@ export function buildGitHubPullRequestListArgs(repository: string | undefined, l
   return args;
 }
 
+/**
+ * A PR work product is authoritative for its repository.  Passing `--repo`
+ * keeps review observation independent of whichever project checkout happens
+ * to be the current process cwd.
+ */
+export function buildGitHubPullRequestCheckArgs(prNumber: number, prUrl?: string): string[] {
+  const args = ["pr", "checks", String(prNumber)];
+  const match = prUrl?.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/\d+\/?$/i);
+  if (match) args.push("--repo", `${match[1]}/${match[2]}`);
+  args.push("--json", "state,bucket,name");
+  return args;
+}
+
 export async function fetchGitHubPullRequests(
   workspacePath: string,
   limit = 50,
@@ -237,6 +250,19 @@ export interface PrCiCheckResult {
   readonly accessProblem?: string | undefined;
 }
 
+/**
+ * A managed provider may explicitly declare that its PR lane has no external
+ * CI gate. Keep that policy decision separate from GitHub observation: a
+ * missing GitHub credential must never turn an intentionally skipped gate
+ * into an infinite pending review state.
+ */
+export function resolvePrCiGate(
+  policy: unknown,
+  observed: PrCiCheckResult,
+): PrCiCheckResult {
+  return policy === "skip" ? { isGreen: true, status: "success" } : observed;
+}
+
 /** Classify GitHub access failures without including credentials or URLs. */
 export function describeGitHubAccessProblem(status: number, source: "gh" | "rest", detail?: string): string {
   if (status === 401) return `GitHub ${source} authentication was rejected (HTTP 401).`;
@@ -296,7 +322,7 @@ export async function checkPrCiIsGreen(
   try {
     const { stdout } = await execFileAsync(
       "gh",
-      ["pr", "checks", String(prNumber), "--json", "state,bucket,name"],
+      buildGitHubPullRequestCheckArgs(prNumber, prUrl),
       { cwd: cwd || process.cwd(), timeout: 15000 }
     );
     const checks = JSON.parse(stdout);

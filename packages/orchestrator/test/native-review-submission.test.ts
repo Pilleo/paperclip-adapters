@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  resolveNativeReviewAssignment,
   resolveNativeReviewCard,
   submitNativeReviewVerdictFromRuntime,
   submitNativeReviewVerdict,
@@ -16,6 +17,62 @@ const card = (patch: Partial<NativeReviewCard> = {}): NativeReviewCard => ({
 });
 
 describe("native review submission protocol", () => {
+  it("exposes the exact addressed plan revision as a typed reviewer assignment", () => {
+    const result = resolveNativeReviewAssignment([card({
+      payload: {
+        items: [{ id: "plan", label: "Plan" }],
+        detailsMarkdown: "# Jules plan\n\nAdd subtraction coverage.",
+        target: {
+          type: "issue_document",
+          issueId: "issue-1",
+          documentId: "plan-document-1",
+          key: "plan",
+          revisionId: "revision-1",
+          revisionNumber: 1,
+        },
+      },
+    })], "luna-1");
+
+    expect(result).toEqual({
+      ok: true,
+      assignment: {
+        kind: "plan",
+        interactionId: "card-1",
+        itemId: "plan",
+        detailsMarkdown: "# Jules plan\n\nAdd subtraction coverage.",
+        target: {
+          type: "issue_document",
+          issueId: "issue-1",
+          documentId: "plan-document-1",
+          key: "plan",
+          revisionId: "revision-1",
+          revisionNumber: 1,
+        },
+      },
+    });
+  });
+
+  it("exposes an immutable pull-request assignment without treating it as a plan", () => {
+    const result = resolveNativeReviewAssignment([card({
+      idempotencyKey: "pr-review:v13:issue-1:https://github.com/acme/repo/pull/7:0123456789abcdef0123456789abcdef01234567:luna",
+      payload: {
+        items: [{ id: "pull_request", label: "Pull request" }],
+        detailsMarkdown: "**PR:** https://github.com/acme/repo/pull/7",
+      },
+    })], "luna-1");
+
+    expect(result).toEqual({
+      ok: true,
+      assignment: {
+        kind: "pull_request",
+        interactionId: "card-1",
+        itemId: "pull_request",
+        prUrl: "https://github.com/acme/repo/pull/7",
+        headSha: "0123456789abcdef0123456789abcdef01234567",
+      },
+    });
+  });
+
   it.each([
     ["the one addressed pending card", [card()], "card-1"],
     ["a non-pull-request item without hard-coded ids", [card()], "plan"],

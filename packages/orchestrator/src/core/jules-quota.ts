@@ -12,6 +12,23 @@ export const JULES_ACTIVE_STATES = Object.freeze([
 ]);
 
 /**
+ * Paperclip owns the worker queue. Provider quota is telemetry and backpressure
+ * information, not a reason to drop a valid task before the Jules adapter can
+ * enqueue it. Keep the adapter's explicit lane limit while never reporting a
+ * capacity below already-running work.
+ */
+export function resolveJulesDispatchCapacity(
+  configuredCapacity: number | null | undefined,
+  quota: Pick<JulesQuotaStatus, "maxConcurrent" | "fetchedLive">,
+  runningCount: number,
+): number {
+  const configured = typeof configuredCapacity === "number" && Number.isFinite(configuredCapacity)
+    ? Math.max(0, Math.floor(configuredCapacity))
+    : Math.max(0, Math.floor(quota.maxConcurrent));
+  return Math.max(configured, Math.max(0, Math.floor(runningCount)));
+}
+
+/**
  * Pure calculation: evaluates active sessions and rolling 24h quota against limits.
  */
 export function calculateJulesCapacity(

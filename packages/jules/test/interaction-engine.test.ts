@@ -177,13 +177,13 @@ describe("interaction-engine pure reducer", () => {
       })).toBe(expected);
     });
 
-    it("does not reopen an exact plan fingerprint after rejection", () => {
+    it("reopens a regenerated provider plan even when its step fingerprint is unchanged", () => {
       expect(isPlanApprovalRequired({
         requirePlanApproval: true,
         planActivityId: "new-activity",
         planFingerprint: "same-plan",
         supersededPlanFingerprint: "same-plan",
-      })).toBe(false);
+      })).toBe(true);
       expect(isPlanApprovalRequired({
         requirePlanApproval: true,
         planActivityId: "new-activity",
@@ -275,6 +275,31 @@ describe("interaction-engine pure reducer", () => {
         true,
       );
       expect(action.type).toBe("CREATE_PLAN_CARD");
+    });
+
+    it("continues polling only when the explicit rejected activity is replayed", () => {
+      const rejected = {
+        ...baseSession,
+        supersededPlanActivityId: "rejected-plan",
+      };
+      expect(evaluateInteractionAction(
+        rejected,
+        "AWAITING_PLAN_APPROVAL",
+        [],
+        "Replayed plan",
+        undefined,
+        false,
+        "rejected-plan",
+      )).toEqual({ type: "CONTINUE_POLLING" });
+      expect(evaluateInteractionAction(
+        rejected,
+        "AWAITING_PLAN_APPROVAL",
+        [],
+        "Regenerated plan",
+        undefined,
+        false,
+        "regenerated-plan",
+      )).toMatchObject({ type: "CREATE_PLAN_CARD" });
     });
   });
 

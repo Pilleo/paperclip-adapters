@@ -10,14 +10,49 @@ import { nativeReviewFetch } from "./native-review-http.js";
  */
 
 export type NativeReviewVerdict = "approve" | "reject";
+export type JulesQuestionDecision = "answer" | "escalate";
 
 export interface NativeReviewCard {
   readonly id: string;
+  readonly idempotencyKey?: string;
   readonly kind: string;
   readonly status: string;
   readonly addresseeAgentId?: string | null;
-  readonly payload?: { readonly items?: readonly [{ readonly id?: string; readonly label?: string }] | readonly { readonly id?: string; readonly label?: string }[] };
+  readonly payload?: {
+    readonly items?: readonly [{ readonly id?: string; readonly label?: string }] | readonly { readonly id?: string; readonly label?: string }[];
+    readonly detailsMarkdown?: string;
+    readonly target?: unknown;
+  };
 }
+
+export interface NativePlanReviewTarget {
+  readonly type: "issue_document";
+  readonly issueId: string;
+  readonly documentId: string;
+  readonly key: "plan";
+  readonly revisionId: string;
+  readonly revisionNumber: number;
+}
+
+export type NativeReviewAssignment =
+  | {
+      readonly kind: "plan";
+      readonly interactionId: string;
+      readonly itemId: "plan";
+      readonly detailsMarkdown: string;
+      readonly target: NativePlanReviewTarget;
+    }
+  | {
+      readonly kind: "pull_request";
+      readonly interactionId: string;
+      readonly itemId: "pull_request";
+      readonly prUrl: string;
+      readonly headSha: string;
+    };
+
+export type NativeReviewAssignmentResult =
+  | { readonly ok: true; readonly assignment: NativeReviewAssignment }
+  | NativeReviewFailure;
 
 type NativeReviewSuccess = {
   readonly ok: true;
@@ -34,6 +69,7 @@ export type NativeReviewFailureCode =
   | "list_invalid_response"
   | "no_owned_pending_card"
   | "ambiguous_owned_pending_cards"
+  | "mismatched_review_card"
   | "malformed_review_card"
   | "rejection_reason_required"
   | "submit_http_error"
@@ -48,6 +84,19 @@ export type NativeReviewFailure = {
 export type NativeReviewSubmissionResult = NativeReviewSuccess | NativeReviewFailure;
 
 type ResolvedCard = { readonly card: NativeReviewCard; readonly item: { readonly id: string } };
+
+function parsePlanTarget(value: unknown): NativePlanReviewTarget | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  const issueId = typeof raw["issueId"] === "string" ? raw["issueId"].trim() : "";
+  const documentId = typeof raw["documentId"] === "string" ? raw["documentId"].trim() : "";
+  const revisionId = typeof raw["revisionId"] === "string" ? raw["revisionId"].trim() : "";
+  const revisionNumber = raw["revisionNumber"];
+  return raw["type"] === "issue_document" && raw["key"] === "plan" && issueId && documentId && revisionId &&
+    typeof revisionNumber === "number" && Number.isInteger(revisionNumber) && revisionNumber > 0
+    ? { type: "issue_document", issueId, documentId, key: "plan", revisionId, revisionNumber }
+    : null;
+}
 
 export function resolveNativeReviewCard(
   cards: readonly NativeReviewCard[],
@@ -70,12 +119,50 @@ export function resolveNativeReviewCard(
   return { ok: true, card: ownedCard, item: { id: items[0].id } };
 }
 
+/** Read-only, immutable context for one addressed Jules plan review. */
+export function resolveNativeReviewAssignment(
+  cards: readonly NativeReviewCard[],
+  agentId: string,
+): NativeReviewAssignmentResult {
+  const resolved = resolveNativeReviewCard(cards, agentId);
+  if (!resolved.ok) return resolved;
+  const detailsMarkdown = resolved.card.payload?.detailsMarkdown?.trim() ?? "";
+  const target = parsePlanTarget(resolved.card.payload?.target);
+  if (resolved.item.id === "plan" && target && detailsMarkdown) {
+    return {
+      ok: true,
+      assignment: {
+        kind: "plan",
+        interactionId: resolved.card.id,
+        itemId: "plan",
+        detailsMarkdown,
+        target,
+      },
+    };
+  }
+  const prUrl = /^\*\*PR:\*\*\s*(https?:\/\/\S+)/m.exec(detailsMarkdown)?.[1];
+  const headSha = /:([a-f0-9]{40}):(?:luna|terra)(?::attempt:[1-9]\d*)?$/i.exec(resolved.card.idempotencyKey ?? "")?.[1];
+  if (resolved.item.id !== "pull_request" || !prUrl || !headSha) return { ok: false, code: "malformed_review_card" };
+  return {
+    ok: true,
+    assignment: {
+      kind: "pull_request",
+      interactionId: resolved.card.id,
+      itemId: "pull_request",
+      prUrl,
+      headSha,
+    },
+  };
+}
+
 export interface NativeReviewSubmissionInput {
   readonly apiBase: string;
   readonly issueId: string;
   readonly agentId: string;
   readonly token?: string;
   readonly runId?: string;
+  /** The interaction bound to this heartbeat run, when Paperclip provided it. */
+  readonly interactionId?: string;
   readonly cards: readonly NativeReviewCard[];
   readonly verdict: NativeReviewVerdict;
   readonly reason?: string;
@@ -113,6 +200,7 @@ export async function submitNativeReviewVerdict(input: NativeReviewSubmissionInp
 
   const resolved = resolveNativeReviewCard(input.cards, input.agentId);
   if (!resolved.ok) return resolved;
+  if (input.interactionId && resolved.card.id !== input.interactionId) return fail("mismatched_review_card");
 
   const fetcher = input.fetcher ?? nativeReviewFetch;
   let response: Response;
@@ -170,6 +258,106 @@ export async function submitNativeReviewVerdictFromRuntime(
   const cards = await response.json().catch(() => null);
   if (!Array.isArray(cards)) return fail("list_invalid_response");
   return submitNativeReviewVerdict({ ...input, cards: cards as NativeReviewCard[] });
+}
+
+/** Fetch and decode the one assignment that the current reviewer may inspect. */
+export async function readNativeReviewAssignmentFromRuntime(
+  input: Omit<NativeReviewRuntimeSubmissionInput, "verdict" | "reason">,
+): Promise<NativeReviewAssignmentResult> {
+  if (!input.apiBase.trim() || !input.issueId.trim() || !input.agentId.trim()) {
+    return fail("missing_runtime_context");
+  }
+  if (!input.token?.trim() && !isLoopbackApi(input.apiBase)) return fail("missing_runtime_auth");
+  const fetcher = input.fetcher ?? nativeReviewFetch;
+  let response: Response;
+  try {
+    response = await fetcher(
+      `${apiRoot(input.apiBase)}/api/issues/${encodeURIComponent(input.issueId)}/interactions`,
+      { headers: runtimeHeaders(input) },
+    );
+  } catch {
+    return fail("runtime_transport_error");
+  }
+  if (!response.ok) return fail("list_http_error", response.status);
+  const cards = await response.json().catch(() => null);
+  if (!Array.isArray(cards)) return fail("list_invalid_response");
+  const assignment = resolveNativeReviewAssignment(cards as NativeReviewCard[], input.agentId);
+  if (!assignment.ok) return assignment;
+  if (input.interactionId && assignment.assignment.interactionId !== input.interactionId) {
+    return fail("mismatched_review_card");
+  }
+  return assignment;
+}
+
+/**
+ * Resolve and answer exactly one reviewer-owned Jules question form.
+ *
+ * This mirrors native-review submission but intentionally uses Paperclip's
+ * `ask_user_questions` response contract. The model supplies only the
+ * decision text; it never selects a card ID or writes a comment fallback.
+ */
+export async function submitJulesQuestionDecisionFromRuntime(input: {
+  readonly apiBase: string;
+  readonly issueId: string;
+  readonly agentId: string;
+  readonly token?: string;
+  readonly runId?: string;
+  readonly decision: JulesQuestionDecision;
+  readonly response: string;
+  readonly fetcher?: typeof fetch;
+}): Promise<
+  | { readonly ok: true; readonly interactionId: string; readonly decision: JulesQuestionDecision }
+  | { readonly ok: false; readonly code: string; readonly status?: number }
+> {
+  if (!input.apiBase.trim() || !input.issueId.trim() || !input.agentId.trim() || !input.response.trim()) {
+    return { ok: false, code: "missing_runtime_context" };
+  }
+  if (!input.token?.trim() && !isLoopbackApi(input.apiBase)) return { ok: false, code: "missing_runtime_auth" };
+  const fetcher = input.fetcher ?? nativeReviewFetch;
+  let list: Response;
+  try {
+    list = await fetcher(
+      `${apiRoot(input.apiBase)}/api/issues/${encodeURIComponent(input.issueId)}/interactions`,
+      { headers: runtimeHeaders(input) },
+    );
+  } catch {
+    return { ok: false, code: "runtime_transport_error" };
+  }
+  if (!list.ok) return { ok: false, code: "list_http_error", status: list.status };
+  const cards = await list.json().catch(() => null);
+  if (!Array.isArray(cards)) return { ok: false, code: "list_invalid_response" };
+  const owned = cards.filter((card): card is NativeReviewCard =>
+    typeof card === "object" && card !== null &&
+    (card as NativeReviewCard).kind === "ask_user_questions" &&
+    (card as NativeReviewCard).status === "pending" &&
+    (card as NativeReviewCard).addresseeAgentId === input.agentId,
+  );
+  if (owned.length !== 1 || !owned[0]?.id) {
+    return { ok: false, code: owned.length === 0 ? "no_owned_pending_card" : "ambiguous_owned_pending_cards" };
+  }
+  const card = owned[0];
+  let submitted: Response;
+  try {
+    submitted = await fetcher(
+      `${apiRoot(input.apiBase)}/api/issues/${encodeURIComponent(input.issueId)}/interactions/${encodeURIComponent(card.id)}/respond`,
+      {
+        method: "POST",
+        headers: runtimeHeaders(input),
+        body: JSON.stringify({
+          answers: [
+            { questionId: "resolution", optionIds: [input.decision] },
+            { questionId: "response", optionIds: ["response"], otherText: input.response.trim() },
+          ],
+        }),
+      },
+    );
+  } catch {
+    return { ok: false, code: "runtime_transport_error" };
+  }
+  if (!submitted.ok) return { ok: false, code: "submit_http_error", status: submitted.status };
+  const body = await submitted.json().catch(() => null) as { id?: unknown; status?: unknown } | null;
+  if (body?.id !== card.id || body.status !== "answered") return { ok: false, code: "submit_invalid_response" };
+  return { ok: true, interactionId: card.id, decision: input.decision };
 }
 
 export function isResolvedNativeReviewCard(value: unknown): value is ResolvedCard {

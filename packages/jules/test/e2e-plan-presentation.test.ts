@@ -150,6 +150,45 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
     });
   });
 
+  it("recreates one missing native plan card for its persisted exact plan revision after Jules completes", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "COMPLETED", id: "session-141" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{
+      id: "act-plan-native",
+      createTime: "2026-08-30T00:01:00.000Z",
+      planGenerated: { plan: { steps: [{ index: 0, title: "Implement the fix", description: "Add tests" }] } },
+    }] } as never);
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([]);
+    vi.mocked(createJulesPlanReviewInteraction).mockResolvedValue({
+      id: "recreated-native-plan-review-1", status: "pending", kind: "request_confirmation",
+      planRevision: { documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1 },
+    });
+
+    const result = await execute({
+      ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({
+        ...session,
+        phase: "WAITING_FOR_PLAN_APPROVAL",
+        pendingInteraction: {
+          type: "plan_native_review", protocolVersion: 2, julesActivityId: "act-plan-native",
+          paperclipInteractionId: "missing-native-plan-review", question: "Persisted plan",
+          planDocumentId: "doc-1", planRevisionId: "rev-1", planRevisionNumber: 1,
+          reviewerAgentId: "00000000-0000-4000-8000-000000000001", stage: "luna",
+          createdAt: "2026-08-30T00:01:00.000Z",
+        },
+      }) },
+    } as AdapterExecutionContext);
+
+    expect(createJulesPlanReviewInteraction).toHaveBeenCalledWith(
+      "issue-141", "session-141", { documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1 },
+      "Persisted plan", "luna", "00000000-0000-4000-8000-000000000001", "jwt-token", "run-1", 1,
+    );
+    const recoveredSession = sessionCodec.decode(result.sessionParams!);
+    expect(recoveredSession?.pendingInteraction).toMatchObject({
+      type: "plan_native_review", paperclipInteractionId: "recreated-native-plan-review-1",
+    });
+    expect(recoveredSession?.planReviewRecoveryAttempt).toBe(1);
+  });
+
   it("preempts a pending native plan review when Jules emits a newer provider question", async () => {
     vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_PLAN_APPROVAL", id: "session-141" } as never);
     vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [
@@ -379,6 +418,48 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
     });
   });
 
+  it("restores the exact migrated reviewer-owned plan card after Jules reports completion", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "COMPLETED", id: "session-141" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{
+      id: "migration-plan-activity", createTime: "2026-09-14T11:25:00.000Z",
+      planGenerated: { plan: { steps: [{ index: 0, title: "Rebuild recovery canary" }] } },
+    }] } as never);
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([{
+      id: "cancelled-migrated-card", status: "cancelled", kind: "request_item_verdicts",
+      result: {
+        outcome: "withdrawn",
+        reason: "Migrating the parent-owned plan form to the reviewer-owned typed form.",
+      },
+    }]);
+    vi.mocked(createJulesPlanReviewInteraction).mockResolvedValue({
+      id: "restored-migrated-luna-card", status: "pending", kind: "request_item_verdicts",
+      planRevision: { documentId: "doc-3", revisionId: "rev-3", revisionNumber: 3 },
+    });
+
+    const result = await execute({
+      ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({
+        ...session,
+        phase: "WAITING_FOR_PLAN_APPROVAL",
+        pendingInteraction: {
+          type: "plan_native_review", protocolVersion: 2, julesActivityId: "migration-plan-activity",
+          paperclipInteractionId: "cancelled-migrated-card", question: "Migration plan",
+          planRevisionId: "rev-3", planRevisionNumber: 3, planDocumentId: "doc-3",
+          reviewerAgentId: "00000000-0000-4000-8000-000000000001", stage: "luna",
+          createdAt: "2026-09-14T11:25:00.000Z",
+        },
+      }) },
+    } as AdapterExecutionContext);
+
+    expect(createJulesPlanReviewInteraction).toHaveBeenCalledWith(
+      "issue-141", "session-141", { documentId: "doc-3", revisionId: "rev-3", revisionNumber: 3 },
+      "Migration plan", "luna", "00000000-0000-4000-8000-000000000001", "jwt-token", "run-1", 1,
+    );
+    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
+      paperclipInteractionId: "restored-migrated-luna-card", julesActivityId: "migration-plan-activity", stage: "luna",
+    });
+  });
+
   it("migrates a pending legacy plan card even when Jules has reached terminal provider state", async () => {
     vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "COMPLETED", id: "session-141" } as never);
     vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [] } as never);
@@ -492,7 +573,126 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
     expect(JulesClient.prototype.sendMessage).toHaveBeenCalledWith("session-141", {
       prompt: expect.stringContaining("Add the missing regression test."),
     });
-    expect(sessionCodec.decode(result.sessionParams!)?.planReviewOutcome).toBe("revision_requested");
+    expect(sessionCodec.decode(result.sessionParams!)).toMatchObject({
+      planReviewOutcome: "revision_requested",
+      // A rejected plan is consumed by its provider activity identity. A
+      // regenerated activity may have identical steps, but must reopen Luna.
+      supersededPlanActivityId: "act-plan-native",
+    });
+  });
+
+  it("keeps polling for a revised plan after a rejected plan even while Jules still reports COMPLETED", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "COMPLETED", id: "session-141" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{
+      id: "act-plan-native",
+      createTime: "2026-08-30T00:01:00.000Z",
+      planGenerated: { plan: { steps: [{ index: 0, title: "Implement the fix", description: "Add tests" }] } },
+    }] } as never);
+
+    const result = await execute({
+      ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({
+        ...session,
+        phase: "WAITING_FOR_PLAN_APPROVAL",
+        planReviewOutcome: "revision_requested",
+        supersededPlanActivityId: "act-plan-native",
+        unresolvedProviderQuestionActivityId: "provider-question-after-rejection",
+      }) },
+    } as AdapterExecutionContext);
+
+    expect(moveIssueToBlocked).not.toHaveBeenCalled();
+    expect(sessionCodec.decode(result.sessionParams!)).toMatchObject({
+      phase: "WAITING_FOR_PLAN_APPROVAL",
+      planReviewOutcome: "revision_requested",
+      supersededPlanActivityId: "act-plan-native",
+    });
+  });
+
+  it("routes a real provider question after a rejected plan through the typed adjudication ladder", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_USER_FEEDBACK", id: "session-141" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [
+      {
+        id: "act-plan-native",
+        createTime: "2026-08-30T00:01:00.000Z",
+        planGenerated: { plan: { steps: [{ index: 0, title: "Implement the fix", description: "Add tests" }] } },
+      },
+      {
+        id: "provider-question-after-rejection",
+        createTime: "2026-08-30T00:02:00.000Z",
+        agentMessaged: { agentMessage: "Should the package artifact include the common adapter?" },
+      },
+    ] } as never);
+
+    const result = await execute({
+      ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({
+        ...session,
+        phase: "WAITING_FOR_PLAN_APPROVAL",
+        planReviewOutcome: "revision_requested",
+        supersededPlanActivityId: "act-plan-native",
+      }) },
+    } as AdapterExecutionContext);
+
+    expect(createJulesAgentAdjudicationInteraction).toHaveBeenCalledOnce();
+    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
+      type: "agent_adjudication",
+      julesActivityId: "provider-question-after-rejection",
+      nativeForm: true,
+    });
+  });
+
+  it("opens exactly one Luna card for a regenerated activity with unchanged plan steps", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_PLAN_APPROVAL", id: "session-141" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{
+      id: "act-plan-regenerated",
+      createTime: "2026-08-30T00:03:00.000Z",
+      planGenerated: { plan: { steps: [{ index: 0, title: "Implement the fix", description: "Add tests" }] } },
+    }] } as never);
+    vi.mocked(saveJulesPlanDocument).mockResolvedValue({ documentId: "doc-1", revisionId: "rev-2", revisionNumber: 2 });
+    vi.mocked(createJulesPlanReviewInteraction).mockResolvedValue({
+      id: "native-plan-review-2", status: "pending", kind: "request_item_verdicts",
+      planRevision: { documentId: "doc-1", revisionId: "rev-2", revisionNumber: 2 },
+    });
+
+    const result = await execute({
+      ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({
+        ...session,
+        phase: "WAITING_FOR_PLAN_APPROVAL",
+        supersededPlanActivityId: "act-plan-native",
+        supersededPlanFingerprint: "same-plan-content-is-diagnostic-only",
+      }) },
+    } as AdapterExecutionContext);
+
+    expect(createJulesPlanReviewInteraction).toHaveBeenCalledTimes(1);
+    expect(createJulesPlanReviewInteraction).toHaveBeenCalledWith(
+      "issue-141", "session-141", { documentId: "doc-1", revisionId: "rev-2", revisionNumber: 2 },
+      expect.stringContaining("Implement the fix"), "luna", "00000000-0000-4000-8000-000000000001", "jwt-token", "run-1",
+    );
+    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
+      type: "plan_native_review", julesActivityId: "act-plan-regenerated", paperclipInteractionId: "native-plan-review-2",
+    });
+  });
+
+  it("does not recreate a Luna card when a rejected plan activity is replayed", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_PLAN_APPROVAL", id: "session-141" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{
+      id: "act-plan-native",
+      createTime: "2026-08-30T00:01:00.000Z",
+      planGenerated: { plan: { steps: [{ index: 0, title: "Implement the fix", description: "Add tests" }] } },
+    }] } as never);
+
+    const result = await execute({
+      ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({
+        ...session,
+        phase: "WAITING_FOR_PLAN_APPROVAL",
+        supersededPlanActivityId: "act-plan-native",
+      }) },
+    } as AdapterExecutionContext);
+
+    expect(createJulesPlanReviewInteraction).not.toHaveBeenCalled();
+    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toBeUndefined();
   });
 
   it("relays exactly one Jules approval from an answered Terra card", async () => {

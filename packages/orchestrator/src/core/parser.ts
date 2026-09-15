@@ -276,6 +276,10 @@ export type ProjectMetadataResolution =
   | { readonly ok: true; readonly repoUrl: string; readonly defaultRef: string; readonly sourceBlock: "primaryWorkspace" | "codebase" }
   | { readonly ok: false; readonly reason: "missing_repo_url" | "missing_default_ref"; readonly repoUrl?: string; readonly sourceBlock?: "primaryWorkspace" | "codebase" };
 
+function isSupportedRepoUrl(value: string): boolean {
+  return value.startsWith("https://") || value.startsWith("ssh://") || value.startsWith("git@");
+}
+
 export function resolveProjectMetadata(project: PaperclipProjectRecord): ProjectMetadataResolution {
   const blocks = [
     { name: "primaryWorkspace" as const, data: project.primaryWorkspace },
@@ -283,7 +287,7 @@ export function resolveProjectMetadata(project: PaperclipProjectRecord): Project
   ];
 
   for (const block of blocks) {
-    if (block.data && typeof block.data.repoUrl === "string" && block.data.repoUrl.trim().startsWith("https://")) {
+    if (block.data && typeof block.data.repoUrl === "string" && isSupportedRepoUrl(block.data.repoUrl.trim())) {
       const repoUrl = block.data.repoUrl.trim();
       const defaultRef = typeof block.data.defaultRef === "string" ? block.data.defaultRef.trim() : "";
       if (!defaultRef) {

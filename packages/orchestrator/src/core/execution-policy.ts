@@ -103,6 +103,25 @@ export function nativePrReviewCleanupPatch(): Record<string, unknown> {
 }
 
 /**
+ * Paperclip v831 execution-policy review stages do not consume the adapter's
+ * addressed `request_item_verdicts` cards.  A managed ready PR therefore has
+ * exactly one review authority: transfer it to the native-card ladder before
+ * Luna or Terra is dispatched.  The predicate is deliberately narrow so an
+ * operator-authored policy remains untouched outside that protocol.
+ */
+export function shouldTakeOverNativePrReview(input: {
+  readonly orchestratorManaged: boolean;
+  readonly hasReadyPullRequest: boolean;
+  readonly nativeReviewConfigured: boolean;
+  readonly rawIssue: Readonly<Record<string, unknown>>;
+}): boolean {
+  return input.orchestratorManaged &&
+    input.hasReadyPullRequest &&
+    input.nativeReviewConfigured &&
+    issueHasExecutionPolicy(input.rawIssue);
+}
+
+/**
  * Paperclip 2026.831 cancels an issue-scoped reviewer wake when the addressed
  * reviewer is not also the issue assignee. Keep the host policy/state empty so
  * Paperclip does not independently launch a second generic review participant;

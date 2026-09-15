@@ -22,7 +22,7 @@ has_side_effects: true
 
 
 paperclip_issue_id: "fa3232a3-5299-4f05-bba4-73c40133677d"
-paperclip_identifier: "JUL-12"
+paperclip_identifier: ""
 ---
 
 # 🔴 [Severity: HIGH]: Add a clean server-backed Jules recovery canary to CI

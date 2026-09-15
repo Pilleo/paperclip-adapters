@@ -2171,8 +2171,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         const nativePlanReview = pendingNativePlanReview;
         const interactions = await listPaperclipInteractions(taskId, ctx.authToken, ctx.runId).catch(() => []);
         const interaction = interactions.find((candidate) => candidate.id === nativePlanReview.paperclipInteractionId);
-        if (!interaction) return await yieldHeartbeat(session);
-        const withdrawalReason = interaction.result && typeof interaction.result === "object"
+        const withdrawalReason = interaction?.result && typeof interaction.result === "object"
           ? (interaction.result as Record<string, unknown>)["reason"]
           : undefined;
         const latestPlanActivity = latestPlan(activities);
@@ -2180,12 +2179,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           providerState: state,
           hasUnresolvedProviderQuestion,
           ...(session.planReviewRecoveryAttempt !== undefined ? { recoveryAttempts: session.planReviewRecoveryAttempt } : {}),
-          matchingInteraction: {
-            status: interaction.status === "pending" || interaction.status === "answered" || interaction.status === "cancelled"
-              ? interaction.status
-              : "unknown",
-            ...(typeof withdrawalReason === "string" ? { cancellationReason: withdrawalReason } : {}),
-          },
+          matchingInteraction: interaction
+            ? {
+                status: interaction.status === "pending" || interaction.status === "answered" || interaction.status === "cancelled"
+                  ? interaction.status
+                  : "unknown",
+                ...(typeof withdrawalReason === "string" ? { cancellationReason: withdrawalReason } : {}),
+              }
+            : undefined,
+          hasExactPersistedPointer: true,
         });
         if (planGateDecision.action === "restore" && latestPlanActivity?.id === pendingNativePlanReview.julesActivityId) {
           // Recreate only an adapter-owned cancellation for the exact provider
@@ -2217,6 +2219,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           await persistSessionBestEffort(session, ctx.onLog);
           return await yieldHeartbeat(session);
         }
+        if (!interaction) return await yieldHeartbeat(session);
         // Native plan reviews are coordination gates, not provider work. A
         // newer typed Jules question must take precedence so it can reach the
         // strong reviewer lane instead of being hidden behind this card.
@@ -2313,6 +2316,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           });
           session.pendingInteraction = undefined;
           session.planReviewOutcome = "revision_requested";
+          // A plan review consumes one immutable provider activity. Persist
+          // that identity before yielding so replaying it is inert, while a
+          // regenerated plan activity reopens the native review ladder even
+          // when its textual steps are unchanged.
+          session.supersededPlanActivityId = pendingNativePlanReview.julesActivityId;
           const rejectedPlan = latestPlan(activities);
           if (rejectedPlan?.planGenerated?.plan?.steps) {
             session.supersededPlanFingerprint = fingerprintPlanSteps(rejectedPlan.planGenerated.plan.steps);
@@ -2828,6 +2836,37 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
       }
 
+      // A rejected native plan has been relayed to Jules, but the provider can
+      // legitimately continue reporting its previous terminal snapshot until
+      // it publishes the requested replacement plan. Treat that snapshot as a
+      // revision wait, not completion: creating a no-PR confirmation here
+      // blocks the owner and clears the external monitor before Jules can
+      // produce the activity that reopens Luna.
+      const latestStructuredPlan = latestPlan(activities);
+      const latestStructuredPlanId = latestStructuredPlan?.planGenerated?.plan?.id;
+      // A typed provider approval is authoritative evidence that Jules has
+      // accepted the plan again.  This can happen after a reviewer rejected
+      // the same plan and the adapter sent revision instructions; Jules may
+      // then receive a valid approval through a different typed Paperclip
+      // path. Do not keep a historical `revision_requested` checkpoint alive
+      // past that provider transition, or it will suppress a completed PR
+      // handoff forever.
+      const providerApprovedLatestPlan = Boolean(
+        latestStructuredPlanId && activities.some(
+          (activity) => activity.planApproved?.planId === latestStructuredPlanId,
+        ),
+      );
+      const awaitingRevisedPlan = state === "COMPLETED" &&
+        session.planReviewOutcome === "revision_requested" &&
+        session.supersededPlanActivityId !== undefined &&
+        latestStructuredPlan?.id === session.supersededPlanActivityId &&
+        !providerApprovedLatestPlan;
+      if (awaitingRevisedPlan) {
+        session.phase = "WAITING_FOR_PLAN_APPROVAL";
+        await persistSessionBestEffort(session, ctx.onLog);
+        return await yieldHeartbeat(session);
+      }
+
       const stateMachineRes = handleJulesState(state, !!session.currentPrUrl);
       session.phase = stateMachineRes.nextPhase;
       if (stateMachineRes.isTerminal) {
@@ -3126,6 +3165,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             rawQuestionText,
             rawQuestionActivityId,
             isPlanningTurnCompleted,
+            unapprovedPlan?.id,
           );
 
           switch (action.type) {
@@ -3264,12 +3304,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             case "CREATE_PLAN_CARD": {
               const activity = latestPlan(activities);
               const activityId = activity?.id ?? "awaiting-plan-approval";
-              const currentPlanFingerprint = activity?.planGenerated?.plan?.steps
-                ? fingerprintPlanSteps(activity.planGenerated.plan.steps)
-                : undefined;
-              if (currentPlanFingerprint && session.supersededPlanFingerprint === currentPlanFingerprint) {
-                return await yieldHeartbeat(session);
-              }
               session.supersededPlanFingerprint = undefined;
               session.supersededPlanActivityId = undefined;
               const { plan: hostPlan, markdown: hostPlanMarkdown } = buildHostImplementationPlan(

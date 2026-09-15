@@ -22,7 +22,7 @@ has_side_effects: true
 
 
 paperclip_issue_id: "5ffdcdbd-cd86-4ada-b63d-c0dbcca159e9"
-paperclip_identifier: "JUL-8"
+paperclip_identifier: ""
 ---
 
 # 🔴 [Severity: HIGH]: Restore Jules native-question ownership and terminal-monitor cleanup

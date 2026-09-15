@@ -20,7 +20,7 @@ open_questions: false
 has_side_effects: true
 
 paperclip_issue_id: "564cbae7-2421-4e73-bf45-6df1882c9d53"
-paperclip_identifier: "MAZ-1145"
+paperclip_identifier: ""
 ---
 
 # 🟢 [Severity: LOW]: Retire the deprecated Jules PR compatibility timer after native recovery validation

@@ -8,6 +8,7 @@ import {
   nativePrReviewOwnershipPatch,
   nativePrReviewParticipantPatch,
   nativePrReviewWaitPatch,
+  shouldTakeOverNativePrReview,
   shouldRecoverNativePrReview,
 } from "../src/core/execution-policy.js";
 
@@ -46,6 +47,35 @@ describe("mazewall execution policy builder", () => {
       executionPolicy: null,
       executionState: null,
     });
+  });
+
+  it.each([
+    ["takes over a host review policy for a managed ready PR", {
+      orchestratorManaged: true,
+      hasReadyPullRequest: true,
+      nativeReviewConfigured: true,
+      rawIssue: { executionPolicy: { stages: [{ type: "review" }] } },
+    }, true],
+    ["does not take over before a PR exists", {
+      orchestratorManaged: true,
+      hasReadyPullRequest: false,
+      nativeReviewConfigured: true,
+      rawIssue: { executionPolicy: { stages: [{ type: "review" }] } },
+    }, false],
+    ["does not take over an operator policy without the native ladder", {
+      orchestratorManaged: true,
+      hasReadyPullRequest: true,
+      nativeReviewConfigured: false,
+      rawIssue: { executionPolicy: { stages: [{ type: "review" }] } },
+    }, false],
+    ["does not repeat a completed ownership transfer", {
+      orchestratorManaged: true,
+      hasReadyPullRequest: true,
+      nativeReviewConfigured: true,
+      rawIssue: { executionPolicy: null },
+    }, false],
+  ] as const)("%s", (_name, input, expected) => {
+    expect(shouldTakeOverNativePrReview(input)).toBe(expected);
   });
 
   it("keeps an unavailable review owned and visible", () => {

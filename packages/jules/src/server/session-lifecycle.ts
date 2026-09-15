@@ -132,9 +132,22 @@ export function evaluateSessionStartup(
       scopeDriftFingerprint: session.scopeDriftFingerprint ?? storedSession.scopeDriftFingerprint,
       deliveredFeedbackActivityId: session.deliveredFeedbackActivityId ?? storedSession.deliveredFeedbackActivityId,
       deliveredFeedbackInteractionId: session.deliveredFeedbackInteractionId ?? storedSession.deliveredFeedbackInteractionId,
+      // This identity records a provider question that survived a terminal
+      // provider-state race. It must travel with the delivered checkpoint:
+      // replaying an older Paperclip runtime envelope without it can make the
+      // completed question look newly actionable and recreate a reviewer
+      // child after Jules has already opened its PR.
+      unresolvedProviderQuestionActivityId: session.unresolvedProviderQuestionActivityId ?? storedSession.unresolvedProviderQuestionActivityId,
       deliveredActivityIds: session.deliveredActivityIds ?? storedSession.deliveredActivityIds,
       relayedReviewCommentIds: session.relayedReviewCommentIds ?? storedSession.relayedReviewCommentIds,
       pendingInteraction: session.pendingInteraction ?? storedSession.pendingInteraction,
+      // A plan rejection is a durable provider-continuation state. Paperclip
+      // can replay an older runtime envelope after the rejection was relayed;
+      // losing these fields makes the next terminal poll manufacture a no-PR
+      // human confirmation before Jules has a chance to publish its revision.
+      planReviewOutcome: session.planReviewOutcome ?? storedSession.planReviewOutcome,
+      supersededPlanActivityId: session.supersededPlanActivityId ?? storedSession.supersededPlanActivityId,
+      supersededPlanFingerprint: session.supersededPlanFingerprint ?? storedSession.supersededPlanFingerprint,
       workerFeedbackDeliveryId: session.workerFeedbackDeliveryId ?? storedSession.workerFeedbackDeliveryId,
       providerContinuation: session.providerContinuation ?? storedSession.providerContinuation,
       currentPrHeadSha: session.currentPrHeadSha ?? storedSession.currentPrHeadSha,

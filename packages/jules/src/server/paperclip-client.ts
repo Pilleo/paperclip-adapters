@@ -924,7 +924,10 @@ export async function createJulesPlanReviewInteraction(
     title: `Review Jules plan (${stageName})`,
     summary: `Review Jules plan revision ${revision.revisionNumber}.`,
     addresseeAgentId: reviewerAgentId,
-    continuationPolicy: "wake_assignee",
+    // Addressed native reviewers must use the host's native-card dispatch.
+    // `wake_assignee` routes through the Jules owner and v831 cancels the
+    // foreign reviewer run before its typed card context is available.
+    continuationPolicy: "none",
     resolverPolicy: "anyone",
     payload: {
       version: 1,
@@ -1143,16 +1146,14 @@ function executionPolicyWithJulesMonitor(
   executionPolicy: Record<string, unknown> | null | undefined,
   input: { sessionId: string; nextCheckAt: string; timeoutAt: string },
 ): Record<string, unknown> {
-  // The Jules adapter owns provider continuation. Native Paperclip review
-  // stages on the same issue can block a legitimate Jules poll or emit a
-  // generic missing-disposition prompt, so retain only non-review metadata
-  // while the remote session is active. The orchestrator owns final PR review.
-  const { stages: _stages, commentRequired: _commentRequired, ...nonReviewPolicy } = executionPolicy ?? {};
+  // A provider poll and a native review lane are independent durable states.
+  // Keep the host-owned review stages verbatim: stripping them abandons an
+  // addressed plan/PR verdict whenever Jules schedules its next cloud poll.
+  // The monitor is the only field owned by this adapter.
+  const existingPolicy = executionPolicy ?? {};
   return {
-    mode: nonReviewPolicy["mode"] ?? "normal",
-    ...nonReviewPolicy,
-    stages: [],
-    commentRequired: false,
+    mode: existingPolicy["mode"] ?? "normal",
+    ...existingPolicy,
     monitor: {
       nextCheckAt: input.nextCheckAt,
       notes: "Jules cloud session is active; Paperclip will poll it when this monitor is due.",

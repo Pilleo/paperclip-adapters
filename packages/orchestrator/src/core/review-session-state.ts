@@ -64,7 +64,11 @@ export function findReviewCardBinding(input: {
   );
   if (!run || !run.interactionId) return null;
   const boundCard = input.cards.find((candidate) => candidate.id === run.interactionId);
-  return boundCard ? { card: boundCard, run } : null;
+  // An answered verdict is terminal authority for the pipeline. A lingering
+  // host run must not suppress Terra/Luna advancement or the merge gate;
+  // cancelled cards remain protected because their run may still be deciding.
+  if (!boundCard || boundCard.status === "answered") return null;
+  return { card: boundCard, run };
 }
 
 const LIVE_RUN_STATUSES = new Set(["queued", "running", "active", "claimed"]);

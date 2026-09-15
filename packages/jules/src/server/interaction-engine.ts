@@ -85,7 +85,8 @@ export function evaluateInteractionAction(
   existingInteractions: PaperclipInteraction[] = [],
   rawQuestionText?: string,
   rawQuestionActivityId?: string,
-  planRequiresApproval = false,
+  planRequiresApproval?: boolean,
+  planActivityId?: string,
 ): InteractionAction {
   // Plan availability is supplied by the provider activity/state machine.
   // Never infer a transition by matching Jules-generated prose: wording is
@@ -149,6 +150,15 @@ export function evaluateInteractionAction(
           (acceptedPlan.result as { planRevisionId?: string } | undefined)?.planRevisionId ?? "accepted",
         interactionId: acceptedPlan.id,
       };
+    }
+
+    // The provider can replay the rejected activity after the adapter has
+    // persisted that exact activity as consumed. Do not infer replay from the
+    // phase or plan text: legacy plan forms and a regenerated activity remain
+    // valid work. Only this identity match suppresses card creation.
+    if (planRequiresApproval === false && planActivityId &&
+        session.supersededPlanActivityId === planActivityId) {
+      return { type: "CONTINUE_POLLING" };
     }
 
     return {
@@ -293,7 +303,6 @@ export function isPlanApprovalRequired(input: {
 }): boolean {
   if (!input.requirePlanApproval || !input.planActivityId) return false;
   if (input.supersededPlanActivityId === input.planActivityId) return false;
-  if (input.planFingerprint && input.supersededPlanFingerprint === input.planFingerprint) return false;
   if (!input.planApprovedAt) return true;
   if (!input.planApprovedActivityId) return false;
   return input.planApprovedActivityId !== input.planActivityId;

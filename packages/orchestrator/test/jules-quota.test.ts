@@ -1,7 +1,25 @@
 import { describe, it, expect } from "vitest";
-import { calculateJulesCapacity } from "../src/core/jules-quota.js";
+import { calculateJulesCapacity, resolveJulesDispatchCapacity } from "../src/core/jules-quota.js";
 
 describe("Jules Quota Module", () => {
+  it("keeps the configured Paperclip queue lane available when provider quota is full", () => {
+    const quota = calculateJulesCapacity([], Date.now(), 15, 100);
+    expect(resolveJulesDispatchCapacity(1, { ...quota, effectiveAvailableCapacity: 0 }, 0)).toBe(1);
+  });
+
+  it("uses configured queue capacity when live quota cannot be read", () => {
+    expect(resolveJulesDispatchCapacity(1, {
+      activeSessionsCount: 0,
+      sessionsLast24hCount: 0,
+      maxConcurrent: 15,
+      maxDaily: 100,
+      availableConcurrentSlots: 0,
+      availableDailySlots: 0,
+      effectiveAvailableCapacity: 0,
+      fetchedLive: false,
+    }, 0)).toBe(1);
+  });
+
   it("calculates available concurrent and daily capacity accurately", () => {
     const now = Date.now();
     const sessions = [

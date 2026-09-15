@@ -33,7 +33,7 @@ export interface IssueListOptions {
 }
 
 function apiBase(apiUrl: string): string {
-  return apiUrl.replace(/\/+$/, "");
+  return apiUrl.replace(/\/+$/, "").replace(/\/api$/i, "");
 }
 
 function requireToken(authToken?: string): string {
@@ -50,7 +50,11 @@ function requireToken(authToken?: string): string {
 
 export function createPaperclipHttp(options: PaperclipHttpOptions) {
   const base = apiBase(options.apiUrl);
-  const localTrustedBoardWrites = options.localTrustedBoardWrites === true && /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(base);
+  // Callers may pass either the Paperclip origin or its conventional `/api`
+  // base. Both are loopback-only and therefore eligible for the built-in
+  // local-trusted actor; rejecting the latter makes recovery scripts fail
+  // before they can reuse an existing typed review card.
+  const localTrustedBoardWrites = options.localTrustedBoardWrites === true && /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?(?:\/api)?$/i.test(base);
 
   async function request(path: string, init: RequestInit = {}): Promise<Response> {
     const isMutation = (init.method || "GET").toUpperCase() !== "GET";
@@ -236,6 +240,20 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
     async cancelHeartbeatRun(runId: string, reason = "Cancelled stale delegated execution") {
       return sendJson(`/api/heartbeat-runs/${encodeURIComponent(runId)}/cancel`, "POST", { reason });
     },
+    /**
+     * Paperclip's typed native-review dispatch endpoint preserves the card
+     * binding in the reviewer runtime context. Do not replace this with a
+     * generic agent wake: that run has no interaction identity and cannot
+     * submit the structured verdict.
+     */
+    async dispatchNativeReview(issueId: string, interactionId: string, idempotencyKey?: string) {
+      return sendJson(
+        `/api/issues/${encodeURIComponent(issueId)}/interactions/${encodeURIComponent(interactionId)}/dispatch`,
+        "POST",
+        {},
+        idempotencyKey,
+      );
+    },
     async wakeup(
       agentId: string,
       reason: string,
@@ -247,13 +265,17 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
         reviewInteractionId?: string | undefined;
         /** Reviewers must not reuse a stale session whose prompt predates the card. */
         forceFreshSession?: boolean | undefined;
+        /** Compatibility wake anchor required by Paperclip v831. */
+        wakeCommentId?: string | undefined;
+        source?: "automation" | "on_demand" | undefined;
+        triggerDetail?: "system" | "ping" | undefined;
       },
     ) {
       // Paperclip wakeAgentSchema ignores top-level issueId. Heartbeat only
       // injects context.paperclipIssue / task when payload.issueId is set.
       return sendJson(`/api/agents/${encodeURIComponent(agentId)}/wakeup`, "POST", {
-        source: "on_demand",
-        triggerDetail: "ping",
+        source: options?.source ?? "on_demand",
+        triggerDetail: options?.triggerDetail ?? "ping",
         reason,
         // A reviewer session contains the previous task prompt and may be
         // reused by Paperclip. Review-card wakes are protocol-bound and must
@@ -266,6 +288,7 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
                 ...(issueId ? { issueId } : {}),
                 ...(options?.resumeFromRunId ? { resumeFromRunId: options.resumeFromRunId } : {}),
                 ...(options?.reviewInteractionId ? { interactionId: options.reviewInteractionId, interactionKind: "request_item_verdicts" } : {}),
+                ...(options?.wakeCommentId ? { commentId: options.wakeCommentId } : {}),
               },
             }
           : {}),

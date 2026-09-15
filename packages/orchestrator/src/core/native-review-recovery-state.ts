@@ -7,6 +7,7 @@ export interface RecoverableNativeReviewCard {
   readonly status?: string | undefined;
   readonly idempotencyKey?: string | undefined;
   readonly addresseeAgentId?: string | null | undefined;
+  readonly createdAt?: string | undefined;
 }
 
 export interface NativeReviewRecoveryPrIdentity {
@@ -26,17 +27,33 @@ export type NativeReviewRecoveryDecision =
     }
   | { readonly action: "protocol_failure"; readonly reason: "multiple_pending_canonical_pr_cards" };
 
+export type JulesPlanNativeReviewRecoveryDecision =
+  | { readonly action: "no_action" }
+  | { readonly action: "await_run"; readonly interactionId: string; readonly runId: string }
+  | { readonly action: "retry_exhausted"; readonly interactionId: string }
+  | {
+      readonly action: "recover";
+      readonly interactionId: string;
+      readonly reviewerAgentId: string;
+      readonly recoveryRunId: string | undefined;
+    }
+  | { readonly action: "protocol_failure"; readonly reason: "multiple_pending_canonical_jules_plan_cards" };
+
 /**
- * The released Paperclip ownership guard validates a queued reviewer run
- * against the issue assignee before it recognizes the native-card payload.
- * Assigning the card's explicit addressee before the wake is therefore the
- * narrow adapter-side bridge for hot-restart recovery. Remove this when core
- * persists the interaction binding before applying its ownership gate.
+ * A typed PR card remains the only review authority after recovery.  Do not
+ * reassign the issue to its reviewer: that recreates Paperclip's independent
+ * execution-review lane and can produce recovery spam after a verdict.
  */
 export function nativeReviewRecoveryIssuePatch(
   decision: Extract<NativeReviewRecoveryDecision, { readonly action: "restore_and_recover" }>,
-): { readonly status: "in_review"; readonly assigneeAgentId: string } {
-  return { status: "in_review", assigneeAgentId: decision.reviewerAgentId };
+): { readonly status: "in_review"; readonly assigneeAgentId: null; readonly executionPolicy: null; readonly executionState: null } {
+  void decision;
+  return {
+    status: "in_review",
+    assigneeAgentId: null,
+    executionPolicy: null,
+    executionState: null,
+  };
 }
 
 const LIVE_RUN_STATUSES = new Set(["queued", "running", "active", "claimed"]);
@@ -54,6 +71,75 @@ function isCanonicalPrCard(
   const terraPrefix = reviewInteractionKeyPrefix({ issueId, prUrl: prIdentity.url, headSha: prIdentity.headSha, stage: "terra" });
   return key === lunaPrefix || key.startsWith(`${lunaPrefix}:attempt:`) ||
     key === terraPrefix || key.startsWith(`${terraPrefix}:attempt:`);
+}
+
+type JulesPlanReviewStage = "luna" | "terra";
+
+function julesPlanReviewStage(
+  card: RecoverableNativeReviewCard,
+  issueId: string,
+  reviewerAgentIds: Readonly<Record<JulesPlanReviewStage, string>>,
+): JulesPlanReviewStage | null {
+  if (card.kind !== "request_item_verdicts" || card.status !== "pending") return null;
+  const key = card.idempotencyKey?.split(":");
+  if (!key || key.length !== 7 || key[0] !== "jules" || key[1] !== "plan-review" || key[2] !== "v2") return null;
+  if (key[3] !== issueId || !key[4] || !key[5]) return null;
+  const stage = key[6];
+  if (stage !== "luna" && stage !== "terra") return null;
+  return card.addresseeAgentId === reviewerAgentIds[stage] ? stage : null;
+}
+
+/**
+ * Jules owns the plan gate and keeps its implementation issue assigned to the
+ * provider worker. Paperclip v831 can nevertheless fail to start an addressed
+ * native reviewer for the typed card. This selector detects only that missing
+ * dispatch; it deliberately never applies the PR-review ownership projection.
+ */
+export function decideJulesPlanNativeReviewRecovery(input: {
+  readonly issueId: string;
+  readonly orchestratorManaged: boolean;
+  readonly issueAssigneeAgentId?: string | null | undefined;
+  readonly julesAgentId: string;
+  readonly reviewerAgentIds: Readonly<Record<JulesPlanReviewStage, string>>;
+  readonly nowMs: number;
+  readonly graceMs: number;
+  readonly cards: readonly RecoverableNativeReviewCard[];
+  readonly reviewerRuns: readonly Pick<HeartbeatRunSummary, "id" | "agentId" | "status" | "issueId" | "interactionId">[];
+}): JulesPlanNativeReviewRecoveryDecision {
+  if (!input.orchestratorManaged || input.issueAssigneeAgentId !== input.julesAgentId) return { action: "no_action" };
+
+  const cards = input.cards.filter((card) => julesPlanReviewStage(card, input.issueId, input.reviewerAgentIds) !== null);
+  if (cards.length === 0) return { action: "no_action" };
+  if (cards.length > 1) return { action: "protocol_failure", reason: "multiple_pending_canonical_jules_plan_cards" };
+
+  const card = cards[0]!;
+  const stage = julesPlanReviewStage(card, input.issueId, input.reviewerAgentIds);
+  if (!stage) return { action: "no_action" };
+  const reviewerAgentId = input.reviewerAgentIds[stage];
+  const createdAtMs = card.createdAt ? Date.parse(card.createdAt) : Number.NaN;
+  if (!Number.isFinite(createdAtMs) || input.nowMs - createdAtMs < input.graceMs) return { action: "no_action" };
+
+  const runs = input.reviewerRuns.filter((run) =>
+    run.issueId === input.issueId && run.agentId === reviewerAgentId &&
+    (run.interactionId === card.id || run.interactionId == null),
+  );
+  const liveRun = runs.find((run) => LIVE_RUN_STATUSES.has(run.status));
+  if (liveRun) return { action: "await_run", interactionId: card.id, runId: liveRun.id };
+
+  const terminalRuns = runs.filter((run) => TERMINAL_RUN_STATUSES.has(run.status));
+  // A missing host dispatch merits one recovery. If the reviewer itself ends
+  // without a typed verdict, retry that same card once. Further automatic
+  // retries would turn a provider outage into quota-consuming review spam.
+  if (new Set(terminalRuns.map((run) => run.id)).size >= 2) {
+    return { action: "retry_exhausted", interactionId: card.id };
+  }
+  const terminalRun = terminalRuns[0];
+  return {
+    action: "recover",
+    interactionId: card.id,
+    reviewerAgentId,
+    recoveryRunId: terminalRun?.id,
+  };
 }
 
 /**

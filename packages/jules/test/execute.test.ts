@@ -302,6 +302,77 @@ beforeAll(() => {
     );
   });
 
+  it('hands off a completed PR after Jules approves a plan that a reviewer had previously rejected', async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({
+      state: 'COMPLETED',
+      rawOutputs: [],
+    } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({
+      activities: [
+        {
+          id: 'rejected-plan',
+          createTime: '2026-09-15T00:00:00.000Z',
+          planGenerated: { plan: { id: 'plan-1', steps: [{ title: 'Implement helper' }] } },
+        },
+        {
+          id: 'plan-prose',
+          createTime: '2026-09-15T00:01:00.000Z',
+          agentMessaged: { agentMessage: 'I created a plan. Please approve it so I can proceed.' },
+        },
+        {
+          id: 'provider-plan-approved',
+          createTime: '2026-09-15T00:02:00.000Z',
+          planApproved: { planId: 'plan-1' },
+        },
+        {
+          id: 'provider-completed',
+          createTime: '2026-09-15T00:03:00.000Z',
+          sessionCompleted: {},
+        },
+      ],
+    } as never);
+
+    const res = await execute({
+      ...baseCtx,
+      agent: {
+        ...baseCtx.agent,
+        adapterConfig: { ...baseCtx.agent.adapterConfig, ciPolicy: 'skip' },
+      },
+      runtime: {
+        ...baseCtx.runtime,
+        sessionParams: sessionCodec.encode({
+          version: 1,
+          paperclipIssueId: 'task-1',
+          promptHash: 'stable-hash',
+          promptHashVersion: 2,
+          repository: 'pilleo/test',
+          source: 'github',
+          baseBranch: 'master',
+          phase: 'WAITING_FOR_PLAN_APPROVAL',
+          sessionId: '123',
+          julesSessionId: '123',
+          attempt: 1,
+          failedSessions: [],
+          createdAt: new Date().toISOString(),
+          currentPrUrl: 'https://github.com/example/repo/pull/3',
+          planReviewOutcome: 'revision_requested',
+          supersededPlanActivityId: 'rejected-plan',
+          unresolvedProviderQuestionActivityId: 'plan-prose',
+          deliveredFeedbackActivityId: 'plan-prose',
+        } as never),
+      },
+      authToken: 'jwt-token',
+    } as any);
+
+    expect(res.resultJson?.issueStatus).toBe('in_review');
+    expect(moveIssueToReview).toHaveBeenCalledWith(
+      'task-1',
+      'https://github.com/example/repo/pull/3',
+      'jwt-token',
+      'run-1',
+    );
+  });
+
   it('does not reopen a completed PR for a pre-completion plan prompt', async () => {
     vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({
       state: 'COMPLETED',

@@ -288,10 +288,10 @@ describe("resolveProjectMetadata", () => {
     });
   });
 
-  it("falls back to codebase if primaryWorkspace lacks a valid HTTPS repoUrl", () => {
+  it("falls back to codebase if primaryWorkspace lacks a supported repoUrl", () => {
     const project: PaperclipProjectRecord = {
       id: "p2",
-      primaryWorkspace: { repoUrl: "git@github.com:Pilleo/ssh-url", defaultRef: "main" },
+      primaryWorkspace: { repoUrl: "file:///tmp/ssh-url", defaultRef: "main" },
       codebase: { repoUrl: "https://github.com/Pilleo/codebase", defaultRef: "master" },
     };
     expect(resolveProjectMetadata(project)).toEqual({
@@ -320,11 +320,27 @@ describe("resolveProjectMetadata", () => {
     const project: PaperclipProjectRecord = {
       id: "p4",
       primaryWorkspace: {},
-      codebase: { repoUrl: "git@github.com:foo/bar" },
+      codebase: { repoUrl: "file:///tmp/foo/bar" },
     };
     expect(resolveProjectMetadata(project)).toEqual({
       ok: false,
       reason: "missing_repo_url",
+    });
+  });
+
+  it("accepts the SSH URL used by non-interactive Paperclip project clones", () => {
+    const project: PaperclipProjectRecord = {
+      id: "p4-ssh",
+      primaryWorkspace: {
+        repoUrl: "ssh://git@github.com/Pilleo/paperclip-adapters-e2e.git",
+        defaultRef: "master",
+      },
+    };
+    expect(resolveProjectMetadata(project)).toEqual({
+      ok: true,
+      repoUrl: "ssh://git@github.com/Pilleo/paperclip-adapters-e2e.git",
+      defaultRef: "master",
+      sourceBlock: "primaryWorkspace",
     });
   });
 

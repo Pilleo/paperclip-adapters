@@ -19,7 +19,7 @@ open_questions: false
 has_side_effects: true
 
 paperclip_issue_id: "d7ec66ca-0935-4cb3-b0a2-b5922f5745a9"
-paperclip_identifier: "MAZ-1139"
+paperclip_identifier: ""
 ---
 
 # 🟢 [Severity: LOW]: Deduplicate E2E canary logging and isolate test telemetry

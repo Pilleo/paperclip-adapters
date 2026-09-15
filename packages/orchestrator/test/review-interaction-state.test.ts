@@ -6,6 +6,7 @@ import {
   planReviewDialog,
   buildReviewInteractionRequest,
   shouldExplicitlyWakeReviewCard,
+  selectReviewRunDispatch,
   selectReviewAttempt,
   reviewVerdictFromInteraction,
   shouldWakeAssignedReview,
@@ -14,12 +15,37 @@ import {
   selectReviewCardsToWithdrawAfterRejection,
   canPromoteOpenPrToReview,
   hasNativeRejectionForHead,
+  hasCompletedNativeApprovalLadderForHead,
   hasPendingBlockingQuestion,
   shouldDeferPrReviewDispatch,
 } from "../src/core/review-interaction-state.js";
 import { isAuthoritativeJulesMonitor } from "../src/core/jules-monitor-state.js";
 
 describe("native PR review interaction state", () => {
+  it("lets a newly created addressed card own its first reviewer run", () => {
+    const request = buildReviewInteractionRequest({
+      issueId: "issue-1",
+      prUrl: "https://github.com/acme/repo/pull/1",
+      headSha: "abc",
+      stage: "luna",
+      reviewerAgentId: "luna-1",
+    });
+
+    expect(selectReviewRunDispatch({ dialogCreated: true, recovery: false, request })).toBe("native_card");
+  });
+
+  it("uses an explicit wake only to recover an existing unanswered card", () => {
+    const request = buildReviewInteractionRequest({
+      issueId: "issue-1",
+      prUrl: "https://github.com/acme/repo/pull/1",
+      headSha: "abc",
+      stage: "luna",
+      reviewerAgentId: "luna-1",
+    });
+
+    expect(selectReviewRunDispatch({ dialogCreated: false, recovery: true, request })).toBe("recovery_wake");
+  });
+
   it.each([
     ["pending provider question", { id: "q1", kind: "ask_user_questions", status: "pending" }, true],
     ["answered provider question", { id: "q1", kind: "ask_user_questions", status: "answered" }, false],
@@ -67,6 +93,17 @@ describe("native PR review interaction state", () => {
       { id: "comment", kind: "comment", status: "answered", idempotencyKey: "pr-review:v13:issue-1:pr:head-a:terra", result: { items: [{ id: "pull_request", verdict: "reject", reason: "No" }] } },
     ], "issue-1", "head-a")).toBe(true);
     expect(hasNativeRejectionForHead([], "issue-1", "head-a")).toBe(false);
+  });
+
+  it("recognizes a completed Luna and Terra approval ladder only for the current head", () => {
+    expect(hasCompletedNativeApprovalLadderForHead([
+      { id: "luna", kind: "request_item_verdicts", status: "answered", idempotencyKey: "pr-review:v13:issue-1:pr:head-a:luna", result: { items: [{ id: "pull_request", verdict: "approve" }] } },
+      { id: "terra", kind: "request_item_verdicts", status: "answered", idempotencyKey: "pr-review:v13:issue-1:pr:head-a:terra", result: { items: [{ id: "pull_request", verdict: "approve" }] } },
+      { id: "old", kind: "request_item_verdicts", status: "answered", idempotencyKey: "pr-review:v13:issue-1:pr:head-b:terra", result: { items: [{ id: "pull_request", verdict: "approve" }] } },
+    ], "issue-1", "head-a")).toBe(true);
+    expect(hasCompletedNativeApprovalLadderForHead([
+      { id: "luna", kind: "request_item_verdicts", status: "answered", idempotencyKey: "pr-review:v13:issue-1:pr:head-a:luna", result: { items: [{ id: "pull_request", verdict: "approve" }] } },
+    ], "issue-1", "head-a")).toBe(false);
   });
 
   it("selects every other pending review card after a rejection, including legacy stale cards", () => {

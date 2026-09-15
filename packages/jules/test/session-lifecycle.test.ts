@@ -150,6 +150,41 @@ describe("session-lifecycle", () => {
     expect(decision.session?.providerContinuation).toEqual(stored.providerContinuation);
   });
 
+  it("preserves a rejected-plan revision wait when Paperclip replays an older envelope", () => {
+    const stored = {
+      ...sampleSession,
+      phase: "WAITING_FOR_PLAN_APPROVAL" as const,
+      planReviewOutcome: "revision_requested" as const,
+      supersededPlanActivityId: "rejected-plan-activity",
+      supersededPlanFingerprint: "diagnostic-plan-fingerprint",
+    };
+
+    const decision = evaluateSessionStartup({}, sampleSession, stored, null, config);
+
+    expect(decision.session).toMatchObject({
+      planReviewOutcome: "revision_requested",
+      supersededPlanActivityId: "rejected-plan-activity",
+      supersededPlanFingerprint: "diagnostic-plan-fingerprint",
+    });
+  });
+
+  it("preserves the resolved provider-question checkpoint when Paperclip replays an older envelope", () => {
+    const stored = {
+      ...sampleSession,
+      deliveredFeedbackActivityId: "answered-provider-question",
+      deliveredFeedbackInteractionId: "answered-parent-card",
+      unresolvedProviderQuestionActivityId: "answered-provider-question",
+    };
+
+    const decision = evaluateSessionStartup({}, sampleSession, stored, null, config);
+
+    expect(decision.session).toMatchObject({
+      deliveredFeedbackActivityId: "answered-provider-question",
+      deliveredFeedbackInteractionId: "answered-parent-card",
+      unresolvedProviderQuestionActivityId: "answered-provider-question",
+    });
+  });
+
   it("relays interaction when wake is an interaction response", () => {
     const decision = evaluateSessionStartup(
       { planReviewInteraction: { id: "p1", status: "accepted" }, previousStatus: "backlog" },

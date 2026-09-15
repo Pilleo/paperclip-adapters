@@ -255,6 +255,23 @@ export function hasNativeRejectionForHead(
   });
 }
 
+/** A completed current-head ladder belongs to the PR pipeline, not Jules recovery. */
+export function hasCompletedNativeApprovalLadderForHead(
+  interactions: readonly NativeReviewInteraction[],
+  issueId: string,
+  headSha: string,
+): boolean {
+  const approvedStages = new Set<"luna" | "terra">();
+  for (const interaction of interactions) {
+    const match = new RegExp(`^pr-review:v\\d+:${issueId}:.*:${headSha}:(luna|terra)(?::attempt:[1-9]\\d*)?$`, "i")
+      .exec(interaction.idempotencyKey || "");
+    if (!match || reviewVerdictFromInteraction(interaction, interaction.id)?.decision !== "all_good") continue;
+    const stage = match[1]?.toLowerCase();
+    if (stage === "luna" || stage === "terra") approvedStages.add(stage);
+  }
+  return approvedStages.has("luna") && approvedStages.has("terra");
+}
+
 /** Plans a single idempotent dialog effect. The adapter explicitly wakes the
  * assigned reviewer because Paperclip's addressed-card wake currently drops
  * interaction context before queued-run validation. */
@@ -316,6 +333,25 @@ export function buildReviewInteractionRequest(identity: ReviewInteractionIdentit
 /** Only legacy unaddressed cards need an explicit adapter wake. */
 export function shouldExplicitlyWakeReviewCard(request: ReviewInteractionRequest): boolean {
   return request.addresseeAgentId == null;
+}
+
+/**
+ * Paperclip dispatches a newly created addressed native card itself.  The
+ * adapter may wake only a previously-created unanswered card during explicit
+ * recovery.  Treating both paths alike creates an unbound second run after a
+ * verdict has already resolved the card, which Paperclip later tries to
+ * repair as a lost review path.
+ */
+export type ReviewRunDispatch = "native_card" | "manual_wake" | "recovery_wake" | "none";
+
+export function selectReviewRunDispatch(input: {
+  readonly dialogCreated: boolean;
+  readonly recovery: boolean;
+  readonly request?: ReviewInteractionRequest | undefined;
+}): ReviewRunDispatch {
+  if (input.recovery) return "recovery_wake";
+  if (!input.dialogCreated) return "none";
+  return input.request && shouldExplicitlyWakeReviewCard(input.request) ? "manual_wake" : "native_card";
 }
 
 /** Prevent internal Jules coordination and non-PR work entering the PR lane. */

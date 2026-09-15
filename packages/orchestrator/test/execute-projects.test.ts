@@ -92,4 +92,35 @@ describe("executeAllProjects", () => {
     expect(calls).toEqual(["project-a"]);
     expect(result.summary).toContain("Processed 1 project(s)");
   });
+
+  it("passes a managed git project to its project runner before its checkout exists", async () => {
+    process.env["PAPERCLIP_API_KEY"] = "test-token";
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify([
+      {
+        id: "project-managed-git",
+        primaryWorkspace: {
+          sourceType: "git_repo",
+          repoUrl: "git@github.com:Pilleo/disposable.git",
+          defaultRef: "master",
+        },
+        codebase: {
+          effectiveLocalFolder: "/tmp/paperclip-checkout-created-during-run",
+        },
+      },
+    ]), { status: 200 })) as typeof fetch;
+    const runProject = vi.fn(async (): Promise<AdapterExecutionResult> => ({
+      exitCode: 0, signal: null, timedOut: false, summary: "ok",
+    }));
+
+    const result = await executeAllProjects({
+      agent: { id: "orchestrator", companyId: "company-1", name: "Orchestrator", adapterConfig: {} },
+      config: { reconcileFleet: false },
+      context: { companyId: "company-1" },
+      runtime: { sessionId: null, sessionParams: null },
+      onLog: vi.fn().mockResolvedValue(undefined),
+    } as AdapterExecutionContext, runProject);
+
+    expect(result.exitCode).toBe(0);
+    expect(runProject).toHaveBeenCalledOnce();
+  });
 });

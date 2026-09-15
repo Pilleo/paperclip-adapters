@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildGitHubPullRequestListArgs, describeGitHubAccessProblem, hasUnreviewedReadyPullRequest, matchPrToIssue, processRawPullRequests, registeredPullRequestFromIssue } from "../src/core/github-sync.js";
+import { buildGitHubPullRequestCheckArgs, buildGitHubPullRequestListArgs, describeGitHubAccessProblem, hasUnreviewedReadyPullRequest, matchPrToIssue, processRawPullRequests, registeredPullRequestFromIssue, resolvePrCiGate } from "../src/core/github-sync.js";
 import { extractIssueMetadata } from "../src/core/parser.js";
 import { GitHubPullRequest } from "../src/core/types.js";
 
@@ -37,6 +37,20 @@ describe("GitHub PR Sync Module", () => {
     expect(describeGitHubAccessProblem(401, "rest")).toContain("authentication was rejected");
     expect(describeGitHubAccessProblem(403, "rest")).toContain("authenticate the Paperclip service");
     expect(describeGitHubAccessProblem(408, "gh")).toContain("timed out");
+  });
+
+  it("treats a managed worker's explicit CI-skip policy as a successful gate", () => {
+    expect(resolvePrCiGate("skip", {
+      isGreen: false,
+      status: "pending",
+      accessProblem: "GitHub rest access is unavailable (HTTP 403).",
+    })).toEqual({ isGreen: true, status: "success" });
+  });
+
+  it("checks a registered PR against its URL repository rather than the local cwd remote", () => {
+    expect(buildGitHubPullRequestCheckArgs(17, "https://github.com/acme/repo/pull/17")).toEqual([
+      "pr", "checks", "17", "--repo", "acme/repo", "--json", "state,bucket,name",
+    ]);
   });
 
   it("retains the immutable PR head SHA for review-card invalidation", () => {

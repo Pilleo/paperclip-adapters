@@ -1,9 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { reconcileManagedFleet, MANAGED_FLEET_DEFINITIONS } from "../src/core/fleet-manager.js";
+import { managedAgentInstructionsPath, reconcileManagedFleet, MANAGED_FLEET_DEFINITIONS } from "../src/core/fleet-manager.js";
 
 describe("Orchestrator Managed Fleet Manager", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("derives the local managed instruction path without accepting model-controlled segments", () => {
+    expect(managedAgentInstructionsPath("/state/default", "company-1", "agent-1"))
+      .toBe("/state/default/companies/company-1/agents/agent-1/instructions/AGENTS.md");
   });
 
   it("provisions missing managed workers with supported heartbeat policy and reportsTo orchestrator", async () => {
@@ -91,7 +96,9 @@ describe("Orchestrator Managed Fleet Manager", () => {
     expect(luna?.adapterConfig).not.toHaveProperty("promptTemplate");
     expect(luna?.instructionsBundle.files["AGENTS.md"]).toContain("paperclip_review.submit_native_review_verdict");
     expect(luna?.adapterConfig.env).toMatchObject({ CODEX_HOME: expect.stringContaining("native-review-mcp/luna_reviewer") });
+    expect(luna?.adapterConfig.env).toMatchObject({ PATH: expect.any(String) });
     expect(createdCalls.find((call) => call.name === "[Orchestrated] Terra Strong Reviewer")?.adapterConfig.model).toBe("gpt-5.6-terra");
+    expect(createdCalls.find((call) => call.name === "[Orchestrated] Terra Strong Reviewer")?.adapterConfig).not.toHaveProperty("cwd");
     const jules = createdCalls.find((call) => call.name === "[Orchestrated] Jules Async Worker");
     expect(jules?.adapterConfig.planReviewerAgentId).toBe(result.lunaReviewerAgentId);
     expect(jules?.adapterConfig.planStrongReviewerAgentId).toBe(result.terraReviewerAgentId);
@@ -103,7 +110,12 @@ describe("Orchestrator Managed Fleet Manager", () => {
     expect(adjudicator?.instructionsBundle.files["AGENTS.md"]).toContain("Jules Question Adjudicator Role");
     const lunaReviewer = createdCalls.find((call) => call.name === "[Orchestrated] Luna Fast Reviewer");
     const reviewerInstructions = lunaReviewer?.instructionsBundle.files["AGENTS.md"] as string;
+    expect(reviewerInstructions).toContain("paperclip_review.get_current_native_review_assignment");
+    expect(reviewerInstructions).toContain("For a plan assignment");
     expect(reviewerInstructions).toContain("paperclip_review.submit_native_review_verdict");
+    expect(reviewerInstructions).toContain("immutable PR head");
+    expect(reviewerInstructions).toContain("gh pr view");
+    expect(reviewerInstructions).toContain("connector 404");
     expect(reviewerInstructions).not.toContain("PAPERCLIP_API_KEY");
     expect(reviewerInstructions).not.toContain("DECISION=");
     expect(reviewerInstructions).not.toContain('id":"pull_request"');
@@ -196,8 +208,13 @@ describe("Orchestrator Managed Fleet Manager", () => {
       },
     ];
     const patches: any[] = [];
+    const instructionWrites: any[] = [];
     global.fetch = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
       if (!init || !init.method || init.method === "GET") return { ok: true, json: async () => agents };
+      if (init.method === "PUT") {
+        instructionWrites.push({ url, body: JSON.parse(String(init.body)) });
+        return { ok: true, json: async () => ({}) };
+      }
       if (init.method === "PATCH") {
         const body = JSON.parse(String(init.body));
         patches.push(body);
@@ -215,6 +232,10 @@ describe("Orchestrator Managed Fleet Manager", () => {
     expect(lunaPatch?.adapterConfig.networkScope).toBeUndefined();
     expect(lunaPatch?.adapterConfig.networkAllowlist).toBeUndefined();
     expect(lunaPatch?.adapterConfig.promptTemplate).toContain("paperclip_review.submit_native_review_verdict");
+    expect(instructionWrites).toContainEqual(expect.objectContaining({
+      url: "http://127.0.0.1:3100/api/agents/luna-1/instructions-bundle/file",
+      body: expect.objectContaining({ path: "AGENTS.md", content: expect.stringContaining("paperclip_review.submit_native_review_verdict") }),
+    }));
   });
 
   it("does not resolve an independent Luna agent as the managed reviewer", async () => {
@@ -396,5 +417,45 @@ describe("Orchestrator Managed Fleet Manager", () => {
 
     expect(mutations.length).toBeGreaterThan(0);
     expect(mutations.every((init) => (init.headers as Record<string, string>)["X-Paperclip-Run-Id"] === "run-1")).toBe(true);
+  });
+
+  it("reconciles a stale Jules CI gate policy even when its other managed settings match", async () => {
+    const jules = MANAGED_FLEET_DEFINITIONS.find((definition) => definition.key === "jules");
+    expect(jules).toBeDefined();
+    const agents = [
+      { id: "orch-1", name: "Task Orchestrator", adapterType: "orchestrator" },
+      {
+        id: "jules-1",
+        name: jules!.name,
+        title: jules!.title,
+        capabilities: jules!.capabilities,
+        adapterType: "jules",
+        status: "idle",
+        reportsTo: "orch-1",
+        metadata: { managedBy: "paperclip-orchestrator", workerKey: "jules" },
+        adapterConfig: {
+          ...jules!.adapterConfig,
+          ciPolicy: "required",
+          pollCadenceSeconds: 900,
+        },
+        runtimeConfig: { heartbeat: { enabled: true, intervalSec: 900, wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      },
+    ];
+    const patches: Array<{ url: string; body: Record<string, unknown> }> = [];
+    global.fetch = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (!init?.method || init.method === "GET") return { ok: true, json: async () => agents };
+      const body = init.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
+      if (init.method === "PATCH") patches.push({ url, body });
+      return { ok: true, json: async () => ({}) };
+    });
+
+    await reconcileManagedFleet("http://127.0.0.1:3100", "company-1", { orchestratorAgentId: "orch-1" });
+
+    expect(patches).toContainEqual(expect.objectContaining({
+      url: "http://127.0.0.1:3100/api/agents/jules-1",
+      body: expect.objectContaining({
+        adapterConfig: expect.objectContaining({ ciPolicy: "skip" }),
+      }),
+    }));
   });
 });

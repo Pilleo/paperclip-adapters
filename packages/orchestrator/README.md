@@ -59,7 +59,10 @@ All reviewer prompts enforce explicit rejection criteria (`REQUEST_CHANGES`):
 - **Self-Healing Stalled Session Reaper (48h Async Threshold):** Grants 48-hour reaper immunity to long-running asynchronous cloud workers (Jules) while reclaiming orphaned local runs idle $>15\text{ minutes}$ back to `todo`.
 - **Jules continuation workaround (temporary):** Until Paperclip natively persists an external-provider poll as a continuation, the adapter performs cadence-limited, issue-scoped wakes using the last successful heartbeat run as `resumeFromRunId`. This bypasses Paperclip's no-progress re-wake throttle while preserving the existing Jules provider session. It uses only structured heartbeat state and never parses provider prose or creates monitor child issues. Remove this workaround when upstream monitor dispatch persists and exposes a reliable provider continuation state.
 - **Native-review disposition containment (temporary):** Older Paperclip recovery logic does not recognize a native PR verdict card as a valid live disposition. It can therefore park the owner with `deliberate_wait_without_target` and leave an unbound reviewer heartbeat running. The adapter’s narrow `orphan-review-recovery.ts` shim cancels only reviewer runs for the affected issue that lack a pending `request_item_verdicts` card binding, and resolves only the matching generic repair action before the normal native-card pipeline runs. This is deliberately not a prose parser or a general recovery override. The proper Paperclip fix is to make review cards a first-class typed disposition, atomically propagate `interactionId`/`interactionKind` into heartbeat context, and make generic disposition repair ignore a live review stage. Remove the shim once that upstream behavior is available and covered by Paperclip’s own integration tests.
+- **Typed plan-review compatibility (temporary):** Paperclip v831 can cancel a newly queued foreign reviewer when an addressed plan card uses `wake_assignee`, and its wake context can omit the interaction identity. Addressed Jules plan cards therefore use native-card continuation (`none`), while the reviewer MCP resolves exactly one addressed card at invocation time and exposes its typed assignment before a verdict. A plan assignment contains the immutable issue-document revision and must never trigger PR/local-checkout inspection; a PR assignment contains its immutable URL/head. Remove this adapters-only bridge when Paperclip atomically persists and injects the addressed interaction identity for every reviewer run.
+- **Company-heartbeat managed-checkout compatibility (temporary):** Paperclip exposes a project’s managed checkout path immediately, but currently materializes it only while starting an issue-scoped host execution. This orchestrator schedules project state machines from a company heartbeat, so `project-managed-checkout.ts` atomically clones only the exact Paperclip-owned `instances/.../projects/<company>/<project>/<repo>` path before any local Git command. It rejects custom paths, never deletes an existing non-Git directory, and single-flights concurrent materialization. This is not a Jules worktree or a replacement workspace system; it is the missing host lifecycle call. Remove it when Paperclip provides an authorized project-checkout realization API for company-scoped adapters.
 - **Hot-restart native-review recovery (temporary):** Paperclip can interrupt a reviewer and transiently project its source issue as `backlog` or reassign it during dev-server restart. `native-review-recovery-state.ts` restores only an addressed pending PR card whose typed idempotency identity exactly matches the immutable PR URL and head SHA. It waits for a live bound run, re-wakes the same card only after a terminal run without a verdict, and withdraws a superseded Jules plan card through the issue-scoped interaction API. It never infers state from comments or reviewer prose, creates a replacement card, or patches execution-policy stages. The upstream fix is atomic persistence of the interaction binding and review disposition across heartbeat restart recovery; remove this adapter fence when that exists.
+- **Native PR-review ownership transfer (temporary):** Paperclip v831 may leave host `executionPolicy` review stages on an orchestrator-managed issue after Jules registers a ready PR. Those stages cannot consume the adapter's addressed `request_item_verdicts` cards, so they can re-enter review after Luna and Terra have already decided. For a managed ready PR with the native ladder configured, the orchestrator atomically projects `in_review`, clears the host policy/state, verifies that write, and then relies exclusively on the typed cards. Existing PR reviews deliberately bypass workspace-sync gating: synchronization protects new implementation dispatch, never a registered PR's review or merge lifecycle. Remove this handoff when Paperclip makes host execution-policy review stages consume the same typed verdict protocol.
 - **Idempotent managed wakes:** Every orchestrator wake carries a stable `Idempotency-Key` derived from agent, issue, and resume run. Transient 429/5xx responses use bounded exponential retry; authorization, validation, not-found, and conflict responses are surfaced immediately.
 - **Merged Feature Branch Pruner:** Discovers merged GitHub branches for safe pruning.
 
@@ -134,14 +137,16 @@ card or post a prose fallback. A successful review must make that same card
 `answered`; a legitimate reject returns work to the implementer and is not a
 transport failure.
 
-The current managed Codex reviewer transport stores a mode-0600, non-secret runtime identity file
-beside its dedicated `CODEX_HOME`. This is an adapter-only compatibility
-fallback for Paperclip/Codex launches that rewrite `config.toml` and strip MCP
-environment entries. It contains only API base, issue, agent, and run ids—no
-token, interaction id, or verdict—and the bridge still resolves exactly one
-addressed pending card from Paperclip. Remove it when Paperclip atomically
-passes the native interaction binding and runtime environment into the
-reviewer process.
+The current managed Codex reviewer transport stores a mode-0600, non-secret,
+static identity file beside its dedicated `CODEX_HOME`. This is an adapter-only
+compatibility fallback for Paperclip/Codex launches that rewrite `config.toml`
+and strip MCP environment entries. It contains only API base, company, and
+agent ids—never task, run, token, interaction id, or verdict. At invocation,
+the bridge requires exactly one live run for that reviewer, reads its
+authoritative typed interaction binding, and sends both lookup and verdict
+requests with that run ID. Zero, stale, or multiple candidate runs fail closed.
+Remove this workaround when Paperclip atomically passes the native interaction
+binding and runtime environment into the reviewer process.
 
 This MCP implementation is one implementation of the shared structured-decision
 contract, not the contract itself. ACP adapters and remote/provider adapters

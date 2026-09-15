@@ -26,7 +26,10 @@ export interface PullRequestDetails {
 
 export function evaluateChecks(checks: CheckItem[]): CiCheckStatus {
   if (!Array.isArray(checks) || checks.length === 0) {
-    return "pending";
+    // A repository without required CI produces an empty check list. That is
+    // a completed CI gate, not evidence of work still running; otherwise a
+    // completed Jules PR can be polled forever and never reach native review.
+    return "success";
   }
 
   let hasPending = false;
@@ -44,6 +47,28 @@ export function evaluateChecks(checks: CheckItem[]): CiCheckStatus {
 
   if (hasPending) return "pending";
   return "success";
+}
+
+/**
+ * `gh pr view --json statusCheckRollup` is available even when `gh pr checks`
+ * exits non-zero for a repository that has no checks. Keep that provider
+ * representation at this boundary so terminal PR handoff has one explicit
+ * no-checks policy.
+ */
+export function evaluateStatusCheckRollup(statusCheckRollup: unknown): CiCheckStatus {
+  if (!Array.isArray(statusCheckRollup)) return "pending";
+  return evaluateChecks(statusCheckRollup.map((item): CheckItem => {
+    const record = item && typeof item === "object" ? item as Record<string, unknown> : {};
+    const conclusion = typeof record["conclusion"] === "string" ? record["conclusion"] : undefined;
+    const state = typeof record["state"] === "string"
+      ? record["state"]
+      : typeof record["status"] === "string" ? record["status"] : conclusion;
+    return {
+      ...(typeof record["name"] === "string" ? { name: record["name"] } : {}),
+      ...(state ? { state } : {}),
+      ...(conclusion === "SUCCESS" ? { bucket: "pass" } : {}),
+    };
+  }));
 }
 
 export async function listPullRequestChangedFiles(prUrl: string, cwd?: string): Promise<string[]> {
@@ -85,7 +110,7 @@ export async function getPullRequestDetails(
   // 1. Check PR State via gh CLI
   try {
     const { stdout } = await execAsync(
-      `gh pr view "${prUrl}" --json state,mergedAt,mergeable,mergeStateStatus,headRefOid`,
+      `gh pr view "${prUrl}" --json state,mergedAt,mergeable,mergeStateStatus,headRefOid,statusCheckRollup`,
       { cwd: cwd || process.cwd(), timeout: 3_000 },
     );
     const parsed = JSON.parse(stdout.trim());
@@ -107,6 +132,15 @@ export async function getPullRequestDetails(
         };
       }
       prHeadSha = headSha;
+      if (Array.isArray(parsed.statusCheckRollup)) {
+        return {
+          state: prState,
+          merged: false,
+          ciStatus: evaluateStatusCheckRollup(parsed.statusCheckRollup),
+          mergeableStatus,
+          ...(headSha ? { headSha } : {}),
+        };
+      }
     }
   } catch {
     // Fall back to checks or REST API
@@ -165,7 +199,7 @@ export async function getPullRequestDetails(
             const checkData: any = await checkRunsRes.json();
             const checkRuns = checkData?.check_runs || [];
             if (checkRuns.length === 0) {
-              return { state: "OPEN", merged: false, ciStatus: "pending", headSha };
+              return { state: "OPEN", merged: false, ciStatus: "success", headSha };
             }
             const items: CheckItem[] = checkRuns.map((cr: any) => ({
               name: cr.name,

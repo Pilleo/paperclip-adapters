@@ -69,6 +69,7 @@ describe("native Jules plan review interaction", () => {
     const body = JSON.parse(String(init?.body));
     expect(body.kind).toBe("request_item_verdicts");
     expect(body.addresseeAgentId).toBe("reviewer-1");
+    expect(body.continuationPolicy).toBe("none");
     expect(body.payload.items).toEqual([{ id: "plan", label: "Plan", description: "Plan revision 1" }]);
     expect(body.payload.verdicts).toEqual(["approve", "reject"]);
     expect(body.payload.target.revisionId).toBe("revision-1");
@@ -709,7 +710,9 @@ describe("Paperclip issue completion", () => {
     await scheduleJulesSessionMonitor("issue-1", "s-1", "2026-08-31T12:00:00Z", "2026-09-01T12:00:00Z", "jwt-token");
     await clearJulesSessionMonitor("issue-1", "jwt-token");
     expect(fetchMock).toHaveBeenCalledTimes(7);
-    expect(JSON.parse(fetchMock.mock.calls[4]![1]!.body as string).executionPolicy).toMatchObject({ stages: [], commentRequired: false, custom: "keep" });
+    // A live Jules session needs a durable monitor, but that must never erase
+    // a native Paperclip review lane already attached to the same parent card.
+    expect(JSON.parse(fetchMock.mock.calls[4]![1]!.body as string).executionPolicy).toMatchObject({ stages: ["review"], commentRequired: true, custom: "keep" });
   });
 
   it("rejects a successful monitor write that does not echo a verified Jules monitor", async () => {

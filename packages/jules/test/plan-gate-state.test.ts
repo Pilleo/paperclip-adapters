@@ -5,6 +5,7 @@ describe("decidePlanGateRecovery", () => {
   it.each([
     ["PR rejection supersession", "Superseded by structured PR rejection for the same Jules session and immutable PR head.", "restore"],
     ["PR-card authority supersession", "Superseded plan-review card: an immutable matching PR review card is the active native review authority.", "restore"],
+    ["historic parent-form migration", "Migrating the parent-owned plan form to the reviewer-owned typed form.", "restore"],
     ["user cancellation", "Cancelled by a board member.", "manual_recovery_required"],
     ["unknown system cancellation", "issue_assignee_changed", "manual_recovery_required"],
   ] as const)("%s is %s", (_name, cancellationReason, action) => {
@@ -22,6 +23,28 @@ describe("decidePlanGateRecovery", () => {
     ["no matching card was found", "AWAITING_PLAN_APPROVAL", false, undefined, "manual_recovery_required"],
   ] as const)("does not recreate when %s", (_name, providerState, hasUnresolvedProviderQuestion, matchingInteraction, action) => {
     expect(decidePlanGateRecovery({ providerState, hasUnresolvedProviderQuestion, matchingInteraction })).toEqual({ action });
+  });
+
+  it("recreates a missing card only when the current plan still has an exact persisted pointer", () => {
+    expect(decidePlanGateRecovery({
+      providerState: "AWAITING_PLAN_APPROVAL",
+      hasUnresolvedProviderQuestion: false,
+      hasExactPersistedPointer: true,
+    })).toEqual({ action: "restore" });
+    expect(decidePlanGateRecovery({
+      providerState: "AWAITING_PLAN_APPROVAL",
+      hasUnresolvedProviderQuestion: false,
+      hasExactPersistedPointer: true,
+      recoveryAttempts: 3,
+    })).toEqual({ action: "manual_recovery_required" });
+  });
+
+  it("keeps an exact persisted plan gate authoritative after provider completion", () => {
+    expect(decidePlanGateRecovery({
+      providerState: "COMPLETED",
+      hasUnresolvedProviderQuestion: false,
+      hasExactPersistedPointer: true,
+    })).toEqual({ action: "restore" });
   });
 });
 

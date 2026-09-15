@@ -28,6 +28,12 @@ export interface PlanGateObservation {
   readonly providerState: PlanGateProviderState;
   readonly hasUnresolvedProviderQuestion: boolean;
   readonly matchingInteraction?: PlanGateInteraction | undefined;
+  /**
+   * A persisted v2 pointer binds the exact provider plan activity to a typed
+   * Paperclip card. If the card was lost during a host restart, that identity
+   * is sufficient to recreate it; an unbound missing card remains fail-closed.
+   */
+  readonly hasExactPersistedPointer?: boolean | undefined;
   /** A cancelled card consumes an immutable idempotency key; bound reopen attempts. */
   readonly recoveryAttempts?: number | undefined;
 }
@@ -43,6 +49,10 @@ export type PlanGateDecision =
 export const RESTORABLE_PLAN_GATE_CANCELLATION_REASONS = new Set<string>([
   "Superseded by structured PR rejection for the same Jules session and immutable PR head.",
   "Superseded plan-review card: an immutable matching PR review card is the active native review authority.",
+  // Written by the pre-v2 parent-form migration. The card was adapter-owned,
+  // carried the immutable plan target, and was never a reviewer or human
+  // decision, so an exact persisted pointer may safely recreate its v2 card.
+  "Migrating the parent-owned plan form to the reviewer-owned typed form.",
 ]);
 
 export interface RecoveredPlanGatePointer {
@@ -100,9 +110,17 @@ export function recoverMissingPlanGatePointer(input: {
 }
 
 export function decidePlanGateRecovery(input: PlanGateObservation): PlanGateDecision {
-  if (input.providerState !== "AWAITING_PLAN_APPROVAL") return { action: "await_provider" };
+  const exactPersistedGateSurvivesCompletion =
+    input.providerState === "COMPLETED" && input.hasExactPersistedPointer === true;
+  if (input.providerState !== "AWAITING_PLAN_APPROVAL" && !exactPersistedGateSurvivesCompletion) {
+    return { action: "await_provider" };
+  }
   if (input.hasUnresolvedProviderQuestion) return { action: "await_provider_question" };
-  if (!input.matchingInteraction) return { action: "manual_recovery_required" };
+  if (!input.matchingInteraction) {
+    return input.hasExactPersistedPointer && (input.recoveryAttempts ?? 0) < 3
+      ? { action: "restore" }
+      : { action: "manual_recovery_required" };
+  }
 
   switch (input.matchingInteraction.status) {
     case "pending":

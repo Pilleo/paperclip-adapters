@@ -397,6 +397,30 @@ describe("getPullRequestDetails REST fallback", () => {
       global.fetch = originalFetch;
     }
   });
+
+  it("treats an open PR with no check runs as ready for review", async () => {
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes("/pulls/123")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ state: "open", merged: false, head: { sha: "abc1234" } })
+        } as any;
+      }
+      if (url.includes("/commits/abc1234/check-runs")) {
+        return { ok: true, status: 200, json: async () => ({ check_runs: [] }) } as any;
+      }
+      return { ok: false, status: 404 } as any;
+    });
+
+    try {
+      const details = await getPullRequestDetails("https://github.com/Pilleo/paperclip-jules-adapter/pull/123");
+      expect(details.ciStatus).toBe("success");
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
 });
 
 import { CtxContextSchema } from "../src/server/context-schemas.js";

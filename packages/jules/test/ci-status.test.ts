@@ -1,9 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
-import { evaluateChecks, getPullRequestDetails, getPullRequestCiStatus, getPullRequestPatch, listPullRequestChangedFiles, CheckItem } from "../src/server/ci-status";
+import { evaluateChecks, evaluateStatusCheckRollup, getPullRequestDetails, getPullRequestCiStatus, getPullRequestPatch, listPullRequestChangedFiles, CheckItem } from "../src/server/ci-status";
 
 describe("evaluateChecks", () => {
-  it("returns success when checks array is empty", () => {
-    expect(evaluateChecks([])).toBe("pending");
+  it("treats an empty check set as no CI gate", () => {
+    expect(evaluateChecks([])).toBe("success");
   });
 
   it("returns pending when any check is pending or in progress", () => {
@@ -29,6 +29,12 @@ describe("evaluateChecks", () => {
       { name: "Lint", state: "SUCCESS", bucket: "pass" },
     ];
     expect(evaluateChecks(checks)).toBe("success");
+  });
+});
+
+describe("evaluateStatusCheckRollup", () => {
+  it("treats GitHub's empty statusCheckRollup as no CI gate", () => {
+    expect(evaluateStatusCheckRollup([])).toBe("success");
   });
 });
 

@@ -241,6 +241,22 @@ async function main(): Promise<void> {
       type: "pull_request", provider: "github", title: "Canary Jules PR", url: prUrl,
       externalId: prUrl, status: "ready_for_review", isPrimary: true, metadata: { source: "jules" },
     });
+    // Reproduce MAZ-1519: a normal implementation dispatch installed
+    // Paperclip's Luna/Terra execution policy before Jules registered its PR.
+    // The adapter must transfer ownership before it creates or evaluates a
+    // native card; otherwise Paperclip later retries an unrelated host-stage
+    // reviewer after both typed verdicts are already complete.
+    await request(`/api/issues/${issueId}`, "PATCH", {
+      status: "in_review",
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [
+          { type: "review", participants: [{ type: "agent", agentId: luna.id }], approvalsNeeded: 1 },
+          { type: "review", participants: [{ type: "agent", agentId: terra.id }], approvalsNeeded: 1 },
+        ],
+      },
+    });
     const childIds: string[] = [];
     for (const markerText of ["jules-session-supervisor", "jules-question-adjudication"]) {
       const child = requireObject(await request(`/api/issues/${issueId}/children`, "POST", {
@@ -260,17 +276,26 @@ async function main(): Promise<void> {
     const runId = String(wake.id || "");
     if (!runId) throw new Error(`Paperclip wake did not return a heartbeat run: ${JSON.stringify(wake)}`);
     await waitForIssueExecution(issueId, runId, "Orchestrator");
+    const transferRun = requireObject(await request(`/api/heartbeat-runs/${runId}`, "GET"), "native ownership transfer run");
+    if (String(transferRun.stdoutExcerpt || "").includes("Could not recover open Jules PR")) {
+      throw new Error(`Native ownership transfer must not attempt the obsolete partial issue patch: ${String(transferRun.stdoutExcerpt)}`);
+    }
     const recovered = requireObject(await request(`/api/issues/${issueId}`, "GET"), "recovered issue");
     const recoveredInteractions = await request(`/api/issues/${issueId}/interactions`, "GET");
     const pendingCards = (Array.isArray(recoveredInteractions) ? recoveredInteractions : [])
       .filter((interaction) => interaction && typeof interaction === "object" &&
         interaction.kind === "request_item_verdicts" && interaction.status === "pending");
-    const lunaCard = pendingCards.find((interaction) =>
-      String(interaction.idempotencyKey || "").endsWith(":luna") &&
-      interaction.addresseeAgentId === luna.id &&
-      interaction.continuationPolicy === "none",
-    );
-    if (recovered.status !== "in_review" || recovered.assigneeAgentId !== luna.id || pendingCards.length !== 1 || !lunaCard) {
+    // Clearing the host policy can make the same heartbeat eligible to create
+    // the first native card. Both zero (handoff only) and one (handoff plus
+    // native dispatch) are valid, but it must never create a host-owned or
+    // duplicate review card.
+    if (recovered.status !== "in_review" || recovered.assigneeAgentId !== null ||
+        recovered.executionPolicy !== null || recovered.executionState !== null ||
+        pendingCards.length > 1 ||
+        (pendingCards.length === 1 &&
+          (!String(pendingCards[0]?.idempotencyKey || "").endsWith(":luna") ||
+            pendingCards[0]?.addresseeAgentId !== luna.id ||
+            pendingCards[0]?.continuationPolicy !== "none"))) {
       const canaryAgents = await request(`/api/companies/${companyId}/agents`, "GET");
       const canaryComments = await request(`/api/issues/${issueId}/comments`, "GET");
       throw new Error(`Canary did not enter native review: ${JSON.stringify({
@@ -285,13 +310,37 @@ async function main(): Promise<void> {
           addresseeAgentId: card.addresseeAgentId,
           continuationPolicy: card.continuationPolicy,
         })),
-        expectedLunaAgentId: luna.id,
+        expectedNativeOwnershipTransfer: true,
         executionPolicy: recovered.executionPolicy ?? null,
         executionState: recovered.executionState ?? null,
         agents: canaryAgents,
         comments: canaryComments,
       })}`);
     }
+    // A second heartbeat proves the policy-free issue retains or creates
+    // exactly one addressed Luna review without host execution-state ownership.
+    const ownershipWake = requireObject(await request(`/api/agents/${orch.id}/wakeup`, "POST", {
+      source: "on_demand",
+      reason: "e2e_jules_recovery_native_ownership_transferred",
+      idempotencyKey: `e2e-jules-recovery:${issueId}:native-ownership-transferred`,
+      payload: {},
+    }), "native ownership transferred wake");
+    await waitForIssueExecution(issueId, String(ownershipWake.id), "Native ownership transfer");
+    const nativeReviewIssue = requireObject(await request(`/api/issues/${issueId}`, "GET"), "native review issue");
+    const nativeReviewInteractions = await request(`/api/issues/${issueId}/interactions`, "GET");
+    const nativeReviewCards = pendingReviewCards(nativeReviewInteractions);
+    const nativeLunaCard = nativeReviewCards.find((interaction) =>
+      String(interaction.idempotencyKey || "").endsWith(":luna") &&
+      interaction.addresseeAgentId === luna.id && interaction.continuationPolicy === "none",
+    );
+    if (nativeReviewIssue.assigneeAgentId !== null || nativeReviewIssue.executionPolicy !== null ||
+        nativeReviewCards.length !== 1 || !nativeLunaCard) {
+      throw new Error(`Canary did not start one policy-free native Luna review: ${JSON.stringify({
+        issue: nativeReviewIssue,
+        pendingCards: nativeReviewCards,
+      })}`);
+    }
+    const lunaCard = nativeLunaCard;
     for (const childId of childIds) {
       const child = requireObject(await request(`/api/issues/${childId}`, "GET"), "stale child");
       if (child.status !== "done") throw new Error(`Stale child ${childId} was not closed`);
@@ -344,7 +393,7 @@ async function main(): Promise<void> {
     const stalePlanAfter = (Array.isArray(interactionsAfter) ? interactionsAfter : []).find((card) =>
       card && typeof card === "object" && String((card as Record<string, unknown>).id) === String(stalePlan.id),
     ) as Record<string, unknown> | undefined;
-    if (repeated.status !== "in_review" || repeated.assigneeAgentId !== luna.id ||
+    if (repeated.status !== "in_review" || repeated.assigneeAgentId !== null ||
         recoveredPrCards.length !== 1 || !recoveredLunaCard || stalePlanAfter?.status !== "cancelled") {
       throw new Error(`Canary did not recover the typed PR review authority: ${JSON.stringify({
         status: repeated.status,
