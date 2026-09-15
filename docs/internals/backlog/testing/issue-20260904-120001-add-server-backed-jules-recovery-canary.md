@@ -21,8 +21,8 @@ open_questions: false
 has_side_effects: true
 
 
-paperclip_issue_id: "3df30c8d-e982-4295-b179-0d221d49d71a"
-paperclip_identifier: "MAZ-1457"
+paperclip_issue_id: "bb694935-4476-415d-8851-99022a7e623f"
+paperclip_identifier: "MAZ-1516"
 ---
 
 # 🔴 [Severity: HIGH]: Add a clean server-backed Jules recovery canary to CI
