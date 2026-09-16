@@ -1311,17 +1311,23 @@ export async function clearJulesSessionMonitor(
   await paperclipRequest(`/api/issues/${encodeURIComponent(issueId)}`, authToken, {
     method: "PATCH",
     body: JSON.stringify({
-      executionPolicy: Object.keys(executionPolicy).length > 0 ? executionPolicy : null,
+      // Paperclip merges nested policy objects. Omitting `monitor` therefore
+      // leaves a terminal Jules poll active; the explicit tombstone is the
+      // only safe handoff to the independent native-review state machine.
+      executionPolicy: { ...executionPolicy, monitor: null },
     }),
   }, runId);
 
-  if (strandedJulesMonitor) {
-    const verified = await getPaperclipIssue(issueId, authToken, runId);
-    const remaining = verified.executionState?.["monitor"];
-    if (remaining && typeof remaining === "object" && !Array.isArray(remaining) &&
-        (remaining as Record<string, unknown>)["serviceName"] === "jules") {
-      throw new PaperclipClientError(null, "Paperclip retained a stranded Jules monitor after compatibility cleanup");
-    }
+  // A 2xx PATCH is not enough: Paperclip may preserve an omitted/merged
+  // nested monitor in either projection. Verify both durable policy and the
+  // runtime projection before the adapter reports terminal handoff.
+  const verified = await getPaperclipIssue(issueId, authToken, runId);
+  const remainingMonitors = [verified.executionPolicy?.["monitor"], verified.executionState?.["monitor"]];
+  if (remainingMonitors.some((monitor) =>
+    monitor && typeof monitor === "object" && !Array.isArray(monitor) &&
+    (monitor as Record<string, unknown>)["serviceName"] === "jules"
+  )) {
+    throw new PaperclipClientError(null, "Paperclip retained a Jules monitor after terminal handoff");
   }
 }
 

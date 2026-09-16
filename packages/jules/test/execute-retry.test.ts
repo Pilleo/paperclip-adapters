@@ -158,28 +158,44 @@ beforeAll(() => {
      });
   });
 
-  it('handles FAILED jules state with retry', async () => {
+  it('sends one retry message to a first failed Jules session', async () => {
       (JulesClient.prototype.getSession as any).mockResolvedValue({ state: 'FAILED' });
-      vi.mocked(shouldRetry).mockReturnValueOnce(true); // Retry the explicitly failed session
 
       const abortCtrl = new AbortController();
       const res = await execute({ ...resumedCtx, abortSignal: abortCtrl.signal } as any);
 
-      expect(res.exitCode).toBe(1);
-      expect(res.errorCode).toBe('jules_transient_failure');
+      expect(JulesClient.prototype.sendMessage).toHaveBeenCalledWith('123', { prompt: 'retry' });
+      expect(res.exitCode).toBe(0);
       const session = sessionCodec.decode(res.sessionParams!);
-      expect(session.phase).toBe('RETRY_SCHEDULED');
+      expect(session.phase).toBe('RUNNING');
+      expect(session.failedSessionRetryCount).toBe(1);
   });
 
-  it('handles FAILED jules state without retry (exhausted)', async () => {
-        (JulesClient.prototype.getSession as any).mockResolvedValue({ state: 'FAILED' });
-        vi.mocked(shouldRetry).mockReturnValueOnce(false);
+  it('does not send a second retry message after the bounded retry was used', async () => {
+      (JulesClient.prototype.getSession as any).mockResolvedValue({ state: 'FAILED' });
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({}),
+      });
+      const retryUsedParams = sessionCodec.encode({
+        ...sessionCodec.decode(activeSessionParams),
+        failedSessionRetryCount: 1,
+        failedSessions: [{
+          sessionId: '123',
+          failedAt: new Date().toISOString(),
+          message: 'Sent in-session retry after terminal Jules failure.',
+          classification: 'transient',
+        }],
+      } as any);
 
-        const res = await execute(resumedCtx);
+      const res = await execute({
+        ...baseCtx,
+        runtime: { ...baseCtx.runtime, sessionParams: retryUsedParams },
+      } as any);
 
-        expect(res.exitCode).toBe(1);
-        expect(res.errorCode).toBe('jules_task_failure');
-        expect(res.clearSession).toBe(false);
+      expect(JulesClient.prototype.sendMessage).not.toHaveBeenCalled();
+      expect(res.resultJson?.issueStatus).toBe('blocked');
   });
 
   it('resumes from RETRY_SCHEDULED by creating new session', async () => {

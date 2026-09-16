@@ -2893,14 +2893,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const terminalDisposition = stateMachineRes.isTerminal && (state === "COMPLETED" || state === "FAILED")
         ? decideTerminalDisposition({
           providerState: state,
-          // `auto` preserves the existing confirmation path: a repository or
-          // provider can legitimately decide there is no change to submit.
-          // Only `always` is an unconditional PR contract.
+          // `always` is the explicit delivery contract. `auto` deliberately
+          // retains support for valid no-PR tasks, which use the typed
+          // completion-confirmation flow below.
           requiresPr: config.prPolicy === "always",
           hasPr: Boolean(session.currentPrUrl),
           hasUnapprovedPlan: isPlanningTurnCompleted,
           hasPendingPlanReview: session.pendingInteraction?.type === "plan_native_review"
             || session.pendingInteraction?.type === "plan_agent_review",
+          ...(session.missingPrRetryCount !== undefined
+            ? { missingPrRetryCount: session.missingPrRetryCount }
+            : {}),
+          // This is deliberately independent from failedSessions. That array
+          // is historical diagnostics for prior provider attempts, whereas
+          // this marker records whether this exact provider session has
+          // already received its one allowed in-session `retry` message.
+          failedSessionRetryCount: session.failedSessionRetryCount ?? 0,
         })
         : undefined;
 
@@ -2942,7 +2950,53 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       } else if (!terminalPrHandoff && isPlanningTurnCompleted) {
         session.phase = "WAITING_FOR_PLAN_APPROVAL";
       } else if (stateMachineRes.isTerminal) {
+         if (session.phase === 'FAILED') {
+             if (terminalDisposition?.action === "retry_failed_session") {
+               // Jules' FAILED state is occasionally a transient cloud-VM
+               // provisioning failure. The provider accepts `retry` on that
+               // same session, so preserve plan/review context and try it
+               // once before the existing fail-closed recovery path applies.
+               await client.sendMessage(session.julesSessionId!, { prompt: "retry" });
+               session.failedSessionRetryCount = 1;
+               session.failedSessions.push({
+                 sessionId: session.julesSessionId,
+                 failedAt: new Date().toISOString(),
+                 message: "Sent in-session retry after terminal Jules failure.",
+                 classification: "transient",
+               });
+               session.phase = "RUNNING";
+               session.julesState = "IN_PROGRESS";
+               await persistSessionBestEffort(session, ctx.onLog);
+               await scheduleLiveSessionMonitor(session, true);
+               return createPendingResult(session, true);
+             }
+             if (terminalDisposition?.action === "block_missing_pr") {
+               await moveIssueToBlocked(taskId, ctx.authToken, ctx.runId);
+               return completionInteractionResult(
+                 session,
+                 "blocked",
+                 `Jules session ${session.julesSessionId} failed after its bounded in-session retry.`,
+                 false,
+               );
+             }
+         }
          if (session.phase === 'COMPLETED') {
+             if (terminalDisposition?.action === "resume_missing_pr") {
+               // Jules can occasionally acknowledge an approved plan as
+               // completed before it has performed the requested code/PR work.
+               // Reopen that same provider session once; a second no-PR
+               // completion fails closed below instead of looping or asking a
+               // human to bless a missing implementation.
+               await client.sendMessage(session.julesSessionId!, {
+                 prompt: "The approved task requires implementation and a pull request. Continue the approved plan now: modify only the declared files, run the declared tests, commit, push, and open the PR."
+               });
+               session.missingPrRetryCount = 1;
+               session.phase = "RUNNING";
+               session.julesState = "IN_PROGRESS";
+               await persistSessionBestEffort(session, ctx.onLog);
+               await scheduleLiveSessionMonitor(session, true);
+               return createPendingResult(session, true);
+             }
              if (terminalDisposition?.action === "block_missing_pr") {
                await moveIssueToBlocked(taskId, ctx.authToken, ctx.runId);
                return completionInteractionResult(

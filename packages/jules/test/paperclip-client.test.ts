@@ -702,14 +702,15 @@ describe("Paperclip issue completion", () => {
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ id: "issue-1", status: "in_progress", executionPolicy: { mode: "normal", stages: ["review"], commentRequired: true, custom: "keep" } }) })
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ id: "issue-1", status: "in_progress", executionPolicy: { mode: "normal", monitor: { serviceName: "jules", externalRef: "s-1", nextCheckAt: "2026-08-31T12:00:00Z" } } }) })
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ id: "issue-1", status: "in_progress", executionPolicy: { mode: "normal", monitor: { externalRef: "old" } } }) })
-      .mockResolvedValueOnce({ ok: true, status: 200 });
+      .mockResolvedValueOnce({ ok: true, status: 200 })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ id: "issue-1", executionPolicy: { mode: "normal", monitor: null }, executionState: { monitor: null } }) });
     global.fetch = fetchMock as unknown as typeof global.fetch;
     await postSessionLink("issue-1", "https://jules.google.com/session/s-1", "jwt-token", "run-1");
     await createIssueComment("issue-1", "hello", "jwt-token");
     await withdrawPaperclipInteraction("issue-1", "interaction-1", "superseded", "jwt-token");
     await scheduleJulesSessionMonitor("issue-1", "s-1", "2026-08-31T12:00:00Z", "2026-09-01T12:00:00Z", "jwt-token");
     await clearJulesSessionMonitor("issue-1", "jwt-token");
-    expect(fetchMock).toHaveBeenCalledTimes(7);
+    expect(fetchMock).toHaveBeenCalledTimes(8);
     // A live Jules session needs a durable monitor, but that must never erase
     // a native Paperclip review lane already attached to the same parent card.
     expect(JSON.parse(fetchMock.mock.calls[4]![1]!.body as string).executionPolicy).toMatchObject({ stages: ["review"], commentRequired: true, custom: "keep" });
@@ -843,7 +844,33 @@ describe("Paperclip issue completion", () => {
       mode: "normal",
       stages: [],
       commentRequired: false,
+      monitor: null,
     });
+  });
+
+  it("verifies a normal terminal handoff removed the Jules monitor", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: "issue-1",
+          executionPolicy: { mode: "normal", monitor: { serviceName: "jules", externalRef: "s-1" } },
+          executionState: null,
+        }),
+      })
+      .mockResolvedValueOnce({ ok: true, status: 200 })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ id: "issue-1", executionPolicy: { mode: "normal", monitor: null }, executionState: { monitor: null } }),
+      });
+    global.fetch = fetchMock as unknown as typeof global.fetch;
+
+    await clearJulesSessionMonitor("issue-1", "jwt-token");
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(JSON.parse(fetchMock.mock.calls[1]![1]!.body as string).executionPolicy.monitor).toBeNull();
   });
 
   it("recovers an existing feedback interaction after an idempotency conflict", async () => {

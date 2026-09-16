@@ -3,6 +3,8 @@ export type TerminalDispositionAction =
   | "resume_pending_plan_review"
   | "handoff_pr"
   | "request_no_pr_confirmation"
+  | "resume_missing_pr"
+  | "retry_failed_session"
   | "block_missing_pr";
 
 export interface TerminalDispositionInput {
@@ -11,6 +13,10 @@ export interface TerminalDispositionInput {
   readonly hasPr: boolean;
   readonly hasUnapprovedPlan: boolean;
   readonly hasPendingPlanReview: boolean;
+  /** Bounded automatic recovery for a provider that completed before opening its required PR. */
+  readonly missingPrRetryCount?: number;
+  /** A Jules FAILED state can be an ephemeral cloud-VM failure; retry it once in-place. */
+  readonly failedSessionRetryCount?: number;
 }
 
 export interface TerminalDisposition {
@@ -25,12 +31,17 @@ export interface TerminalDisposition {
 export function decideTerminalDisposition(input: TerminalDispositionInput): TerminalDisposition {
   switch (input.providerState) {
     case "FAILED":
-      return { action: "block_missing_pr" };
+      return (input.failedSessionRetryCount ?? 0) === 0
+        ? { action: "retry_failed_session" }
+        : { action: "block_missing_pr" };
     case "COMPLETED":
       if (input.hasPr) return { action: "handoff_pr" };
       if (input.hasUnapprovedPlan) {
         return { action: input.hasPendingPlanReview ? "resume_pending_plan_review" : "create_plan_review" };
       }
-      return { action: input.requiresPr ? "block_missing_pr" : "request_no_pr_confirmation" };
+      if (!input.requiresPr) return { action: "request_no_pr_confirmation" };
+      return (input.missingPrRetryCount ?? 0) === 0
+        ? { action: "resume_missing_pr" }
+        : { action: "block_missing_pr" };
   }
 }

@@ -230,6 +230,9 @@ export const JulesAdapterSessionV1Schema = z.object({
   lastWatchdogNudgeAt: z.string().optional(),
   watchdogNudgeCount: z.number().int().min(0).optional(),
   inPlaceRetryCount: z.number().int().min(0).optional(),
+  /** One bounded recovery when a PR-required session completes without a PR. */
+  missingPrRetryCount: z.number().int().min(0).max(1).optional(),
+  failedSessionRetryCount: z.number().int().min(0).max(1).optional(),
   mutationCheckpoint: MutationCheckpointSchema.optional(),
   createdAt: z.string(),
   lastPolledAt: z.string().optional()
@@ -411,6 +414,9 @@ export interface JulesAdapterSessionV1 {
   lastWatchdogNudgeAt?: string | undefined;
   watchdogNudgeCount?: number | undefined;
   inPlaceRetryCount?: number | undefined;
+  /** One bounded recovery when a PR-required session completes without its PR. */
+  missingPrRetryCount?: number | undefined;
+  failedSessionRetryCount?: number | undefined;
   mutationCheckpoint?: MutationCheckpoint | undefined;
   createdAt: string;
   lastPolledAt?: string | undefined;
