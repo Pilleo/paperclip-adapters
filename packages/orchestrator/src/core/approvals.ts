@@ -153,11 +153,21 @@ export function evaluatePrMergeApproval(
     companyUrlKey?: string | undefined;
   } = {}
 ): MergeApprovalDecision {
+  const normalizedPrUrl = options.prUrl?.replace(/\/$/, "");
   const matchingApproval = existingApprovals.find(
     (app) =>
       (app.type === "task_merge_approval" ||
         (app.type === "request_board_approval" && app.payload?.["action"] === "task_merge")) &&
-      (app.issueIds.includes(issue.id) || app.payload?.["issueId"] === issue.id || app.payload?.["prNumber"] === prNumber)
+      (
+        app.issueIds.includes(issue.id) ||
+        app.payload?.["issueId"] === issue.id ||
+        // PR numbers are scoped to a repository, not a Paperclip company.
+        // Prefer the immutable canonical URL when it is available; retain
+        // number matching only for legacy callers that do not have one.
+        (normalizedPrUrl
+          ? typeof app.payload?.["prUrl"] === "string" && app.payload["prUrl"].replace(/\/$/, "") === normalizedPrUrl
+          : app.payload?.["prNumber"] === prNumber)
+      )
   );
 
   if (!matchingApproval) {
