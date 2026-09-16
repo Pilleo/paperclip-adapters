@@ -4,13 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
+import { isolatedGitEnvironment } from "../src/core/git-environment.js";
 import { reconcileWorkspaceSync } from "../src/core/workspace-sync.js";
 
 const execFileAsync = promisify(execFile);
 const temporaryDirectories: string[] = [];
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
-  const result = await execFileAsync("git", args, { cwd });
+  const result = await execFileAsync("git", args, {
+    cwd,
+    env: isolatedGitEnvironment(process.env),
+  });
   return result.stdout.trim();
 }
 
@@ -34,11 +38,11 @@ describe("workspace synchronization with real Git", () => {
     const checkout = join(root, "checkout");
     const writer = join(root, "writer");
     await git(root, "init", "--bare", remote);
-    await execFileAsync("git", ["clone", remote, checkout]);
+    await git(root, "clone", remote, checkout);
     await git(checkout, "config", "user.email", "workspace-sync@example.test");
     await git(checkout, "config", "user.name", "Workspace Sync Test");
     await commitAndPush(checkout, "initial");
-    await execFileAsync("git", ["clone", remote, writer]);
+    await git(root, "clone", remote, writer);
     await git(writer, "config", "user.email", "workspace-sync@example.test");
     await git(writer, "config", "user.name", "Workspace Sync Test");
     const configuredRemoteHead = await commitAndPush(writer, "remote-only");

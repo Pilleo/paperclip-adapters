@@ -177,4 +177,56 @@ describe("evaluatePrMergeApproval", () => {
     const decision = evaluatePrMergeApproval(issue, 526, existing);
     expect(decision.action).toBe("AWAIT_MERGE_APPROVAL");
   });
+
+  it.each([
+    {
+      desc: "does not reuse an approval from another repository with the same PR number",
+      options: { prUrl: "https://github.com/Pilleo/repository-b/pull/3" },
+      approval: {
+        id: "repository-a-pr-3",
+        type: "task_merge_approval",
+        status: "pending" as const,
+        issueIds: ["other-issue"],
+        payload: {
+          action: "task_merge",
+          issueId: "other-issue",
+          prNumber: 3,
+          prUrl: "https://github.com/Pilleo/repository-a/pull/3",
+        },
+      },
+      expectedAction: "CREATE_MERGE_APPROVAL_REQUEST",
+    },
+    {
+      desc: "reuses the same canonical PR URL after trailing-slash normalization",
+      options: { prUrl: "https://github.com/Pilleo/repository-a/pull/3/" },
+      approval: {
+        id: "repository-a-pr-3",
+        type: "task_merge_approval",
+        status: "pending" as const,
+        issueIds: ["other-issue"],
+        payload: {
+          action: "task_merge",
+          issueId: "other-issue",
+          prNumber: 3,
+          prUrl: "https://github.com/Pilleo/repository-a/pull/3",
+        },
+      },
+      expectedAction: "AWAIT_MERGE_APPROVAL",
+    },
+    {
+      desc: "preserves number matching for legacy callers without a PR URL",
+      options: {},
+      approval: {
+        id: "legacy-pr-3",
+        type: "task_merge_approval",
+        status: "pending" as const,
+        issueIds: ["other-issue"],
+        payload: { action: "task_merge", issueId: "other-issue", prNumber: 3 },
+      },
+      expectedAction: "AWAIT_MERGE_APPROVAL",
+    },
+  ])("$desc", ({ options, approval, expectedAction }) => {
+    const decision = evaluatePrMergeApproval(createMockIssue(), 3, [approval], options);
+    expect(decision.action).toBe(expectedAction);
+  });
 });

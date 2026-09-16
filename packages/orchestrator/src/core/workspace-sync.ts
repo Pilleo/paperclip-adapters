@@ -29,7 +29,10 @@ export function isFreshDispatchAllowed(decision: WorkspaceSyncDecision): boolean
 export type WorkspaceGitRunner = (args: readonly string[], workspacePath: string) => Promise<string>;
 
 async function defaultGitRunner(args: readonly string[], workspacePath: string): Promise<string> {
-  const result = await execFileAsync("git", [...args], { cwd: workspacePath });
+  const result = await execFileAsync("git", [...args], {
+    cwd: workspacePath,
+    env: isolatedGitEnvironment(process.env),
+  });
   return result.stdout.trim();
 }
 
@@ -200,3 +203,4 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 import { randomUUID } from "node:crypto";
+import { isolatedGitEnvironment } from "./git-environment.js";
