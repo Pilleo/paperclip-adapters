@@ -15,6 +15,8 @@ import { buildClarifierAutonomousPrompt } from "../src/core/clarifier.js";
 // prevents a normal developer invocation from mutating the live local board.
 const PAPERCLIP_API = process.env["PAPERCLIP_TEST_API_URL"];
 const WORKSPACE_PATH = process.env["WORKSPACE_PATH"] || process.cwd();
+const E2E_REPOSITORY_URL = process.env["PAPERCLIP_E2E_REPOSITORY_URL"] || "ssh://git@github.com/Pilleo/paperclip-adapters.git";
+const E2E_REPOSITORY_REF = process.env["PAPERCLIP_E2E_REPOSITORY_REF"] || "master";
 
 async function log(step: string, status: "RUNNING" | "PASS" | "FAIL", msg?: string) {
   const icon = status === "PASS" ? "✅" : status === "FAIL" ? "❌" : "⏳";
@@ -102,15 +104,27 @@ async function main() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        name: `E2E Workspace ${Date.now()}`,
-        description: "Disposable workspace for the Paperclip adapter E2E harness",
-        workspace: { name: "E2E local workspace", sourceType: "local_path", cwd: WORKSPACE_PATH, isPrimary: true },
-      }),
+      name: `E2E Workspace ${Date.now()}`,
+      description: "Disposable workspace for the Paperclip adapter E2E harness",
+    }),
     });
     if (!createProjectRes.ok) throw new Error(`Failed to create isolated E2E project (${createProjectRes.status})`);
     const testProject = await createProjectRes.json() as { id?: unknown };
     if (typeof testProject.id !== "string") throw new Error("Paperclip did not return the isolated E2E project id");
     testProjectId = testProject.id;
+    const createWorkspaceRes = await fetch(`${PAPERCLIP_API}/api/projects/${testProjectId}/workspaces`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "E2E managed repository",
+        sourceType: "git_repo",
+        repoUrl: E2E_REPOSITORY_URL,
+        repoRef: E2E_REPOSITORY_REF,
+        defaultRef: E2E_REPOSITORY_REF,
+        isPrimary: true,
+      }),
+    });
+    if (!createWorkspaceRes.ok) throw new Error(`Failed to create isolated E2E project workspace (${createWorkspaceRes.status})`);
     await log("PHASE 1", "PASS", `Created isolated project with workspace (ID: ${testProjectId})`);
 
     // Register test agents
@@ -169,16 +183,16 @@ status: "open"
 orchestrator_managed: true
 priority: high
 has_side_effects: false
-component: "enforcer"
-target_modules: [":enforcer"]
-target_files: ["enforcer/src/main/kotlin/io/mazewall/seccomp/PureJavaBpfEngine.kt"]
-target_symbols: ["PureJavaBpfEngine#installFilter"]
+component: "orchestrator"
+target_modules: ["packages/orchestrator"]
+target_files: ["packages/orchestrator/src/core/github-sync.ts"]
+target_symbols: ["checkPrCiIsGreen"]
 open_questions: false
 ---
 
-# 🔴 [Severity: HIGH]: E2E Test: Support ARM64 BPF Downcall Compilation
-**Context:** ARM64 instruction downcall verification.
-**Needed:** Add downcall compilation unit test for PureJavaBpfEngine.
+# 🔴 [Severity: HIGH]: E2E Test: Verify GitHub CI Gate
+**Context:** GitHub CI observation must be deterministic.
+**Needed:** Add a focused verification around the CI gate.
 `;
     fs.writeFileSync(issueFileA, issueMarkdownA, "utf8");
 
@@ -260,16 +274,16 @@ status: "open"
 orchestrator_managed: true
 priority: high
 has_side_effects: false
-component: "enforcer"
-target_modules: [":enforcer"]
-target_files: ["enforcer/src/main/kotlin/io/mazewall/seccomp/BpfNativeCache.kt"]
-target_symbols: ["PureJavaBpfEngine#setNoNewPrivs"]
+component: "orchestrator"
+target_modules: ["packages/orchestrator"]
+target_files: ["packages/orchestrator/src/core/jules-monitor-state.ts"]
+target_symbols: ["canPromoteJulesPrToReview"]
 open_questions: false
 ---
 
-# 🔴 [Severity: HIGH]: E2E Test: Support X86 BPF Downcall Compilation
-**Context:** X86 instruction downcall verification.
-**Needed:** Add downcall compilation unit test for PureJavaBpfEngine setNoNewPrivs.
+# 🔴 [Severity: HIGH]: E2E Test: Verify Jules PR Ownership
+**Context:** Jules handoff must remain independent from CI classification.
+**Needed:** Add a focused verification around the PR ownership gate.
 `;
     fs.writeFileSync(issueFileB, issueMarkdownB, "utf8");
 
@@ -282,16 +296,16 @@ status: "open"
 orchestrator_managed: true
 priority: high
 has_side_effects: false
-component: "enforcer"
-target_modules: [":enforcer"]
-target_files: ["enforcer/src/main/kotlin/io/mazewall/seccomp/PureJavaBpfEngine.kt"]
-target_symbols: ["PureJavaBpfEngine#installFilter"]
+component: "orchestrator"
+target_modules: ["packages/orchestrator"]
+target_files: ["packages/orchestrator/src/core/github-sync.ts"]
+target_symbols: ["checkPrCiIsGreen"]
 open_questions: false
 ---
 
-# 🔴 [Severity: HIGH]: E2E Test: Conflicting Install Filter Refactor
-**Context:** Overlapping method target.
-**Needed:** Refactor installFilter.
+# 🔴 [Severity: HIGH]: E2E Test: Conflicting CI Gate Refactor
+**Context:** Overlapping target symbol.
+**Needed:** Refactor checkPrCiIsGreen.
 `;
     fs.writeFileSync(issueFileC, issueMarkdownC, "utf8");
 
@@ -310,11 +324,11 @@ open_questions: false
     const issueB = await (await fetch(`${PAPERCLIP_API}/api/issues/${idB}`)).json();
     const issueC = await (await fetch(`${PAPERCLIP_API}/api/issues/${idC}`)).json();
 
-    // Task B touches disjoint method (setNoNewPrivs) -> must be in_progress
+    // Task B touches a disjoint source file -> must be in_progress.
     if (issueB.status !== "in_progress") {
       throw new Error(`Expected disjoint Task B to run in parallel ('in_progress'), but got '${issueB.status}'`);
     }
-    // Task C touches overlapping method (installFilter) while Task A is in_progress -> must be blocked in 'todo' or 'backlog'
+    // Task C touches Task A's source file while it is in progress -> must be held.
     if (issueC.status !== "todo" && issueC.status !== "backlog") {
       throw new Error(`Expected conflicting Task C to be held in 'todo' or 'backlog', but got '${issueC.status}'`);
     }
@@ -323,11 +337,17 @@ open_questions: false
     // -------------------------------------------------------------------------
     // Phase 5: Codanna Symbol Research & Jules Cloud Prompt Verification
     // -------------------------------------------------------------------------
-    await log("PHASE 5", "RUNNING", "Validating Codanna Symbol Research and Jules Cloud Prompt Synthesis...");
+    await log("PHASE 5", "RUNNING", "Validating deterministic symbol targets and Jules prompt synthesis...");
     const rawPlan = synthesizeDeterministicPlan(issueMarkdownA, "issue-arm64", WORKSPACE_PATH);
     const enrichedPlan = enrichPlanWithSymbolResearch(rawPlan, WORKSPACE_PATH);
-    if (!enrichedPlan.semanticSymbolContext || !enrichedPlan.semanticSymbolContext.includes("installFilter")) {
-      throw new Error("Codanna symbol research failed to retrieve PureJavaBpfEngine#installFilter");
+    if (!rawPlan.targetSymbols.some((symbol) => symbol.symbol === "checkPrCiIsGreen")) {
+      throw new Error("Deterministic plan did not retain checkPrCiIsGreen as its target symbol");
+    }
+    // Codanna is optional at runtime. When its local index is available, the
+    // extra context must agree with the deterministic target; its absence
+    // cannot make the production planning path fail.
+    if (enrichedPlan.semanticSymbolContext && !enrichedPlan.semanticSymbolContext.includes("checkPrCiIsGreen")) {
+      throw new Error("Codanna symbol context did not match checkPrCiIsGreen");
     }
 
     const julesPrompt = buildPrompt(
@@ -340,15 +360,15 @@ open_questions: false
         workspacePath: WORKSPACE_PATH,
       },
       {
-        source: "Pilleo/mazewall",
+        source: "Pilleo/paperclip-adapters",
         baseBranch: "master",
       }
     );
 
-    if (!julesPrompt.includes("installFilter") || !julesPrompt.includes("Implementation plan") || !julesPrompt.includes(paperclipIssueIdA)) {
+    if (!julesPrompt.includes("checkPrCiIsGreen") || !julesPrompt.includes("Implementation plan") || !julesPrompt.includes(paperclipIssueIdA)) {
       throw new Error("Jules prompt missing the task target, implementation plan, or Paperclip identity");
     }
-    await log("PHASE 5", "PASS", "Jules prompt synthesized with exact Codanna type signature, AST outline, and sandbox guidelines");
+    await log("PHASE 5", "PASS", "Jules prompt retained the deterministic target and optional Codanna context when available");
 
     // -------------------------------------------------------------------------
     // Phase 6: Autonomous Clarification Loop (Codebase Research First)
@@ -360,10 +380,10 @@ title: "E2E Test: Clarify Cache Invalidation Protocol"
 severity: "MEDIUM"
 status: "open"
 priority: medium
-component: "enforcer"
-target_modules: [":enforcer"]
-target_files: ["enforcer/src/main/kotlin/io/mazewall/seccomp/PureJavaBpfEngine.kt"]
-target_symbols: ["PureJavaBpfEngine#clearCache"]
+component: "orchestrator"
+target_modules: ["packages/orchestrator"]
+target_files: ["packages/orchestrator/src/core/jules-monitor-state.ts"]
+target_symbols: ["canPromoteJulesPrToReview"]
 open_questions: true
 ---
 
@@ -372,7 +392,7 @@ open_questions: true
 **Needed:** Document and test cache clearing.
 
 ## ❓ Open Questions
-1. Does PureJavaBpfEngine.clearCache() delegate directly to BpfNativeCache.clear()?
+1. Does canPromoteJulesPrToReview refuse a durable Jules monitor?
 `;
     fs.writeFileSync(issueFileClarify, issueMarkdownClarify, "utf8");
 
@@ -392,9 +412,9 @@ open_questions: true
       priority: "medium",
       priorityRank: 2,
       dependencies: [],
-      targetFiles: ["enforcer/src/main/kotlin/io/mazewall/seccomp/PureJavaBpfEngine.kt"],
-      targetModules: [":enforcer"],
-      targetSymbols: ["PureJavaBpfEngine#clearCache"],
+      targetFiles: ["packages/orchestrator/src/core/jules-monitor-state.ts"],
+      targetModules: ["packages/orchestrator"],
+      targetSymbols: ["canPromoteJulesPrToReview"],
       hasSideEffects: false,
       isNonInterfering: false,
       rawIssue: { description: issueMarkdownClarify },
@@ -410,17 +430,17 @@ title: "E2E Test: Clarify Cache Invalidation Protocol"
 severity: "MEDIUM"
 status: "open"
 priority: medium
-component: "enforcer"
-target_modules: [":enforcer"]
-target_files: ["enforcer/src/main/kotlin/io/mazewall/seccomp/PureJavaBpfEngine.kt"]
-target_symbols: ["PureJavaBpfEngine#clearCache"]
+component: "orchestrator"
+target_modules: ["packages/orchestrator"]
+target_files: ["packages/orchestrator/src/core/jules-monitor-state.ts"]
+target_symbols: ["canPromoteJulesPrToReview"]
 open_questions: false
 paperclip_issue_id: "${idClarify}"
 ---
 
-# 🟡 [Severity: MEDIUM]: E2E Test: Clarify Cache Invalidation Protocol
-**Context:** Verified from code: \`PureJavaBpfEngine.clearCache()\` delegates to \`BpfNativeCache.clear()\`.
-**Needed:** Add verification unit test confirming cache reset.
+# 🟡 [Severity: MEDIUM]: E2E Test: Clarify Jules Monitor Ownership
+**Context:** Verify whether a durable Jules monitor prevents PR review handoff.
+**Needed:** Add verification coverage for the ownership gate.
 `;
     fs.writeFileSync(issueFileClarify, resolvedMarkdownClarify, "utf8");
 
@@ -438,7 +458,7 @@ paperclip_issue_id: "${idClarify}"
     // GitHub CLI is replaced only inside a temporary directory so the canary
     // can prove PR correlation, CI gating, stale-child cleanup, and heartbeat
     // idempotency without opening a real Jules session or mutating GitHub.
-    await log("PHASE 7", "RUNNING", "Testing native recovery of a blocked Jules issue with an open green PR...");
+    await log("PHASE 7", "RUNNING", "Testing native recovery of a blocked Jules issue whose PR has no declared CI checks...");
     const canaryMarker = `e2e-open-jules-pr-recovery-${Date.now()}`;
     const canaryIssueFile = path.join(tempBacklogDir, `${canaryMarker}.md`);
     fs.writeFileSync(canaryIssueFile, `---
@@ -509,20 +529,31 @@ This issue is created and owned by the isolated E2E company.
     const fakeGhDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-e2e-gh-"));
     const fakeGhPath = path.join(fakeGhDir, "gh");
     const previousPath = process.env["PATH"];
+    const previousGitHubCliPath = process.env["PAPERCLIP_GH_PATH"];
     fs.writeFileSync(fakeGhPath, `#!/bin/sh
 case "$*" in
   *"pr list"*) printf '%s\\n' '[{"number":991,"title":"${canaryMarker}","state":"OPEN","headRefName":"canary","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","baseRefName":"main","mergedAt":null,"url":"${canaryPrUrl}","files":[]}]' ;;
-  *"pr checks"*) printf '%s\\n' '[{"state":"SUCCESS","bucket":"pass","name":"canary"}]' ;;
+  *"pr checks"*) printf '%s\\n' "no checks reported on the 'canary' branch" >&2; exit 1 ;;
   *) exit 1 ;;
 esac
 `, "utf8");
     fs.chmodSync(fakeGhPath, 0o755);
     process.env["PATH"] = `${fakeGhDir}${path.delimiter}${previousPath || ""}`;
+    // Production adapters prefer an absolute system binary because Paperclip
+    // can sanitize PATH inside its runner. The E2E canary deliberately uses
+    // a fake executable, so bind the same explicit override the resolver
+    // supports instead of relying on PATH precedence.
+    process.env["PAPERCLIP_GH_PATH"] = fakeGhPath;
     try {
       await runOrchestrator(canaryContext as any);
       const recovered = await jsonRequest(`${PAPERCLIP_API}/api/issues/${canaryIssueId}`, "GET");
       if (recovered.status !== "in_review" || recovered.assigneeAgentId !== null) {
         throw new Error(`Canary source issue was not recovered into native review: ${JSON.stringify({ status: recovered.status, assigneeAgentId: recovered.assigneeAgentId })}`);
+      }
+      const recoveredPolicy = recovered.executionPolicy as { monitor?: unknown } | null | undefined;
+      const recoveredState = recovered.executionState as { monitor?: unknown } | null | undefined;
+      if (recoveredPolicy?.monitor || recoveredState?.monitor) {
+        throw new Error("No-check PR recovery retained or reattached a Jules monitor");
       }
       for (const childId of staleChildIds) {
         const child = await jsonRequest(`${PAPERCLIP_API}/api/issues/${childId}`, "GET");
@@ -532,13 +563,17 @@ esac
       await runOrchestrator(canaryContext as any);
       const repeated = await jsonRequest(`${PAPERCLIP_API}/api/issues/${canaryIssueId}`, "GET");
       const secondComments = await jsonRequest(`${PAPERCLIP_API}/api/issues/${canaryIssueId}/comments`, "GET");
-      if (repeated.status !== "in_review" || secondComments.length !== firstComments.length) {
+      const repeatedPolicy = repeated.executionPolicy as { monitor?: unknown } | null | undefined;
+      const repeatedState = repeated.executionState as { monitor?: unknown } | null | undefined;
+      if (repeated.status !== "in_review" || secondComments.length !== firstComments.length || repeatedPolicy?.monitor || repeatedState?.monitor) {
         throw new Error("Canary recovery was not idempotent across heartbeats");
       }
-      await log("PHASE 7", "PASS", "Blocked Jules issue recovered once, stale children closed, and repeat heartbeat was idempotent");
+      await log("PHASE 7", "PASS", "No-check Jules PR recovered once without a monitor, stale children closed, and repeat heartbeat was idempotent");
     } finally {
       if (previousPath === undefined) delete process.env["PATH"];
       else process.env["PATH"] = previousPath;
+      if (previousGitHubCliPath === undefined) delete process.env["PAPERCLIP_GH_PATH"];
+      else process.env["PAPERCLIP_GH_PATH"] = previousGitHubCliPath;
       fs.rmSync(fakeGhDir, { recursive: true, force: true });
     }
 

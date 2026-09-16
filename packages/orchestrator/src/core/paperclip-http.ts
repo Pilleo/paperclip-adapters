@@ -224,6 +224,19 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
     async createApproval(companyId: string, payload: Record<string, unknown>) {
       return sendJson(`/api/companies/${encodeURIComponent(companyId)}/approvals`, "POST", payload);
     },
+    /**
+     * A verified remote merge makes an unanswered operator gate obsolete.
+     * Paperclip currently exposes reject, rather than a dedicated invalidation
+     * route, so callers must supply an explicit note that distinguishes this
+     * terminal cleanup from a human rejection of the implementation.
+     */
+    async rejectApproval(approvalId: string, decisionNote: string) {
+      return sendJson(
+        `/api/approvals/${encodeURIComponent(approvalId)}/reject`,
+        "POST",
+        { decisionNote },
+      );
+    },
     async listHeartbeatRuns(companyId: string, agentId: string, limit = 8): Promise<Record<string, unknown>[]> {
       const path =
         `/api/companies/${encodeURIComponent(companyId)}/heartbeat-runs` +

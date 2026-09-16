@@ -79,7 +79,10 @@ export function decidePullRequestReconciliation(
     const metadataNeedsUpdate = needsMergedMetadata(input);
     const shouldPostAudit = !input.auditAlreadyRecorded;
     const cancelMergeApprovalId = pendingMergeApprovalId(input);
-    if (input.issueStatus === "done" && !metadataNeedsUpdate && !shouldPostAudit) {
+    // A pending final-merge approval is a visible stale gate even after all
+    // task and work-product metadata is terminal. Keep this reconciliation
+    // active until the caller invalidates that approval.
+    if (input.issueStatus === "done" && !metadataNeedsUpdate && !shouldPostAudit && !cancelMergeApprovalId) {
       return { action: "NOOP", reason: `PR #${input.pullRequest.number} is already fully reconciled.` };
     }
 

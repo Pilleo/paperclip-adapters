@@ -41,12 +41,19 @@ export function findTaskStartApproval(
   return approvals.find((approval) => isTaskStartApprovalForIssue(approval, issueId));
 }
 
-/** Assigned or in_progress work while task_start is still pending is a gate violation. */
+/**
+ * A pending task-start approval gates executor dispatch only. Native review is
+ * a terminal handoff from that executor, so it must never be reclaimed merely
+ * because a historical start card remains pending.
+ */
 export function shouldReclaimUnapprovedStart(
   issue: { readonly id: string; readonly status: string; readonly assigneeAgentId?: string | null | undefined },
   approvals: readonly PaperclipApprovalSummary[],
+  promotedToNativeReviewThisHeartbeat: boolean = false,
 ): boolean {
   if (issue.status === "done" || issue.status === "cancelled") return false;
+  if (promotedToNativeReviewThisHeartbeat) return false;
+  if (issue.status === "in_review") return false;
   const start = findTaskStartApproval(approvals, issue.id);
   if (!start || start.status !== "pending") return false;
   if (issue.assigneeAgentId) return true;

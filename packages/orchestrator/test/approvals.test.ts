@@ -98,6 +98,12 @@ describe("evaluateTaskStartApproval", () => {
       reclaim: true,
     },
     {
+      desc: "unassigned native review with a pending historical start approval is preserved",
+      issue: { id: "issue-1", status: "in_review", assigneeAgentId: null },
+      status: "pending" as const,
+      reclaim: false,
+    },
+    {
       desc: "approved start is not reclaimed",
       issue: { id: "issue-1", status: "in_progress", assigneeAgentId: "jules-1" },
       status: "approved" as const,
@@ -128,6 +134,14 @@ describe("evaluateTaskStartApproval", () => {
     ];
     const decision = evaluateTaskStartApproval(issue, "agent-jules", existing);
     expect(decision.action).toBe("SKIP_REJECTED");
+  });
+
+  it("does not reclaim an initial in-progress snapshot after this heartbeat promoted its PR to review", () => {
+    expect(shouldReclaimUnapprovedStart(
+      { id: "issue-1", status: "in_progress", assigneeAgentId: "jules-1" },
+      [{ id: "app-123", type: "task_start_approval", status: "pending", issueIds: ["issue-1"] }],
+      true,
+    )).toBe(false);
   });
 });
 

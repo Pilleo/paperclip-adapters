@@ -235,6 +235,23 @@ describe("createPaperclipHttp wakeup", () => {
     expect((fetchMock.mock.calls[0]?.[1] as RequestInit).method).toBe("PATCH");
   });
 
+  it("rejects a superseded merge approval through the typed board route", async () => {
+    const fetchMock = vi.fn(async () => new Response('{"status":"rejected"}', { status: 200 }));
+    globalThis.fetch = fetchMock as typeof fetch;
+    const pc = createPaperclipHttp({ apiUrl: "http://127.0.0.1:3100", localTrustedBoardWrites: true });
+    const note = "Superseded automatically: GitHub confirmed PR #4 is merged. This is not a rejection of the implementation.";
+
+    await expect(pc.rejectApproval("approval-1522", note)).resolves.toMatchObject({
+      ok: true,
+      data: { status: "rejected" },
+    });
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://127.0.0.1:3100/api/approvals/approval-1522/reject");
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({ decisionNote: note });
+  });
+
   it("creates and lists native issue interactions", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response('{"id":"dialog-1"}', { status: 201 }))

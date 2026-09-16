@@ -22,7 +22,7 @@ import { calculateConflictMatrix, selectNextTasksMultiLane } from "../core/dispa
 import { fetchJulesQuota, resolveJulesDispatchCapacity } from "../core/jules-quota.js";
 import { checkWorkspaceConsistency } from "../core/consistency.js";
 import { ensureManagedProjectCheckout, managedProjectCheckoutPath } from "../core/project-managed-checkout.js";
-import { fetchGitHubPullRequests, hasUnreviewedReadyPullRequest, matchPrToIssue, registeredPullRequestFromIssue, checkPrCiIsGreen, fetchPullRequestHeadSha, resolvePrCiGate } from "../core/github-sync.js";
+import { fetchGitHubPullRequest, fetchGitHubPullRequests, hasUnreviewedReadyPullRequest, matchPrToIssue, registeredPullRequestFromIssue, checkPrCiIsGreen, fetchPullRequestHeadSha, resolvePrCiGate } from "../core/github-sync.js";
 import { evaluateIssueTransition } from "../core/state-machine.js";
 import { readWorkspaceGitRemote, syncBacklogMarkdownToPaperclip } from "../core/backlog-sync.js";
 import { archiveResolvedBacklogFiles } from "../core/backlog-archiver.js";
@@ -106,6 +106,10 @@ import {
 // otherwise race on the same issue. The board is still re-read on each tick;
 // this only protects the read/decide/write window within this adapter process.
 const mergeConvergenceGuard = new ConvergenceGuard();
+// Approval invalidation is intentionally independent of issue completion. A
+// GitHub merge is terminal even if Paperclip temporarily rejects the board
+// write; a later heartbeat must retry only that stale-card cleanup.
+const mergeApprovalInvalidationGuard = new ConvergenceGuard();
 const lifecycleConvergenceGuard = new ConvergenceGuard();
 // A stale reviewer card must be withdrawn exactly once after a structured
 // rejection. Without this fence, overlapping heartbeats can repeatedly race
@@ -971,16 +975,94 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     }
   }
 
+  let existingApprovals: PaperclipApprovalSummary[] = [];
+  let approvalsSnapshotLoaded = false;
+  const loadApprovals = async (): Promise<void> => {
+    const rawApprovals = asArray<{
+      id: string;
+      type: string;
+      status: string;
+      issueIds?: string[];
+      title?: string;
+      description?: string;
+      payload?: Record<string, unknown>;
+    }>(await pc.listApprovals(companyId));
+    existingApprovals = rawApprovals.map((a) => ({
+      id: a.id,
+      type: a.type,
+      status: (a.status as "pending" | "approved" | "rejected") || "pending",
+      issueIds: a.issueIds || [],
+      ...(a.title ? { title: a.title } : {}),
+      ...(a.description ? { description: a.description } : {}),
+      ...(a.payload ? { payload: a.payload } : {}),
+    }));
+    approvalsSnapshotLoaded = true;
+  };
+  try {
+    await loadApprovals();
+  } catch (err: unknown) {
+    // A missing approval snapshot must not prevent GitHub's terminal merge
+    // state from completing the issue. The start-approval phase below still
+    // fails closed if it cannot load its required snapshot.
+    await log(`[ORCHESTRATOR] Warning: Failed to prefetch approvals for merged-PR cleanup: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  const pendingMergeApprovalFor = (issue: ParsedIssueMetadata, prUrl: string): PaperclipApprovalSummary | undefined => {
+    const normalizedPrUrl = prUrl.replace(/\/$/, "").toLowerCase();
+    return existingApprovals.find((approval) => {
+      if (approval.status !== "pending") return false;
+      const isMergeGate = approval.type === "task_merge_approval" ||
+        (approval.type === "request_board_approval" && approval.payload?.["action"] === "task_merge");
+      const approvalPrUrl = approval.payload?.["prUrl"];
+      return isMergeGate &&
+        (approval.issueIds.includes(issue.id) || approval.payload?.["issueId"] === issue.id) &&
+        typeof approvalPrUrl === "string" && approvalPrUrl.replace(/\/$/, "").toLowerCase() === normalizedPrUrl;
+    });
+  };
+
+  // `gh pr list --limit 50` is intentionally bounded. A pending final merge
+  // approval is the only historical state that can keep a completed task
+  // visibly stale, so hydrate only its board-registered PR when it falls
+  // outside that discovery window.
+  const mergedPrs = [...ghStatus.mergedPrs];
+  if (approvalsSnapshotLoaded) {
+    for (const issue of parsedIssues) {
+      const registeredPr = registeredPullRequestFromIssue(issue);
+      if (!registeredPr || mergedPrs.some((pr) => pr.url.replace(/\/$/, "").toLowerCase() === registeredPr.url.replace(/\/$/, "").toLowerCase())) continue;
+      if (!pendingMergeApprovalFor(issue, registeredPr.url)) continue;
+      const observedPr = await fetchGitHubPullRequest(workspacePath, registeredPr.url);
+      if (observedPr?.state === "MERGED") mergedPrs.push(observedPr);
+    }
+  }
+
   // 7. PHASE 1: Reconcile board status with merged GitHub PRs & Archive files
   const statusOverrides = new Map<string, IssueState>();
   const mergedIssueIds = new Set<string>();
   let mergedAutoCompleted = 0;
-  if (!ghStatus.error) {
+  if (!ghStatus.error || mergedPrs.length > 0) {
     for (const issue of parsedIssues) {
-      const mergedPr = ghStatus.mergedPrs.find((pr) => matchPrToIssue(pr, issue));
+      const mergedPr = mergedPrs.find((pr) => matchPrToIssue(pr, issue));
       if (!mergedPr) continue;
 
       mergedIssueIds.add(issue.id);
+      const pendingMergeApproval = pendingMergeApprovalFor(issue, mergedPr.url);
+      if (pendingMergeApproval) {
+        const invalidationKey = `merged-approval-invalidation:${pendingMergeApproval.id}`;
+        try {
+          await mergeApprovalInvalidationGuard.runOnce(invalidationKey, async () => {
+            const rejection = await pc.rejectApproval(
+              pendingMergeApproval.id,
+              `Superseded automatically: GitHub confirmed PR #${mergedPr.number} is merged. This is not a rejection of the implementation.`,
+            );
+            if (!rejection.ok) {
+              throw new Error(`Paperclip rejected stale merge-approval invalidation (${rejection.status}): ${rejection.text}`);
+            }
+            await log(`[ORCHESTRATOR] [Stage 4 Operator Approval] invalidated stale final merge approval ${pendingMergeApproval.id} after GitHub merged PR #${mergedPr.number}.`);
+          });
+        } catch (err: unknown) {
+          await log(`[ORCHESTRATOR] Warning: Failed to invalidate stale final merge approval ${pendingMergeApproval.id} for merged PR ${mergedPr.url}: ${err instanceof Error ? err.message : String(err)}. The task will remain terminal and cleanup will retry.`);
+        }
+      }
       const mergeKey = `merge:${issue.id}:pr-${mergedPr.number}:${mergedPr.mergedAt || "unknown"}`;
       await mergeConvergenceGuard.runOnce(mergeKey, async () => {
         const rawProducts = issue.rawIssue["workProducts"] ?? issue.rawIssue["work_products"];
@@ -1006,6 +1088,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
             },
           } : {}),
           pullRequest: mergedPr,
+          ...(pendingMergeApproval ? { mergeApproval: { id: pendingMergeApproval.id, status: pendingMergeApproval.status } } : {}),
           auditAlreadyRecorded: comments.some((comment) => typeof comment.body === "string" && comment.body.includes(auditMarker)),
         });
         if (decision.action !== "COMPLETE_MERGED_PR" && decision.action !== "NORMALIZE_MERGED_METADATA") return;
@@ -2002,43 +2085,31 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
     `[ORCHESTRATOR] Backlog: total=${parsedIssues.length}, in_review=${inReviewIssues.length} | Jules running=${julesRunning}/${julesCapacity}, Vibe running=${vibeRunning}/${vibeCapacity}, conflict_edges=${conflictResult.conflictEdges.length}`
   );
 
-  let existingApprovals: PaperclipApprovalSummary[] = [];
-  try {
-    const rawApprovals = asArray<{
-      id: string;
-      type: string;
-      status: string;
-      issueIds?: string[];
-      title?: string;
-      description?: string;
-      payload?: Record<string, unknown>;
-    }>(await pc.listApprovals(companyId));
-    existingApprovals = rawApprovals.map((a) => ({
-      id: a.id,
-      type: a.type,
-      status: (a.status as "pending" | "approved" | "rejected") || "pending",
-      issueIds: a.issueIds || [],
-      ...(a.title ? { title: a.title } : {}),
-      ...(a.description ? { description: a.description } : {}),
-      ...(a.payload ? { payload: a.payload } : {}),
-    }));
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    await log(`[ORCHESTRATOR] Error: Failed to fetch approvals: ${msg}. Refusing to dispatch this tick.`);
-    return {
-      exitCode: 1,
-      signal: null,
-      timedOut: false,
-      errorMessage: msg,
-      summary: `Failed to fetch approvals: ${msg}`,
-    };
+  if (!approvalsSnapshotLoaded) {
+    try {
+      await loadApprovals();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await log(`[ORCHESTRATOR] Error: Failed to fetch approvals: ${msg}. Refusing to dispatch this tick.`);
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorMessage: msg,
+        summary: `Failed to fetch approvals: ${msg}`,
+      };
+    }
   }
 
   const requireApproval = config.requireTaskApproval !== false && (config as Record<string, unknown>)["requireApproval"] !== false;
   let reclaimedUnapprovedCount = 0;
   if (requireApproval) {
     for (const issue of parsedIssues) {
-      if (!shouldReclaimUnapprovedStart(issue, existingApprovals)) continue;
+      // `parsedIssues` is the heartbeat's initial snapshot. An open PR can
+      // have been promoted above to native review during this same tick, so
+      // never let the stale in-progress projection reclaim that terminal
+      // handoff because its historical task_start approval is still pending.
+      if (!shouldReclaimUnapprovedStart(issue, existingApprovals, openPrRecoveryIds.has(issue.id))) continue;
       await log(
         `[ORCHESTRATOR] Reclaiming [${issue.identifier || issue.id}] "${issue.title}" — task_start is still pending; workers must not run this issue.`,
       );
