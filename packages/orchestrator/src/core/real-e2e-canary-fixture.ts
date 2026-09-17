@@ -17,3 +17,67 @@ export function buildDisposableCanaryBootstrapIssue(projectId: string): Record<s
     executionState: null,
   };
 }
+
+export function buildCanaryA(projectId: string, runKey: string): Record<string, unknown> {
+  return buildCanaryIssue(projectId, runKey, {
+    title: "Canary A: implement increment",
+    priority: "high",
+    targetFile: "increment.js",
+    body: "Implement the increment helper and its focused behavioral test.",
+  });
+}
+
+export function buildCanaryB(projectId: string, runKey: string, aId: string): Record<string, unknown> {
+  return {
+    ...buildCanaryIssue(projectId, runKey, {
+      title: "Canary B: implement decrement",
+      priority: "medium",
+      targetFile: "decrement.js",
+      body: "Implement the decrement helper and its focused behavioral test after Canary A merges.",
+    }),
+    blockedByIssueIds: [aId],
+  };
+}
+
+export function buildCanaryC(projectId: string, runKey: string, bId: string): Record<string, unknown> {
+  return {
+    ...buildCanaryIssue(projectId, runKey, {
+      title: "Canary C: implement is-zero",
+      priority: "low",
+      targetFile: "is-zero.js",
+      body: "Implement the zero predicate and its focused behavioral test after Canary B merges.",
+    }),
+    blockedByIssueIds: [bId],
+  };
+}
+
+function buildCanaryIssue(
+  projectId: string,
+  runKey: string,
+  input: { readonly title: string; readonly priority: string; readonly targetFile: string; readonly body: string },
+): Record<string, unknown> {
+  return {
+    title: input.title,
+    description: `<!-- paperclip-adapters:e2e-run:${runKey} -->\n---\norchestrator_managed: true\ncomponent: "core"\ntarget_files: ["${input.targetFile}"]\n---\n\n${input.body}`,
+    projectId,
+    status: "todo",
+    priority: input.priority,
+  };
+}
+
+export function assertAuthoritativeCanaryChain(
+  a: Record<string, unknown>,
+  b: Record<string, unknown>,
+  c: Record<string, unknown>,
+): { readonly ok: true } | { readonly ok: false; readonly reason: string } {
+  if (!hasOnlyBlocker(b, String(a["id"] ?? ""))) return { ok: false, reason: "b_missing_authoritative_blocker" };
+  if (!hasOnlyBlocker(c, String(b["id"] ?? ""))) return { ok: false, reason: "c_missing_authoritative_blocker" };
+  return { ok: true };
+}
+
+function hasOnlyBlocker(issue: Record<string, unknown>, expectedId: string): boolean {
+  const blockers = issue["blockedBy"];
+  if (!Array.isArray(blockers) || blockers.length !== 1 || !expectedId) return false;
+  const blocker = blockers[0];
+  return typeof blocker === "object" && blocker !== null && (blocker as Record<string, unknown>)["id"] === expectedId;
+}

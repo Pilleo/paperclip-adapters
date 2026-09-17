@@ -121,6 +121,18 @@ The Jules adapter's `e2eProviderBaseUrl` is similarly restricted to explicit
 Paperclip server talk to a local fake Jules API; production always uses the
 public Jules endpoint.
 
+### Reusable real-provider dependency canary
+
+`scripts/e2e-real-project-canary.ts` is the live A → B → C dependency probe.
+It never creates a GitHub repository, company, or agents. Set
+`PAPERCLIP_REAL_E2E=1`, `PAPERCLIP_TEST_API_URL`, `PAPERCLIP_E2E_COMPANY_ID`,
+`PAPERCLIP_E2E_PROJECT_ID`, `PAPERCLIP_E2E_REPOSITORY_SSH_URL`, and
+`PAPERCLIP_E2E_ORCHESTRATOR_ID`. The project ID is mandatory: the script
+never creates or searches for a replacement project. It verifies that exact
+project owns the existing SSH repository and has no unfinished marked canary
+run, creates A/B/C atomically with native blocker IDs, validates authoritative
+`blockedBy` edges, then wakes the existing orchestrator with A's `issueId`.
+
 ## Live Adapter Reload and Native-Review Recovery
 
 External adapter modules are loaded from their built `dist/` entries when the
