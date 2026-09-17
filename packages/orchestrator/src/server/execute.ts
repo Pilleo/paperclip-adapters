@@ -21,7 +21,13 @@ import { extractIssueMetadata, normalizeGitHubOwnerRepo, resolvePaperclipProject
 import { calculateConflictMatrix, selectNextTasksMultiLane } from "../core/dispatcher.js";
 import { fetchJulesQuota, resolveJulesDispatchCapacity } from "../core/jules-quota.js";
 import { checkWorkspaceConsistency } from "../core/consistency.js";
-import { parseHeartbeatScopeReference, resolveHeartbeatProjectSelection, type ApprovalScopeRecord } from "../core/heartbeat-project-scope.js";
+import {
+  classifyAuthoritativeHeartbeatScope,
+  resolveHeartbeatProjectSelection,
+  type ApprovalScopeRecord,
+  type HeartbeatScopeReference,
+  type HeartbeatRunScopeRecord,
+} from "../core/heartbeat-project-scope.js";
 import { ensureManagedProjectCheckout, managedProjectCheckoutPath } from "../core/project-managed-checkout.js";
 import { fetchGitHubPullRequest, fetchGitHubPullRequests, hasUnreviewedReadyPullRequest, matchPrToIssue, registeredPullRequestFromIssue, checkPrCiIsGreen, fetchPullRequestHeadSha, resolvePrCiGate } from "../core/github-sync.js";
 import { evaluateIssueTransition } from "../core/state-machine.js";
@@ -170,6 +176,8 @@ export async function executeAllProjects(
   runProject: (context: AdapterExecutionContext) => Promise<AdapterExecutionResult> = executeProject,
 ): Promise<AdapterExecutionResult> {
   const rawContext = (context.context as Record<string, unknown> | undefined) || {};
+  const runId = context.runId?.trim() || process.env["PAPERCLIP_RUN_ID"]?.trim() || "";
+  const agentId = context.agent?.id?.trim() || "";
   const companyId = context.agent?.companyId || String(rawContext["companyId"] || "");
   const apiUrl = ((context.config as Record<string, unknown> | undefined)?.["apiUrl"] as string | undefined)
     || process.env["PAPERCLIP_API_URL"] || "http://127.0.0.1:3100";
@@ -177,7 +185,38 @@ export async function executeAllProjects(
     (context as AdapterExecutionContext & { authToken?: string }).authToken
     || process.env["PAPERCLIP_AGENT_TOKEN"]
     || process.env["PAPERCLIP_API_KEY"];
-  const pc = createPaperclipHttp({ apiUrl, authToken, localTrustedBoardWrites: true });
+  const pc = createPaperclipHttp({ apiUrl, authToken, runId: runId || undefined, localTrustedBoardWrites: true });
+  let scopeReference: Exclude<HeartbeatScopeReference, { readonly kind: "invalid_explicit_scope" }>;
+  try {
+    const run = runId ? await pc.getHeartbeatRun<HeartbeatRunScopeRecord>(runId) : {};
+    const authority = classifyAuthoritativeHeartbeatScope({
+      runId,
+      agentId,
+      invocationContext: rawContext,
+      run,
+    });
+    if (authority.kind === "invalid") {
+      const message = `Invalid authoritative heartbeat scope (${authority.reason})`;
+      await context.onLog?.("stderr", `[ORCHESTRATOR] 🚨 ${message}\n`);
+      return { exitCode: 1, signal: null, timedOut: false, errorMessage: message, summary: message };
+    }
+    scopeReference = authority.reference;
+  } catch (err: unknown) {
+    const message = `Could not load authoritative heartbeat scope: ${err instanceof Error ? err.message : String(err)}`;
+    await context.onLog?.("stderr", `[ORCHESTRATOR] 🚨 ${message}\n`);
+    return { exitCode: 1, signal: null, timedOut: false, errorMessage: message, summary: message };
+  }
+
+  const scopeDescription = (() => {
+    switch (scopeReference.kind) {
+      case "project": return `project:${scopeReference.projectId}`;
+      case "issue": return `issue:${scopeReference.issueId}`;
+      case "approval": return `approval:${scopeReference.approvalId}`;
+      case "unscoped_timer": return "scheduler_timer";
+    }
+  })();
+  await context.onLog?.("stdout", `[ORCHESTRATOR] Authoritative heartbeat scope: run=${runId}; ${scopeDescription}\n`);
+
   let projects: PaperclipProjectRecord[];
   try {
     const listedProjects = asArray<PaperclipProjectRecord>(await pc.listProjects(companyId));
@@ -192,7 +231,6 @@ export async function executeAllProjects(
     return { exitCode: 1, signal: null, timedOut: false, errorMessage: message, summary: message };
   }
 
-  const scopeReference = parseHeartbeatScopeReference(rawContext);
   let selectedProjects: readonly PaperclipProjectRecord[];
   try {
     const selection = await resolveHeartbeatProjectSelection({
