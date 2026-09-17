@@ -1,3 +1,5 @@
+import { EXPLICIT_PROJECT_WAKE_REASON_PREFIX } from "./heartbeat-project-scope.js";
+
 /**
  * The bootstrap wake needs an issue-to-project association, but it must never
  * compete with the real canary tasks.  A live, unscoped bootstrap issue is
@@ -48,6 +50,20 @@ export function buildCanaryC(projectId: string, runKey: string, bId: string): Re
       body: "Implement the zero predicate and its focused behavioral test after Canary B merges.",
     }),
     blockedByIssueIds: [bId],
+  };
+}
+
+/**
+ * Paperclip may coalesce an on-demand wake and omit its payload from the
+ * adapter invocation. The adapter resolves this envelope from the
+ * server-owned heartbeat run snapshot, so the canary remains project-scoped.
+ */
+export function buildCanaryOrchestratorWake(projectId: string, runKey: string): Record<string, unknown> {
+  return {
+    source: "on_demand",
+    reason: `${EXPLICIT_PROJECT_WAKE_REASON_PREFIX}${projectId}`,
+    idempotencyKey: `real-project-canary:${projectId}:${runKey}`,
+    payload: { projectId },
   };
 }
 

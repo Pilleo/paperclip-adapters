@@ -131,7 +131,14 @@ It never creates a GitHub repository, company, or agents. Set
 never creates or searches for a replacement project. It verifies that exact
 project owns the existing SSH repository and has no unfinished marked canary
 run, creates A/B/C atomically with native blocker IDs, validates authoritative
-`blockedBy` edges, then wakes the existing orchestrator with A's `issueId`.
+`blockedBy` edges, then wakes the existing orchestrator with an explicit
+project-scope envelope. This is an adapter-only compatibility bridge: Paperclip
+currently preserves `wakeReason` but can discard custom wake payload fields
+when it coalesces an on-demand wake into a timer run. The envelope is accepted
+only for on-demand wakes and is resolved from the server-owned heartbeat run
+snapshot; malformed, missing, or conflicting scope evidence fails closed rather
+than widening to a company-wide tick. Remove the envelope only once Paperclip
+persists typed wake payloads through coalescing and every adapter invocation.
 
 ## Live Adapter Reload and Native-Review Recovery
 

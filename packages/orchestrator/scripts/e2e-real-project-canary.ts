@@ -1,6 +1,6 @@
 import process from "node:process";
 import { assertProjectBackedGitWorkspace } from "../src/core/real-e2e-project-contract.js";
-import { assertAuthoritativeCanaryChain, buildCanaryA, buildCanaryB, buildCanaryC } from "../src/core/real-e2e-canary-fixture.js";
+import { assertAuthoritativeCanaryChain, buildCanaryA, buildCanaryB, buildCanaryC, buildCanaryOrchestratorWake } from "../src/core/real-e2e-canary-fixture.js";
 import { assertProjectReadyForCanary, selectExistingDisposableProject } from "../src/core/real-e2e-project-registry.js";
 
 const apiUrl = process.env["PAPERCLIP_TEST_API_URL"]?.replace(/\/+$/, "");
@@ -59,12 +59,11 @@ async function main(): Promise<void> {
     object(await request(`/api/issues/${issueC["id"]}`, "GET"), "issue C detail"),
   );
   if (!chain.ok) throw new Error(`Paperclip did not persist native canary blockers: ${chain.reason}`);
-  const wake = object(await request(`/api/agents/${orchestratorId}/wakeup`, "POST", {
-      source: "on_demand",
-      reason: "real_project_canary",
-      idempotencyKey: `real-project-canary:${projectId}:${runKey}`,
-      payload: { issueId: issueA["id"] },
-    }), "orchestrator wake");
+  const wake = object(await request(
+    `/api/agents/${orchestratorId}/wakeup`,
+    "POST",
+    buildCanaryOrchestratorWake(projectId, runKey),
+  ), "orchestrator wake");
   console.log(JSON.stringify({ companyId, projectId, workspacePath: contract.workspacePath, orchestratorId, heartbeatRunId: wake["id"], issueA: issueA["id"], issueB: issueB["id"], issueC: issueC["id"], next: "Await the three task-scoped approvals created by the orchestrator." }, null, 2));
 }
 

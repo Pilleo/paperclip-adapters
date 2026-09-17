@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   assertAuthoritativeCanaryChain,
+  buildCanaryOrchestratorWake,
   buildCanaryA,
   buildCanaryB,
   buildCanaryC,
@@ -45,5 +46,14 @@ describe("real provider E2E canary fixture", () => {
       { id: "b", blockedByIssueIds: ["a"] },
       { id: "c", blockedBy: [{ id: "b" }] },
     )).toEqual({ ok: false, reason: "b_missing_authoritative_blocker" });
+  });
+
+  it("builds one explicit project-scoped orchestrator wake", () => {
+    expect(buildCanaryOrchestratorWake("project-1", "run-1")).toEqual({
+      source: "on_demand",
+      reason: "paperclip-orchestrator-scope/v1/project/project-1",
+      idempotencyKey: "real-project-canary:project-1:run-1",
+      payload: { projectId: "project-1" },
+    });
   });
 });
