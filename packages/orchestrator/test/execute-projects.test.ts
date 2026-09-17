@@ -44,18 +44,23 @@ describe("executeAllProjects", () => {
       exitCode: 0, signal: null, timedOut: false, summary: "ok",
     }));
 
+    const onLog = vi.fn().mockResolvedValue(undefined);
     const result = await executeAllProjects({
       runId: "run-scoped",
       agent: { id: "orchestrator", companyId: "company-1", name: "Orchestrator", adapterConfig: {} },
       config: {},
       context: { companyId: "company-1" },
       runtime: { sessionId: null, sessionParams: null },
-      onLog: vi.fn().mockResolvedValue(undefined),
+      onLog,
     } as AdapterExecutionContext, runProject);
 
     expect(result.exitCode).toBe(0);
     expect(runProject).toHaveBeenCalledOnce();
     expect((runProject.mock.calls[0]?.[0].context as Record<string, unknown>)["projectId"]).toBe("project-b");
+    expect(onLog).toHaveBeenCalledWith(
+      "stdout",
+      expect.stringContaining('"wakeSource":"on_demand"'),
+    );
   });
 
   it.each([

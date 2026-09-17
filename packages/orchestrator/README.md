@@ -140,6 +140,14 @@ snapshot; malformed, missing, or conflicting scope evidence fails closed rather
 than widening to a company-wide tick. Remove the envelope only once Paperclip
 persists typed wake payloads through coalescing and every adapter invocation.
 
+An on-demand wake must not be merged into a heartbeat that has already entered
+`running`: the adapter may have already read that timer's scope and begun its
+project loop, so no adapter-side reread can undo work already started. Paperclip
+must queue a successor run for that case. The adapter logs an allowlisted scope
+evidence record (`source`, `reason`, `wakeSource`, `wakeReason`, and direct
+scope IDs) to make any server/adapter projection mismatch diagnosable without
+writing tokens, payload bodies, or other sensitive run context to logs.
+
 ## Live Adapter Reload and Native-Review Recovery
 
 External adapter modules are loaded from their built `dist/` entries when the

@@ -189,6 +189,18 @@ export async function executeAllProjects(
   let scopeReference: Exclude<HeartbeatScopeReference, { readonly kind: "invalid_explicit_scope" }>;
   try {
     const run = runId ? await pc.getHeartbeatRun<HeartbeatRunScopeRecord>(runId) : {};
+    const snapshot = run.contextSnapshot && typeof run.contextSnapshot === "object" && !Array.isArray(run.contextSnapshot)
+      ? run.contextSnapshot as Readonly<Record<string, unknown>>
+      : {};
+    await context.onLog?.("stdout", `[ORCHESTRATOR] Authoritative heartbeat scope evidence: ${JSON.stringify({
+      source: snapshot["source"] ?? null,
+      reason: snapshot["reason"] ?? null,
+      wakeSource: snapshot["wakeSource"] ?? null,
+      wakeReason: snapshot["wakeReason"] ?? null,
+      projectId: snapshot["projectId"] ?? null,
+      issueId: snapshot["issueId"] ?? null,
+      approvalId: snapshot["approvalId"] ?? null,
+    })}\n`);
     const authority = classifyAuthoritativeHeartbeatScope({
       runId,
       agentId,
