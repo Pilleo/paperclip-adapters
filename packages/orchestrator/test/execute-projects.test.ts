@@ -93,6 +93,35 @@ describe("executeAllProjects", () => {
     expect(result.summary).toContain("Processed 1 project(s)");
   });
 
+  it("runs only the requested project instead of expanding an issue-bound heartbeat to the company", async () => {
+    process.env["PAPERCLIP_API_KEY"] = "test-token";
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify([
+      { id: "project-a", primaryWorkspace: { cwd: process.cwd() } },
+      { id: "project-b", primaryWorkspace: { cwd: "/tmp" } },
+    ]), { status: 200 })) as typeof fetch;
+    const calls: Array<{ projectId: string; jules: number; vibe: number }> = [];
+    const runProject = vi.fn(async (context: AdapterExecutionContext): Promise<AdapterExecutionResult> => {
+      const config = context.config as Record<string, unknown>;
+      calls.push({
+        projectId: String((context.context as Record<string, unknown>)["projectId"]),
+        jules: Number(config["maxConcurrentJules"]),
+        vibe: Number(config["maxConcurrentVibe"]),
+      });
+      return { exitCode: 0, signal: null, timedOut: false, summary: "ok" };
+    });
+
+    const result = await executeAllProjects({
+      agent: { id: "orchestrator", companyId: "company-1", name: "Orchestrator", adapterConfig: {} },
+      config: { maxConcurrentJules: 3, maxConcurrentVibe: 1 },
+      context: { companyId: "company-1", projectId: "project-b" },
+      runtime: { sessionId: null, sessionParams: null },
+      onLog: vi.fn().mockResolvedValue(undefined),
+    } as AdapterExecutionContext, runProject);
+
+    expect(calls).toEqual([{ projectId: "project-b", jules: 3, vibe: 1 }]);
+    expect(result.summary).toContain("Processed 1 project(s)");
+  });
+
   it("passes a managed git project to its project runner before its checkout exists", async () => {
     process.env["PAPERCLIP_API_KEY"] = "test-token";
     globalThis.fetch = vi.fn(async () => new Response(JSON.stringify([

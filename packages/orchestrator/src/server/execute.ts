@@ -21,12 +21,14 @@ import { extractIssueMetadata, normalizeGitHubOwnerRepo, resolvePaperclipProject
 import { calculateConflictMatrix, selectNextTasksMultiLane } from "../core/dispatcher.js";
 import { fetchJulesQuota, resolveJulesDispatchCapacity } from "../core/jules-quota.js";
 import { checkWorkspaceConsistency } from "../core/consistency.js";
+import { parseHeartbeatScopeReference, resolveHeartbeatProjectSelection, type ApprovalScopeRecord } from "../core/heartbeat-project-scope.js";
 import { ensureManagedProjectCheckout, managedProjectCheckoutPath } from "../core/project-managed-checkout.js";
 import { fetchGitHubPullRequest, fetchGitHubPullRequests, hasUnreviewedReadyPullRequest, matchPrToIssue, registeredPullRequestFromIssue, checkPrCiIsGreen, fetchPullRequestHeadSha, resolvePrCiGate } from "../core/github-sync.js";
 import { evaluateIssueTransition } from "../core/state-machine.js";
 import { readWorkspaceGitRemote, syncBacklogMarkdownToPaperclip } from "../core/backlog-sync.js";
 import { archiveResolvedBacklogFiles } from "../core/backlog-archiver.js";
 import { selectClarificationCandidates } from "../core/clarifier.js";
+import { selectStartApprovalCandidates } from "../core/start-approval-scheduling.js";
 import { ParsedIssueMetadata } from "../core/types.js";
 import {
   evaluateTaskStartApproval,
@@ -190,7 +192,43 @@ export async function executeAllProjects(
     return { exitCode: 1, signal: null, timedOut: false, errorMessage: message, summary: message };
   }
 
-  const runnableProjects = projects.filter((project) => {
+  const scopeReference = parseHeartbeatScopeReference(rawContext);
+  let selectedProjects: readonly PaperclipProjectRecord[];
+  try {
+    const selection = await resolveHeartbeatProjectSelection({
+      projects,
+      reference: scopeReference,
+      approvals: scopeReference.kind === "approval"
+        ? asArray<ApprovalScopeRecord>(await pc.listApprovals(companyId))
+        : [],
+      getIssue: async (issueId) => {
+        const issue = await pc.getIssue<Record<string, unknown>>(issueId);
+        return {
+          id: String(issue["id"] ?? issueId),
+          projectId: typeof issue["projectId"] === "string" ? issue["projectId"] : null,
+        };
+      },
+    });
+    switch (selection.kind) {
+      case "all_projects":
+        selectedProjects = selection.projects;
+        break;
+      case "scoped":
+        selectedProjects = [selection.project];
+        break;
+      case "invalid": {
+        const message = `Could not resolve scoped heartbeat project (${selection.reason})`;
+        await context.onLog?.("stderr", `[ORCHESTRATOR] 🚨 ${message}\n`);
+        return { exitCode: 1, signal: null, timedOut: false, errorMessage: message, summary: message };
+      }
+    }
+  } catch (err: unknown) {
+    const message = `Could not resolve scoped heartbeat project: ${err instanceof Error ? err.message : String(err)}`;
+    await context.onLog?.("stderr", `[ORCHESTRATOR] 🚨 ${message}\n`);
+    return { exitCode: 1, signal: null, timedOut: false, errorMessage: message, summary: message };
+  }
+
+  const runnableProjects = selectedProjects.filter((project) => {
     const resolution = resolveProjectWorkspace({ projectId: project.id, projects });
     // Paperclip records a managed git path before an issue-scoped execution
     // materializes it. The project runner validates that metadata first, then
@@ -199,9 +237,9 @@ export async function executeAllProjects(
     // would incorrectly drop a valid remote project before that step.
     return resolution.ok;
   });
-  const skippedProjects = projects.length - runnableProjects.length;
+  const skippedProjects = selectedProjects.length - runnableProjects.length;
   if (runnableProjects.length === 0) {
-    const message = `No company project has a usable local workspace; skipped ${projects.length} project(s)`;
+    const message = `No selected project has a usable local workspace; skipped ${selectedProjects.length} project(s)`;
     await context.onLog?.("stderr", `[ORCHESTRATOR] 🚨 ${message}\n`);
     return { exitCode: 1, signal: null, timedOut: false, errorMessage: message, summary: message };
   }
@@ -2889,6 +2927,52 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
     ),
   }) : [];
 
+  // Authorization belongs to a task, not to a capacity-dependent worker
+  // selection. Create a bounded wave from the currently runnable roots and
+  // their explicit dependents, so an operator can approve a DAG before each
+  // predecessor becomes terminal without flooding unrelated backlog cards.
+  let approvalsRequestedCount = 0;
+  const requestedStartApprovalIssueIds = new Set<string>();
+  if (requireApproval && isSyncHealthy) {
+    const earlyApprovalCandidates = selectStartApprovalCandidates(
+      dispatchIssues,
+      candidateSelections.map((selection) => selection.issue.id),
+    );
+    for (const issue of earlyApprovalCandidates) {
+      const approvalDecision = evaluateTaskStartApproval(issue, existingApprovals, requireApproval);
+      if (approvalDecision.action !== "CREATE_APPROVAL_REQUEST") continue;
+
+      await log(
+        `[ORCHESTRATOR] ⏳ Requesting task-scoped operator start approval for [${issue.identifier || issue.id}] "${issue.title}".`,
+      );
+      try {
+        const createRes = await pc.createApproval(companyId, {
+          type: "request_board_approval",
+          payload: {
+            action: "task_start",
+            title: approvalDecision.title,
+            description: approvalDecision.description,
+            issueId: issue.id,
+            identifier: issue.identifier,
+            issueTitle: issue.title,
+            priority: issue.priority,
+            component: issue.component,
+            targetFiles: issue.targetFiles,
+          },
+        });
+        if (createRes.ok) {
+          approvalsRequestedCount++;
+          requestedStartApprovalIssueIds.add(issue.id);
+        } else {
+          await log(`[ORCHESTRATOR] Warning: Failed to create start approval (${createRes.status}): ${createRes.text}`);
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await log(`[ORCHESTRATOR] Warning: Failed to create start approval: ${msg}`);
+      }
+    }
+  }
+
   if (candidateSelections.length === 0) {
     const reason = !isSyncHealthy
       ? `Workspace synchronization is unhealthy (${syncDispositionObservation.type}); new dev tasks suppressed.`
@@ -2953,50 +3037,33 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
   // existingApprovals was evaluated in Phase 2
 
   let dispatchedCount = 0;
-  let approvalsRequestedCount = 0;
   let awaitingApprovalCount = 0;
 
   for (const selection of candidateSelections) {
     const targetIssueId = selection.issue.id;
     const targetAgentId = selection.targetAgentId;
 
+    if (requestedStartApprovalIssueIds.has(targetIssueId)) {
+      await log(
+        `[ORCHESTRATOR] ⏳ [${selection.issue.identifier || selection.issue.id}] "${selection.issue.title}" is awaiting the task-scoped approval created this heartbeat.`,
+      );
+      awaitingApprovalCount++;
+      continue;
+    }
+
     const approvalDecision = evaluateTaskStartApproval(
       selection.issue,
-      targetAgentId || "",
       existingApprovals,
       requireApproval
     );
 
     if (approvalDecision.action === "CREATE_APPROVAL_REQUEST") {
+      // The early authorization phase owns creation. Reaching this branch
+      // means creation failed or the snapshot is stale, and dispatch must
+      // remain fail-closed until the next heartbeat can reconcile it.
       await log(
-        `[ORCHESTRATOR] ⏳ Requesting operator start approval for [${selection.issue.identifier || selection.issue.id}] "${selection.issue.title}" -> ${targetAgentId || "worker"}`
+        `[ORCHESTRATOR] Warning: [${selection.issue.identifier || selection.issue.id}] has no task-start approval after the authorization phase; refusing dispatch.`,
       );
-      try {
-        const createRes = await pc.createApproval(companyId, {
-          type: "request_board_approval",
-          payload: {
-            action: "task_start",
-            title: approvalDecision.title,
-            description: approvalDecision.description,
-            issueId: targetIssueId,
-            identifier: selection.issue.identifier,
-            issueTitle: selection.issue.title,
-            targetAgentId,
-            priority: selection.issue.priority,
-            component: selection.issue.component,
-            targetFiles: selection.issue.targetFiles,
-            reason: selection.reason,
-          },
-        });
-        if (createRes.ok) {
-          approvalsRequestedCount++;
-        } else {
-          await log(`[ORCHESTRATOR] Warning: Failed to create start approval (${createRes.status}): ${createRes.text}`);
-        }
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        await log(`[ORCHESTRATOR] Warning: Failed to create approval request: ${msg}`);
-      }
       continue;
     }
 

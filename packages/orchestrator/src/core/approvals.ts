@@ -17,7 +17,6 @@ export type ApprovalDecision =
       title: string;
       description: string;
       issueId: string;
-      targetAgentId: string;
       issueUrl?: string | undefined;
     }
   | { action: "AWAIT_APPROVAL"; approvalId: string; reason: string }
@@ -62,7 +61,6 @@ export function shouldReclaimUnapprovedStart(
 
 export function evaluateTaskStartApproval(
   issue: ParsedIssueMetadata,
-  targetAgentId: string,
   existingApprovals: readonly PaperclipApprovalSummary[],
   requireApproval: boolean = true,
   options: { companyUrlKey?: string; apiUrl?: string } = {}
@@ -98,17 +96,15 @@ export function evaluateTaskStartApproval(
 | **Issue Identifier** | \`${issue.identifier || issue.id}\` |
 | **Priority** | **${issue.priority.toUpperCase()}** |
 | **Component** | \`${issue.component || "core"}\` |
-| **Target Worker** | \`${targetAgentId}\` |
 ${symbolsDesc}${filesDesc}
 
-*Approving this authorization will dispatch the worker to begin implementation.*`;
+*Approving this authorization allows the orchestrator to dispatch a compatible worker once the task is dependency-ready.*`;
 
     return {
       action: "CREATE_APPROVAL_REQUEST",
       title,
       description,
       issueId: issue.id,
-      targetAgentId,
       issueUrl: issueLink,
     };
   }
