@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { gitCommandOptions } from "./git-command-timeout.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -62,9 +63,9 @@ export async function checkWorkspaceConsistency(workspacePath: string, repoUrl?:
 
   try {
     const [branchRes, headRes, statusRes] = await Promise.all([
-      execFileAsync("git", ["branch", "--show-current"], { cwd: workspacePath }),
-      execFileAsync("git", ["rev-parse", "HEAD"], { cwd: workspacePath }),
-      execFileAsync("git", ["status", "--porcelain"], { cwd: workspacePath }),
+      execFileAsync("git", ["branch", "--show-current"], { cwd: workspacePath, ...gitCommandOptions() }),
+      execFileAsync("git", ["rev-parse", "HEAD"], { cwd: workspacePath, ...gitCommandOptions() }),
+      execFileAsync("git", ["status", "--porcelain"], { cwd: workspacePath, ...gitCommandOptions() }),
     ]);
     localBranch = branchRes.stdout.trim();
     localSha = headRes.stdout.trim();
@@ -83,7 +84,7 @@ export async function checkWorkspaceConsistency(workspacePath: string, repoUrl?:
 
   let remoteSha = "";
   try {
-    const lsRemote = await execFileAsync("git", ["ls-remote", repoUrl, defaultRef], { cwd: workspacePath });
+    const lsRemote = await execFileAsync("git", ["ls-remote", repoUrl, defaultRef], { cwd: workspacePath, ...gitCommandOptions() });
     const output = lsRemote.stdout.trim();
     if (!output) {
       return evaluate("unhealthy", { type: "remote_unavailable", error: "Empty output from ls-remote", repoUrl, defaultRef }, { isClean, currentBranch: localBranch, headSha: localSha, isConsistent: false, warning: `Remote ref ${defaultRef} not found.` });
@@ -101,8 +102,8 @@ export async function checkWorkspaceConsistency(workspacePath: string, repoUrl?:
   }
 
   try {
-    await execFileAsync("git", ["fetch", repoUrl, defaultRef], { cwd: workspacePath });
-    const mergeBase = await execFileAsync("git", ["merge-base", "HEAD", "FETCH_HEAD"], { cwd: workspacePath });
+    await execFileAsync("git", ["fetch", repoUrl, defaultRef], { cwd: workspacePath, ...gitCommandOptions() });
+    const mergeBase = await execFileAsync("git", ["merge-base", "HEAD", "FETCH_HEAD"], { cwd: workspacePath, ...gitCommandOptions() });
     if (mergeBase.stdout.trim() !== localSha) {
       return evaluate("unhealthy", { type: "diverged", localSha, remoteSha, repoUrl, defaultRef }, { isClean, currentBranch: localBranch, headSha: localSha, isConsistent: false, warning: `Workspace has diverged from ${defaultRef}.` });
     }
@@ -111,8 +112,8 @@ export async function checkWorkspaceConsistency(workspacePath: string, repoUrl?:
   }
 
   try {
-    await execFileAsync("git", ["pull", "--ff-only", repoUrl, defaultRef], { cwd: workspacePath });
-    const postHead = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: workspacePath });
+    await execFileAsync("git", ["pull", "--ff-only", repoUrl, defaultRef], { cwd: workspacePath, ...gitCommandOptions() });
+    const postHead = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: workspacePath, ...gitCommandOptions() });
     const postPullSha = postHead.stdout.trim();
     if (postPullSha !== remoteSha) {
       return evaluate("unhealthy", { type: "post_pull_verification_failed", localSha, remoteSha, postPullSha, repoUrl, defaultRef }, { isClean, currentBranch: localBranch, headSha: postPullSha, isConsistent: false, warning: `HEAD mismatch after pull: expected ${remoteSha}, got ${postPullSha}` });

@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { gitCommandOptions } from "./git-command-timeout.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -52,7 +53,7 @@ export function managedProjectCheckoutPath(input: {
 
 async function isGitCheckout(workspacePath: string): Promise<boolean> {
   try {
-    await execFileAsync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: workspacePath });
+    await execFileAsync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: workspacePath, ...gitCommandOptions() });
     return true;
   } catch {
     return false;
@@ -76,6 +77,7 @@ async function materialize(input: ManagedProjectCheckoutInput): Promise<ManagedP
   try {
     await execFileAsync("git", ["clone", "--branch", input.defaultRef, "--single-branch", input.repoUrl, temporaryCheckout], {
       env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+      ...gitCommandOptions(),
     });
     await fs.rename(temporaryCheckout, workspacePath);
     return { status: "materialized", workspacePath };
