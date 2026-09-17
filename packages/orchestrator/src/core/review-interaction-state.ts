@@ -34,22 +34,31 @@ export interface NativeReviewInteraction {
 }
 
 /**
- * A pending native question is an unresolved execution decision, regardless of
- * which provider or adapter produced it. PR review must not start in parallel:
- * doing so spends reviewer quota against code that the worker is explicitly
- * waiting to clarify and creates two competing owners for one issue.
+ * A pending provider question is an unresolved execution decision. PR review
+ * must not start in parallel: doing so spends reviewer quota against code that
+ * the worker is explicitly waiting to clarify and creates two competing owners
+ * for one issue. Workspace-sync holds are different: they are orchestrator
+ * control-plane prompts, not worker questions, and must not strand an already
+ * open PR without a reviewer.
  */
 export function hasPendingBlockingQuestion(
-  interactions: readonly Pick<NativeReviewInteraction, "kind" | "status">[],
+  interactions: readonly Pick<NativeReviewInteraction, "kind" | "status" | "idempotencyKey">[],
 ): boolean {
   return interactions.some((interaction) =>
-    interaction.kind === "ask_user_questions" && interaction.status === "pending"
+    interaction.kind === "ask_user_questions" &&
+    interaction.status === "pending" &&
+    !isWorkspaceSyncHold(interaction.idempotencyKey)
   );
+}
+
+function isWorkspaceSyncHold(idempotencyKey: string | undefined): boolean {
+  return idempotencyKey?.startsWith("workspace-sync:") === true ||
+    idempotencyKey?.startsWith("sync-hold:") === true;
 }
 
 /** Terminal review decisions must converge even while a question is pending. */
 export function shouldDeferPrReviewDispatch(
-  interactions: readonly Pick<NativeReviewInteraction, "kind" | "status">[],
+  interactions: readonly Pick<NativeReviewInteraction, "kind" | "status" | "idempotencyKey">[],
   isNewReviewDispatch: boolean,
 ): boolean {
   return isNewReviewDispatch && hasPendingBlockingQuestion(interactions);

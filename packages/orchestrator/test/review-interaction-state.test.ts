@@ -48,6 +48,8 @@ describe("native PR review interaction state", () => {
 
   it.each([
     ["pending provider question", { id: "q1", kind: "ask_user_questions", status: "pending" }, true],
+    ["pending workspace-sync hold", { id: "sync-1", kind: "ask_user_questions", status: "pending", idempotencyKey: "workspace-sync:v2:issue-1" }, false],
+    ["pending current sync-hold", { id: "sync-2", kind: "ask_user_questions", status: "pending", idempotencyKey: "sync-hold:issue-1:{\"type\":\"dirty\"}" }, false],
     ["answered provider question", { id: "q1", kind: "ask_user_questions", status: "answered" }, false],
     ["pending PR verdict", { id: "r1", kind: "request_item_verdicts", status: "pending" }, false],
     ["unknown pending interaction", { id: "x1", kind: "confirmation", status: "pending" }, false],
