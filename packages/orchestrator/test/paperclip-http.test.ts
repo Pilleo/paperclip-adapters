@@ -130,6 +130,20 @@ describe("createPaperclipHttp wakeup", () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe("http://127.0.0.1:3100/api/heartbeat-runs/run-stale/cancel");
   });
 
+  it("loads the authoritative heartbeat run by encoded id", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      id: "run/1",
+      agentId: "orch-1",
+      contextSnapshot: { projectId: "project-b" },
+    }), { status: 200 }));
+    globalThis.fetch = fetchMock as typeof fetch;
+    const pc = createPaperclipHttp({ apiUrl: "http://127.0.0.1:3100", authToken: "token", runId: "run/1" });
+
+    await expect(pc.getHeartbeatRun("run/1")).resolves.toMatchObject({ id: "run/1" });
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://127.0.0.1:3100/api/heartbeat-runs/run%2F1");
+    expect((fetchMock.mock.calls[0]?.[1] as RequestInit).method).toBe("GET");
+  });
+
   it("uses the implicit local board actor for company-level mutations", async () => {
     const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
     globalThis.fetch = fetchMock as typeof fetch;

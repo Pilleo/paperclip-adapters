@@ -250,6 +250,14 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
         throw err;
       }
     },
+    /**
+     * The server-owned run snapshot is the authority for a coalesced
+     * heartbeat's scope. Do not hide lookup failures: callers must fail
+     * closed instead of widening a scoped wake to every project.
+     */
+    async getHeartbeatRun<T = unknown>(runId: string): Promise<T> {
+      return getJson<T>(`/api/heartbeat-runs/${encodeURIComponent(runId)}`);
+    },
     async cancelHeartbeatRun(runId: string, reason = "Cancelled stale delegated execution") {
       return sendJson(`/api/heartbeat-runs/${encodeURIComponent(runId)}/cancel`, "POST", { reason });
     },
