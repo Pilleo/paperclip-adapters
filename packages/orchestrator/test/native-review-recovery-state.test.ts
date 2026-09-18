@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  decideNativeReviewWake,
   decideJulesPlanNativeReviewRecovery,
   decideNativeReviewRecovery,
   nativeReviewRecoveryIssuePatch,
@@ -48,6 +49,46 @@ const planRecoveryInput = (cards: readonly typeof stalePlanCard[], reviewerRuns:
 });
 
 describe("native review recovery state", () => {
+  describe("final native-review wake decision", () => {
+    const wakeInput = (patch: Record<string, unknown> = {}) => ({
+      issueId: "issue-1",
+      reviewerAgentId: "terra-1",
+      nowMs: Date.parse("2026-09-15T18:02:00.000Z"),
+      graceMs: 60_000,
+      card: {
+        ...terraPlanCard,
+        createdAt: "2026-09-15T18:00:00.000Z",
+      },
+      reviewerRuns: [],
+      ...patch,
+    });
+
+    it.each([
+      [
+        "the card was answered after the stale recovery snapshot",
+        wakeInput({ card: { ...terraPlanCard, status: "answered" } }),
+        { action: "answered" },
+      ],
+      [
+        "Paperclip has already started the addressed reviewer",
+        wakeInput({ reviewerRuns: [{ id: "terra-live", agentId: "terra-1", status: "running", issueId: "issue-1", interactionId: "terra-plan-card" }] }),
+        { action: "await_run", runId: "terra-live" },
+      ],
+      [
+        "the host native-dispatch grace window is still open",
+        wakeInput({ nowMs: Date.parse("2026-09-15T18:00:30.000Z") }),
+        { action: "await_native_dispatch" },
+      ],
+      [
+        "the pending card has no native reviewer run after grace",
+        wakeInput(),
+        { action: "compatibility_wake", recoveryRunId: undefined },
+      ],
+    ])("%s", (_name, input, expected) => {
+      expect(decideNativeReviewWake(input)).toEqual(expected);
+    });
+  });
+
   it("restores the canonical PR card after a restart projection and retires a superseded plan card", () => {
     expect(decideNativeReviewRecovery({
       issueId: "issue-1",

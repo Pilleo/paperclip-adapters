@@ -9,16 +9,6 @@ describe("telemetry-card", () => {
     inReviewCount: 2,
     resolvedCount: 30,
     todoCount: 63,
-    julesQuota: {
-      fetchedLive: true,
-      activeSessionsCount: 15,
-      maxConcurrent: 15,
-      sessionsLast24hCount: 33,
-      maxDaily: 100,
-      availableCapacity: 0,
-      effectiveAvailableCapacity: 0,
-      rateLimited: false,
-    },
     julesRunning: 5,
     julesCapacity: 15,
     vibeRunning: 1,
@@ -39,7 +29,7 @@ describe("telemetry-card", () => {
   it("formats rich Markdown dashboard table", () => {
     const card = formatOrchestratorDashboardCard(baseParams);
     expect(card).toContain("Orchestrator Live Telemetry");
-    expect(card).toContain("15/15");
+    expect(card).toContain("Jules queue: `5/15` configured active assignments");
     expect(card).toContain("enforcer/src/Bpf.kt");
     expect(card).toContain("Total: **100**");
   });
@@ -53,19 +43,28 @@ describe("telemetry-card", () => {
       rateLimitPausedUntilMs: rateLimitEnd,
     });
 
-    expect(card).toContain("⏸️ **Paused** (Rate limit cooldown: `3m 12s` remaining)");
+    expect(card).toContain("⏸️ **Paused** (rate-limit cooldown: `3m 12s` remaining)");
   });
 
-  it("renders active badge when quota is available", () => {
+  it("renders configured Jules queue capacity", () => {
     const card = formatOrchestratorDashboardCard({
       ...baseParams,
-      julesQuota: {
-        ...baseParams.julesQuota,
-        activeSessionsCount: 3,
-        effectiveAvailableCapacity: 12,
-      },
+      julesRunning: 3,
+      julesCapacity: 12,
     });
 
-    expect(card).toContain("⚡ **Active** (`3/15` concurrent, `33/100` daily rolling)");
+    expect(card).toContain("Jules queue: `3/12` configured active assignments");
+  });
+
+  it("reports only Paperclip-owned Jules queue capacity", () => {
+    const card = formatOrchestratorDashboardCard({
+      ...baseParams,
+      julesRunning: 2,
+      julesCapacity: 7,
+    });
+
+    expect(card).toContain("Jules queue: `2/7` configured active assignments");
+    expect(card).not.toContain("Full/Exhausted");
+    expect(card).not.toContain("15/15");
   });
 });

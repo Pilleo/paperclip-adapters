@@ -40,6 +40,19 @@ export type JulesPlanNativeReviewRecoveryDecision =
   | { readonly action: "protocol_failure"; readonly reason: "multiple_pending_canonical_jules_plan_cards" };
 
 /**
+ * Last-moment fence for an explicit compatibility wake. The caller must use a
+ * fresh card/run read: an earlier scheduler snapshot may have selected a
+ * recovery just as Paperclip's native reviewer resolves the card.
+ */
+export type NativeReviewWakeDecision =
+  | { readonly action: "answered" }
+  | { readonly action: "await_native_dispatch" }
+  | { readonly action: "await_run"; readonly runId: string }
+  | { readonly action: "compatibility_wake"; readonly recoveryRunId: string | undefined }
+  | { readonly action: "retry_exhausted" }
+  | { readonly action: "no_action" };
+
+/**
  * A typed PR card remains the only review authority after recovery.  Do not
  * reassign the issue to its reviewer: that recreates Paperclip's independent
  * execution-review lane and can produce recovery spam after a verdict.
@@ -58,6 +71,35 @@ export function nativeReviewRecoveryIssuePatch(
 
 const LIVE_RUN_STATUSES = new Set(["queued", "running", "active", "claimed"]);
 const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out", "interrupted"]);
+
+export function decideNativeReviewWake(input: {
+  readonly issueId: string;
+  readonly reviewerAgentId: string;
+  readonly nowMs: number;
+  readonly graceMs: number;
+  readonly card: Pick<RecoverableNativeReviewCard, "id" | "status" | "createdAt">;
+  readonly reviewerRuns: readonly Pick<HeartbeatRunSummary, "id" | "agentId" | "status" | "issueId" | "interactionId">[];
+}): NativeReviewWakeDecision {
+  if (input.card.status === "answered") return { action: "answered" };
+  if (input.card.status !== "pending") return { action: "no_action" };
+
+  const runs = input.reviewerRuns.filter((run) =>
+    run.issueId === input.issueId &&
+    run.agentId === input.reviewerAgentId &&
+    run.interactionId === input.card.id,
+  );
+  const liveRun = runs.find((run) => LIVE_RUN_STATUSES.has(run.status));
+  if (liveRun) return { action: "await_run", runId: liveRun.id };
+
+  const createdAtMs = input.card.createdAt ? Date.parse(input.card.createdAt) : Number.NaN;
+  if (!Number.isFinite(createdAtMs) || input.nowMs - createdAtMs < input.graceMs) {
+    return { action: "await_native_dispatch" };
+  }
+
+  const terminalRuns = runs.filter((run) => TERMINAL_RUN_STATUSES.has(run.status));
+  if (new Set(terminalRuns.map((run) => run.id)).size >= 2) return { action: "retry_exhausted" };
+  return { action: "compatibility_wake", recoveryRunId: terminalRuns[0]?.id };
+}
 
 function isCanonicalPrCard(
   card: RecoverableNativeReviewCard,

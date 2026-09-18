@@ -19,7 +19,7 @@ const lastSyncDisposition = new Map<string, string>();
 import { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { extractIssueMetadata, normalizeGitHubOwnerRepo, resolvePaperclipProject, resolveProjectWorkspace, resolveProjectMetadata, type PaperclipProjectRecord } from "../core/parser.js";
 import { calculateConflictMatrix, selectNextTasksMultiLane } from "../core/dispatcher.js";
-import { fetchJulesQuota, resolveJulesDispatchCapacity } from "../core/jules-quota.js";
+import { managedWorkerLane, resolveWorkerLaneCapacity } from "../core/worker-lane-state.js";
 import { checkWorkspaceConsistency } from "../core/consistency.js";
 import {
   classifyAuthoritativeHeartbeatScope,
@@ -50,7 +50,7 @@ import { hasDelegatedReviewChild, hasDelegatedReviewHistory, isDelegatedReviewCh
 import { evaluateReviewPipelineProgress, hasStaleReviewerOwnership, isReviewDispatchDecision, operatorGateReconciliationPatch, reviewDispatchStage } from "../core/review-pipeline.js";
 import { buildReviewInteractionRequest, hasCompletedNativeApprovalLadderForHead, hasNativeRejectionForHead, isCanonicalReviewCardKey, isReviewInteractionForIssue, planReviewDialog, reviewInteractionIdempotencyKey, reviewInteractionIdempotencyKeys, selectReviewAttempt, selectReviewCardsToWithdrawAfterRejection, selectReviewRunDispatch, shouldDeferPrReviewDispatch, type PrReviewStage } from "../core/review-interaction-state.js";
 import { findReviewCardBinding, nativeReviewRecoveryWakeKey } from "../core/review-session-state.js";
-import { prepareAndWakeNativeReview, selectNativeReviewWakeAnchor } from "../core/native-review-recovery.js";
+import { prepareAndWakeNativeReview, revalidateNativeReviewWake, selectNativeReviewWakeAnchor } from "../core/native-review-recovery.js";
 import {
   buildMazewallExecutionPolicy,
   NATIVE_PR_REVIEW_STAGE_IDS,
@@ -534,6 +534,52 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     const idempotencyKey = options?.idempotencyKey ?? (options?.recoveryRunId && options.reviewInteractionId && issueId
       ? nativeReviewRecoveryWakeKey(agentId, issueId, options.reviewInteractionId, options.recoveryRunId)
       : `orchestrator:wakeup:${agentId}:${issueId || "company"}:${options?.reviewInteractionId || options?.resumeFromRunId || "current"}`);
+    // A recovery decision is made from the scheduler's earlier snapshot. Do
+    // not let that stale snapshot turn into a compatibility wake after
+    // Paperclip has already started, or completed, the addressed native
+    // reviewer. This is deliberately a final read immediately before the
+    // write; failure is fail-closed because an unnecessary wake spends model
+    // quota and can create a second reviewer run for the same card.
+    const canWakeNativeReviewCard = async (): Promise<boolean> => {
+      if (!options?.reviewInteractionId || !issueId) return true;
+      try {
+        const decision = await revalidateNativeReviewWake({
+          paperclip: pc,
+          companyId,
+          agentId,
+          issueId,
+          interactionId: options.reviewInteractionId,
+          nowMs: Date.now(),
+          graceMs: JULES_PLAN_NATIVE_REVIEW_RECOVERY_GRACE_MS,
+        });
+        switch (decision.action) {
+          case "compatibility_wake":
+            return true;
+          case "answered":
+            await log(`[ORCHESTRATOR] Suppressed native-review compatibility wake for ${issueId}; card ${options.reviewInteractionId} is already answered.`);
+            return false;
+          case "await_run":
+            await log(`[ORCHESTRATOR] Suppressed native-review compatibility wake for ${issueId}; card ${options.reviewInteractionId} already has live reviewer run ${decision.runId}.`);
+            return false;
+          case "await_native_dispatch":
+            await log(`[ORCHESTRATOR] Deferred native-review compatibility wake for ${issueId}; card ${options.reviewInteractionId} remains inside Paperclip's native dispatch grace period.`);
+            return false;
+          case "retry_exhausted":
+            await log(`[ORCHESTRATOR] Suppressed native-review compatibility wake for ${issueId}; card ${options.reviewInteractionId} has exhausted its bounded recovery attempts.`);
+            return false;
+          case "no_action":
+            await log(`[ORCHESTRATOR] Suppressed native-review compatibility wake for ${issueId}; addressed card ${options.reviewInteractionId} is no longer pending.`);
+            return false;
+          default: {
+            const exhaustive: never = decision;
+            return exhaustive;
+          }
+        }
+      } catch (error) {
+        await log(`[ORCHESTRATOR] Suppressed native-review compatibility wake for ${issueId}; final card/run revalidation failed: ${error instanceof Error ? error.message : String(error)}`);
+        return false;
+      }
+    };
     const wakeNativeReviewCard = async () => {
       let wakeCommentId: string | undefined;
       try {
@@ -555,6 +601,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
         ...(wakeCommentId ? { wakeCommentId } : {}),
       });
     };
+    if (options?.reviewInteractionId && issueId && !(await canWakeNativeReviewCard())) return false;
     const result = await executePaperclipCommand(
       {
         key: idempotencyKey,
@@ -595,7 +642,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
         if (cancelled.ok) {
           await log(`[ORCHESTRATOR] Cleared stale execution ${staleRunId} owned by ${staleOwnerId}; retrying delegated review wake.`);
           if (options.reviewInteractionId && issueId) {
-            await wakeNativeReviewCard();
+            if (await canWakeNativeReviewCard()) await wakeNativeReviewCard();
           } else {
             await pc.wakeup(agentId, reason, issueId, { resumeFromRunId: options?.resumeFromRunId });
           }
@@ -610,6 +657,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
         : "";
       await log(`[ORCHESTRATOR] Managed-worker wakeup failed (${normalizedResult.status}): ${normalizedResult.text}${suffix}`);
     }
+    return normalizedResult.ok;
   };
 
   await log(`[ORCHESTRATOR] Starting deterministic scheduling tick for company ${companyId}...`);
@@ -626,6 +674,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
   let terraAdjudicatorAgentId = config.terraAdjudicatorAgentId;
   let fleetAuthorizationFailures: Awaited<ReturnType<typeof reconcileManagedFleet>>["authorizationFailures"] = [];
   let agentHealthReport: AgentHealthReport | undefined;
+  let managedAgents: FleetAgentRecord[] = [];
 
   let managedJulesIds = new Set<string>();
   let managedJulesCiPolicy: unknown = undefined;
@@ -683,6 +732,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       orgChainHealth: a["orgChainHealth"] as FleetAgentRecord["orgChainHealth"],
       metadata: (a["metadata"] as Record<string, unknown> | null) || null,
     }));
+    managedAgents = agents;
     managedAgentStatuses = new Map(agents.map((agent) => [agent.id, agent.status]));
     agentStructuredDecisionCapabilities = new Map(
       agents.map((agent) => [agent.id, agent.metadata?.["structuredDecisionCapability"]]),
@@ -754,15 +804,6 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
         (managedJules.status === "error" || (managedJules.errorReason || "").includes("Process lost"))
     );
 
-    agentHealthReport = evaluateAgentHealth(agents);
-    const newIncidents = agentIncidentDeduper.reconcile(agentHealthReport.incidents);
-    if (newIncidents.length > 0) {
-      for (const inc of newIncidents) {
-        await log(
-          `[ORCHESTRATOR] [Agent Incident] [${inc.severity}] ${inc.agentName} (${inc.status}): ${inc.issue}`
-        );
-      }
-    }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     await log(`[ORCHESTRATOR] Error: Failed to fetch agents list: ${msg}`);
@@ -916,20 +957,6 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     );
   }
 
-  // 5. Fetch live Jules quota
-  const configEnv = context.config ? (context.config["env"] as Record<string, unknown> | undefined) : undefined;
-  const julesApiKey =
-    (configEnv ? (configEnv["JULES_API_KEY"] as string | undefined) : undefined) ||
-    (context.config ? (context.config["julesApiKey"] as string | undefined) : undefined) ||
-    envMap["JULES_API_KEY"];
-
-  const julesQuota = await fetchJulesQuota(julesApiKey);
-  if (julesQuota.fetchedLive) {
-    await log(
-      `[ORCHESTRATOR] Live Jules Quota: active_sessions=${julesQuota.activeSessionsCount}/${julesQuota.maxConcurrent}, last_24h=${julesQuota.sessionsLast24hCount}/${julesQuota.maxDaily}, available_slots=${julesQuota.effectiveAvailableCapacity}`
-    );
-  }
-
   if (ghStatus.error) {
     await log(`[ORCHESTRATOR] 🚨 GITHUB ACCESS UNAVAILABLE: ${ghStatus.error}. Remote PR reconciliation is degraded; reviews and merges remain safety-paused until GitHub access recovers.`);
   }
@@ -997,6 +1024,23 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       parentId: typeof issue["parentId"] === "string" ? issue["parentId"] : null,
     })
   );
+
+  const activeAssignments = new Map<string, number>();
+  for (const issue of parsedIssues) {
+    if (!issue.assigneeAgentId || !["in_progress", "in_review"].includes(issue.status)) continue;
+    activeAssignments.set(issue.assigneeAgentId, (activeAssignments.get(issue.assigneeAgentId) || 0) + 1);
+  }
+  const laneAssignments = { julesAgentId, vibeAgentId, lunaReviewerAgentId, terraReviewerAgentId };
+  agentHealthReport = evaluateAgentHealth(managedAgents.map((agent) => ({
+    ...agent,
+    lane: managedWorkerLane(agent.id, laneAssignments),
+    activeAssignmentCount: activeAssignments.get(agent.id) || 0,
+  })));
+  const newIncidents = agentIncidentDeduper.reconcile(agentHealthReport.incidents);
+  for (const incident of newIncidents) {
+    const label = incident.impact === "lane_degraded" ? "DEGRADED" : incident.severity;
+    await log(`[ORCHESTRATOR] [Agent Incident] [${label}] ${incident.agentName} (${incident.status}): ${incident.issue}`);
+  }
 
   const wokeThisTick = new Set<string>();
   if (julesNeedsReattach && julesAgentId && managedIds.has(julesAgentId)) {
@@ -1999,7 +2043,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
 
       const recoveryKey = `native-review-plan-recovery:${issue.id}:${recovery.interactionId}:${recovery.recoveryRunId || "initial"}`;
       await nativeReviewRecoveryConvergenceGuard.runOnce(recoveryKey, async () => {
-        await managedWakeup(
+        const woke = await managedWakeup(
           recovery.reviewerAgentId,
           `Recover Jules plan review interaction ${recovery.interactionId}; submit only its structured verdict.`,
           issue.id,
@@ -2011,7 +2055,9 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
             idempotencyKey: `native-review-plan-recovery:v1:${recovery.reviewerAgentId}:${issue.id}:${recovery.interactionId}:${recovery.recoveryRunId || "initial"}`,
           },
         );
-        await log(`[ORCHESTRATOR] Recovered Jules plan review for ${issue.identifier || issue.id} using card ${recovery.interactionId}.`);
+        if (woke) {
+          await log(`[ORCHESTRATOR] Recovered Jules plan review for ${issue.identifier || issue.id} using card ${recovery.interactionId}.`);
+        }
         return true;
       });
     }
@@ -2166,8 +2212,18 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
   const julesRunning = inProgressIssues.filter((i) => i.assigneeAgentId === julesAgentId).length;
   const vibeRunning = inProgressIssues.filter((i) => i.assigneeAgentId === vibeAgentId).length;
 
-  const julesCapacity = resolveJulesDispatchCapacity(config.maxConcurrentJules, julesQuota, julesRunning);
-  const vibeCapacity = config.maxConcurrentVibe ?? 1;
+  const julesCapacity = resolveWorkerLaneCapacity({
+    lane: "jules",
+    configuredCapacity: config.maxConcurrentJules ?? 15,
+    runningCount: julesRunning,
+    agentStatus: julesAgentId ? managedAgentStatuses.get(julesAgentId) : undefined,
+  });
+  const vibeCapacity = resolveWorkerLaneCapacity({
+    lane: "vibe",
+    configuredCapacity: config.maxConcurrentVibe ?? 1,
+    runningCount: vibeRunning,
+    agentStatus: vibeAgentId ? managedAgentStatuses.get(vibeAgentId) : undefined,
+  });
 
   await log(
     `[ORCHESTRATOR] Backlog: total=${parsedIssues.length}, in_review=${inReviewIssues.length} | Jules running=${julesRunning}/${julesCapacity}, Vibe running=${vibeRunning}/${vibeCapacity}, conflict_edges=${conflictResult.conflictEdges.length}`
@@ -3201,7 +3257,6 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
     inReviewCount: inReviewIssues.length,
     resolvedCount: parsedIssues.filter((i) => i.status === "done").length,
     todoCount: parsedIssues.filter((i) => i.status === "todo" || i.status === "backlog").length,
-    julesQuota,
     julesRunning,
     julesCapacity,
     vibeRunning,

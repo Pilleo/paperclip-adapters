@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { prepareAndWakeNativeReview, recoverNativeReviewCard, selectNativeReviewWakeAnchor, wakeNativeReview, type NativeReviewRecoveryInput } from "../src/core/native-review-recovery.js";
+import { prepareAndWakeNativeReview, recoverNativeReviewCard, revalidateNativeReviewWake, selectNativeReviewWakeAnchor, wakeNativeReview, type NativeReviewRecoveryInput } from "../src/core/native-review-recovery.js";
 
 const base: NativeReviewRecoveryInput = {
   agentId: "luna-1",
@@ -10,6 +10,48 @@ const base: NativeReviewRecoveryInput = {
 };
 
 describe("native review recovery", () => {
+  it("suppresses a compatibility wake when the fresh card read is already answered", async () => {
+    const listInteractions = vi.fn().mockResolvedValue([{ id: "card-1", status: "answered" }]);
+    const listHeartbeatRuns = vi.fn().mockResolvedValue([]);
+
+    await expect(revalidateNativeReviewWake({
+      paperclip: { listInteractions, listHeartbeatRuns } as never,
+      companyId: "company-1",
+      agentId: "luna-1",
+      issueId: "issue-1",
+      interactionId: "card-1",
+      nowMs: Date.parse("2026-09-15T18:02:00.000Z"),
+      graceMs: 60_000,
+    })).resolves.toEqual({ action: "answered" });
+
+    expect(listInteractions).toHaveBeenCalledWith("issue-1");
+    expect(listHeartbeatRuns).toHaveBeenCalledWith("company-1", "luna-1", 50);
+  });
+
+  it("reads the card after reviewer runs so the final state fences a concurrent verdict", async () => {
+    const calls: string[] = [];
+    const listHeartbeatRuns = vi.fn(async () => {
+      calls.push("runs");
+      return [];
+    });
+    const listInteractions = vi.fn(async () => {
+      calls.push("card");
+      return [{ id: "card-1", status: "answered" }];
+    });
+
+    await revalidateNativeReviewWake({
+      paperclip: { listInteractions, listHeartbeatRuns } as never,
+      companyId: "company-1",
+      agentId: "luna-1",
+      issueId: "issue-1",
+      interactionId: "card-1",
+      nowMs: Date.parse("2026-09-15T18:02:00.000Z"),
+      graceMs: 60_000,
+    });
+
+    expect(calls).toEqual(["runs", "card"]);
+  });
+
   it("selects the latest durable Jules-session comment as the compatibility wake anchor", () => {
     expect(selectNativeReviewWakeAnchor([
       { id: "other", body: "ordinary status" },

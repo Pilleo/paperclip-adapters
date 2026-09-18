@@ -1,0 +1,19 @@
+{
+    "name": "paperclip-adapters",
+    "type": "node",
+    "compileCommand": "npx tsc --noEmit",
+    "testCommand": "npm test",
+    "memoryNamespace": "paperclip-adapters",
+    "modules": {},
+    "verificationCommands": {
+        "compile": [
+            "npx",
+            "tsc",
+            "--noEmit"
+        ],
+        "test": [
+            "npm",
+            "test"
+        ]
+    }
+}

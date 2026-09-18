@@ -147,4 +147,75 @@ describe("orchestrator Jules plan native-review recovery", () => {
     expect(wakes).toHaveLength(1);
     expect(comments).toEqual([]);
   });
+
+  it("does not emit a compatibility wake when the addressed card is answered during final revalidation", async () => {
+    const wakes: unknown[] = [];
+    const comments: unknown[] = [];
+    const createdAt = new Date(Date.now() - 2 * 60_000).toISOString();
+    const answeredIssueId = "issue-plan-answered-before-wake";
+    const answeredCardId = "terra-plan-card-answered-before-wake";
+    let terraRunReads = 0;
+    const issue = {
+      id: answeredIssueId,
+      identifier: "MAZ-answered-race",
+      title: "final card revalidation canary",
+      description: "---\norchestrator_managed: true\n---\nDo not wake an already answered card.",
+      status: "in_progress",
+      projectId: "project-1",
+      assigneeAgentId: "jules-1",
+      updatedAt: createdAt,
+      executionState: { status: "idle" },
+      executionPolicy: { mode: "normal", stages: [] },
+    };
+    globalThis.fetch = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      const method = (init?.method || "GET").toUpperCase();
+      if (method === "POST" && href.includes("/agents/terra-1/wakeup")) {
+        wakes.push(JSON.parse(String(init?.body || "{}")));
+        return new Response(JSON.stringify({ status: "started" }), { status: 202 });
+      }
+      if (method === "POST" && href.includes(`/api/issues/${answeredIssueId}/comments`)) {
+        comments.push(JSON.parse(String(init?.body || "{}")));
+        return new Response("{}", { status: 201 });
+      }
+      if (href.includes(`/api/issues/${answeredIssueId}/comments`)) {
+        return new Response(JSON.stringify([{ id: "jules-session-link", body: "[Open Jules session](https://jules.google.com/session/1)" }]), { status: 200 });
+      }
+      if (href.includes("/heartbeat-runs")) {
+        if (href.includes("agentId=terra-1")) terraRunReads++;
+        return new Response("[]", { status: 200 });
+      }
+      if (href.includes(`/api/issues/${answeredIssueId}/interactions`)) {
+        return new Response(JSON.stringify([{
+          id: answeredCardId,
+          kind: "request_item_verdicts",
+          // The scheduler saw the pending card. The final read, made only
+          // after the exact Terra run read, sees Paperclip's verdict.
+          status: terraRunReads >= 1 ? "answered" : "pending",
+          addresseeAgentId: "terra-1",
+          createdAt,
+          idempotencyKey: `jules:plan-review:v2:${answeredIssueId}:session-1:revision-1:terra`,
+        }]), { status: 200 });
+      }
+      if (href.endsWith("/agents") || href.includes("/agents?")) {
+        return new Response(JSON.stringify([
+          { id: "jules-1", name: "Jules", adapterType: "jules", status: "idle", reportsTo: "orchestrator-1", metadata: { managedBy: "paperclip-orchestrator", workerKey: "jules" } },
+          { id: "luna-1", name: "Luna", adapterType: "codex_local", status: "idle", reportsTo: "orchestrator-1", metadata: { managedBy: "paperclip-orchestrator", workerKey: "luna_reviewer", structuredDecisionCapability: { version: 1, transports: ["mcp_tool"], decisionKinds: ["plan_review", "pull_request_review"] } } },
+          { id: "terra-1", name: "Terra", adapterType: "codex_local", status: "idle", reportsTo: "orchestrator-1", metadata: { managedBy: "paperclip-orchestrator", workerKey: "terra_reviewer", structuredDecisionCapability: { version: 1, transports: ["mcp_tool"], decisionKinds: ["plan_review", "pull_request_review"] } } },
+        ]), { status: 200 });
+      }
+      if (href.includes("/projects")) return new Response(JSON.stringify([{ id: "project-1", name: "fixture", primaryWorkspace: { cwd: process.cwd() } }]), { status: 200 });
+      if (method === "GET" && href.endsWith(`/api/issues/${answeredIssueId}`)) return new Response(JSON.stringify(issue), { status: 200 });
+      if (href.includes("/issues")) return new Response(JSON.stringify([issue]), { status: 200 });
+      if (href.includes("/approvals")) return new Response("[]", { status: 200 });
+      return new Response("[]", { status: 200 });
+    }) as typeof fetch;
+
+    const result = await execute(context());
+
+    expect(result.exitCode).toBe(0);
+    expect(terraRunReads).toBeGreaterThanOrEqual(1);
+    expect(wakes).toEqual([]);
+    expect(comments).toEqual([]);
+  });
 });

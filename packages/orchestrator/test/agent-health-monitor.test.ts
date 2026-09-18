@@ -60,15 +60,57 @@ describe("Agent Health Monitor & Formal Failure Tracker", () => {
         status: "paused",
         errorReason: null,
         pauseReason: "Process crashed with SIGSEGV (exit code 139)",
+        lane: "vibe",
+        activeAssignmentCount: 0,
         orgChainHealth: { status: "healthy" },
       },
     ];
 
     const report = evaluateAgentHealth(agents);
-    expect(report.isHealthy).toBe(false);
+    expect(report.isHealthy).toBe(true);
     expect(report.incidents).toHaveLength(1);
     expect(report.incidents[0].severity).toBe("HIGH");
+    expect(report.incidents[0].impact).toBe("lane_degraded");
+    expect(report.incidents[0].retryDisposition).toBe("retryable");
     expect(report.incidents[0].issue).toContain("Process crashed with SIGSEGV");
+  });
+
+  it("keeps an idle Vibe billing failure visible without blocking the Jules or review lanes", () => {
+    const report = evaluateAgentHealth([
+      {
+        id: "vibe-1",
+        name: "[Orchestrated] Vibe Local Worker",
+        status: "paused",
+        errorReason: "HTTP 402 Payment Required",
+        pauseReason: "Payment Required",
+        lane: "vibe",
+        activeAssignmentCount: 0,
+      },
+    ]);
+
+    expect(report.isHealthy).toBe(true);
+    expect(report.incidents).toHaveLength(1);
+    expect(report.incidents[0]).toMatchObject({
+      severity: "HIGH",
+      impact: "lane_degraded",
+      retryDisposition: "operator_action",
+    });
+  });
+
+  it("treats a Vibe billing failure as blocking when that lane owns active work", () => {
+    const report = evaluateAgentHealth([
+      {
+        id: "vibe-1",
+        name: "[Orchestrated] Vibe Local Worker",
+        status: "paused",
+        errorReason: "HTTP 402 Payment Required",
+        lane: "vibe",
+        activeAssignmentCount: 1,
+      },
+    ]);
+
+    expect(report.isHealthy).toBe(false);
+    expect(report.incidents[0]).toMatchObject({ impact: "workflow_blocking", retryDisposition: "operator_action" });
   });
 
   it("detects broken organizational escalation chain", () => {

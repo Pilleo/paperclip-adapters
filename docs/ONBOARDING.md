@@ -43,7 +43,7 @@ This repository contains the deterministic multi-lane orchestrator, execution ad
 |---|---|---|
 | [`packages/orchestrator`](../packages/orchestrator) | Fleet Orchestrator & DAG Dispatcher | AST conflict detection, multi-tier review pipeline (`review-pipeline.ts`), agent health tracking (`agent-health-monitor.ts`), 1-click approvals (`approvals.ts`). |
 | [`packages/jules`](../packages/jules) | Google Jules Cloud Adapter | Stateful bridge between Paperclip and Jules Cloud API (`state-engine.ts`), PR review feedback relay, watchdog keepalives. |
-| [`packages/vibe`](../packages/vibe) | Mistral Vibe ACP Adapter | Local Agent Client Protocol (ACP) worker for rapid clarifications, task interviews, and Stage 2 fast code review. |
+| [`packages/vibe`](../packages/vibe) | Mistral Vibe ACP Adapter | Optional local Agent Client Protocol (ACP) implementation lane for rapid clarifications, task interviews, and targeted refactors. It is not a reviewer. |
 | [`packages/antigravity`](../packages/antigravity) | Google Antigravity ACP Adapter | Local deep systems engineering and interactive tool-calling pair programming. |
 | [`packages/telegram`](../packages/telegram) | Operator Telegram Companion | Push notifications, board telemetry digests, interactive plan/merge approval buttons. |
 | [`packages/common`](../packages/common) | Shared Adapter Utilities | Common session codecs, logging abstractions, process runner helpers. |
@@ -154,4 +154,6 @@ active run from the old configuration.
 stage and the addressed reviewer has no queued or running heartbeat. Reuse the
 same card through the native recovery helper; never create a replacement card
 or leave a normal comment as a decision. The next successful reviewer run must
-resolve the original card to `answered`.
+resolve the original card to `answered`. The compatibility wake performs one
+final card/run read immediately before writing; an answered card, a live run,
+the native dispatch grace period, or a read error suppresses the wake.

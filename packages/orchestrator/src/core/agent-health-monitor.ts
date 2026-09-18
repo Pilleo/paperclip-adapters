@@ -1,9 +1,19 @@
+import {
+  classifyWorkerFailureDisposition,
+  type ManagedWorkerLane,
+  type WorkerFailureDisposition,
+} from "./worker-lane-state.js";
+
 export interface AgentHealthInput {
   readonly id: string;
   readonly name: string;
   readonly status: string;
   readonly errorReason?: string | null | undefined;
   readonly pauseReason?: string | null | undefined;
+  /** Supplied by fleet reconciliation; never inferred from an agent display name. */
+  readonly lane?: ManagedWorkerLane | undefined;
+  /** Active issues assigned to this agent in the current project snapshot. */
+  readonly activeAssignmentCount?: number | undefined;
   readonly orgChainHealth?: {
     readonly status?: string | undefined;
     readonly reason?: string | undefined;
@@ -12,6 +22,7 @@ export interface AgentHealthInput {
 }
 
 export type IncidentSeverity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
+export type IncidentImpact = "workflow_blocking" | "lane_degraded";
 
 export interface AgentIncident {
   readonly agentId: string;
@@ -20,6 +31,20 @@ export interface AgentIncident {
   readonly status: string;
   readonly issue: string;
   readonly remediation: string;
+  readonly impact: IncidentImpact;
+  readonly retryDisposition: WorkerFailureDisposition;
+}
+
+function incidentImpact(agent: AgentHealthInput): IncidentImpact {
+  return agent.lane === "vibe" && (agent.activeAssignmentCount || 0) === 0
+    ? "lane_degraded"
+    : "workflow_blocking";
+}
+
+function remediationFor(disposition: WorkerFailureDisposition): string {
+  return disposition === "operator_action"
+    ? "Resolve the provider billing or authentication failure, then explicitly unpause the agent."
+    : "Inspect adapter logs, resolve the underlying failure, and unpause the agent when it is invokable.";
 }
 
 export interface AgentHealthReport {
@@ -44,13 +69,17 @@ export function evaluateAgentHealth(agents: readonly AgentHealthInput[]): AgentH
     if (agent.status === "error" || (agent.errorReason && agent.errorReason.trim().length > 0)) {
       errorCount++;
       const reason = agent.errorReason || `Agent status is "${agent.status}" without detailed reason.`;
+      const retryDisposition = classifyWorkerFailureDisposition(reason);
+      const impact = incidentImpact(agent);
       incidents.push({
         agentId: agent.id,
         agentName: agent.name,
-        severity: "CRITICAL",
+        severity: impact === "lane_degraded" ? "HIGH" : "CRITICAL",
         status: agent.status,
         issue: reason,
-        remediation: "Inspect adapter logs, verify credentials/secrets, and restart the agent run.",
+        remediation: remediationFor(retryDisposition),
+        impact,
+        retryDisposition,
       });
       continue;
     }
@@ -75,7 +104,9 @@ export function evaluateAgentHealth(agents: readonly AgentHealthInput[]): AgentH
             severity: "HIGH",
             status: agent.status,
             issue: agent.pauseReason,
-            remediation: "Unpause the agent after resolving the underlying environment or quota issue.",
+            remediation: remediationFor("retryable"),
+            impact: incidentImpact(agent),
+            retryDisposition: "retryable",
           });
         }
       }
@@ -94,12 +125,14 @@ export function evaluateAgentHealth(agents: readonly AgentHealthInput[]): AgentH
         status: agent.status,
         issue: warning,
         remediation: "Reassign reportsTo or unpause the supervising manager agent.",
+        impact: "workflow_blocking",
+        retryDisposition: "operator_action",
       });
     }
   }
 
   return {
-    isHealthy: incidents.length === 0,
+    isHealthy: !incidents.some((incident) => incident.impact === "workflow_blocking"),
     totalAgentsCount: agents.length,
     errorAgentsCount: errorCount,
     pausedAgentsCount: pausedCount,
@@ -111,7 +144,7 @@ export function evaluateAgentHealth(agents: readonly AgentHealthInput[]): AgentH
  * Formats a clean markdown alert digest summarizing formal agent failures.
  */
 export function formatAgentHealthAlertDigest(report: AgentHealthReport): string {
-  if (report.isHealthy) {
+  if (report.incidents.length === 0) {
     return "✅ **Fleet Health:** All managed agents are healthy and operating normally.";
   }
 
@@ -121,7 +154,8 @@ export function formatAgentHealthAlertDigest(report: AgentHealthReport): string 
   ];
 
   for (const inc of report.incidents) {
-    lines.push(`- **[${inc.severity}] ${inc.agentName}** (\`${inc.status}\`)`);
+    const label = inc.impact === "lane_degraded" ? "DEGRADED" : inc.severity;
+    lines.push(`- **[${label}] ${inc.agentName}** (\`${inc.status}\`)`);
     lines.push(`  - **Issue:** ${inc.issue}`);
     lines.push(`  - **Remediation:** ${inc.remediation}`);
   }

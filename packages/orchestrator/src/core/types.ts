@@ -97,18 +97,6 @@ export interface MultiLaneOptions {
   readonly preferredIssueIds?: ReadonlySet<string> | undefined;
 }
 
-export interface JulesQuotaStatus {
-  readonly activeSessionsCount: number;
-  readonly sessionsLast24hCount: number;
-  readonly maxConcurrent: number;
-  readonly maxDaily: number;
-  readonly availableConcurrentSlots: number;
-  readonly availableDailySlots: number;
-  readonly effectiveAvailableCapacity: number;
-  readonly fetchedLive: boolean;
-  readonly error?: string | undefined;
-}
-
 export interface GitHubPullRequest {
   readonly number: number;
   readonly title: string;

@@ -113,12 +113,12 @@ Executes an in-process, deterministic scheduling control plane on each heartbeat
 ---
 
 ## 🚀 Capabilities & Features
-- **Multi-Lane Dispatcher:** Routes tasks across **Jules** (up to 15 concurrent remote sessions) and **Vibe** (local kernel/enforcer tasks).
+- **Multi-Lane Dispatcher:** Routes tasks across Paperclip-configured **Jules** and **Vibe** lanes. Jules owns its remote queue; the orchestrator never infers provider capacity from session counts.
 - **Two-Way Backlog Ingestion:** Scans \`docs/internals/backlog/*.md\`, registers board tasks, and synchronizes YAML frontmatter.
 - **Automated Archival:** Automatically moves completed/merged tasks to \`docs/internals/backlog/resolved/\` and updates the index.
 - **Vibe-Backed Clarification:** Automatically routes tasks with \`open_questions: true\` to Vibe to conduct task interviews before Jules begins execution.
 - **DAG Conflict Matrix:** Prevents race conditions by locking active in-flight files and enforcing explicit issue dependencies.
-- **Live Jules Quota:** Real-time quota integration against Google Jules API rate limits (15 concurrent, 100/day).
+- **Lane-Scoped Failure Handling:** A paused worker disables only its own implementation lane. Vibe provider failures remain visible and actionable but cannot affect Jules dispatch or Luna/Terra reviews.
 - **Project-Owned Workspaces:** Each company project is processed independently; its configured workspace is the only checkout used for that project's tasks, PRs, locks, and backlog.
 - **Fail-Closed Scoping:** Issues without a valid project workspace are skipped and reported instead of falling back to the adapter process directory.
 `;

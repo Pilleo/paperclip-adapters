@@ -1,4 +1,6 @@
-import type { PaperclipHttp } from "./paperclip-http.js";
+import { asArray, type PaperclipHttp } from "./paperclip-http.js";
+import { decideNativeReviewWake, type NativeReviewWakeDecision } from "./native-review-recovery-state.js";
+import { parseHeartbeatRun } from "./session-continuation.js";
 
 /**
  * Paperclip v831 treats a non-assignee reviewer wake as live only when its
@@ -28,6 +30,36 @@ export interface NativeReviewRecoveryInput {
 export type NativeReviewRecoveryResult =
   | { readonly ok: boolean; readonly status: number; readonly text: string; readonly data?: unknown }
   | { readonly ok: false; readonly status: 400; readonly text: string; readonly code: "invalid_native_review_identity" };
+
+export async function revalidateNativeReviewWake(input: {
+  readonly paperclip: Pick<PaperclipHttp, "listInteractions" | "listHeartbeatRuns">;
+  readonly companyId: string;
+  readonly agentId: string;
+  readonly issueId: string;
+  readonly interactionId: string;
+  readonly nowMs: number;
+  readonly graceMs: number;
+}): Promise<NativeReviewWakeDecision> {
+  const rawRuns = await input.paperclip.listHeartbeatRuns(input.companyId, input.agentId, 50);
+  // Read the card last. A reviewer can submit its structured verdict while
+  // this compatibility check is in flight; the final card state is the
+  // authority that decides whether any wake may still be emitted.
+  const interactions = await input.paperclip.listInteractions<unknown>(input.issueId);
+  const card = asArray<Record<string, unknown>>(interactions).find((candidate) => candidate["id"] === input.interactionId);
+  if (!card) return { action: "no_action" };
+  return decideNativeReviewWake({
+    issueId: input.issueId,
+    reviewerAgentId: input.agentId,
+    nowMs: input.nowMs,
+    graceMs: input.graceMs,
+    card: {
+      id: input.interactionId,
+      ...(typeof card["status"] === "string" ? { status: card["status"] } : {}),
+      ...(typeof card["createdAt"] === "string" ? { createdAt: card["createdAt"] } : {}),
+    },
+    reviewerRuns: rawRuns.map(parseHeartbeatRun),
+  });
+}
 
 /**
  * Paperclip v831 accepts a non-assignee reviewer wake only when it is tied to
