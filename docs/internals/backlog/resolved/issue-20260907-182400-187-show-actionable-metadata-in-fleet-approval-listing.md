@@ -7,7 +7,7 @@ priority: critical
 dependencies: []
 component: "tools"
 target_modules:
-  - "scripts/fleet"
+  - "packages/orchestrator"
 target_files:
   - "scripts/fleet/list_approvals.sh"
 target_symbols:

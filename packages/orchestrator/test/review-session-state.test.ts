@@ -50,6 +50,15 @@ describe("native review session state", () => {
       runs: [run({ interactionId: null })],
     })).toEqual({ card: { id: "card-1", status: "pending", addresseeAgentId: "terra-1", idempotencyKey: "pr-review:v13:issue-1:pr:sha:terra" } });
   });
+
+  it("does not let a lingering run on an answered card suppress the merge gate", () => {
+    expect(findReviewCardBinding({
+      issueId: "issue-1",
+      reviewerAgentId: "terra-1",
+      cards: [{ id: "card-1", status: "answered", addresseeAgentId: "terra-1", idempotencyKey: "pr-review:v13:issue-1:pr:sha:terra" }],
+      runs: [run({ interactionId: "card-1" })],
+    })).toBeNull();
+  });
   it("waits for the live reviewer run after its card is cancelled", () => {
     expect(decideReviewSession({
       issueId: "issue-1",

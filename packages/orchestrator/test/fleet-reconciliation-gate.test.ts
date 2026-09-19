@@ -5,6 +5,7 @@ describe("canReconcileManagedFleet", () => {
   it.each([
     ["http://localhost:3100", undefined, true, true],
     ["http://127.0.0.1:3100", "", true, true],
+    ["http://127.0.0.1:3100/api", undefined, true, true],
     ["http://localhost:3100", undefined, false, false],
     ["https://paperclip.example", undefined, true, false],
     ["https://paperclip.example", "agent-token", true, true],

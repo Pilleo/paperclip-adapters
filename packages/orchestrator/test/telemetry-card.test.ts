@@ -10,7 +10,7 @@ describe("telemetry-card", () => {
     resolvedCount: 30,
     todoCount: 63,
     julesRunning: 5,
-    julesNewSessionBudget: 3,
+    julesCapacity: 15,
     vibeRunning: 1,
     vibeCapacity: 1,
     ghStatus: {
@@ -29,7 +29,7 @@ describe("telemetry-card", () => {
   it("formats rich Markdown dashboard table", () => {
     const card = formatOrchestratorDashboardCard(baseParams);
     expect(card).toContain("Orchestrator Live Telemetry");
-    expect(card).toContain("`3` new starts/heartbeat");
+    expect(card).toContain("Jules queue: `5/15` configured active assignments");
     expect(card).toContain("enforcer/src/Bpf.kt");
     expect(card).toContain("Total: **100**");
   });
@@ -43,16 +43,28 @@ describe("telemetry-card", () => {
       rateLimitPausedUntilMs: rateLimitEnd,
     });
 
-    expect(card).toContain("⏸️ **Paused** (Rate limit cooldown: `3m 12s` remaining)");
+    expect(card).toContain("⏸️ **Paused** (rate-limit cooldown: `3m 12s` remaining)");
   });
 
-  it("reports local admissions without claiming provider quota", () => {
+  it("renders configured Jules queue capacity", () => {
     const card = formatOrchestratorDashboardCard({
       ...baseParams,
-      julesNewSessionBudget: 1,
+      julesRunning: 3,
+      julesCapacity: 12,
     });
 
-    expect(card).toContain("`1` new starts/heartbeat");
-    expect(card).not.toContain("daily rolling");
+    expect(card).toContain("Jules queue: `3/12` configured active assignments");
+  });
+
+  it("reports only Paperclip-owned Jules queue capacity", () => {
+    const card = formatOrchestratorDashboardCard({
+      ...baseParams,
+      julesRunning: 2,
+      julesCapacity: 7,
+    });
+
+    expect(card).toContain("Jules queue: `2/7` configured active assignments");
+    expect(card).not.toContain("Full/Exhausted");
+    expect(card).not.toContain("15/15");
   });
 });

@@ -10,9 +10,9 @@ import { execute } from "./execute.js";
 export { execute };
 
 export const OrchestratorConfigSchema = z.object({
+  reconciliationMode: z.enum(["normal", "freeze"]).default("normal"),
   maxConcurrentProjects: z.number().int().min(1).default(2),
-  maxNewJulesSessionsPerHeartbeat: z.number().int().min(1).default(3),
-  maxConcurrentJules: z.number().int().min(1).optional(),
+  maxConcurrentJules: z.number().int().min(1).default(15),
   maxConcurrentVibe: z.number().int().min(1).default(1),
   julesAgentId: z.string().optional(),
   vibeAgentId: z.string().optional(),
@@ -20,13 +20,24 @@ export const OrchestratorConfigSchema = z.object({
   reviewerAgentId: z.string().optional(),
   lunaReviewerAgentId: z.string().optional(),
   terraReviewerAgentId: z.string().optional(),
-  reconciliationMode: z.enum(["active", "freeze"]).default("active"),
   julesPlanApprovalPolicy: z.enum(["required", "trusted_opt_out"]).default("required"),
   apiUrl: z.string().optional(),
 });
 
 export const orchestratorAdapterConfigSchema: AdapterConfigSchema = {
   fields: [
+    {
+      key: "reconciliationMode",
+      label: "Reconciliation Mode",
+      type: "select",
+      required: false,
+      default: "normal",
+      options: [
+        { label: "Normal", value: "normal" },
+        { label: "Freeze", value: "freeze" },
+      ],
+      hint: "Freeze performs no control-plane reads or writes and is intended for emergency maintenance.",
+    },
     {
       key: "maxConcurrentProjects",
       label: "Max Concurrent Projects",
@@ -36,12 +47,12 @@ export const orchestratorAdapterConfigSchema: AdapterConfigSchema = {
       hint: "Maximum project state machines running concurrently in one company heartbeat (default: 2)",
     },
     {
-      key: "maxNewJulesSessionsPerHeartbeat",
-      label: "Max New Jules Sessions Per Heartbeat",
+      key: "maxConcurrentJules",
+      label: "Max Concurrent Jules Sessions",
       type: "number",
       required: false,
-      default: 3,
-      hint: "Company-wide rate limit for new Jules sessions. Jules queues accepted sessions itself (default: 3).",
+      default: 15,
+      hint: "Maximum simultaneous asynchronous Jules development sessions (default: 15)",
     },
     {
       key: "maxConcurrentVibe",
@@ -80,18 +91,6 @@ export const orchestratorAdapterConfigSchema: AdapterConfigSchema = {
       hint: "Optional override for the managed read-only OpenAI Terra strong reviewer.",
     },
     {
-      key: "reconciliationMode",
-      label: "Lifecycle Reconciliation Mode",
-      type: "select",
-      required: false,
-      default: "active",
-      options: [
-        { value: "active", label: "Apply lifecycle effects" },
-        { value: "freeze", label: "Freeze reconciliation (no control-plane I/O)" },
-      ],
-      hint: "Freeze performs no control-plane I/O. Use only as an emergency stop.",
-    },
-    {
       key: "vibeReviewerAgentId",
       label: "Vibe Reviewer Agent ID",
       type: "text",
@@ -127,12 +126,12 @@ Executes an in-process, deterministic scheduling control plane on each heartbeat
 ---
 
 ## 🚀 Capabilities & Features
-- **Multi-Lane Dispatcher:** Admits up to three new Jules sessions per company heartbeat and lets Jules queue accepted work; Vibe remains locally capacity-bound.
+- **Multi-Lane Dispatcher:** Routes tasks across Paperclip-configured **Jules** and **Vibe** lanes. Jules owns its remote queue; the orchestrator never infers provider capacity from session counts.
 - **Two-Way Backlog Ingestion:** Scans \`docs/internals/backlog/*.md\`, registers board tasks, and synchronizes YAML frontmatter.
 - **Automated Archival:** Automatically moves completed/merged tasks to \`docs/internals/backlog/resolved/\` and updates the index.
 - **Vibe-Backed Clarification:** Automatically routes tasks with \`open_questions: true\` to Vibe to conduct task interviews before Jules begins execution.
 - **DAG Conflict Matrix:** Prevents race conditions by locking active in-flight files and enforcing explicit issue dependencies.
-- **Jules Admission Control:** Paperclip limits only fresh session creation. Provider queueing and provider \`429\` responses remain authoritative.
+- **Lane-Scoped Failure Handling:** A paused worker disables only its own implementation lane. Vibe provider failures remain visible and actionable but cannot affect Jules dispatch or Luna/Terra reviews.
 - **Project-Owned Workspaces:** Each company project is processed independently; its configured workspace is the only checkout used for that project's tasks, PRs, locks, and backlog.
 - **Fail-Closed Scoping:** Issues without a valid project workspace are skipped and reported instead of falling back to the adapter process directory.
 `;

@@ -41,7 +41,7 @@ All reviewer prompts enforce explicit rejection criteria (`REQUEST_CHANGES`):
 
 ### 3. Formal Agent Failure & Incident Health Monitor (`agent-health-monitor.ts`)
 - Evaluates company agents for formal failures, crash pauses (`SIGSEGV`, `429 Quota`, `401 Bad Auth`), and broken escalation chains on every scheduling tick.
-- High-visibility alerts are emitted to console logs and rendered dynamically on the pinned Paperclip Dashboard Telemetry Card.
+- Incidents are typed as workflow-blocking or lane-degraded. A paused Vibe implementation lane remains visible and requires operator action, but it cannot block Jules dispatch or the Luna → Terra review ladder. Jules session counts are provider telemetry only and are never used to admit or suppress work.
 
 ### 4. Direct-to-Worker Review Handoff (`review-handoff.ts`)
 - Review verdicts are maintained in Paperclip issue comments and relayed directly into worker session context (`client.sendMessage`).
@@ -58,9 +58,11 @@ All reviewer prompts enforce explicit rejection criteria (`REQUEST_CHANGES`):
 - **Daily Budget & Cost Optimization Tracker (`cost-tracker.ts`):** Tracks estimated cloud spend per session, displays real-time budget telemetry, and enforces configurable daily spending thresholds.
 - **Self-Healing Stalled Session Reaper (48h Async Threshold):** Grants 48-hour reaper immunity to long-running asynchronous cloud workers (Jules) while reclaiming orphaned local runs idle $>15\text{ minutes}$ back to `todo`.
 - **Jules continuation workaround (temporary):** Until Paperclip natively persists an external-provider poll as a continuation, the adapter performs cadence-limited, issue-scoped wakes using the last successful heartbeat run as `resumeFromRunId`. This bypasses Paperclip's no-progress re-wake throttle while preserving the existing Jules provider session. It uses only structured heartbeat state and never parses provider prose or creates monitor child issues. Remove this workaround when upstream monitor dispatch persists and exposes a reliable provider continuation state.
-- **Provider-ownership fence:** Markdown backlog synchronization reconciles task contracts but may claim only queued (`backlog`/`todo`) cards. It never reassigns an `in_progress`, `in_review`, or `blocked` provider/review lifecycle: doing so can sever a durable Jules monitor between heartbeats. Likewise, a rejected PR head with no authoritative Jules monitor is a typed recovery state, distinct from an actively monitored provider session; the orchestrator reattaches the durable `jules-session` handle instead of parking or replacing the provider session. Paperclip could make this cleaner by exposing an atomic external-provider lease that spans task ownership, monitor state, and PR disposition.
 - **Native-review disposition containment (temporary):** Older Paperclip recovery logic does not recognize a native PR verdict card as a valid live disposition. It can therefore park the owner with `deliberate_wait_without_target` and leave an unbound reviewer heartbeat running. The adapter’s narrow `orphan-review-recovery.ts` shim cancels only reviewer runs for the affected issue that lack a pending `request_item_verdicts` card binding, and resolves only the matching generic repair action before the normal native-card pipeline runs. This is deliberately not a prose parser or a general recovery override. The proper Paperclip fix is to make review cards a first-class typed disposition, atomically propagate `interactionId`/`interactionKind` into heartbeat context, and make generic disposition repair ignore a live review stage. Remove the shim once that upstream behavior is available and covered by Paperclip’s own integration tests.
+- **Typed plan-review compatibility (temporary):** Paperclip v831 can cancel a newly queued foreign reviewer when an addressed plan card uses `wake_assignee`, and its wake context can omit the interaction identity. Addressed Jules plan cards therefore use native-card continuation (`none`), while the reviewer MCP resolves exactly one addressed card at invocation time and exposes its typed assignment before a verdict. A plan assignment contains the immutable issue-document revision and must never trigger PR/local-checkout inspection; a PR assignment contains its immutable URL/head. The legacy comment-origin recovery wake is additionally fenced by a final, exact card/run read: it may run only for the same still-pending card with no live bound run, and any read failure suppresses the wake. This prevents a scheduler snapshot from launching a duplicate reviewer after Paperclip has already accepted a structured verdict. Remove this adapters-only bridge when Paperclip atomically persists and injects the addressed interaction identity for every reviewer run.
+- **Company-heartbeat managed-checkout compatibility (temporary):** Paperclip exposes a project’s managed checkout path immediately, but currently materializes it only while starting an issue-scoped host execution. This orchestrator schedules project state machines from a company heartbeat, so `project-managed-checkout.ts` atomically clones only the exact Paperclip-owned `instances/.../projects/<company>/<project>/<repo>` path before any local Git command. It rejects custom paths, never deletes an existing non-Git directory, and single-flights concurrent materialization. This is not a Jules worktree or a replacement workspace system; it is the missing host lifecycle call. Remove it when Paperclip provides an authorized project-checkout realization API for company-scoped adapters.
 - **Hot-restart native-review recovery (temporary):** Paperclip can interrupt a reviewer and transiently project its source issue as `backlog` or reassign it during dev-server restart. `native-review-recovery-state.ts` restores only an addressed pending PR card whose typed idempotency identity exactly matches the immutable PR URL and head SHA. It waits for a live bound run, re-wakes the same card only after a terminal run without a verdict, and withdraws a superseded Jules plan card through the issue-scoped interaction API. It never infers state from comments or reviewer prose, creates a replacement card, or patches execution-policy stages. The upstream fix is atomic persistence of the interaction binding and review disposition across heartbeat restart recovery; remove this adapter fence when that exists.
+- **Native PR-review ownership transfer (temporary):** Paperclip v831 may leave host `executionPolicy` review stages on an orchestrator-managed issue after Jules registers a ready PR. Those stages cannot consume the adapter's addressed `request_item_verdicts` cards, so they can re-enter review after Luna and Terra have already decided. For a managed ready PR with the native ladder configured, the orchestrator atomically projects `in_review`, clears the host policy/state, verifies that write, and then relies exclusively on the typed cards. Existing PR reviews deliberately bypass workspace-sync gating: synchronization protects new implementation dispatch, never a registered PR's review or merge lifecycle. Remove this handoff when Paperclip makes host execution-policy review stages consume the same typed verdict protocol.
 - **Idempotent managed wakes:** Every orchestrator wake carries a stable `Idempotency-Key` derived from agent, issue, and resume run. Transient 429/5xx responses use bounded exponential retry; authorization, validation, not-found, and conflict responses are surfaced immediately.
 - **Merged Feature Branch Pruner:** Discovers merged GitHub branches for safe pruning.
 
@@ -72,7 +74,7 @@ All reviewer prompts enforce explicit rejection criteria (`REQUEST_CHANGES`):
 |---|---|---|---|
 | `apiUrl` | `string` | `http://127.0.0.1:3100` | Paperclip core server URL |
 | `workspacePath` | `string` | Current Repo | Path to working codebase |
-| `maxNewJulesSessionsPerHeartbeat` | `number` | `3` | Company-wide rate limit for creating new Jules sessions; Jules queues accepted work itself |
+| `julesCapacity` | `number` | `15` | Concurrency ceiling for cloud Jules lane |
 | `vibeCapacity` | `number` | `2` | Concurrency ceiling for local Vibe/Antigravity lane |
 | `requireTaskApproval` | `boolean` | `true` | Enforce 1-click operator board approval before task start |
 | `dailyBudgetLimitUsd` | `number` | `10.0` | Daily spend ceiling for cloud sessions and strong model reviews |
@@ -119,6 +121,33 @@ The Jules adapter's `e2eProviderBaseUrl` is similarly restricted to explicit
 Paperclip server talk to a local fake Jules API; production always uses the
 public Jules endpoint.
 
+### Reusable real-provider dependency canary
+
+`scripts/e2e-real-project-canary.ts` is the live A → B → C dependency probe.
+It never creates a GitHub repository, company, or agents. Set
+`PAPERCLIP_REAL_E2E=1`, `PAPERCLIP_TEST_API_URL`, `PAPERCLIP_E2E_COMPANY_ID`,
+`PAPERCLIP_E2E_PROJECT_ID`, `PAPERCLIP_E2E_REPOSITORY_SSH_URL`, and
+`PAPERCLIP_E2E_ORCHESTRATOR_ID`. The project ID is mandatory: the script
+never creates or searches for a replacement project. It verifies that exact
+project owns the existing SSH repository and has no unfinished marked canary
+run, creates A/B/C atomically with native blocker IDs, validates authoritative
+`blockedBy` edges, then wakes the existing orchestrator with an explicit
+project-scope envelope. This is an adapter-only compatibility bridge: Paperclip
+currently preserves `wakeReason` but can discard custom wake payload fields
+when it coalesces an on-demand wake into a timer run. The envelope is accepted
+only for on-demand wakes and is resolved from the server-owned heartbeat run
+snapshot; malformed, missing, or conflicting scope evidence fails closed rather
+than widening to a company-wide tick. Remove the envelope only once Paperclip
+persists typed wake payloads through coalescing and every adapter invocation.
+
+An on-demand wake must not be merged into a heartbeat that has already entered
+`running`: the adapter may have already read that timer's scope and begun its
+project loop, so no adapter-side reread can undo work already started. Paperclip
+must queue a successor run for that case. The adapter logs an allowlisted scope
+evidence record (`source`, `reason`, `wakeSource`, `wakeReason`, and direct
+scope IDs) to make any server/adapter projection mismatch diagnosable without
+writing tokens, payload bodies, or other sensitive run context to logs.
+
 ## Live Adapter Reload and Native-Review Recovery
 
 External adapter modules are loaded from their built `dist/` entries when the
@@ -129,45 +158,25 @@ heartbeat to reconcile the managed worker fleet before waking a reviewer.
 
 For a failed native review, inspect the addressed card and reviewer runs first.
 Recover only when exactly one card remains pending and the reviewer has no
-queued/running run. Reuse that card through
+queued/running run. The adapter re-reads both immediately before its legacy
+compatibility wake; if the card was answered, dispatch is still in its normal
+grace period, a run is live, or the read fails, it emits no wake or comment.
+Reuse that card through
 `packages/orchestrator/scripts/recover-native-review.mjs`; do not create a new
 card or post a prose fallback. A successful review must make that same card
 `answered`; a legitimate reject returns work to the implementer and is not a
 transport failure.
 
-Jules plan forms are owned by an addressed reviewer child while the immutable
-plan document remains on the Jules parent. Paperclip's `wake_assignee`
-continuation therefore wakes the child reviewer, not Jules. The orchestrator's
-temporary typed bridge accepts only a resolved v2 card whose parent, provider
-session, document target, and revision agree; it then completes that exact
-child before restoring the parent monitor and issuing one closed-protocol
-Jules wake. This ordering matters because Paperclip can retain a real
-parent-blocking edge even when the child was requested with
-`blockParentUntilDone: false`. The bridge never reads reviewer prose and never
-creates a replacement form. Replace it when Paperclip exposes an atomic
-cross-issue interaction continuation that also finalizes the protocol child.
-
-The current managed Codex reviewer transport stores a mode-0600, non-secret
-**static** context file beside its dedicated `CODEX_HOME`. It contains only the
-Paperclip API base, company, and reviewer agent identity. It must never contain
-issue or run identity: that home is shared by every project, so persisting
-mutable task identity lets a later heartbeat redirect a reviewer to another
-issue. The MCP process prefers `PAPERCLIP_TASK_ID` and `PAPERCLIP_RUN_ID` from
-its active Paperclip environment. When Codex fails to forward task scope into a
-configured MCP child, the adapter-compatible fallback searches only that
-reviewer's assigned live issues and proceeds only if exactly one addressed
-pending card exists. A missing, conflicting, or ambiguous identity fails
-closed—there is no recency heuristic or model-supplied card ID. Remove this
-compatibility layer when Paperclip atomically passes a native interaction
-binding and immutable run environment to reviewer processes.
-
-The `recover-native-review.mjs` operator command is intentionally fail-closed
-when recovery would first need to restore issue ownership. On Paperclip
-2026.831.1 that ownership patch can enqueue an unbound run before the typed
-card wake, so HTTP 202 does not prove a card-bound recovery. It returns
-`host_card_requeue_required` rather than patching and claiming success. Remove
-this fence when Paperclip exposes an atomic `requeue pending addressed
-interaction` operation.
+The current managed Codex reviewer transport stores a mode-0600, non-secret,
+static identity file beside its dedicated `CODEX_HOME`. This is an adapter-only
+compatibility fallback for Paperclip/Codex launches that rewrite `config.toml`
+and strip MCP environment entries. It contains only API base, company, and
+agent ids—never task, run, token, interaction id, or verdict. At invocation,
+the bridge requires exactly one live run for that reviewer, reads its
+authoritative typed interaction binding, and sends both lookup and verdict
+requests with that run ID. Zero, stale, or multiple candidate runs fail closed.
+Remove this workaround when Paperclip atomically passes the native interaction
+binding and runtime environment into the reviewer process.
 
 This MCP implementation is one implementation of the shared structured-decision
 contract, not the contract itself. ACP adapters and remote/provider adapters

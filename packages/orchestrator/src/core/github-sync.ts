@@ -1,8 +1,27 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { promisify } from "node:util";
 import { GitHubPullRequest, GitHubSyncStatus, ParsedIssueMetadata } from "./types.js";
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Paperclip's isolated adapter runner may sanitize PATH even when the host
+ * service has GitHub CLI installed. Prefer an explicitly configured binary,
+ * then the conventional absolute system locations, while retaining ordinary
+ * PATH lookup for portable installations.
+ */
+export function resolveGitHubCliExecutable(
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+  pathExists: (candidate: string) => boolean = existsSync,
+): string {
+  const configured = environment["PAPERCLIP_GH_PATH"]?.trim();
+  if (configured) return configured;
+  for (const candidate of ["/usr/bin/gh", "/usr/local/bin/gh"]) {
+    if (pathExists(candidate)) return candidate;
+  }
+  return "gh";
+}
 
 /**
  * Pure helper to match a GitHub PR to a Paperclip issue by UUID, identifier, issue number, or PR URL.
@@ -168,6 +187,31 @@ export function buildGitHubPullRequestListArgs(repository: string | undefined, l
   return args;
 }
 
+/**
+ * Inspect one board-registered PR by its canonical GitHub URL.  Discovery is
+ * deliberately bounded per heartbeat, while a pending terminal approval is a
+ * durable, high-value signal that warrants this targeted lookup.
+ */
+export function buildGitHubPullRequestViewArgs(prUrl: string): string[] {
+  return [
+    "pr", "view", prUrl,
+    "--json", "number,title,state,headRefName,headRefOid,baseRefName,mergedAt,url,files",
+  ];
+}
+
+/**
+ * A PR work product is authoritative for its repository.  Passing `--repo`
+ * keeps review observation independent of whichever project checkout happens
+ * to be the current process cwd.
+ */
+export function buildGitHubPullRequestCheckArgs(prNumber: number, prUrl?: string): string[] {
+  const args = ["pr", "checks", String(prNumber)];
+  const match = prUrl?.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/\d+\/?$/i);
+  if (match) args.push("--repo", `${match[1]}/${match[2]}`);
+  args.push("--json", "state,bucket,name");
+  return args;
+}
+
 export async function fetchGitHubPullRequests(
   workspacePath: string,
   limit = 50,
@@ -175,7 +219,7 @@ export async function fetchGitHubPullRequests(
 ): Promise<GitHubSyncStatus> {
   try {
     const { stdout } = await execFileAsync(
-      "gh",
+      resolveGitHubCliExecutable(),
       buildGitHubPullRequestListArgs(repository, limit),
       // Remote verification must not consume an entire heartbeat when gh is
       // unauthenticated or waiting on a broken network connection. Registered
@@ -202,6 +246,31 @@ export async function fetchGitHubPullRequests(
       openPrFiles: Object.freeze(new Set<string>()),
       error: msg,
     };
+  }
+}
+
+/**
+ * Return the current remote state of an explicitly registered GitHub PR.
+ * This prevents an old merged PR from being hidden by the bounded discovery
+ * list while avoiding an unbounded scan of every historical PR on each tick.
+ */
+export async function fetchGitHubPullRequest(
+  workspacePath: string,
+  prUrl: string,
+): Promise<GitHubPullRequest | undefined> {
+  if (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+\/?$/i.test(prUrl)) return undefined;
+  try {
+    const { stdout } = await execFileAsync(
+      resolveGitHubCliExecutable(),
+      buildGitHubPullRequestViewArgs(prUrl),
+      { cwd: workspacePath, timeout: 8_000 },
+    );
+    const raw = JSON.parse(stdout);
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+    const result = processRawPullRequests([raw as RawPullRequestItem]);
+    return result.openPrs[0] ?? result.mergedPrs[0];
+  } catch {
+    return undefined;
   }
 }
 
@@ -235,6 +304,42 @@ export interface PrCiCheckResult {
    * service lost GitHub access.  The latter must be made loud by the caller.
    */
   readonly accessProblem?: string | undefined;
+}
+
+/**
+ * A managed provider may explicitly declare that its PR lane has no external
+ * CI gate. Keep that policy decision separate from GitHub observation: a
+ * missing GitHub credential must never turn an intentionally skipped gate
+ * into an infinite pending review state.
+ */
+export function resolvePrCiGate(
+  policy: unknown,
+  observed: PrCiCheckResult,
+): PrCiCheckResult {
+  return policy === "skip" ? { isGreen: true, status: "success" } : observed;
+}
+
+/**
+ * GitHub CLI uses exit code 1, rather than JSON, when a repository has no
+ * check suites. That is a completed CI observation, but only this exact
+ * terminal diagnostic is safe to distinguish from authentication or runtime
+ * failures.
+ */
+function ghFailureText(detail: unknown): string {
+  if (typeof detail === "string") return detail;
+  if (Buffer.isBuffer(detail)) return detail.toString("utf8");
+  return "";
+}
+
+export function classifyGhNoChecksResult(detail: unknown): boolean {
+  return ghFailureText(detail)
+    .split(/\r?\n/)
+    .some((line) => /^no checks reported on the ['"][^'"\n]+['"] branch\s*$/i.test(line.trim()));
+}
+
+/** Converts only the known terminal no-checks CLI result into CI evidence. */
+export function prCiResultFromGhFailure(detail: unknown): PrCiCheckResult | null {
+  return classifyGhNoChecksResult(detail) ? { isGreen: true, status: "none" } : null;
 }
 
 /** Classify GitHub access failures without including credentials or URLs. */
@@ -299,8 +404,8 @@ export async function checkPrCiIsGreen(
 
   try {
     const { stdout } = await execFileAsync(
-      "gh",
-      ["pr", "checks", String(prNumber), "--json", "state,bucket,name"],
+      resolveGitHubCliExecutable(),
+      buildGitHubPullRequestCheckArgs(prNumber, prUrl),
       { cwd: cwd || process.cwd(), timeout: 15000 }
     );
     const checks = JSON.parse(stdout);
@@ -322,6 +427,15 @@ export async function checkPrCiIsGreen(
     );
     return { isGreen: allPassed, status: allPassed ? "success" : "pending" };
   } catch (err: unknown) {
+    const detail = err instanceof Error
+      ? [
+          (err as Error & { readonly stdout?: unknown }).stdout,
+          (err as Error & { readonly stderr?: unknown }).stderr,
+          err.message,
+        ].map(ghFailureText).filter(Boolean).join("\n")
+      : String(err);
+    const terminalResult = prCiResultFromGhFailure(detail);
+    if (terminalResult) return terminalResult;
     // The orchestrator is also used with Paperclip's built-in/local workers,
     // where the service may not have the user's gh credential or even a gh
     // binary. Fall back to GitHub's read-only REST endpoints when the PR URL

@@ -22,6 +22,8 @@ describe("Workspace Consistency Module", () => {
     });
     expect(report.isClean).toBe(false);
     expect(report.isConsistent).toBe(true);
+    expect(report.status).toBe("unhealthy");
+    expect(report.observation.type).toBe("dirty");
     expect(report.warning).toContain("uncommitted changes");
   });
 });

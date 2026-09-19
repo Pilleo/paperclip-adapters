@@ -17,7 +17,6 @@ export type ApprovalDecision =
       title: string;
       description: string;
       issueId: string;
-      targetAgentId: string;
       issueUrl?: string | undefined;
     }
   | { action: "AWAIT_APPROVAL"; approvalId: string; reason: string }
@@ -41,12 +40,19 @@ export function findTaskStartApproval(
   return approvals.find((approval) => isTaskStartApprovalForIssue(approval, issueId));
 }
 
-/** Assigned or in_progress work while task_start is still pending is a gate violation. */
+/**
+ * A pending task-start approval gates executor dispatch only. Native review is
+ * a terminal handoff from that executor, so it must never be reclaimed merely
+ * because a historical start card remains pending.
+ */
 export function shouldReclaimUnapprovedStart(
   issue: { readonly id: string; readonly status: string; readonly assigneeAgentId?: string | null | undefined },
   approvals: readonly PaperclipApprovalSummary[],
+  promotedToNativeReviewThisHeartbeat: boolean = false,
 ): boolean {
   if (issue.status === "done" || issue.status === "cancelled") return false;
+  if (promotedToNativeReviewThisHeartbeat) return false;
+  if (issue.status === "in_review") return false;
   const start = findTaskStartApproval(approvals, issue.id);
   if (!start || start.status !== "pending") return false;
   if (issue.assigneeAgentId) return true;
@@ -55,7 +61,6 @@ export function shouldReclaimUnapprovedStart(
 
 export function evaluateTaskStartApproval(
   issue: ParsedIssueMetadata,
-  targetAgentId: string,
   existingApprovals: readonly PaperclipApprovalSummary[],
   requireApproval: boolean = true,
   options: { companyUrlKey?: string; apiUrl?: string } = {}
@@ -91,17 +96,15 @@ export function evaluateTaskStartApproval(
 | **Issue Identifier** | \`${issue.identifier || issue.id}\` |
 | **Priority** | **${issue.priority.toUpperCase()}** |
 | **Component** | \`${issue.component || "core"}\` |
-| **Target Worker** | \`${targetAgentId}\` |
 ${symbolsDesc}${filesDesc}
 
-*Approving this authorization will dispatch the worker to begin implementation.*`;
+*Approving this authorization allows the orchestrator to dispatch a compatible worker once the task is dependency-ready.*`;
 
     return {
       action: "CREATE_APPROVAL_REQUEST",
       title,
       description,
       issueId: issue.id,
-      targetAgentId,
       issueUrl: issueLink,
     };
   }
@@ -162,8 +165,9 @@ export function evaluatePrMergeApproval(
         app.issueIds.includes(issue.id) ||
         app.payload?.["issueId"] === issue.id ||
         // PR numbers are scoped to a repository, not a Paperclip company.
-        // Prefer the immutable canonical URL when it is available; retain
-        // number matching only for legacy callers that do not have one.
+        // A company can contain several repositories with PR #3, so use the
+        // canonical URL when the caller has it. Keep number-only matching for
+        // legacy callers that genuinely have no immutable PR URL.
         (normalizedPrUrl
           ? typeof app.payload?.["prUrl"] === "string" && app.payload["prUrl"].replace(/\/$/, "") === normalizedPrUrl
           : app.payload?.["prNumber"] === prNumber)

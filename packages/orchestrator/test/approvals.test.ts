@@ -35,18 +35,18 @@ function createMockIssue(overrides: Partial<ParsedIssueMetadata> = {}): ParsedIs
 describe("evaluateTaskStartApproval", () => {
   it("dispatches immediately if requireApproval is false", () => {
     const issue = createMockIssue();
-    const decision = evaluateTaskStartApproval(issue, "agent-1", [], false);
+    const decision = evaluateTaskStartApproval(issue, [], false);
     expect(decision.action).toBe("DISPATCH");
   });
 
   it("requests approval if no existing approval exists", () => {
     const issue = createMockIssue();
-    const decision = evaluateTaskStartApproval(issue, "agent-jules", []);
+    const decision = evaluateTaskStartApproval(issue, []);
     expect(decision.action).toBe("CREATE_APPROVAL_REQUEST");
     if (decision.action === "CREATE_APPROVAL_REQUEST") {
       expect(decision.title).toContain("MAZ-100");
       expect(decision.description).toContain("enforcer");
-      expect(decision.targetAgentId).toBe("agent-jules");
+      expect(decision.description).not.toContain("Target Worker");
     }
   });
 
@@ -60,7 +60,7 @@ describe("evaluateTaskStartApproval", () => {
         issueIds: ["issue-1"],
       },
     ];
-    const decision = evaluateTaskStartApproval(issue, "agent-jules", existing);
+    const decision = evaluateTaskStartApproval(issue, existing);
     expect(decision.action).toBe("AWAIT_APPROVAL");
     if (decision.action === "AWAIT_APPROVAL") {
       expect(decision.approvalId).toBe("app-123");
@@ -77,7 +77,7 @@ describe("evaluateTaskStartApproval", () => {
         issueIds: ["issue-1"],
       },
     ];
-    const decision = evaluateTaskStartApproval(issue, "agent-jules", existing);
+    const decision = evaluateTaskStartApproval(issue, existing);
     expect(decision.action).toBe("DISPATCH");
     if (decision.action === "DISPATCH") {
       expect(decision.reason).toContain("app-123");
@@ -96,6 +96,12 @@ describe("evaluateTaskStartApproval", () => {
       issue: { id: "issue-1", status: "in_progress", assigneeAgentId: "jules-1" },
       status: "pending" as const,
       reclaim: true,
+    },
+    {
+      desc: "unassigned native review with a pending historical start approval is preserved",
+      issue: { id: "issue-1", status: "in_review", assigneeAgentId: null },
+      status: "pending" as const,
+      reclaim: false,
     },
     {
       desc: "approved start is not reclaimed",
@@ -126,8 +132,16 @@ describe("evaluateTaskStartApproval", () => {
         issueIds: ["issue-1"],
       },
     ];
-    const decision = evaluateTaskStartApproval(issue, "agent-jules", existing);
+    const decision = evaluateTaskStartApproval(issue, existing);
     expect(decision.action).toBe("SKIP_REJECTED");
+  });
+
+  it("does not reclaim an initial in-progress snapshot after this heartbeat promoted its PR to review", () => {
+    expect(shouldReclaimUnapprovedStart(
+      { id: "issue-1", status: "in_progress", assigneeAgentId: "jules-1" },
+      [{ id: "app-123", type: "task_start_approval", status: "pending", issueIds: ["issue-1"] }],
+      true,
+    )).toBe(false);
   });
 });
 

@@ -98,12 +98,50 @@ describe("createPaperclipHttp wakeup", () => {
     expect(new Headers(init.headers).get("Idempotency-Key")).toBe("wake:issue-834:cursor-1");
   });
 
+  it("keeps the compatibility comment anchor separate from the native interaction id", async () => {
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 202 }));
+    globalThis.fetch = fetchMock as typeof fetch;
+    const pc = createPaperclipHttp({ apiUrl: "http://127.0.0.1:3100", localTrustedBoardWrites: true });
+
+    await pc.wakeup("agent-luna", "issue_commented", "issue-834", {
+      reviewInteractionId: "card-834",
+      wakeCommentId: "comment-834",
+      source: "automation",
+      triggerDetail: "system",
+      idempotencyKey: "wake:issue-834:card-834",
+    });
+
+    const body = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body));
+    expect(body.payload).toMatchObject({
+      issueId: "issue-834",
+      interactionId: "card-834",
+      interactionKind: "request_item_verdicts",
+      commentId: "comment-834",
+    });
+    expect(body.source).toBe("automation");
+    expect(body.triggerDetail).toBe("system");
+  });
+
   it("cancels a stale heartbeat run through the board recovery route", async () => {
     const fetchMock = vi.fn(async () => new Response('{"status":"cancelled"}', { status: 200 }));
     globalThis.fetch = fetchMock as typeof fetch;
     const pc = createPaperclipHttp({ apiUrl: "http://127.0.0.1:3100", localTrustedBoardWrites: true });
     await expect(pc.cancelHeartbeatRun("run-stale", "recover review")).resolves.toMatchObject({ ok: true, data: { status: "cancelled" } });
     expect(fetchMock.mock.calls[0]?.[0]).toBe("http://127.0.0.1:3100/api/heartbeat-runs/run-stale/cancel");
+  });
+
+  it("loads the authoritative heartbeat run by encoded id", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      id: "run/1",
+      agentId: "orch-1",
+      contextSnapshot: { projectId: "project-b" },
+    }), { status: 200 }));
+    globalThis.fetch = fetchMock as typeof fetch;
+    const pc = createPaperclipHttp({ apiUrl: "http://127.0.0.1:3100", authToken: "token", runId: "run/1" });
+
+    await expect(pc.getHeartbeatRun("run/1")).resolves.toMatchObject({ id: "run/1" });
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://127.0.0.1:3100/api/heartbeat-runs/run%2F1");
+    expect((fetchMock.mock.calls[0]?.[1] as RequestInit).method).toBe("GET");
   });
 
   it("uses the implicit local board actor for company-level mutations", async () => {
@@ -129,6 +167,20 @@ describe("createPaperclipHttp wakeup", () => {
 
     const pc = createPaperclipHttp({
       apiUrl: "http://127.0.0.1:3100",
+      localTrustedBoardWrites: true,
+    });
+    await expect(pc.listProjects("company-1")).resolves.toEqual([]);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://127.0.0.1:3100/api/companies/company-1/projects");
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(new Headers(init.headers).get("Authorization")).toBeNull();
+  });
+
+  it("keeps loopback trusted access when the configured API URL already ends in /api", async () => {
+    const fetchMock = vi.fn(async () => new Response("[]", { status: 200 }));
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const pc = createPaperclipHttp({
+      apiUrl: "http://127.0.0.1:3100/api",
       localTrustedBoardWrites: true,
     });
     await expect(pc.listProjects("company-1")).resolves.toEqual([]);
@@ -196,6 +248,23 @@ describe("createPaperclipHttp wakeup", () => {
     await expect(pc.patchWorkProduct("wp-834", { status: "merged", reviewState: "approved" })).resolves.toMatchObject({ ok: true });
     expect(fetchMock.mock.calls[0]?.[0]).toBe("http://127.0.0.1:3100/api/work-products/wp-834");
     expect((fetchMock.mock.calls[0]?.[1] as RequestInit).method).toBe("PATCH");
+  });
+
+  it("rejects a superseded merge approval through the typed board route", async () => {
+    const fetchMock = vi.fn(async () => new Response('{"status":"rejected"}', { status: 200 }));
+    globalThis.fetch = fetchMock as typeof fetch;
+    const pc = createPaperclipHttp({ apiUrl: "http://127.0.0.1:3100", localTrustedBoardWrites: true });
+    const note = "Superseded automatically: GitHub confirmed PR #4 is merged. This is not a rejection of the implementation.";
+
+    await expect(pc.rejectApproval("approval-1522", note)).resolves.toMatchObject({
+      ok: true,
+      data: { status: "rejected" },
+    });
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://127.0.0.1:3100/api/approvals/approval-1522/reject");
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({ decisionNote: note });
   });
 
   it("creates and lists native issue interactions", async () => {

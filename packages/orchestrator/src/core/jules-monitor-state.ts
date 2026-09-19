@@ -44,3 +44,12 @@ export function classifyJulesPrReviewDisposition(input: {
     }
   }
 }
+
+/** Compatibility predicate for callers that only need the review-eligible arm. */
+export function canPromoteJulesPrToReview(input: {
+  readonly ciGreen: boolean;
+  readonly currentHeadRejected: boolean;
+  readonly executionPolicy?: unknown;
+}): boolean {
+  return input.ciGreen && classifyJulesPrReviewDisposition(input).kind === "eligible_for_review";
+}

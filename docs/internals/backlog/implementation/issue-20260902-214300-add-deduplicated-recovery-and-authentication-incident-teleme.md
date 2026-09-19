@@ -20,7 +20,7 @@ open_questions: false
 has_side_effects: true
 
 paperclip_issue_id: "a9935358-470e-4e2f-8e2f-0bb511fd3eca"
-paperclip_identifier: "JUL-7"
+paperclip_identifier: ""
 ---
 
 # 🔴 [Severity: HIGH]: Add deduplicated recovery and authentication incident telemetry

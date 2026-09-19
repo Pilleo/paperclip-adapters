@@ -42,13 +42,16 @@ describe("pull-request reconciliation reducer", () => {
     });
   });
 
-  it("is a no-op after the merged metadata and audit are already settled", () => {
+  it("continues reconciliation to invalidate a pending merge approval after metadata is settled", () => {
     expect(decidePullRequestReconciliation(baseInput({
       issueStatus: "done",
       workProduct: { id: "wp-834", status: "merged", reviewState: "approved", url: "https://github.com/Pilleo/paperclip-adapters/pull/3" },
       mergeApproval: { id: "approval-834", status: "pending" },
       auditAlreadyRecorded: true,
-    }))).toMatchObject({ action: "NOOP" });
+    }))).toMatchObject({
+      action: "NORMALIZE_MERGED_METADATA",
+      cancelMergeApprovalId: "approval-834",
+    });
   });
 
   it("allows review recovery only for an explicitly open PR", () => {

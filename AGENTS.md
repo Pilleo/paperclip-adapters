@@ -48,5 +48,4 @@ Because this project manages autonomous AI coding agents interacting with produc
 
 - Outline with `./scripts/adkw slice <file-or-class>` (or the file_structure skill) before a full source-file view.
 - Before modifying a core symbol, run `./scripts/adkw doctor` then `./scripts/adkw blast-radius <SymbolName>`.
-- After edits, hooks run `adk hook` (syntax). Delivery uses `./scripts/adkw guard <file> --stage compile|test|delivery`.
 - Scaffold issues with `./scripts/adkw new-issue --title "<title>"` and run `./scripts/adkw check-backlog` before completion.

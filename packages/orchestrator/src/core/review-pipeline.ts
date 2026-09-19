@@ -272,7 +272,11 @@ export function evaluateReviewPipelineProgress(
         key.startsWith(`${reviewInteractionKeyPrefix(identity)}:attempt:`) || (
         key.includes(`:${issue.id}:`) &&
         (reviewHeadSha
-          ? /^pr-review:v(?:9|10|11|12):/.test(key) && key.endsWith(`:${reviewHeadSha}:${stage}`)
+          // v13 initially shipped without a contract fingerprint. Accept
+          // those already-answered cards for the same immutable head during
+          // rolling upgrades; otherwise the executor and the durable ladder
+          // guard disagree and allocate another reviewer turn.
+          ? /^pr-review:v(?:9|10|11|12|13):/.test(key) && key.endsWith(`:${reviewHeadSha}:${stage}`)
           // If GitHub could not provide the current head, retain only a
           // versioned review card carrying a real commit SHA; do not fall
           // back to prose or an unbound URL-only card.

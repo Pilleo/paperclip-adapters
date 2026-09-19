@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { buildGitHubPullRequestListArgs, checkPrCiIsGreen, describeGitHubAccessProblem, hasUnreviewedReadyPullRequest, matchPrToIssue, processRawPullRequests, registeredPullRequestFromIssue } from "../src/core/github-sync.js";
+import { buildGitHubPullRequestCheckArgs, buildGitHubPullRequestListArgs, buildGitHubPullRequestViewArgs, checkPrCiIsGreen, classifyGhNoChecksResult, describeGitHubAccessProblem, hasUnreviewedReadyPullRequest, matchPrToIssue, prCiResultFromGhFailure, processRawPullRequests, registeredPullRequestFromIssue, resolveGitHubCliExecutable, resolvePrCiGate } from "../src/core/github-sync.js";
 import { extractIssueMetadata } from "../src/core/parser.js";
 import { GitHubPullRequest } from "../src/core/types.js";
 
@@ -29,6 +29,13 @@ describe("GitHub PR Sync Module", () => {
   it("uses an explicit repository when building gh discovery arguments", () => {
     expect(buildGitHubPullRequestListArgs("Pilleo/paperclip-adapters", 50)).toEqual([
       "pr", "list", "--repo", "Pilleo/paperclip-adapters", "--state", "all", "--limit", "50",
+      "--json", "number,title,state,headRefName,headRefOid,baseRefName,mergedAt,url,files",
+    ]);
+  });
+
+  it("uses the canonical registered URL for a targeted historical PR lookup", () => {
+    expect(buildGitHubPullRequestViewArgs("https://github.com/acme/repo/pull/17")).toEqual([
+      "pr", "view", "https://github.com/acme/repo/pull/17",
       "--json", "number,title,state,headRefName,headRefOid,baseRefName,mergedAt,url,files",
     ]);
   });
@@ -75,6 +82,52 @@ describe("GitHub PR Sync Module", () => {
       if (originalPath === undefined) delete process.env["PATH"];
       else process.env["PATH"] = originalPath;
     }
+  });
+
+  it.each([
+    ["uses an explicit runtime override", { PAPERCLIP_GH_PATH: "/runtime/bin/gh" }, new Set<string>(), "/runtime/bin/gh"],
+    ["uses the system gh when the runner PATH was sanitized", {}, new Set(["/usr/bin/gh"]), "/usr/bin/gh"],
+    ["keeps normal PATH lookup when no known absolute path exists", {}, new Set<string>(), "gh"],
+  ])("%s", (_name, environment, existingPaths, expected) => {
+    expect(resolveGitHubCliExecutable(environment, (candidate) => existingPaths.has(candidate))).toBe(expected);
+  });
+
+  it.each([
+    ["GitHub CLI's exact no-checks terminal result", "no checks reported on the 'feature' branch", true],
+    ["the exact no-checks stderr line wrapped by node's command error", "Command failed: gh pr checks 7\nno checks reported on the 'feature' branch\n", true],
+    ["a no-checks phrase embedded in another failure", "HTTP 403: no checks reported on the 'feature' branch", false],
+    ["an authentication failure", "HTTP 403 rate limit exceeded", false],
+  ])("classifies %s without treating GitHub access failures as no-CI", (_name, detail, expected) => {
+    expect(classifyGhNoChecksResult(detail)).toBe(expected);
+  });
+
+  it("turns only GitHub CLI's no-checks exit into a review-eligible CI result", () => {
+    expect(prCiResultFromGhFailure("no checks reported on the 'feature' branch")).toEqual({
+      isGreen: true,
+      status: "none",
+    });
+    expect(prCiResultFromGhFailure("HTTP 403 rate limit exceeded")).toBeNull();
+  });
+
+  it("recognizes the Buffer stderr emitted by node execFile for no-checks exits", () => {
+    expect(prCiResultFromGhFailure(Buffer.from("no checks reported on the 'canary' branch\n"))).toEqual({
+      isGreen: true,
+      status: "none",
+    });
+  });
+
+  it("treats a managed worker's explicit CI-skip policy as a successful gate", () => {
+    expect(resolvePrCiGate("skip", {
+      isGreen: false,
+      status: "pending",
+      accessProblem: "GitHub rest access is unavailable (HTTP 403).",
+    })).toEqual({ isGreen: true, status: "success" });
+  });
+
+  it("checks a registered PR against its URL repository rather than the local cwd remote", () => {
+    expect(buildGitHubPullRequestCheckArgs(17, "https://github.com/acme/repo/pull/17")).toEqual([
+      "pr", "checks", "17", "--repo", "acme/repo", "--json", "state,bucket,name",
+    ]);
   });
 
   it("retains the immutable PR head SHA for review-card invalidation", () => {

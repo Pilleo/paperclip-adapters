@@ -10,7 +10,7 @@ export interface OrchestratorDashboardParams {
   resolvedCount: number;
   todoCount: number;
   julesRunning: number;
-  julesNewSessionBudget: number;
+  julesCapacity: number;
   vibeRunning: number;
   vibeCapacity: number;
   ghStatus: GitHubSyncStatus;
@@ -25,17 +25,15 @@ export interface OrchestratorDashboardParams {
 
 export function formatOrchestratorDashboardCard(params: OrchestratorDashboardParams): string {
   const now = params.nowMs ?? Date.now();
-  let julesStatusStr = "";
-
-  if (params.rateLimitPausedUntilMs && params.rateLimitPausedUntilMs > now) {
+  const julesStatusStr = params.rateLimitPausedUntilMs && params.rateLimitPausedUntilMs > now
+    ? (() => {
     const remainingSec = Math.ceil((params.rateLimitPausedUntilMs - now) / 1000);
     const mins = Math.floor(remainingSec / 60);
     const secs = remainingSec % 60;
     const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
-    julesStatusStr = `⏸️ **Paused** (Rate limit cooldown: \`${timeStr}\` remaining)`;
-  } else {
-    julesStatusStr = `⚡ **Queueing** (\`${params.julesRunning}\` provider session(s) monitored, \`${params.julesNewSessionBudget}\` new starts/heartbeat)`;
-  }
+    return `⏸️ **Paused** (rate-limit cooldown: \`${timeStr}\` remaining)`;
+  })()
+    : `Jules queue: \`${params.julesRunning}/${params.julesCapacity}\` configured active assignments`;
 
   const budgetRow = params.dailyBudget
     ? `\n| **Daily Cloud Spend** | ${formatBudgetTelemetrySummary(params.dailyBudget)} |`
@@ -51,7 +49,7 @@ export function formatOrchestratorDashboardCard(params: OrchestratorDashboardPar
       ? `\n\n#### 🔒 Active File Locks (${params.ghStatus.openPrFiles.size} locked files)\n| File / Symbol | Lock Source |\n|---|---|\n${lockRows}${params.ghStatus.openPrFiles.size > 10 ? "\n| ... | ... |" : ""}`
       : "";
 
-  const incidentsSection = params.agentHealth && !params.agentHealth.isHealthy
+  const incidentsSection = params.agentHealth && params.agentHealth.incidents.length > 0
     ? `
 
 ${formatAgentHealthAlertDigest(params.agentHealth)}`

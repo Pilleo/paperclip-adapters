@@ -48,22 +48,31 @@ function reviewContractFingerprint(markdown: string | undefined): string | undef
 }
 
 /**
- * A pending native question is an unresolved execution decision, regardless of
- * which provider or adapter produced it. PR review must not start in parallel:
- * doing so spends reviewer quota against code that the worker is explicitly
- * waiting to clarify and creates two competing owners for one issue.
+ * A pending provider question is an unresolved execution decision. PR review
+ * must not start in parallel: doing so spends reviewer quota against code that
+ * the worker is explicitly waiting to clarify and creates two competing owners
+ * for one issue. Workspace-sync holds are different: they are orchestrator
+ * control-plane prompts, not worker questions, and must not strand an already
+ * open PR without a reviewer.
  */
 export function hasPendingBlockingQuestion(
-  interactions: readonly Pick<NativeReviewInteraction, "kind" | "status">[],
+  interactions: readonly Pick<NativeReviewInteraction, "kind" | "status" | "idempotencyKey">[],
 ): boolean {
   return interactions.some((interaction) =>
-    interaction.kind === "ask_user_questions" && interaction.status === "pending"
+    interaction.kind === "ask_user_questions" &&
+    interaction.status === "pending" &&
+    !isWorkspaceSyncHold(interaction.idempotencyKey)
   );
+}
+
+function isWorkspaceSyncHold(idempotencyKey: string | undefined): boolean {
+  return idempotencyKey?.startsWith("workspace-sync:") === true ||
+    idempotencyKey?.startsWith("sync-hold:") === true;
 }
 
 /** Terminal review decisions must converge even while a question is pending. */
 export function shouldDeferPrReviewDispatch(
-  interactions: readonly Pick<NativeReviewInteraction, "kind" | "status">[],
+  interactions: readonly Pick<NativeReviewInteraction, "kind" | "status" | "idempotencyKey">[],
   isNewReviewDispatch: boolean,
 ): boolean {
   return isNewReviewDispatch && hasPendingBlockingQuestion(interactions);
@@ -276,6 +285,23 @@ export function hasNativeRejectionForHead(
   });
 }
 
+/** A completed current-head ladder belongs to the PR pipeline, not Jules recovery. */
+export function hasCompletedNativeApprovalLadderForHead(
+  interactions: readonly NativeReviewInteraction[],
+  issueId: string,
+  headSha: string,
+): boolean {
+  const approvedStages = new Set<"luna" | "terra">();
+  for (const interaction of interactions) {
+    const match = new RegExp(`^pr-review:v\\d+:${issueId}:.*:${headSha}:(luna|terra)(?::attempt:[1-9]\\d*)?$`, "i")
+      .exec(interaction.idempotencyKey || "");
+    if (!match || reviewVerdictFromInteraction(interaction, interaction.id)?.decision !== "all_good") continue;
+    const stage = match[1]?.toLowerCase();
+    if (stage === "luna" || stage === "terra") approvedStages.add(stage);
+  }
+  return approvedStages.has("luna") && approvedStages.has("terra");
+}
+
 /** Plans a single idempotent dialog effect. The adapter explicitly wakes the
  * assigned reviewer because Paperclip's addressed-card wake currently drops
  * interaction context before queued-run validation. */
@@ -338,6 +364,25 @@ export function buildReviewInteractionRequest(identity: ReviewInteractionIdentit
 /** Only legacy unaddressed cards need an explicit adapter wake. */
 export function shouldExplicitlyWakeReviewCard(request: ReviewInteractionRequest): boolean {
   return request.addresseeAgentId == null;
+}
+
+/**
+ * Paperclip dispatches a newly created addressed native card itself.  The
+ * adapter may wake only a previously-created unanswered card during explicit
+ * recovery.  Treating both paths alike creates an unbound second run after a
+ * verdict has already resolved the card, which Paperclip later tries to
+ * repair as a lost review path.
+ */
+export type ReviewRunDispatch = "native_card" | "manual_wake" | "recovery_wake" | "none";
+
+export function selectReviewRunDispatch(input: {
+  readonly dialogCreated: boolean;
+  readonly recovery: boolean;
+  readonly request?: ReviewInteractionRequest | undefined;
+}): ReviewRunDispatch {
+  if (input.recovery) return "recovery_wake";
+  if (!input.dialogCreated) return "none";
+  return input.request && shouldExplicitlyWakeReviewCard(input.request) ? "manual_wake" : "native_card";
 }
 
 /** Prevent internal Jules coordination and non-PR work entering the PR lane. */

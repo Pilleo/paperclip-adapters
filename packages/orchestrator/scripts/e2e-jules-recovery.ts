@@ -1,6 +1,6 @@
 import path from "node:path";
 import { projectRecoveryCanaryState } from "../src/core/recovery-canary-state.js";
-import { isCanonicalReviewCardKey } from "../src/core/review-interaction-state.js";
+import { EXPLICIT_PROJECT_WAKE_REASON_PREFIX } from "../src/core/heartbeat-project-scope.js";
 
 /**
  * Fast, destructive-by-design E2E canary for the Jules open-PR recovery path.
@@ -78,13 +78,6 @@ function pendingReviewCards(value: Json): Record<string, any>[] {
     interaction && typeof interaction === "object" &&
     interaction.kind === "request_item_verdicts" && interaction.status === "pending",
   ) as Record<string, any>[];
-}
-
-/** Keep the canary aligned with the adapter's immutable v13 card grammar. */
-function isPendingNativeStageCard(card: Record<string, any>, stage: "luna" | "terra"): boolean {
-  const key = String(card.idempotencyKey || "");
-  return isCanonicalReviewCardKey(key) &&
-    new RegExp(`:${stage}(?::contract:[a-z0-9]+)?(?::attempt:[1-9]\\d*)?$`).test(key);
 }
 
 async function submitReviewVerdict(issueId: string, interactionId: string, verdict: "approve" | "reject", reason?: string): Promise<void> {
@@ -176,62 +169,50 @@ async function main(): Promise<void> {
     // identities explicitly so this canary tests review routing, not fleet
     // authorization policy. Disable their scheduled heartbeats; the canary
     // asserts card binding and duplicate suppression before a model is woken.
-    const requestedLuna = requireObject(await request(`/api/companies/${companyId}/agents`, "POST", {
+    const luna = requireObject(await request(`/api/companies/${companyId}/agents`, "POST", {
       name: "[Orchestrated] Luna Fast Reviewer", role: "qa", adapterType: "codex_local",
       reportsTo: orch.id, runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: false } },
-      metadata: { managedBy: "paperclip-orchestrator", workerKey: "luna_reviewer" },
+      metadata: {
+        managedBy: "paperclip-orchestrator",
+        workerKey: "luna_reviewer",
+        structuredDecisionCapability: { version: 1, transports: ["mcp_tool"], decisionKinds: ["plan_review", "pull_request_review"] },
+      },
     }), "Luna reviewer");
-    const requestedTerra = requireObject(await request(`/api/companies/${companyId}/agents`, "POST", {
+    const terra = requireObject(await request(`/api/companies/${companyId}/agents`, "POST", {
       name: "[Orchestrated] Terra Strong Reviewer", role: "qa", adapterType: "codex_local",
       reportsTo: orch.id, runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: false } },
-      metadata: { managedBy: "paperclip-orchestrator", workerKey: "terra_reviewer" },
+      metadata: {
+        managedBy: "paperclip-orchestrator",
+        workerKey: "terra_reviewer",
+        structuredDecisionCapability: { version: 1, transports: ["mcp_tool"], decisionKinds: ["plan_review", "pull_request_review"] },
+      },
     }), "Terra reviewer");
     await request(`/api/agents/${orch.id}`, "PATCH", {
       adapterConfig: {
         reconcileFleet: true,
         apiUrl,
         backlogDirectory: ".paperclip-canary-empty",
-        lunaReviewerAgentId: requestedLuna.id,
-        terraReviewerAgentId: requestedTerra.id,
+        lunaReviewerAgentId: luna.id,
+        terraReviewerAgentId: terra.id,
       },
     });
     // Canonicalize the managed fleet before introducing the PR. The bootstrap
     // run has no actionable issue, so it can safely install reviewer protocol
-    // metadata without launching a reviewer. Afterwards freeze fleet mutation
-    // and disable on-demand reviewer execution; verdicts below use native API
-    // forms and must never consume model credentials or quota.
+    // metadata without launching a reviewer. It is nevertheless explicitly
+    // project-scoped: Paperclip rejects unscoped on-demand scheduler runs and
+    // the adapter must never expand an on-demand request to every project.
+    // Afterwards freeze fleet mutation and disable on-demand reviewer
+    // execution; verdicts below use native API forms and must never consume
+    // model credentials or quota.
     const bootstrapWake = requireObject(await request(`/api/agents/${orch.id}/wakeup`, "POST", {
       source: "on_demand",
-      reason: "e2e_jules_recovery_canary_fleet_bootstrap",
+      reason: `${EXPLICIT_PROJECT_WAKE_REASON_PREFIX}${project.id}`,
       idempotencyKey: `e2e-jules-recovery:${companyId}:fleet-bootstrap`,
       payload: {},
     }), "fleet bootstrap wake");
     const bootstrapRunId = String(bootstrapWake.id || "");
     if (!bootstrapRunId) throw new Error(`Paperclip bootstrap wake did not return a heartbeat run: ${JSON.stringify(bootstrapWake)}`);
     await waitForIssueExecution("", bootstrapRunId, "Fleet bootstrap");
-    // Reconciliation is allowed to replace a stale explicit reviewer when its
-    // native-decision capability cannot be repaired in place. The review
-    // canary must exercise the identities the orchestrator actually resolved,
-    // not the placeholders created before that reconciliation.
-    const fleetAfterBootstrap = await request(`/api/companies/${companyId}/agents`, "GET");
-    const findCanonicalReviewer = (workerKey: "luna_reviewer" | "terra_reviewer") => {
-      const agent = (Array.isArray(fleetAfterBootstrap) ? fleetAfterBootstrap : []).find((candidate) =>
-        candidate && typeof candidate === "object" &&
-        (candidate as Record<string, any>).metadata?.workerKey === workerKey &&
-        (candidate as Record<string, any>).metadata?.structuredDecisionCapability?.decisionKinds?.includes("pull_request_review"),
-      );
-      if (!agent || typeof agent !== "object") {
-        throw new Error(`Fleet bootstrap did not produce canonical ${workerKey}: ${JSON.stringify(fleetAfterBootstrap)}`);
-      }
-      return agent as Record<string, any>;
-    };
-    const luna = findCanonicalReviewer("luna_reviewer");
-    const terra = findCanonicalReviewer("terra_reviewer");
-    for (const reviewer of [luna, terra]) {
-      if (!["idle", "running", "busy"].includes(String(reviewer.status))) {
-        throw new Error(`Canary reviewer is not invokable after fleet bootstrap: ${JSON.stringify(reviewer)}`);
-      }
-    }
     for (const nonExecutableAgent of [jules, luna, terra]) {
       await request(`/api/agents/${nonExecutableAgent.id}`, "PATCH", {
         runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: false, maxConcurrentRuns: 1 } },
@@ -272,6 +253,22 @@ async function main(): Promise<void> {
       type: "pull_request", provider: "github", title: "Canary Jules PR", url: prUrl,
       externalId: prUrl, status: "ready_for_review", isPrimary: true, metadata: { source: "jules" },
     });
+    // Reproduce MAZ-1519: a normal implementation dispatch installed
+    // Paperclip's Luna/Terra execution policy before Jules registered its PR.
+    // The adapter must transfer ownership before it creates or evaluates a
+    // native card; otherwise Paperclip later retries an unrelated host-stage
+    // reviewer after both typed verdicts are already complete.
+    await request(`/api/issues/${issueId}`, "PATCH", {
+      status: "in_review",
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [
+          { type: "review", participants: [{ type: "agent", agentId: luna.id }], approvalsNeeded: 1 },
+          { type: "review", participants: [{ type: "agent", agentId: terra.id }], approvalsNeeded: 1 },
+        ],
+      },
+    });
     const childIds: string[] = [];
     for (const markerText of ["jules-session-supervisor", "jules-question-adjudication"]) {
       const child = requireObject(await request(`/api/issues/${issueId}/children`, "POST", {
@@ -281,7 +278,7 @@ async function main(): Promise<void> {
     }
     const wake = requireObject(await request(`/api/agents/${orch.id}/wakeup`, "POST", {
       source: "on_demand",
-      reason: "e2e_jules_recovery_canary",
+      reason: `${EXPLICIT_PROJECT_WAKE_REASON_PREFIX}${project.id}`,
       idempotencyKey: `e2e-jules-recovery:${issueId}:orchestrator`,
       // The scheduler heartbeat is company-scoped. Supplying issueId would
       // make Paperclip bind the run to the issue and then cancel that run as
@@ -291,21 +288,28 @@ async function main(): Promise<void> {
     const runId = String(wake.id || "");
     if (!runId) throw new Error(`Paperclip wake did not return a heartbeat run: ${JSON.stringify(wake)}`);
     await waitForIssueExecution(issueId, runId, "Orchestrator");
+    const transferRun = requireObject(await request(`/api/heartbeat-runs/${runId}`, "GET"), "native ownership transfer run");
+    if (String(transferRun.stdoutExcerpt || "").includes("Could not recover open Jules PR")) {
+      throw new Error(`Native ownership transfer must not attempt the obsolete partial issue patch: ${String(transferRun.stdoutExcerpt)}`);
+    }
     const recovered = requireObject(await request(`/api/issues/${issueId}`, "GET"), "recovered issue");
     const recoveredInteractions = await request(`/api/issues/${issueId}/interactions`, "GET");
     const pendingCards = (Array.isArray(recoveredInteractions) ? recoveredInteractions : [])
       .filter((interaction) => interaction && typeof interaction === "object" &&
         interaction.kind === "request_item_verdicts" && interaction.status === "pending");
-    const lunaCard = pendingCards.find((interaction) =>
-      isPendingNativeStageCard(interaction, "luna") &&
-      interaction.addresseeAgentId === luna.id &&
-      interaction.continuationPolicy === "none",
-    );
-    if (recovered.status !== "in_review" || recovered.assigneeAgentId !== luna.id || pendingCards.length !== 1 || !lunaCard) {
+    // Clearing the host policy can make the same heartbeat eligible to create
+    // the first native card. Both zero (handoff only) and one (handoff plus
+    // native dispatch) are valid, but it must never create a host-owned or
+    // duplicate review card.
+    if (recovered.status !== "in_review" || recovered.assigneeAgentId !== null ||
+        recovered.executionPolicy !== null || recovered.executionState !== null ||
+        pendingCards.length > 1 ||
+        (pendingCards.length === 1 &&
+          (!String(pendingCards[0]?.idempotencyKey || "").endsWith(":luna") ||
+            pendingCards[0]?.addresseeAgentId !== luna.id ||
+            pendingCards[0]?.continuationPolicy !== "none"))) {
       const canaryAgents = await request(`/api/companies/${companyId}/agents`, "GET");
       const canaryComments = await request(`/api/issues/${issueId}/comments`, "GET");
-      const canaryRun = await request(`/api/heartbeat-runs/${runId}`, "GET");
-      const recoveryActions = await request(`/api/issues/${issueId}/recovery-actions`, "GET");
       throw new Error(`Canary did not enter native review: ${JSON.stringify({
         status: recovered.status,
         assigneeAgentId: recovered.assigneeAgentId,
@@ -318,15 +322,37 @@ async function main(): Promise<void> {
           addresseeAgentId: card.addresseeAgentId,
           continuationPolicy: card.continuationPolicy,
         })),
-        expectedLunaAgentId: luna.id,
+        expectedNativeOwnershipTransfer: true,
         executionPolicy: recovered.executionPolicy ?? null,
         executionState: recovered.executionState ?? null,
-        orchestratorRun: canaryRun,
-        recoveryActions,
         agents: canaryAgents,
         comments: canaryComments,
       })}`);
     }
+    // A second heartbeat proves the policy-free issue retains or creates
+    // exactly one addressed Luna review without host execution-state ownership.
+    const ownershipWake = requireObject(await request(`/api/agents/${orch.id}/wakeup`, "POST", {
+      source: "on_demand",
+      reason: `${EXPLICIT_PROJECT_WAKE_REASON_PREFIX}${project.id}`,
+      idempotencyKey: `e2e-jules-recovery:${issueId}:native-ownership-transferred`,
+      payload: {},
+    }), "native ownership transferred wake");
+    await waitForIssueExecution(issueId, String(ownershipWake.id), "Native ownership transfer");
+    const nativeReviewIssue = requireObject(await request(`/api/issues/${issueId}`, "GET"), "native review issue");
+    const nativeReviewInteractions = await request(`/api/issues/${issueId}/interactions`, "GET");
+    const nativeReviewCards = pendingReviewCards(nativeReviewInteractions);
+    const nativeLunaCard = nativeReviewCards.find((interaction) =>
+      String(interaction.idempotencyKey || "").endsWith(":luna") &&
+      interaction.addresseeAgentId === luna.id && interaction.continuationPolicy === "none",
+    );
+    if (nativeReviewIssue.assigneeAgentId !== null || nativeReviewIssue.executionPolicy !== null ||
+        nativeReviewCards.length !== 1 || !nativeLunaCard) {
+      throw new Error(`Canary did not start one policy-free native Luna review: ${JSON.stringify({
+        issue: nativeReviewIssue,
+        pendingCards: nativeReviewCards,
+      })}`);
+    }
+    const lunaCard = nativeLunaCard;
     for (const childId of childIds) {
       const child = requireObject(await request(`/api/issues/${childId}`, "GET"), "stale child");
       if (child.status !== "done") throw new Error(`Stale child ${childId} was not closed`);
@@ -363,7 +389,7 @@ async function main(): Promise<void> {
     await request(`/api/issues/${issueId}`, "PATCH", { status: "backlog", assigneeAgentId: jules.id });
     const recoveryWake = requireObject(await request(`/api/agents/${orch.id}/wakeup`, "POST", {
       source: "on_demand",
-      reason: "e2e_jules_recovery_canary_restart_projection",
+      reason: `${EXPLICIT_PROJECT_WAKE_REASON_PREFIX}${project.id}`,
       idempotencyKey: `e2e-jules-recovery:${issueId}:orchestrator:restart-projection`,
       payload: {},
     }), "recovery orchestrator wake");
@@ -379,7 +405,7 @@ async function main(): Promise<void> {
     const stalePlanAfter = (Array.isArray(interactionsAfter) ? interactionsAfter : []).find((card) =>
       card && typeof card === "object" && String((card as Record<string, unknown>).id) === String(stalePlan.id),
     ) as Record<string, unknown> | undefined;
-    if (repeated.status !== "in_review" || repeated.assigneeAgentId !== luna.id ||
+    if (repeated.status !== "in_review" || repeated.assigneeAgentId !== null ||
         recoveredPrCards.length !== 1 || !recoveredLunaCard || stalePlanAfter?.status !== "cancelled") {
       throw new Error(`Canary did not recover the typed PR review authority: ${JSON.stringify({
         status: repeated.status,
@@ -394,7 +420,7 @@ async function main(): Promise<void> {
     const issueBefore = issueAfter;
     const repeatWake = requireObject(await request(`/api/agents/${orch.id}/wakeup`, "POST", {
       source: "on_demand",
-      reason: "e2e_jules_recovery_canary_repeat",
+      reason: `${EXPLICIT_PROJECT_WAKE_REASON_PREFIX}${project.id}`,
       idempotencyKey: `e2e-jules-recovery:${issueId}:orchestrator:repeat`,
       payload: {},
     }), "repeat orchestrator wake");
@@ -432,18 +458,18 @@ async function main(): Promise<void> {
     // orchestrator sees the answered card and advances exactly one stage.
     const firstCards = pendingReviewCards(idempotentInteractions);
     const answeredLunaCard = firstCards.find((card) =>
-      isPendingNativeStageCard(card, "luna") &&
+      String(card.idempotencyKey || "").endsWith(":luna") &&
       card.addresseeAgentId === luna.id,
     );
     if (!answeredLunaCard) throw new Error("Canary did not create a Luna review card addressed to Luna");
     await submitReviewVerdict(issueId, String(answeredLunaCard.id), "approve");
     const lunaWake = requireObject(await request(`/api/agents/${orch.id}/wakeup`, "POST", {
-      source: "on_demand", reason: "e2e_luna_verdict", idempotencyKey: `e2e-jules-recovery:${issueId}:luna-verdict`, payload: {},
+      source: "on_demand", reason: `${EXPLICIT_PROJECT_WAKE_REASON_PREFIX}${project.id}`, idempotencyKey: `e2e-jules-recovery:${issueId}:luna-verdict`, payload: {},
     }), "Luna verdict wake");
     await waitForIssueExecution(issueId, String(lunaWake.id), "Luna verdict");
     const afterLuna = await request(`/api/issues/${issueId}/interactions`, "GET");
     const terraCards = pendingReviewCards(afterLuna).filter((card) =>
-      isPendingNativeStageCard(card, "terra") &&
+      String(card.idempotencyKey || "").endsWith(":terra") &&
       card.addresseeAgentId === terra.id &&
       card.continuationPolicy === "none",
     );
@@ -451,7 +477,7 @@ async function main(): Promise<void> {
     if (terraCards.length !== 1 || !terraCard) throw new Error(`Canary did not advance to exactly one native Terra card: ${JSON.stringify(afterLuna)}`);
     await submitReviewVerdict(issueId, String(terraCard.id), "approve");
     const terraWake = requireObject(await request(`/api/agents/${orch.id}/wakeup`, "POST", {
-      source: "on_demand", reason: "e2e_terra_verdict", idempotencyKey: `e2e-jules-recovery:${issueId}:terra-verdict`, payload: {},
+      source: "on_demand", reason: `${EXPLICIT_PROJECT_WAKE_REASON_PREFIX}${project.id}`, idempotencyKey: `e2e-jules-recovery:${issueId}:terra-verdict`, payload: {},
     }), "Terra verdict wake");
     await waitForIssueExecution(issueId, String(terraWake.id), "Terra verdict");
     const approvals = await request(`/api/companies/${companyId}/approvals`, "GET");

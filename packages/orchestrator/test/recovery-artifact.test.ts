@@ -51,6 +51,18 @@ describe("Paperclip recovery artifact policy", () => {
     expect(decideRecoveryArtifact(issue({ status: "todo" }), null, true)).toEqual({ action: "preserve" });
   });
 
+  it("closes a diagnostic that Paperclip attached as a blocker to live source work", () => {
+    expect(decideRecoveryArtifact(
+      issue({ status: "todo", parentId: "source" }),
+      issue({ id: "source", title: "real work", status: "blocked", rawIssue: {} }),
+      true,
+    )).toEqual({
+      action: "close",
+      status: "done",
+      reason: "productivity diagnostic must not block live source work",
+    });
+  });
+
   it("reclaims stale blocked Vibe work but preserves a Jules approval gate", () => {
     expect(decideBlockedManagedWork(issue({ title: "real Vibe task", rawIssue: {} }), "vibe", "idle")).toEqual({
       action: "reclaim", status: "todo", reason: "blocked Vibe work has no live execution or provider monitor",

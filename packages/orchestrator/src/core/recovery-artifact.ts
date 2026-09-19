@@ -4,7 +4,7 @@ export type RecoveryArtifactKind = "productivity" | "silence";
 
 export type RecoveryArtifactDecision =
   | { readonly action: "preserve" }
-  | { readonly action: "close"; readonly status: "cancelled"; readonly reason: string };
+  | { readonly action: "close"; readonly status: "done" | "cancelled"; readonly reason: string };
 
 export type BlockedManagedWorkDecision =
   | { readonly action: "preserve" }
@@ -39,6 +39,15 @@ export function decideRecoveryArtifact(
 ): RecoveryArtifactDecision {
   const kind = classifyRecoveryArtifact(issue);
   if (!kind || isTerminal(issue.status)) return { action: "preserve" };
+  // Paperclip's productivity monitor can materialize an observation as a
+  // child dependency of the issue it observed. A child dependency is a gate,
+  // so retaining it for the normal diagnostic observation window would turn
+  // harmless telemetry into a self-deadlock. Keep non-gating diagnostics
+  // visible; complete only an explicit live-source child immediately.
+  // Paperclip resolves dependency edges on `done`, not `cancelled`.
+  if (source && issue.parentId === source.id && !isTerminal(source.status)) {
+    return { action: "close", status: "done", reason: `${kind} diagnostic must not block live source work` };
+  }
   if (issue.status === "blocked") {
     return { action: "close", status: "cancelled", reason: `${kind} diagnostic is blocked and is not executable work` };
   }
