@@ -41,7 +41,7 @@ describe("orchestrator execute fail-closed auth", () => {
     expect(result.errorMessage || result.summary).toMatch(/token/i);
   });
 
-  it("does not fall back to independent Jules when listing agents", async () => {
+  it("uses local-trusted agent discovery without falling back to independent Jules", async () => {
     const fetchMock = vi.fn(async (url: string | URL) => {
       const href = String(url);
       if (href.includes("/agents")) {
@@ -79,9 +79,7 @@ describe("orchestrator execute fail-closed auth", () => {
     const result = await execute(ctx());
     expect(result.exitCode).toBe(0);
     const agentCall = fetchMock.mock.calls.find((c) => String(c[0]).includes("/agents"));
-    expect(agentCall?.[1]?.headers).toMatchObject({
-      Authorization: "Bearer test-token",
-    });
+    expect((agentCall?.[1]?.headers as Record<string, string> | undefined)?.Authorization).toBeUndefined();
     expect(JSON.stringify(result.summary)).not.toContain("indie-jules");
   });
 });

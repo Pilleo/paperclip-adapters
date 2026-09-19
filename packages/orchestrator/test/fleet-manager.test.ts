@@ -422,6 +422,48 @@ describe("Orchestrator Managed Fleet Manager", () => {
     expect(mutations.every((init) => (init.headers as Record<string, string>)["X-Paperclip-Run-Id"] === "run-1")).toBe(true);
   });
 
+  it.each([
+    "http://127.0.0.1:3100",
+    "http://localhost:3100/api",
+  ])("uses Paperclip's local-trusted actor for fleet mutations at %s", async (apiUrl) => {
+    const agents: any[] = [
+      { id: "orch-1", name: "Task Orchestrator", adapterType: "orchestrator" },
+      { id: "luna-1", name: "[Orchestrated] Luna Fast Reviewer", adapterType: "codex_local", adapterConfig: { model: "old" }, metadata: { managedBy: "paperclip-orchestrator", workerKey: "luna_reviewer" } },
+    ];
+    const observedHeaders: Record<string, string>[] = [];
+    global.fetch = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+      observedHeaders.push((init?.headers ?? {}) as Record<string, string>);
+      if (!init?.method || init.method === "GET") return { ok: true, json: async () => agents };
+      return { ok: true, json: async () => ({}) };
+    });
+
+    await reconcileManagedFleet(apiUrl, "company-1", {
+      orchestratorAgentId: "orch-1",
+      authToken: "agent-heartbeat-token",
+      runId: "run-1",
+    });
+
+    expect(observedHeaders.length).toBeGreaterThan(1);
+    expect(observedHeaders.every((headers) => headers.Authorization === undefined)).toBe(true);
+    expect(observedHeaders.some((headers) => headers["X-Paperclip-Run-Id"] === "run-1")).toBe(true);
+  });
+
+  it("retains bearer authorization for remote fleet reconciliation", async () => {
+    const observedHeaders: Record<string, string>[] = [];
+    global.fetch = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+      observedHeaders.push((init?.headers ?? {}) as Record<string, string>);
+      return { ok: true, json: async () => [] };
+    });
+
+    await reconcileManagedFleet("https://paperclip.example/api", "company-1", {
+      orchestratorAgentId: "orch-1",
+      authToken: "remote-token",
+    });
+
+    expect(observedHeaders.length).toBeGreaterThan(0);
+    expect(observedHeaders.every((headers) => headers.Authorization === "Bearer remote-token")).toBe(true);
+  });
+
   it("reconciles a stale Jules CI gate policy even when its other managed settings match", async () => {
     const jules = MANAGED_FLEET_DEFINITIONS.find((definition) => definition.key === "jules");
     expect(jules).toBeDefined();

@@ -101,9 +101,16 @@ export function canReconcileManagedFleet(
 ): boolean {
   if (!enabled) return false;
   if (typeof authToken === "string" && authToken.trim().length > 0) return true;
-  // Runtime adapters receive PAPERCLIP_API_URL with `/api`; fleet
-  // reconciliation owns API-relative routes and must still recognize that
-  // loopback URL as the local trusted control plane.
+  return isLocalTrustedPaperclipUrl(apiUrl);
+}
+
+/**
+ * Runtime adapters receive PAPERCLIP_API_URL with or without `/api`.
+ * Paperclip's credential-free board actor is intentionally restricted to
+ * loopback; attaching an agent heartbeat JWT there downgrades the request to
+ * that agent's narrower grants and breaks managed-fleet reconciliation.
+ */
+function isLocalTrustedPaperclipUrl(apiUrl: string): boolean {
   return /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(
     apiUrl.replace(/\/+$/, "").replace(/\/api$/i, ""),
   );
@@ -398,8 +405,9 @@ export async function reconcileManagedFleet(
   companyId: string,
   config: ManagedFleetConfig = {}
 ): Promise<ManagedFleetResolved> {
+  const localTrusted = isLocalTrustedPaperclipUrl(apiUrl);
   const headers = {
-    ...(config.authToken ? { Authorization: `Bearer ${config.authToken}` } : {}),
+    ...(!localTrusted && config.authToken ? { Authorization: `Bearer ${config.authToken}` } : {}),
     ...(config.runId ? { "X-Paperclip-Run-Id": config.runId } : {}),
   };
   const requestInit = Object.keys(headers).length > 0 ? { headers } : {};
