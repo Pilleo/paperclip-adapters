@@ -446,7 +446,15 @@ describe("orchestrator live session continuation", () => {
         }]), { status: 200 });
       }
       if (href.includes("/projects")) return new Response(JSON.stringify([
-        { id: "project-1", name: "paperclip-adapters", primaryWorkspace: { cwd: process.cwd() } },
+        {
+          id: "project-1",
+          name: "paperclip-adapters",
+          primaryWorkspace: {
+            cwd: process.cwd(),
+            repoUrl: "https://github.com/Pilleo/paperclip-adapters.git",
+            repoRef: "master",
+          },
+        },
       ]), { status: 200 });
       if (href.includes("/issues")) return new Response(JSON.stringify([issue]), { status: 200 });
       if (href.includes("/approvals")) return new Response("[]", { status: 200 });

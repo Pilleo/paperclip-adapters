@@ -39,7 +39,7 @@ describe("Jules execution blocker reconciliation", () => {
   });
 
   it.each([
-    ["issue is not blocked", { issueStatus: "in_progress" }],
+    ["issue is outside implementation recovery", { issueStatus: "in_review" }],
     ["assignee is not Jules", { assigneeAgentId: "other-agent" }],
     ["provider session is absent", { providerSessionId: null }],
     ["blocker cause is unrelated", { executionBlocker: { recoveryActionId: actionId, runId, agentId: "jules-orch", cause: "reviewer_unavailable" } }],
@@ -51,5 +51,13 @@ describe("Jules execution blocker reconciliation", () => {
     ["failure is not polling", { failedRun: { id: runId, status: "failed", agentId: "jules-orch", errorCode: "unknown_failure", finishedAt: "2026-09-18T02:39:12.896Z" } }],
   ])("preserves state when %s", (_name, overrides) => {
     expect(decideJulesExecutionBlockerRecovery(snapshot(overrides))).toMatchObject({ action: "preserve" });
+  });
+
+  it.each(["blocked", "todo", "in_progress"])("reconciles the hold from Paperclip's %s projection", (issueStatus) => {
+    expect(decideJulesExecutionBlockerRecovery(snapshot({ issueStatus }))).toMatchObject({
+      action: "resolve_to_todo",
+      actionId,
+      runId,
+    });
   });
 });

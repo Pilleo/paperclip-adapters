@@ -2,6 +2,7 @@ type UnknownRecord = Readonly<Record<string, unknown>>;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TERMINAL_RUN_STATUSES = new Set(["failed", "interrupted", "timed_out", "cancelled"]);
+const RECOVERABLE_ISSUE_STATUSES = new Set(["blocked", "todo", "in_progress"]);
 
 export interface JulesExecutionBlockerSnapshot {
   readonly issueStatus: unknown;
@@ -50,7 +51,7 @@ function nonEmptyString(value: unknown): string | null {
 export function parseJulesExecutionBlockerPointer(
   snapshot: Omit<JulesExecutionBlockerSnapshot, "failedRun">,
 ): JulesExecutionBlockerPointer | null {
-  if (snapshot.issueStatus !== "blocked") return null;
+  if (!RECOVERABLE_ISSUE_STATUSES.has(String(snapshot.issueStatus ?? ""))) return null;
   const assigneeAgentId = nonEmptyString(snapshot.assigneeAgentId);
   const julesAgentId = nonEmptyString(snapshot.julesAgentId);
   if (!assigneeAgentId || assigneeAgentId !== julesAgentId) return null;

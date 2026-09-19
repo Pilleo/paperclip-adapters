@@ -107,6 +107,7 @@ import { planOrphanReviewRecovery } from "../core/orphan-review-recovery.js";
 import { decideReviewSession } from "../core/review-session-state.js";
 import type { IssueState } from "../core/types.js";
 import { selectStaleJulesReviewChildren } from "../core/stale-review-artifacts.js";
+import { isExecutionAdmissionHeld } from "../core/execution-admission.js";
 import { executePaperclipCommand } from "@pilleo/paperclip-adapter-common";
 import { provisionNativeReviewMcpHome, resolveNativeReviewMcpHome, type NativeReviewWorkerKey } from "../core/native-review-mcp-home.js";
 import {
@@ -1422,7 +1423,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     // durable provider session. Upstream Paperclip should eventually expose
     // this as an adapter-owned terminal disposition rather than requiring a
     // local-trusted board reconciliation.
-    if (issue.status === "blocked" && executionBlocker != null) {
+    if (executionBlocker != null) {
       const blockerPointer = parseJulesExecutionBlockerPointer({
         issueStatus: issue.status,
         assigneeAgentId: issue.assigneeAgentId,
@@ -3183,9 +3184,11 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
     }
   }
 
-  const dispatchIssues = overlayedIssues.filter((issue) => issue.orchestratorManaged).map((issue) =>
-    statusOverrides.has(issue.id) ? { ...issue, status: statusOverrides.get(issue.id) as IssueState } : issue
-  );
+  const dispatchIssues = overlayedIssues
+    .filter((issue) => issue.orchestratorManaged && !isExecutionAdmissionHeld(issue.rawIssue))
+    .map((issue) =>
+      statusOverrides.has(issue.id) ? { ...issue, status: statusOverrides.get(issue.id) as IssueState } : issue
+    );
   const conflictForDispatch = calculateConflictMatrix(dispatchIssues);
 
   // 10. PHASE 4: Multi-Lane Implementation Dispatching
