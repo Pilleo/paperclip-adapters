@@ -157,6 +157,46 @@ describe("executeAllProjects", () => {
     ]);
   });
 
+  it("assigns company-scoped fleet reconciliation only once even when that project fails", async () => {
+    process.env["PAPERCLIP_API_KEY"] = "test-token";
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/api/heartbeat-runs/heartbeat-failure")) {
+        return new Response(JSON.stringify(schedulerRun("heartbeat-failure")), { status: 200 });
+      }
+      return new Response(JSON.stringify([
+        { id: "project-a", primaryWorkspace: { cwd: process.cwd() } },
+        { id: "project-b", primaryWorkspace: { cwd: "/tmp" } },
+        { id: "project-c", primaryWorkspace: { cwd: "/tmp" } },
+      ]), { status: 200 });
+    }) as typeof fetch;
+
+    const calls: Array<{ projectId: string; reconcileFleet: boolean }> = [];
+    const result = await executeAllProjects({
+      runId: "heartbeat-failure",
+      agent: { id: "orchestrator", companyId: "company-1", name: "Orchestrator", adapterConfig: {} },
+      config: { maxConcurrentProjects: 1 },
+      context: { companyId: "company-1" },
+      runtime: { sessionId: null, sessionParams: null },
+      onLog: vi.fn().mockResolvedValue(undefined),
+    } as AdapterExecutionContext, async (context) => {
+      const projectId = String((context.context as Record<string, unknown>)["projectId"]);
+      calls.push({
+        projectId,
+        reconcileFleet: (context.config as Record<string, unknown>)["reconcileFleet"] === true,
+      });
+      return projectId === "project-a"
+        ? { exitCode: 1, signal: null, timedOut: false, errorMessage: "fleet project failed" }
+        : { exitCode: 0, signal: null, timedOut: false, summary: "ok" };
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(calls).toEqual([
+      { projectId: "project-a", reconcileFleet: true },
+      { projectId: "project-b", reconcileFleet: false },
+      { projectId: "project-c", reconcileFleet: false },
+    ]);
+  });
+
   it("does not invent a local Jules provider-session admission budget", async () => {
     process.env["PAPERCLIP_API_KEY"] = "test-token";
     globalThis.fetch = vi.fn(async (input) => String(input).endsWith("/api/heartbeat-runs/heartbeat-1")

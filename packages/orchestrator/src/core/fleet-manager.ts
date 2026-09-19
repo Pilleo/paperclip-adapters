@@ -401,35 +401,7 @@ export const MANAGED_FLEET_DEFINITIONS: readonly ManagedWorkerDefinition[] = Obj
  * Reconciles and provisions the dedicated orchestrator-managed worker fleet in Paperclip.
  * Configures rich titles, capabilities, supported heartbeat scheduling, and direct reportsTo hierarchy.
  */
-const inFlightFleetReconciliations = new Map<string, Promise<ManagedFleetResolved>>();
-
-export function reconcileManagedFleet(
-  apiUrl: string,
-  companyId: string,
-  config: ManagedFleetConfig = {}
-): Promise<ManagedFleetResolved> {
-  // executeAllProjects intentionally runs project ticks concurrently, but the
-  // managed fleet is company-scoped. All project ticks in one authoritative
-  // heartbeat therefore share one mutation pass; otherwise identical agent
-  // PATCHes race Paperclip's shortname uniqueness check and one returns 409.
-  if (!config.runId) return reconcileManagedFleetUncoalesced(apiUrl, companyId, config);
-  const key = `${apiUrl.replace(/\/+$/, "")}:${companyId}:${config.runId}`;
-  const existing = inFlightFleetReconciliations.get(key);
-  if (existing) return existing;
-  const reconciliation = reconcileManagedFleetUncoalesced(apiUrl, companyId, config);
-  inFlightFleetReconciliations.set(key, reconciliation);
-  void reconciliation.then(
-    () => {
-      if (inFlightFleetReconciliations.get(key) === reconciliation) inFlightFleetReconciliations.delete(key);
-    },
-    () => {
-      if (inFlightFleetReconciliations.get(key) === reconciliation) inFlightFleetReconciliations.delete(key);
-    },
-  );
-  return reconciliation;
-}
-
-async function reconcileManagedFleetUncoalesced(
+export async function reconcileManagedFleet(
   apiUrl: string,
   companyId: string,
   config: ManagedFleetConfig = {}
