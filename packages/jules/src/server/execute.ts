@@ -75,7 +75,7 @@ import {
   answerJulesAgentAdjudicationInteraction,
   resolveJulesAgentAdjudicationInteraction,
   createJulesPlanApprovalInteraction,
-  createJulesPlanReviewChildInteraction,
+  createJulesPlanReviewInteraction,
   saveJulesPlanDocument,
   getPaperclipInteraction,
   listPaperclipApprovals,
@@ -1994,30 +1994,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   // Compatibility migration for sessions created before the native review
-  // ladder. A legacy human card is not a native verdict; create the one
-  // reviewer-owned native card directly rather than briefly creating a
-  // parent-owned form and migrating it again on the next heartbeat.
+  // ladder. A legacy human card is not a native verdict; replace it with one
+  // parent-owned typed card. Reviewer routing belongs to addresseeAgentId;
+  // keeping the card on the source-run issue preserves Paperclip provenance.
   if (
     pendingProviderInteraction?.type === "plan_approval" &&
     storedPendingInteraction?.status === "pending" &&
     config.planReviewerAgentId && config.planStrongReviewerAgentId
   ) {
     if (config.planReviewerAgentId && config.planStrongReviewerAgentId) {
-      const reviewerChild = await createJulesQuestionAdjudication(
-        taskId,
-        pendingProviderInteraction.question,
-        config.planReviewerAgentId,
-        ctx.authToken,
-        ctx.runId,
-        ctx.agent.companyId,
-        pendingProviderInteraction.julesActivityId,
-        session.julesSessionId,
-        0,
-        true,
-        "plan",
-      );
-      const nativeReview = await createJulesPlanReviewChildInteraction(
-        reviewerChild.id,
+      const nativeReview = await createJulesPlanReviewInteraction(
         taskId,
         session.julesSessionId!,
         {
@@ -2046,7 +2032,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         paperclipInteractionId: nativeReview.id,
         reviewerAgentId: config.planReviewerAgentId,
         stage: "luna",
-        reviewerChildIssueId: reviewerChild.id,
+        reviewIssueId: taskId,
         createdAt: new Date().toISOString(),
       };
       session.planReviewRevisionId = pendingProviderInteraction.planRevisionId;
@@ -3112,7 +3098,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       if (pendingNativePlanReview) {
         const nativePlanReview = pendingNativePlanReview;
-        const reviewIssueId = nativePlanReview.reviewerChildIssueId ?? taskId;
+        const reviewIssueId = nativePlanReview.reviewIssueId ?? nativePlanReview.reviewerChildIssueId ?? taskId;
         const latestPlanActivity = latestPlan(activities);
         // The provider activity is the immutable review target. Retire an
         // orphaned or answered card before reading its child issue, because
@@ -3139,27 +3125,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           await persistSessionBestEffort(session, ctx.onLog);
           pendingNativePlanReview = null;
         } else {
-        // v2 initially placed its form on the Jules-owned parent. Paperclip
-        // does not dispatch a cross-assignee form there, so migrate that exact
-        // pending card to a reviewer-owned child before waiting again.
-        if (!nativePlanReview.reviewerChildIssueId && interaction.status === "pending" && !hasUnresolvedProviderQuestion) {
-          await withdrawPaperclipInteraction(taskId, interaction.id,
-            "Migrating the parent-owned plan form to the reviewer-owned typed form.", ctx.authToken, ctx.runId);
-          const child = await createJulesQuestionAdjudication(
-            taskId, nativePlanReview.reviewerAgentId, nativePlanReview.question,
-            ctx.authToken, ctx.runId, ctx.agent.companyId, nativePlanReview.julesActivityId,
-            session.julesSessionId, 0, true, "plan",
-          );
-          const bridged = await createJulesPlanReviewChildInteraction(
-            child.id, taskId, session.julesSessionId!,
-            { documentId: nativePlanReview.planDocumentId, revisionId: nativePlanReview.planRevisionId, revisionNumber: nativePlanReview.planRevisionNumber },
-            nativePlanReview.question, nativePlanReview.stage, nativePlanReview.reviewerAgentId,
-            ctx.authToken, ctx.runId, nativePlanReview.julesActivityId,
-          );
-          session.pendingInteraction = { ...nativePlanReview, protocolVersion: 2, paperclipInteractionId: bridged.id, reviewerChildIssueId: child.id };
-          await persistSessionBestEffort(session, ctx.onLog);
-          return await yieldHeartbeat(session);
-        }
         const withdrawalReason = interaction.result && typeof interaction.result === "object"
           ? (interaction.result as Record<string, unknown>)["reason"]
           : undefined;
@@ -3354,20 +3319,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           // resolved legacy decisions remain authoritative and are never
           // withdrawn or replayed.
           if (parsedPlanInteraction.kind === "legacy" && parsedPlanInteraction.state === "pending") {
-            await withdrawPaperclipInteraction(
-              reviewIssueId,
-              interaction.id,
-              "Migrating the pending legacy plan review to the v2 typed verdict protocol.",
-              ctx.authToken,
-              ctx.runId,
-            );
-            const child = await createJulesQuestionAdjudication(
-              taskId, pendingNativePlanReview.reviewerAgentId, pendingNativePlanReview.question,
-              ctx.authToken, ctx.runId, ctx.agent.companyId, pendingNativePlanReview.julesActivityId,
-              session.julesSessionId, 0, true, "plan",
-            );
-            const migrated = await createJulesPlanReviewChildInteraction(
-              child.id,
+            const migrated = await createJulesPlanReviewInteraction(
               taskId,
               session.julesSessionId!,
               {
@@ -3382,11 +3334,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               ctx.runId,
               pendingNativePlanReview.julesActivityId,
             );
+            await withdrawPaperclipInteraction(
+              reviewIssueId,
+              interaction.id,
+              "Migrating the pending legacy plan review to the parent-owned v2 typed verdict protocol.",
+              ctx.authToken,
+              ctx.runId,
+            );
             session.pendingInteraction = {
               ...pendingNativePlanReview,
               protocolVersion: 2,
               paperclipInteractionId: migrated.id,
-              reviewerChildIssueId: child.id,
+              reviewIssueId: taskId,
+              reviewerChildIssueId: undefined,
             };
             await persistSessionBestEffort(session, ctx.onLog);
           }
@@ -3414,13 +3374,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           );
         }
         if (pendingNativePlanReview.stage === "luna" && config.planStrongReviewerAgentId) {
-          const nextChild = await createJulesQuestionAdjudication(
-            taskId, config.planStrongReviewerAgentId, pendingNativePlanReview.question,
-            ctx.authToken, ctx.runId, ctx.agent.companyId, pendingNativePlanReview.julesActivityId,
-            session.julesSessionId, 0, true, "plan",
-          );
-          const next = await createJulesPlanReviewChildInteraction(
-            nextChild.id,
+          const next = await createJulesPlanReviewInteraction(
             taskId,
             session.julesSessionId!,
             { documentId: pendingNativePlanReview.planDocumentId, revisionId: pendingNativePlanReview.planRevisionId, revisionNumber: pendingNativePlanReview.planRevisionNumber },
@@ -3438,7 +3392,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             paperclipInteractionId: next.id,
             reviewerAgentId: config.planStrongReviewerAgentId,
             stage: "terra",
-            reviewerChildIssueId: nextChild.id,
+            reviewIssueId: taskId,
+            reviewerChildIssueId: undefined,
           };
           await persistSessionBestEffort(session, ctx.onLog);
           return await yieldHeartbeat(session);
@@ -4401,10 +4356,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                   persist: () => persistSessionBestEffort(session!, ctx.onLog),
                   run: () => saveJulesPlanDocument(taskId, activityId, fullPlan, ctx.authToken, ctx.runId),
                 });
-                const reviewerChild = await createJulesQuestionAdjudication(
-                  taskId, config.planReviewerAgentId!, fullPlan, ctx.authToken, ctx.runId,
-                  ctx.agent.companyId, activityId, session.julesSessionId, 0, true, "plan",
-                );
                 const review = await runCheckpointedMutation({
                   session: session!,
                   key: `jules:plan-review:${taskId}:${revision.revisionId}:luna`,
@@ -4413,11 +4364,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                   sessionId: session!.julesSessionId,
                   activityId,
                   persist: () => persistSessionBestEffort(session!, ctx.onLog),
-                  run: () => createJulesPlanReviewChildInteraction(reviewerChild.id, taskId, session!.julesSessionId!, revision, fullPlan, "luna", config.planReviewerAgentId!, ctx.authToken, ctx.runId, activityId),
+                  run: () => createJulesPlanReviewInteraction(taskId, session!.julesSessionId!, revision, fullPlan, "luna", config.planReviewerAgentId!, ctx.authToken, ctx.runId, activityId),
                 });
                 session.planReviewRevisionId = revision.revisionId;
                 session.planReviewOutcome = undefined;
-            session.pendingInteraction = { type: "plan_native_review", protocolVersion: 2, julesActivityId: asJulesActivityId(activityId), question: fullPlan, planDocumentId: revision.documentId, planRevisionId: revision.revisionId, planRevisionNumber: revision.revisionNumber, paperclipInteractionId: review.id, reviewerAgentId: config.planReviewerAgentId, stage: "luna", reviewerChildIssueId: reviewerChild.id, createdAt: new Date().toISOString() };
+            session.pendingInteraction = { type: "plan_native_review", protocolVersion: 2, julesActivityId: asJulesActivityId(activityId), question: fullPlan, planDocumentId: revision.documentId, planRevisionId: revision.revisionId, planRevisionNumber: revision.revisionNumber, paperclipInteractionId: review.id, reviewerAgentId: config.planReviewerAgentId, stage: "luna", reviewIssueId: taskId, createdAt: new Date().toISOString() };
                 await persistSessionBestEffort(session, ctx.onLog);
                 return await yieldHeartbeat(session);
               }

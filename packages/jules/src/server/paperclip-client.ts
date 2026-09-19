@@ -986,6 +986,7 @@ export async function createJulesPlanReviewInteraction(
   reviewerAgentId: string,
   authToken: string | undefined,
   runId?: string,
+  providerActivityId?: string,
 ): Promise<PlanApprovalInteraction> {
   const idempotencyKey = planReviewIdempotencyKey({
     issueId,
@@ -1018,6 +1019,10 @@ export async function createJulesPlanReviewInteraction(
       reasonLabel: "What must change?",
       allowBulkApprove: true,
       supersedeOnUserComment: false,
+      // Bind a verdict to the exact provider plan generation. Recovery may
+      // observe several plans in one Jules session and must never replay an
+      // older answer against the current plan.
+      ...(providerActivityId ? { providerActivityId } : {}),
       target: {
         type: "issue_document",
         issueId,
@@ -1045,10 +1050,9 @@ export async function createJulesPlanReviewInteraction(
 }
 
 /**
- * Creates the executable plan verdict on a reviewer-owned child. Paperclip
- * only dispatches an addressed agent when it owns the mutated issue; placing
- * this on the Jules parent leaves a perfectly valid card permanently pending.
- * The parent plan document remains the immutable review target.
+ * Legacy writer retained while persisted pre-v2026.916.0 sessions migrate.
+ * New plan-review cards must use createJulesPlanReviewInteraction so the card
+ * and its source Jules run share one issue-scoped continuation provenance.
  */
 export async function createJulesPlanReviewChildInteraction(
   childIssueId: string,

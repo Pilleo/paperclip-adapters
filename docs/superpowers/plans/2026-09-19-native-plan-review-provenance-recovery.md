@@ -50,25 +50,25 @@
 - Consumes: parent issue ID, review issue ID, source-run issue ID, interaction status.
 - Produces: `NativePlanReviewLocation` and exhaustive `NativePlanReviewMigrationDecision` unions.
 
-- [ ] [15%] **Step 1: Write parameterized failing provenance tests**
+- [x] [100%] **Step 1: Write parameterized failing provenance tests**
 
   Cover the Cartesian cases: parent card/same source, child card/parent source, child card/child source, answered legacy child, missing source identity. Assert only pending child-card/parent-source yields `migrate_to_parent`; answered cards yield `consume_existing`; valid parent cards yield `keep`.
 
-- [ ] [0%] **Step 2: Run the red tests**
+- [x] [100%] **Step 2: Run the red tests**
 
   Run: `pnpm --filter @pilleo/paperclip-jules-adapter exec vitest run test/native-review-provenance.test.ts test/native-plan-review-lifecycle.test.ts`
 
   Expected: FAIL because the provenance types and migration transition do not exist.
 
-- [ ] [0%] **Step 3: Implement the pure exhaustive state machine**
+- [x] [100%] **Step 3: Implement the pure exhaustive state machine**
 
   Add branded non-empty issue IDs and a discriminated union with no boolean combinations. Use exhaustive `switch` statements for `keep`, `migrate_to_parent`, `consume_existing`, and `fail_closed`. Keep host-specific provenance rules out of `execute.ts`.
 
-- [ ] [0%] **Step 4: Run focused tests and guard receipts**
+- [x] [100%] **Step 4: Run focused tests and guard receipts**
 
   Run the focused Vitest command, then `./scripts/adkw guard packages/jules/src/server/native-review-provenance.ts --stage test`.
 
-- [ ] [0%] **Step 5: Commit**
+- [x] [100%] **Step 5: Commit**
 
   Commit: `test(jules): model native review provenance`
 
@@ -87,25 +87,25 @@
 - Consumes: `createJulesPlanReviewInteraction(parentIssueId, ...)` and the Task 1 provenance decision.
 - Produces: parent-scoped Luna/Terra cards and persisted `reviewIssueId` equal to the parent task ID.
 
-- [ ] [0%] **Step 1: Write failing parent-card tests**
+- [x] [100%] **Step 1: Write failing parent-card tests**
 
   Assert initial Luna creation, legacy human-card migration, Luna→Terra promotion, cancelled-card restoration, and revised-plan generation all POST interactions to the parent `taskId`. Assert no `createJulesPlanReviewChild` or `activateInternalReviewIssue` call occurs for plan review.
 
-- [ ] [0%] **Step 2: Run the red E2E slice**
+- [x] [100%] **Step 2: Run the red E2E slice**
 
   Run: `pnpm --filter @pilleo/paperclip-jules-adapter exec vitest run test/paperclip-client.test.ts test/e2e-plan-presentation.test.ts test/session-codec.test.ts`
 
   Expected: existing child-card assertions fail.
 
-- [ ] [0%] **Step 3: Replace child creation with parent interaction creation**
+- [x] [100%] **Step 3: Replace child creation with parent interaction creation**
 
   Restore one typed `createJulesPlanReviewInteraction` API. Keep `addresseeAgentId`, immutable Jules session/revision identity, `continuationPolicy: "none"`, and idempotency key unchanged. Persist `reviewIssueId: taskId`; decode legacy `reviewerChildIssueId` only as migration input.
 
-- [ ] [0%] **Step 4: Remove plan-only child activation paths**
+- [x] [100%] **Step 4: Remove plan-only child activation paths**
 
   Delete plan-review calls to `createJulesPlanReviewChild` and `activateInternalReviewIssue`. Do not alter question-adjudication children, which have a different ownership and escalation contract.
 
-- [ ] [0%] **Step 5: Run the focused E2E suite and build**
+- [x] [100%] **Step 5: Run the focused E2E suite and build**
 
   Run the Step 2 command and `pnpm --filter @pilleo/paperclip-jules-adapter build`.
 

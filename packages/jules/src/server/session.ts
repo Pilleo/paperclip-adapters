@@ -150,6 +150,9 @@ export const PendingInteractionSchema = z.union([
     planDocumentId: z.string().min(1),
     reviewerAgentId: z.string().min(1),
     stage: z.enum(["luna", "terra"]),
+    /** Issue that owns the native verdict card. New sessions use the Jules parent. */
+    reviewIssueId: z.string().min(1).optional(),
+    /** Compatibility pointer for plan cards created on reviewer children before v2026.916.0. */
     reviewerChildIssueId: z.string().min(1).optional(),
     createdAt: z.string(),
   }),
@@ -451,7 +454,9 @@ export interface JulesAdapterSessionV1 {
         planDocumentId: string;
         reviewerAgentId: string;
         stage: "luna" | "terra";
-        /** Reviewer-owned child that hosts the executable typed verdict form. */
+        /** Issue that owns the typed verdict form; new sessions use the Jules parent. */
+        reviewIssueId?: string | undefined;
+        /** Legacy reviewer-owned child retained only for migration. */
         reviewerChildIssueId?: string | undefined;
         createdAt: string;
       }

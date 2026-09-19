@@ -172,6 +172,48 @@ beforeAll(() => {
 
         expect(sessionCodec.decode(sessionCodec.serialize(payload))).toMatchObject(payload);
     });
+
+    it.each([
+      {
+        label: 'parent-owned native plan review',
+        location: { reviewIssueId: 'issue-1' },
+      },
+      {
+        label: 'legacy reviewer-child native plan review',
+        location: { reviewerChildIssueId: 'review-child-1' },
+      },
+    ])('round-trips $label identity', ({ location }) => {
+      const payload = {
+        version: 1,
+        paperclipIssueId: 'issue-1',
+        promptHash: 'identity-hash',
+        repository: 'r',
+        source: 's',
+        baseBranch: 'main',
+        phase: 'WAITING_FOR_PLAN_APPROVAL',
+        sessionId: 'j-1',
+        julesSessionId: 'j-1',
+        attempt: 1,
+        failedSessions: [],
+        pendingInteraction: {
+          type: 'plan_native_review',
+          protocolVersion: 2,
+          julesActivityId: 'activity-1',
+          paperclipInteractionId: 'card-1',
+          question: '# Plan',
+          planRevisionId: 'revision-1',
+          planRevisionNumber: 1,
+          planDocumentId: 'document-1',
+          reviewerAgentId: 'reviewer-1',
+          stage: 'luna',
+          ...location,
+          createdAt: '2026-09-19T00:00:00.000Z',
+        },
+        createdAt: '2026-09-19T00:00:00.000Z',
+      };
+
+      expect(sessionCodec.decode(sessionCodec.serialize(payload))).toMatchObject(payload);
+    });
 });
 describe('Session Codec serialization coverage', () => {
    it('correctly maps null outputs for encode and serialize boundaries', () => {

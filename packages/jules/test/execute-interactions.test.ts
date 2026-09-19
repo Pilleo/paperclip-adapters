@@ -15,7 +15,6 @@ import {
   createJulesQuestionAdjudication,
   createJulesPlanApprovalInteraction,
   createJulesPlanReviewInteraction,
-  createJulesPlanReviewChildInteraction,
   clearJulesSessionMonitor,
   getPaperclipInteraction,
   findJulesQuestionAdjudication,
@@ -69,7 +68,6 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
     createJulesQuestionAdjudication: vi.fn(),
     createJulesPlanApprovalInteraction: vi.fn(),
     createJulesPlanReviewInteraction: vi.fn(),
-    createJulesPlanReviewChildInteraction: vi.fn(),
     clearJulesSessionMonitor: vi.fn(),
     getPaperclipInteraction: vi.fn(),
     listPaperclipInteractions: vi.fn().mockResolvedValue([]),
@@ -133,10 +131,6 @@ describe("Jules activity interactions", { timeout: 30000 }, () => {
     vi.mocked(createJulesQuestionReviewInteraction).mockResolvedValue({ id: "child-form-1", status: "pending" });
     vi.mocked(createJulesPlanReviewInteraction).mockResolvedValue({
       id: "plan-review-1", status: "pending", kind: "request_item_verdicts",
-      planRevision: { documentId: "plan-doc-1", revisionId: "plan-revision-1", revisionNumber: 1 },
-    } as never);
-    vi.mocked(createJulesPlanReviewChildInteraction).mockResolvedValue({
-      id: "plan-review-child-form-1", status: "pending", kind: "request_item_verdicts",
       planRevision: { documentId: "plan-doc-1", revisionId: "plan-revision-1", revisionNumber: 1 },
     } as never);
     vi.mocked(clearJulesSessionMonitor).mockResolvedValue(undefined);
@@ -978,7 +972,7 @@ describe("Jules activity interactions", { timeout: 30000 }, () => {
     });
   });
 
-  it("migrates one legacy pending human plan card directly to one reviewer-owned native card", async () => {
+  it("migrates one legacy pending human plan card directly to one parent-owned native card", async () => {
     vi.mocked(getPaperclipInteraction).mockResolvedValue({
       id: "plan-1", kind: "request_confirmation", status: "pending",
       target: { type: "issue_document", key: "plan", revisionId: "revision-1" },
@@ -1015,18 +1009,15 @@ describe("Jules activity interactions", { timeout: 30000 }, () => {
       },
     } as AdapterExecutionContext);
 
-    expect(createJulesPlanReviewInteraction).not.toHaveBeenCalled();
-    expect(createJulesQuestionAdjudication).toHaveBeenCalledWith(
-      "issue-1", "**Jules plan**", "00000000-0000-4000-8000-000000000011", "jwt-token", "run-1", "company-1", "activity-plan", "session-1", 0, true, "plan",
-    );
-    expect(createJulesPlanReviewChildInteraction).toHaveBeenCalledWith(
-      "child-question-1", "issue-1", "session-1",
+    expect(createJulesQuestionAdjudication).not.toHaveBeenCalled();
+    expect(createJulesPlanReviewInteraction).toHaveBeenCalledWith(
+      "issue-1", "session-1",
       { documentId: "doc-1", revisionId: "revision-1", revisionNumber: 1 },
       "**Jules plan**", "luna", "00000000-0000-4000-8000-000000000011", "jwt-token", "run-1", "activity-plan",
     );
     expect(wakeJulesPlanReviewer).not.toHaveBeenCalled();
     expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
-      type: "plan_native_review", paperclipInteractionId: "plan-review-child-form-1", reviewerChildIssueId: "child-question-1",
+      type: "plan_native_review", paperclipInteractionId: "plan-review-1", reviewIssueId: "issue-1",
     });
   });
 

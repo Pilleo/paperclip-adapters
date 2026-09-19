@@ -64,15 +64,17 @@ describe("native Jules plan review interaction", () => {
     const { createJulesPlanReviewInteraction } = await import("../src/server/paperclip-client");
     await createJulesPlanReviewInteraction(
       "issue-1", "session-1", { documentId: "document-1", revisionId: "revision-1", revisionNumber: 1 },
-      "# Plan", "luna", "reviewer-1", "token", "run-1",
+      "# Plan", "luna", "reviewer-1", "token", "run-1", "activity-1",
     );
 
-    const [, init] = fetchMock.mock.calls[0] ?? [];
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
     const body = JSON.parse(String(init?.body));
+    expect(url).toBe("http://127.0.0.1:3100/api/issues/issue-1/interactions");
     expect(body.kind).toBe("request_item_verdicts");
     expect(body.addresseeAgentId).toBe("reviewer-1");
     expect(body.payload.items).toEqual([{ id: "plan", label: "Plan", description: "Plan revision 1" }]);
     expect(body.payload.verdicts).toEqual(["approve", "reject"]);
+    expect(body.payload.providerActivityId).toBe("activity-1");
     expect(body.payload.target.revisionId).toBe("revision-1");
     fetchMock.mockRestore();
   });
