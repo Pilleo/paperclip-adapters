@@ -4,14 +4,15 @@
  * agent.  The interaction row alone therefore cannot distinguish the reviewer
  * decision from a board override.  This adapter-only verifier accepts that
  * compatibility gap only when Paperclip's own immutable heartbeat result has
- * an exact structured MCP receipt for the addressed child/card/verdict.
+ * an exact structured MCP receipt for the addressed issue/card/verdict.
  *
  * Remove this once Paperclip persists `resolvedByAgentId` for native MCP
  * verdicts and exposes an agent-only resolver policy for review cards.
  */
 export function hasNativeReviewVerdictAttestation(input: {
   readonly reviewerAgentId: string;
-  readonly reviewerChildIssueId: string;
+  /** The issue that owns both the addressed native card and reviewer run. */
+  readonly reviewerIssueId: string;
   readonly interactionId: string;
   readonly verdict: "approve" | "reject";
   readonly runs: readonly unknown[];
@@ -21,13 +22,13 @@ export function hasNativeReviewVerdictAttestation(input: {
 
 function isExactReviewerRun(run: unknown, input: {
   readonly reviewerAgentId: string;
-  readonly reviewerChildIssueId: string;
+  readonly reviewerIssueId: string;
   readonly interactionId: string;
   readonly verdict: "approve" | "reject";
 }): boolean {
   if (!isRecord(run) || run["agentId"] !== input.reviewerAgentId || run["status"] !== "succeeded") return false;
   const context = record(run["contextSnapshot"]);
-  if (context?.["taskId"] !== input.reviewerChildIssueId && context?.["issueId"] !== input.reviewerChildIssueId) return false;
+  if (context?.["taskId"] !== input.reviewerIssueId && context?.["issueId"] !== input.reviewerIssueId) return false;
   const result = record(run["resultJson"]);
   if (!result || typeof result["stdout"] !== "string") return false;
   return result["stdout"].split("\n").some((line) => isExactVerdictEvent(line, input));

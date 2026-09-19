@@ -42,6 +42,12 @@ export interface PaperclipInteraction {
   target?: unknown;
   idempotencyKey?: string;
   sourceRunId?: string | null;
+  /** Native MCP verdict executor when Paperclip records local-board as resolver. */
+  resolvedByRunId?: string | null;
+  /** Direct native reviewer identity when Paperclip exposes it. */
+  resolvedByAgentId?: string | null;
+  /** Local-board principal used by Paperclip's native MCP bridge. */
+  resolvedByUserId?: string | null;
 }
 
 /**
@@ -523,7 +529,7 @@ export async function requeueInternalReviewIssue(
   }, runId);
 }
 
-function interactionFromResponse(raw: unknown, status: number): PaperclipInteraction {
+export function interactionFromResponse(raw: unknown, status: number): PaperclipInteraction {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     throw new PaperclipClientError(status, "Paperclip returned an invalid interaction response");
   }
@@ -542,6 +548,9 @@ function interactionFromResponse(raw: unknown, status: number): PaperclipInterac
     target: (record["payload"] as Record<string, unknown> | undefined)?.["target"] ?? record["target"],
     ...(typeof record["kind"] === "string" ? { kind: record["kind"] } : {}),
     ...(typeof record["idempotencyKey"] === "string" ? { idempotencyKey: record["idempotencyKey"] } : {}),
+    ...(typeof record["resolvedByRunId"] === "string" ? { resolvedByRunId: record["resolvedByRunId"] } : {}),
+    ...(typeof record["resolvedByAgentId"] === "string" ? { resolvedByAgentId: record["resolvedByAgentId"] } : {}),
+    ...(typeof record["resolvedByUserId"] === "string" ? { resolvedByUserId: record["resolvedByUserId"] } : {}),
   };
 }
 

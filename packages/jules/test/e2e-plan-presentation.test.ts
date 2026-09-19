@@ -303,7 +303,7 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
           },
         }] as never : [] as never;
       }
-      return [] as never;
+      throw new Error("Reviewer-run listing is unavailable");
     });
     vi.mocked(createJulesPlanReviewInteraction).mockResolvedValue({
       id: "parent-card", status: "pending", kind: "request_item_verdicts",
@@ -1082,7 +1082,7 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
     vi.mocked(listPaperclipInteractions).mockResolvedValue([{
       id: "orphaned-native-plan-v2", status: "answered", kind: "request_item_verdicts",
       addresseeAgentId: "00000000-0000-4000-8000-000000000001",
-      resolvedByAgentId: "00000000-0000-4000-8000-000000000001",
+      resolvedByRunId: "luna-run-1",
       idempotencyKey: "jules:plan-review:v2:issue-141:session-141:rev-1:luna",
       payload: {
         providerActivityId: "act-plan-native",
@@ -1098,6 +1098,24 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
         items: [{ id: "plan", verdict: "reject", reason: "Exercise both supported Node versions." }],
       },
     }]);
+    vi.mocked(getPaperclipJson).mockImplementation(async (path) => {
+      if (path === "/api/heartbeat-runs/luna-run-1") {
+        return {
+          id: "luna-run-1", agentId: "00000000-0000-4000-8000-000000000001", status: "succeeded",
+          contextSnapshot: { issueId: "issue-141" },
+          resultJson: {
+            stdout: `${JSON.stringify({
+              type: "item.completed",
+              item: {
+                type: "mcp_tool_call", server: "paperclip_review", tool: "submit_native_review_verdict", status: "completed",
+                result: { structured_content: { interactionId: "orphaned-native-plan-v2", verdict: "reject" } },
+              },
+            })}\n`,
+          },
+        } as never;
+      }
+      throw new Error("Reviewer-run listing is unavailable");
+    });
 
     const result = await execute({
       ...baseContext,
@@ -1108,6 +1126,51 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
     expect(JulesClient.prototype.sendMessage).toHaveBeenCalledWith("session-141", {
       prompt: expect.stringContaining("Exercise both supported Node versions."),
     });
+    expect(sessionCodec.decode(result.sessionParams!)?.planReviewOutcome).toBe("revision_requested");
+  });
+
+  it("relays an exact answered plan rejection when Jules reports feedback after a checkpoint restart", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_USER_FEEDBACK", id: "session-141" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [
+      {
+        id: "act-plan-native", createTime: "2026-08-30T00:01:00.000Z",
+        planGenerated: { plan: { steps: [{ index: 0, title: "Exercise the canary", description: "Add the focused behavior test." }] } },
+      },
+      {
+        id: "act-plan-prompt", createTime: "2026-08-30T00:02:00.000Z",
+        agentMessaged: { agentMessage: "Please review the plan." },
+      },
+    ] } as never);
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([{
+      id: "orphaned-native-plan-v2", status: "answered", kind: "request_item_verdicts",
+      addresseeAgentId: "00000000-0000-4000-8000-000000000001",
+      resolvedByAgentId: "00000000-0000-4000-8000-000000000001",
+      idempotencyKey: "jules:plan-review:v2:issue-141:session-141:rev-1:luna",
+      payload: {
+        providerActivityId: "act-plan-native",
+        detailsMarkdown: "Recovered plan",
+        items: [{ id: "plan" }],
+        target: {
+          type: "issue_document", issueId: "issue-141", documentId: "doc-1", key: "plan",
+          revisionId: "rev-1", revisionNumber: 1,
+        },
+      },
+      result: {
+        outcome: "resolved", complete: true,
+        items: [{ id: "plan", verdict: "reject", reason: "State the canary behavior explicitly." }],
+      },
+    }]);
+
+    const result = await execute({
+      ...baseContext,
+      config: { ...baseContext.config, planApprovalPolicy: "required", planReviewerAgentId: "00000000-0000-4000-8000-000000000001" },
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({ ...session, phase: "RUNNING" }) },
+    } as AdapterExecutionContext);
+
+    expect(JulesClient.prototype.sendMessage).toHaveBeenCalledWith("session-141", {
+      prompt: expect.stringContaining("State the canary behavior explicitly."),
+    });
+    expect(createJulesQuestionAdjudication).not.toHaveBeenCalled();
     expect(sessionCodec.decode(result.sessionParams!)?.planReviewOutcome).toBe("revision_requested");
   });
 

@@ -45,6 +45,9 @@ export const REPLAN_REQUIRED_PLAN_GATE_CANCELLATION_REASONS = new Set<string>([
 
 export interface RecoveredPlanGatePointer {
   readonly interactionId: string;
+  /** The persisted card state controls whether an answered verdict may take
+   * precedence over a provider prompt emitted during checkpoint recovery. */
+  readonly status: "answered" | "cancelled";
   readonly activityId: string;
   readonly question: string;
   readonly documentId: string;
@@ -88,6 +91,12 @@ export function recoverMissingPlanGatePointer(input: {
   readonly interactions: readonly unknown[];
   /** A later provider plan proves older answered cards are historical. */
   readonly allowAnswered?: boolean | undefined;
+  /**
+   * Compatibility bridge for cards written before providerActivityId was
+   * persisted. The caller must establish that this is the session's sole
+   * visible plan activity; without that proof an older verdict stays inert.
+   */
+  readonly allowLegacyAnsweredActivityBinding?: boolean | undefined;
 }): RecoveredPlanGatePointer | null {
   const prefix = `jules:plan-review:v2:${input.issueId}:${input.sessionId}:`;
   const candidates = input.interactions.flatMap((value): RecoveredPlanGatePointer[] => {
@@ -101,17 +110,22 @@ export function recoverMissingPlanGatePointer(input: {
     const result = card.result && typeof card.result === "object" ? card.result as { reason?: unknown } : undefined;
     if (card.status === "cancelled" &&
         (!result || typeof result.reason !== "string" || !REPLAN_REQUIRED_PLAN_GATE_CANCELLATION_REASONS.has(result.reason))) return [];
+    const recoveredStatus = card.status === "answered" ? "answered" : "cancelled";
     const payload = card.payload && typeof card.payload === "object" ? card.payload as RawPlanGatePayload : undefined;
     const target = payload?.target && typeof payload.target === "object" ? payload.target as RawPlanTarget : undefined;
     const question = payload?.detailsMarkdown;
     const providerActivityId = payload?.providerActivityId;
+    const hasExactProviderActivity = typeof providerActivityId === "string" &&
+      providerActivityId === input.latestPlanActivityId;
+    const mayBindLegacyAnsweredCard = card.status === "answered" &&
+      input.allowLegacyAnsweredActivityBinding === true && providerActivityId === undefined;
     const keyParts = card.idempotencyKey.split(":");
     const stage = keyParts.at(6);
     if (!target || target.type !== "issue_document" || target.issueId !== input.issueId || target.key !== "plan" ||
         typeof target.documentId !== "string" || typeof target.revisionId !== "string" ||
         !Number.isInteger(target.revisionNumber) || (stage !== "luna" && stage !== "terra") || typeof question !== "string" ||
-        typeof providerActivityId !== "string" || providerActivityId !== input.latestPlanActivityId) return [];
-    return [{ interactionId: card.id, activityId: providerActivityId, question, documentId: target.documentId,
+        (!hasExactProviderActivity && !mayBindLegacyAnsweredCard)) return [];
+    return [{ interactionId: card.id, status: recoveredStatus, activityId: input.latestPlanActivityId, question, documentId: target.documentId,
       revisionId: target.revisionId, revisionNumber: target.revisionNumber as number, reviewerAgentId: card.addresseeAgentId, stage }];
   });
   return candidates.length === 1 ? candidates[0]! : null;

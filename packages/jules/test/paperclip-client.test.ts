@@ -42,6 +42,7 @@ describe("native Jules plan review interaction", () => {
   it("preserves the typed payload when reading an answered interaction", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify([{
       id: "plan-review-answered", status: "answered", kind: "request_item_verdicts",
+      resolvedByRunId: "reviewer-run-1",
       payload: { items: [{ id: "plan" }], target: { type: "issue_document", key: "plan" } },
       result: { outcome: "resolved", complete: true },
     }]), { status: 200, headers: { "content-type": "application/json" } }));
@@ -49,6 +50,7 @@ describe("native Jules plan review interaction", () => {
     await expect(listPaperclipInteractions("issue-1", "token", "run-1")).resolves.toMatchObject([{
       id: "plan-review-answered",
       payload: { items: [{ id: "plan" }] },
+      resolvedByRunId: "reviewer-run-1",
     }]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     fetchMock.mockRestore();

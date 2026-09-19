@@ -53,7 +53,7 @@ describe("recoverMissingPlanGatePointer", () => {
         result: { reason: "Superseded plan-review card: an immutable matching PR review card is the active native review authority." },
       }],
     })).toEqual({
-      interactionId: "card-1", activityId: "activity-1", question: "Plan text", documentId: "doc-1", revisionId: "revision-1", revisionNumber: 1, reviewerAgentId: "luna-1", stage: "luna",
+      interactionId: "card-1", status: "cancelled", activityId: "activity-1", question: "Plan text", documentId: "doc-1", revisionId: "revision-1", revisionNumber: 1, reviewerAgentId: "luna-1", stage: "luna",
     });
   });
 
@@ -79,6 +79,28 @@ describe("recoverMissingPlanGatePointer", () => {
         payload: { detailsMarkdown: "Old plan", target: { type: "issue_document", issueId: "issue-1", documentId: "doc-1", key: "plan", revisionId: "revision-1", revisionNumber: 1 } },
         result: { outcome: "resolved", complete: true, items: [{ id: "plan", verdict: "reject", reason: "Revise it." }] },
       }],
+    })).toBeNull();
+  });
+
+  it("recovers one answered legacy card only when the caller proves a single provider plan", () => {
+    const legacyCard = {
+      id: "card-1", status: "answered", kind: "request_item_verdicts", addresseeAgentId: "luna-1",
+      idempotencyKey: "jules:plan-review:v2:issue-1:session-1:revision-1:luna",
+      payload: {
+        detailsMarkdown: "Plan text",
+        target: { type: "issue_document", issueId: "issue-1", documentId: "doc-1", key: "plan", revisionId: "revision-1", revisionNumber: 1 },
+      },
+      result: { outcome: "resolved", complete: true, items: [{ id: "plan", verdict: "reject", reason: "Use the focused test." }] },
+    };
+
+    expect(recoverMissingPlanGatePointer({
+      issueId: "issue-1", sessionId: "session-1", latestPlanActivityId: "activity-1",
+      allowLegacyAnsweredActivityBinding: true,
+      interactions: [legacyCard],
+    })).toMatchObject({ interactionId: "card-1", status: "answered", activityId: "activity-1" });
+    expect(recoverMissingPlanGatePointer({
+      issueId: "issue-1", sessionId: "session-1", latestPlanActivityId: "activity-1",
+      interactions: [legacyCard],
     })).toBeNull();
   });
 

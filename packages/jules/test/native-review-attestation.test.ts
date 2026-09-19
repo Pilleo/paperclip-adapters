@@ -21,7 +21,7 @@ describe("native reviewer verdict attestation", () => {
   it("accepts only the exact structured verdict from the addressed reviewer run", () => {
     expect(hasNativeReviewVerdictAttestation({
       reviewerAgentId: "luna-1",
-      reviewerChildIssueId: "child-1",
+      reviewerIssueId: "child-1",
       interactionId: "card-1",
       verdict: "reject",
       runs: [{
@@ -31,6 +31,36 @@ describe("native reviewer verdict attestation", () => {
         resultJson: { stdout: `${JSON.stringify(verdictEvent)}\n` },
       }],
     })).toBe(true);
+  });
+
+  it("accepts an exact receipt from a parent-owned native review run", () => {
+    expect(hasNativeReviewVerdictAttestation({
+      reviewerAgentId: "luna-1",
+      reviewerIssueId: "parent-1",
+      interactionId: "card-1",
+      verdict: "reject",
+      runs: [{
+        agentId: "luna-1",
+        status: "succeeded",
+        contextSnapshot: { issueId: "parent-1" },
+        resultJson: { stdout: `${JSON.stringify(verdictEvent)}\n` },
+      }],
+    })).toBe(true);
+  });
+
+  it("rejects a receipt from another parent-owned review", () => {
+    expect(hasNativeReviewVerdictAttestation({
+      reviewerAgentId: "luna-1",
+      reviewerIssueId: "parent-1",
+      interactionId: "card-1",
+      verdict: "reject",
+      runs: [{
+        agentId: "luna-1",
+        status: "succeeded",
+        contextSnapshot: { issueId: "parent-2" },
+        resultJson: { stdout: `${JSON.stringify(verdictEvent)}\n` },
+      }],
+    })).toBe(false);
   });
 
   it.each([
@@ -51,7 +81,7 @@ describe("native reviewer verdict attestation", () => {
   ])("rejects %s", (_label, runs) => {
     expect(hasNativeReviewVerdictAttestation({
       reviewerAgentId: "luna-1",
-      reviewerChildIssueId: "child-1",
+      reviewerIssueId: "child-1",
       interactionId: "card-1",
       verdict: "reject",
       runs,

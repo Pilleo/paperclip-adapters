@@ -126,37 +126,64 @@ const JULES_INITIAL_ACTIVITY_CHECK_DELAY_MS = 5 * 1000;
 async function nativePlanVerdictIsAttested(input: {
   readonly companyId: string | undefined;
   readonly reviewerAgentId: string;
-  readonly reviewerChildIssueId: string | undefined;
+  /** Parent-owned v2 cards and retired child cards both bind a reviewer run to this issue. */
+  readonly reviewerIssueId: string;
+  /** Paperclip records the native MCP executor here when resolvedByAgentId is the board principal. */
+  readonly resolvedByRunId: string | undefined;
   readonly interactionId: string;
   readonly verdict: "approve" | "reject";
   readonly authToken: string | undefined;
   readonly runId: string | undefined;
 }): Promise<boolean> {
-  const reviewerChildIssueId = input.reviewerChildIssueId;
-  if (!input.companyId || !reviewerChildIssueId) return false;
+  if (!input.companyId) return false;
+  // Paperclip records the exact native-MCP executor on current parent-owned
+  // cards. Prefer that immutable receipt before optional broad run discovery:
+  // a restricted or unavailable list endpoint must not erase a decision whose
+  // addressed run can still prove the exact issue/card/verdict tuple.
+  if (input.resolvedByRunId) {
+    try {
+      const run = await getPaperclipJson<unknown>(
+        `/api/heartbeat-runs/${encodeURIComponent(input.resolvedByRunId)}`,
+        input.authToken,
+        input.runId,
+      );
+      return hasNativeReviewVerdictAttestation({
+        reviewerAgentId: input.reviewerAgentId,
+        reviewerIssueId: input.reviewerIssueId,
+        interactionId: input.interactionId,
+        verdict: input.verdict,
+        runs: [run],
+      });
+    } catch {
+      // The historical child-card fallback below may still have a readable
+      // company run index. Its evidence remains exact and independently
+      // validated before any verdict is relayed.
+    }
+  }
   try {
+    const candidateIds = new Set<string>();
     const summaries = await getPaperclipJson<unknown[]>(
       `/api/companies/${encodeURIComponent(input.companyId)}/heartbeat-runs?agentId=${encodeURIComponent(input.reviewerAgentId)}&limit=50`,
       input.authToken,
       input.runId,
     );
-    const candidateIds = summaries.flatMap((summary) => {
-      if (!summary || typeof summary !== "object" || Array.isArray(summary)) return [];
+    for (const summary of summaries) {
+      if (!summary || typeof summary !== "object" || Array.isArray(summary)) continue;
       const record = summary as Record<string, unknown>;
       const context = record["contextSnapshot"];
       const taskId = context && typeof context === "object" && !Array.isArray(context)
-        ? (context as Record<string, unknown>)["taskId"]
+        ? (context as Record<string, unknown>)["taskId"] ?? (context as Record<string, unknown>)["issueId"]
         : undefined;
-      return record["agentId"] === input.reviewerAgentId && record["status"] === "succeeded" &&
-          taskId === reviewerChildIssueId && typeof record["id"] === "string"
-        ? [record["id"]]
-        : [];
-    });
+      if (record["agentId"] === input.reviewerAgentId && record["status"] === "succeeded" &&
+          taskId === input.reviewerIssueId && typeof record["id"] === "string") {
+        candidateIds.add(record["id"]);
+      }
+    }
     for (const runId of candidateIds) {
       const run = await getPaperclipJson<unknown>(`/api/heartbeat-runs/${encodeURIComponent(runId)}`, input.authToken, input.runId);
       if (hasNativeReviewVerdictAttestation({
         reviewerAgentId: input.reviewerAgentId,
-        reviewerChildIssueId,
+        reviewerIssueId: input.reviewerIssueId,
         interactionId: input.interactionId,
         verdict: input.verdict,
         runs: [run],
@@ -2674,8 +2701,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // rejection is a durable decision that must still be relayed.  Ambiguous
       // and user-cancelled cards stay inert.
       if (!pendingNativePlanReview &&
-          (state === "AWAITING_PLAN_APPROVAL" || terminalProviderState) &&
-          !hasUnresolvedProviderQuestion) {
+          (state === "AWAITING_PLAN_APPROVAL" || state === "AWAITING_USER_FEEDBACK" || terminalProviderState)) {
         const currentPlan = latestPlan(activities);
         if (currentPlan?.id) {
           const recovered = recoverMissingPlanGatePointer({
@@ -2687,8 +2713,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             // answered card from the first revision would duplicate its
             // rejection and bind it to the wrong provider plan.
             allowAnswered: planActivities.length <= 1,
+            // Older cards did not persist providerActivityId. This narrow
+            // bridge is safe only while the cloud session exposes one plan;
+            // it prevents a configuration-refresh restart from losing an
+            // already-answered verdict without rebinding an older revision.
+            allowLegacyAnsweredActivityBinding: planActivities.length === 1,
           });
-          if (recovered) {
+          // A configuration restart can lose the local pointer while Jules
+          // reports AWAITING_USER_FEEDBACK and replays its plan prompt.  An
+          // exact answered native card is already a durable reviewer verdict,
+          // so relay it before treating that prompt as a new provider
+          // question. Pending and cancelled cards retain the normal question
+          // precedence: only an answered, identity-bound verdict may cross
+          // this boundary.
+          if (recovered && (!hasUnresolvedProviderQuestion || recovered.status === "answered")) {
             pendingNativePlanReview = {
               type: "plan_native_review", protocolVersion: 2, julesActivityId: asJulesActivityId(recovered.activityId),
               paperclipInteractionId: recovered.interactionId, question: recovered.question,
@@ -3342,7 +3380,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           const attested = rawVerdict && await nativePlanVerdictIsAttested({
             companyId: ctx.agent.companyId,
             reviewerAgentId: nativePlanReview.reviewerAgentId,
-            reviewerChildIssueId: nativePlanReview.reviewerChildIssueId,
+            reviewerIssueId: reviewIssueId,
+            resolvedByRunId: typeof interaction.resolvedByRunId === "string"
+              ? interaction.resolvedByRunId
+              : undefined,
             interactionId: interaction.id,
             verdict: rawVerdict.kind,
             authToken: ctx.authToken,
