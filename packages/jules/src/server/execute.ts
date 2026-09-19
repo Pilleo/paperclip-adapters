@@ -112,6 +112,7 @@ import { createJulesPlanReviewChild } from "./plan-review-client.js";
 import { parsePlanAdjudication } from "./plan-adjudication.js";
 import { createTelemetry } from "./telemetry.js";
 import { decideNativePlanReviewLifecycle } from "./native-plan-review-lifecycle.js";
+import { decideNativePlanReviewMigration } from "./native-review-provenance.js";
 
 function assertNever(value: never): never {
   throw new Error(`Unhandled Jules adapter state: ${String(value)}`);
@@ -238,6 +239,24 @@ async function readNativePlanReviewRuns(input: {
     input.runId,
   );
   return normalizeNativePlanReviewRuns(runs);
+}
+
+async function readNativePlanReviewSourceIssueId(input: {
+  readonly interaction: PaperclipInteraction;
+  readonly authToken: string | undefined;
+  readonly runId: string | undefined;
+}): Promise<string | null> {
+  if (!input.interaction.sourceRunId) return null;
+  const raw = await getPaperclipJson<unknown>(
+    `/api/heartbeat-runs/${encodeURIComponent(input.interaction.sourceRunId)}`,
+    input.authToken,
+    input.runId,
+  );
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const context = (raw as Record<string, unknown>)["contextSnapshot"];
+  if (!context || typeof context !== "object" || Array.isArray(context)) return null;
+  const issueId = (context as Record<string, unknown>)["issueId"];
+  return typeof issueId === "string" && issueId.trim().length > 0 ? issueId : null;
 }
 
 /**
@@ -3098,6 +3117,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       if (pendingNativePlanReview) {
         const nativePlanReview = pendingNativePlanReview;
+        if (nativePlanReview.legacyPlanReviewCleanup) {
+          await withdrawPaperclipInteraction(
+            nativePlanReview.legacyPlanReviewCleanup.issueId,
+            nativePlanReview.legacyPlanReviewCleanup.interactionId,
+            "Replaced by a parent-owned native plan-review card.",
+            ctx.authToken,
+            ctx.runId,
+          );
+          session.pendingInteraction = { ...nativePlanReview, legacyPlanReviewCleanup: undefined };
+          await persistSessionBestEffort(session, ctx.onLog);
+        }
         const reviewIssueId = nativePlanReview.reviewIssueId ?? nativePlanReview.reviewerChildIssueId ?? taskId;
         const latestPlanActivity = latestPlan(activities);
         // The provider activity is the immutable review target. Retire an
@@ -3125,6 +3155,129 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           await persistSessionBestEffort(session, ctx.onLog);
           pendingNativePlanReview = null;
         } else {
+        if (nativePlanReview.reviewerChildIssueId &&
+            (interaction.status === "pending" || interaction.status === "answered")) {
+          let sourceRunIssueId: string | null;
+          let reviewerRuns: NativePlanReviewRunEvidence[];
+          try {
+            [sourceRunIssueId, reviewerRuns] = await Promise.all([
+              readNativePlanReviewSourceIssueId({
+                interaction,
+                authToken: ctx.authToken,
+                runId: ctx.runId,
+              }),
+              ctx.agent.companyId
+                ? readNativePlanReviewRuns({
+                  companyId: ctx.agent.companyId,
+                  reviewerAgentId: nativePlanReview.reviewerAgentId,
+                  authToken: ctx.authToken,
+                  runId: ctx.runId,
+                })
+                : Promise.resolve([]),
+            ]);
+          } catch (error) {
+            return {
+              exitCode: 1, signal: null, timedOut: false, clearSession: false,
+              errorCode: "paperclip_plan_review_provenance_unavailable",
+              errorFamily: "transient_upstream",
+              errorMessage: sanitizeError(error),
+              retryNotBefore: new Date(Date.now() + reattachDelayMs).toISOString(),
+              sessionParams: serializeSession(session),
+            };
+          }
+          const boundReviewerRuns = reviewerRuns.filter((run) =>
+            run.issueId === reviewIssueId &&
+            run.agentId === nativePlanReview.reviewerAgentId &&
+            run.interactionId === interaction.id &&
+            run.interactionKind === "request_item_verdicts",
+          );
+          const reviewerRunState = boundReviewerRuns.some((run) =>
+            run.status === "queued" || run.status === "running",
+          )
+            ? "active" as const
+            : boundReviewerRuns.length > 0
+              ? "terminal" as const
+              : "none" as const;
+          const migration = decideNativePlanReviewMigration({
+            parentIssueId: taskId,
+            reviewIssueId,
+            sourceRunIssueId,
+            status: interaction.status,
+            reviewerRunState,
+          });
+          switch (migration.action) {
+            case "keep":
+            case "consume_existing":
+              break;
+            case "await_active_run":
+              return await yieldHeartbeat(session);
+            case "migrate_to_parent": {
+              const migrationSession = session;
+              if (!migrationSession) {
+                throw new Error("Native plan-review migration requires an active Jules session");
+              }
+              const replacement = await runCheckpointedMutation({
+                session: migrationSession,
+                key: `jules:plan-review:migrate-parent:${taskId}:${nativePlanReview.planRevisionId}:${interaction.id}`,
+                operation: "migrate_native_plan_review_to_parent",
+                issueId: taskId,
+                sessionId: migrationSession.julesSessionId!,
+                activityId: nativePlanReview.julesActivityId,
+                persist: () => persistSessionBestEffort(migrationSession, ctx.onLog),
+                run: () => createJulesPlanReviewInteraction(
+                  taskId,
+                  migrationSession.julesSessionId!,
+                  {
+                    documentId: nativePlanReview.planDocumentId,
+                    revisionId: nativePlanReview.planRevisionId,
+                    revisionNumber: nativePlanReview.planRevisionNumber,
+                  },
+                  nativePlanReview.question,
+                  nativePlanReview.stage,
+                  nativePlanReview.reviewerAgentId,
+                  ctx.authToken,
+                  ctx.runId,
+                  nativePlanReview.julesActivityId,
+                ),
+              });
+              session.pendingInteraction = {
+                ...nativePlanReview,
+                paperclipInteractionId: replacement.id,
+                reviewIssueId: taskId,
+                reviewerChildIssueId: undefined,
+                legacyPlanReviewCleanup: {
+                  issueId: reviewIssueId,
+                  interactionId: interaction.id,
+                },
+              };
+              await persistSessionBestEffort(session, ctx.onLog);
+              await withdrawPaperclipInteraction(
+                reviewIssueId,
+                interaction.id,
+                "Replaced by a parent-owned native plan-review card.",
+                ctx.authToken,
+                ctx.runId,
+              );
+              session.pendingInteraction = {
+                ...session.pendingInteraction,
+                legacyPlanReviewCleanup: undefined,
+              };
+              await persistSessionBestEffort(session, ctx.onLog);
+              return await yieldHeartbeat(session);
+            }
+            case "fail_closed":
+              await moveIssueToBlocked(taskId, ctx.authToken, ctx.runId).catch(() => undefined);
+              return {
+                exitCode: 1, signal: null, timedOut: false, clearSession: false,
+                errorCode: "native_plan_review_provenance_invalid",
+                errorFamily: null,
+                errorMessage: `Native plan-review provenance is invalid for card ${interaction.id}: ${migration.reason}.`,
+                sessionParams: serializeSession(session),
+              };
+            default:
+              return assertNever(migration);
+          }
+        }
         const withdrawalReason = interaction.result && typeof interaction.result === "object"
           ? (interaction.result as Record<string, unknown>)["reason"]
           : undefined;

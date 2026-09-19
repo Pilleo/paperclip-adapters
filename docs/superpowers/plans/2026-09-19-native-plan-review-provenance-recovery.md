@@ -109,7 +109,7 @@
 
   Run the Step 2 command and `pnpm --filter @pilleo/paperclip-jules-adapter build`.
 
-- [ ] [0%] **Step 6: Commit**
+- [x] [100%] **Step 6: Commit**
 
   Commit: `fix(jules): keep plan verdicts on parent issue`
 
@@ -126,23 +126,23 @@
 - Consumes: `migrate_to_parent` from Task 1 and parent-card creation from Task 2.
 - Produces: one replacement parent card, a persisted replacement pointer, and one withdrawn obsolete child card.
 
-- [ ] [0%] **Step 1: Write failing migration tests**
+- [x] [100%] **Step 1: Write failing migration tests**
 
   Model MAZ-1543/1547 exactly: persisted pending child card, failed reviewer run with `continuation_source_context_missing`, parent source run, and no active reviewer run. Assert ordering: create/recover parent card → persist new pointer → withdraw old child card. Replaying the heartbeat must perform zero writes.
 
-- [ ] [0%] **Step 2: Add fail-closed edge tests**
+- [x] [100%] **Step 2: Add fail-closed edge tests**
 
   Assert no migration when the child card is answered, when a reviewer run is queued/running, when the parent revision changed, or when replacement creation fails. The old card must remain visible on replacement failure.
 
-- [ ] [0%] **Step 3: Run red tests**
+- [x] [100%] **Step 3: Run red tests**
 
   Run: `pnpm --filter @pilleo/paperclip-jules-adapter exec vitest run test/e2e-plan-presentation.test.ts test/execute-heartbeat-yield.test.ts`
 
-- [ ] [0%] **Step 4: Implement checkpointed migration**
+- [x] [100%] **Step 4: Implement checkpointed migration**
 
   Use the existing mutation checkpoint mechanism with an idempotency key derived from parent issue, provider session, revision, stage, and legacy card ID. Never infer migration from error text alone; require the typed cross-issue provenance mismatch plus a pending card and terminal/no reviewer run.
 
-- [ ] [0%] **Step 5: Run focused tests and build**
+- [x] [100%] **Step 5: Run focused tests and build**
 
   Run the Step 3 command and Jules build.
 

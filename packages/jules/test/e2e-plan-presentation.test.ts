@@ -23,6 +23,7 @@ import {
   moveIssueToInProgress,
   scheduleJulesSessionMonitor,
   wakeJulesPlanReviewer,
+  PaperclipClientError,
 } from "../src/server/paperclip-client";
 
 vi.mock("../src/server/jules-client", async (importOriginal) => {
@@ -265,6 +266,141 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
     expect(createJulesQuestionAdjudication).not.toHaveBeenCalled();
     expect(createJulesPlanReviewChildInteraction).not.toHaveBeenCalled();
     expect(wakeJulesPlanReviewer).not.toHaveBeenCalled();
+  });
+
+  it("waits for an active child reviewer run, then migrates once before withdrawing the legacy card", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_PLAN_APPROVAL", id: "session-141" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{
+      id: "act-plan-native", createTime: "2026-08-30T00:01:00.000Z",
+      planGenerated: { plan: { steps: [{ index: 0, title: "Implement", description: "Test" }] } },
+    }] } as never);
+    const legacyCard = {
+      id: "legacy-child-card", sourceRunId: "parent-jules-run", status: "pending", kind: "request_item_verdicts",
+      addresseeAgentId: "00000000-0000-4000-8000-000000000001",
+      idempotencyKey: "jules:plan-review:v2:issue-141:session-141:rev-1:luna",
+      payload: {
+        providerActivityId: "act-plan-native", items: [{ id: "plan" }],
+        target: { type: "issue_document", issueId: "issue-141", documentId: "doc-1", key: "plan", revisionId: "rev-1", revisionNumber: 1 },
+      },
+    };
+    const parentCard = { ...legacyCard, id: "parent-card", sourceRunId: "replacement-run" };
+    vi.mocked(listPaperclipInteractions)
+      .mockResolvedValueOnce([legacyCard])
+      .mockResolvedValueOnce([legacyCard])
+      .mockResolvedValueOnce([parentCard]);
+    let reviewerRunActive = true;
+    vi.mocked(getPaperclipJson).mockImplementation(async (path: string) => {
+      if (path === "/api/heartbeat-runs/parent-jules-run") {
+        return { id: "parent-jules-run", contextSnapshot: { issueId: "issue-141" } } as never;
+      }
+      if (path.includes("/heartbeat-runs?agentId=")) {
+        return reviewerRunActive ? [{
+          id: "active-child-review", agentId: "00000000-0000-4000-8000-000000000001",
+          status: "running", startedAt: "2026-09-19T18:00:00.000Z", finishedAt: null,
+          contextSnapshot: {
+            issueId: "legacy-child", interactionId: "legacy-child-card",
+            interactionKind: "request_item_verdicts",
+          },
+        }] as never : [] as never;
+      }
+      return [] as never;
+    });
+    vi.mocked(createJulesPlanReviewInteraction).mockResolvedValue({
+      id: "parent-card", status: "pending", kind: "request_item_verdicts",
+      planRevision: { documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1 },
+    });
+    const legacySession = sessionCodec.encode({
+      ...session,
+      phase: "WAITING_FOR_PLAN_APPROVAL",
+      pendingInteraction: {
+        type: "plan_native_review", protocolVersion: 2,
+        julesActivityId: "act-plan-native", paperclipInteractionId: "legacy-child-card",
+        question: "Plan", planDocumentId: "doc-1", planRevisionId: "rev-1", planRevisionNumber: 1,
+        reviewerAgentId: "00000000-0000-4000-8000-000000000001", stage: "luna",
+        reviewerChildIssueId: "legacy-child", createdAt: "2026-09-19T18:00:00.000Z",
+      },
+    });
+
+    const waiting = await execute({
+      ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams: legacySession },
+    } as AdapterExecutionContext);
+
+    expect(createJulesPlanReviewInteraction).not.toHaveBeenCalled();
+    expect(withdrawPaperclipInteraction).not.toHaveBeenCalled();
+
+    reviewerRunActive = false;
+    const migrated = await execute({
+      ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams: waiting.sessionParams },
+    } as AdapterExecutionContext);
+
+    expect(createJulesPlanReviewInteraction).toHaveBeenCalledTimes(1);
+    expect(createJulesPlanReviewInteraction).toHaveBeenCalledWith(
+      "issue-141", "session-141", { documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1 },
+      "Plan", "luna", "00000000-0000-4000-8000-000000000001", "jwt-token", "run-1", "act-plan-native",
+    );
+    expect(withdrawPaperclipInteraction).toHaveBeenCalledWith(
+      "legacy-child", "legacy-child-card", expect.stringContaining("parent"), "jwt-token", "run-1",
+    );
+    expect(vi.mocked(createJulesPlanReviewInteraction).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(withdrawPaperclipInteraction).mock.invocationCallOrder[0]!,
+    );
+    expect(sessionCodec.decode(migrated.sessionParams!)?.pendingInteraction).toMatchObject({
+      paperclipInteractionId: "parent-card", reviewIssueId: "issue-141", reviewerChildIssueId: undefined,
+    });
+
+    await execute({
+      ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams: migrated.sessionParams },
+    } as AdapterExecutionContext);
+    expect(createJulesPlanReviewInteraction).toHaveBeenCalledTimes(1);
+    expect(withdrawPaperclipInteraction).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a pending legacy child card visible when parent replacement creation fails", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_PLAN_APPROVAL", id: "session-141" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{
+      id: "act-plan-native", createTime: "2026-08-30T00:01:00.000Z",
+      planGenerated: { plan: { steps: [{ index: 0, title: "Implement", description: "Test" }] } },
+    }] } as never);
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([{
+      id: "legacy-child-card", sourceRunId: "parent-jules-run", status: "pending", kind: "request_item_verdicts",
+      addresseeAgentId: "00000000-0000-4000-8000-000000000001",
+      idempotencyKey: "jules:plan-review:v2:issue-141:session-141:rev-1:luna",
+      payload: {
+        providerActivityId: "act-plan-native", items: [{ id: "plan" }],
+        target: { type: "issue_document", issueId: "issue-141", documentId: "doc-1", key: "plan", revisionId: "rev-1", revisionNumber: 1 },
+      },
+    }]);
+    vi.mocked(getPaperclipJson).mockImplementation(async (path: string) =>
+      path === "/api/heartbeat-runs/parent-jules-run"
+        ? { id: "parent-jules-run", contextSnapshot: { issueId: "issue-141" } } as never
+        : [] as never,
+    );
+    vi.mocked(createJulesPlanReviewInteraction).mockRejectedValue(
+      new PaperclipClientError(503, "Paperclip unavailable"),
+    );
+
+    const result = await execute({
+      ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({
+        ...session,
+        phase: "WAITING_FOR_PLAN_APPROVAL",
+        pendingInteraction: {
+          type: "plan_native_review", protocolVersion: 2,
+          julesActivityId: "act-plan-native", paperclipInteractionId: "legacy-child-card",
+          question: "Plan", planDocumentId: "doc-1", planRevisionId: "rev-1", planRevisionNumber: 1,
+          reviewerAgentId: "00000000-0000-4000-8000-000000000001", stage: "luna",
+          reviewerChildIssueId: "legacy-child", createdAt: "2026-09-19T18:00:00.000Z",
+        },
+      }) },
+    } as AdapterExecutionContext);
+
+    expect(withdrawPaperclipInteraction).not.toHaveBeenCalled();
+    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
+      paperclipInteractionId: "legacy-child-card", reviewerChildIssueId: "legacy-child",
+    });
   });
 
   it("preempts a pending native plan review when Jules emits a newer provider question", async () => {

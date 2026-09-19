@@ -154,6 +154,11 @@ export const PendingInteractionSchema = z.union([
     reviewIssueId: z.string().min(1).optional(),
     /** Compatibility pointer for plan cards created on reviewer children before v2026.916.0. */
     reviewerChildIssueId: z.string().min(1).optional(),
+    /** Replacement-first migration cleanup; retained until the obsolete child card is withdrawn. */
+    legacyPlanReviewCleanup: z.object({
+      issueId: z.string().min(1),
+      interactionId: z.string().min(1),
+    }).optional(),
     createdAt: z.string(),
   }),
   z.object({
@@ -458,6 +463,8 @@ export interface JulesAdapterSessionV1 {
         reviewIssueId?: string | undefined;
         /** Legacy reviewer-owned child retained only for migration. */
         reviewerChildIssueId?: string | undefined;
+        /** Obsolete child card awaiting idempotent withdrawal after parent-card persistence. */
+        legacyPlanReviewCleanup?: { issueId: string; interactionId: string } | undefined;
         createdAt: string;
       }
     | undefined;

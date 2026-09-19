@@ -315,12 +315,11 @@ describe("heartbeat yield vs session deadline", () => {
       status: "pending",
       addresseeAgentId: reviewerAgentId,
     }] as never);
-    vi.mocked(getPaperclipIssue).mockResolvedValue({ id: "plan-review-child-1", status: "backlog" } as never);
     vi.mocked(getPaperclipJson).mockResolvedValue([{
       id: `${stage}-run`, agentId: reviewerAgentId, status: "running",
       startedAt: "2026-09-19T18:00:00.000Z", finishedAt: null,
       contextSnapshot: {
-        issueId: "plan-review-child-1",
+        issueId: "issue-yield",
         interactionId: "plan-card-1",
         interactionKind: "request_item_verdicts",
       },
@@ -337,7 +336,7 @@ describe("heartbeat yield vs session deadline", () => {
             type: "plan_native_review", protocolVersion: 2,
             julesActivityId: "plan-activity", question: "Plan", paperclipInteractionId: "plan-card-1",
             planDocumentId: "plan-document-1", planRevisionId: "plan-revision-1", planRevisionNumber: 1,
-            reviewerAgentId, stage, reviewerChildIssueId: "plan-review-child-1", createdAt: new Date().toISOString(),
+            reviewerAgentId, stage, reviewIssueId: "issue-yield", createdAt: new Date().toISOString(),
           },
         } as never),
       },

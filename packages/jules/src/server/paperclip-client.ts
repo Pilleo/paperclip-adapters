@@ -41,6 +41,7 @@ export interface PaperclipInteraction {
   addresseeAgentId?: string;
   target?: unknown;
   idempotencyKey?: string;
+  sourceRunId?: string | null;
 }
 
 /**

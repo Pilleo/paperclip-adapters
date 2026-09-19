@@ -251,7 +251,7 @@ describe("Review Feedback Relay to Jules", () => {
           julesActivityId: "replacement-plan-activity", paperclipInteractionId: "replacement-luna-plan-1",
           question: "Replacement plan", planRevisionId: "revision-2", planRevisionNumber: 2,
           planDocumentId: "document-2", reviewerAgentId: "luna-1", stage: "luna" as const,
-          reviewerChildIssueId: "replacement-plan-review-child-1",
+          reviewIssueId: "issue-141",
           createdAt: "2026-09-06T01:25:00.000Z",
         },
       }) },
@@ -259,7 +259,7 @@ describe("Review Feedback Relay to Jules", () => {
       config: adapterConfig, authToken: "mock-token", runId: "run-2", onLog: vi.fn().mockResolvedValue(undefined),
     } as unknown as AdapterExecutionContext;
 
-    // The reviewer-owned child form remains the durable authority after the
+    // The parent-owned typed form remains the durable authority after the
     // PR rejection was delivered. An empty response would model a compacted
     // card and should deliberately retire the stale local pointer instead.
     vi.mocked(listPaperclipInteractions).mockResolvedValue([{
@@ -272,7 +272,7 @@ describe("Review Feedback Relay to Jules", () => {
       id: "replacement-luna-run", agentId: "luna-1", status: "running",
       startedAt: "2026-09-19T18:00:00.000Z", finishedAt: null,
       contextSnapshot: {
-        issueId: "replacement-plan-review-child-1",
+        issueId: "issue-141",
         interactionId: "replacement-luna-plan-1",
         interactionKind: "request_item_verdicts",
       },
