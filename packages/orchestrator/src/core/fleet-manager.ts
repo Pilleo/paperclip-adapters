@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
 import { JULES_PROVIDER_POLL_CADENCE_SECONDS } from "@pilleo/paperclip-adapter-common";
+import { decideManagedAgentPatch, managedConfigFingerprint } from "./managed-agent-patch.js";
 import { resolveNativeReviewMcpHome, type NativeReviewWorkerKey } from "./native-review-mcp-home.js";
 
 export interface ManagedWorkerDefinition {
@@ -557,9 +558,42 @@ async function reconcileManagedFleetUncoalesced(
       ...(def.key === "jules" && config.julesApiKey ? { apiKey: config.julesApiKey } : {}),
     };
 
+    const runtimeConfig = desiredRuntimeConfig(def.key);
+    const reconciledAdapterConfig: Record<string, unknown> = {
+      ...mergedConfig,
+      ...(def.key === "jules"
+        ? { pollCadenceSeconds: JULES_PROVIDER_POLL_CADENCE_SECONDS }
+        : { pollCadenceSeconds: 0 }),
+    };
+    const desiredReportsTo = managerId || matching?.reportsTo || null;
+    const desiredManagedMetadata = {
+      managedBy: "paperclip-orchestrator",
+      workerKey: def.key,
+      immutableConfig: true,
+      description: def.description,
+      ...(reviewerInstructionsFor(def.key)
+        ? { nativeReviewProtocolVersion: NATIVE_REVIEW_PROTOCOL_VERSION }
+        : {}),
+      ...(def.key === "luna_reviewer" || def.key === "terra_reviewer"
+        ? { structuredDecisionCapability: NATIVE_REVIEW_DECISION_CAPABILITY }
+        : {}),
+    };
+    // This is the complete adapter-owned state. It intentionally contains
+    // hidden values such as env, but only its digest is persisted in metadata.
+    const desiredManagedConfiguration = {
+      title: def.title,
+      capabilities: def.capabilities,
+      adapterType: def.adapterType,
+      reportsTo: desiredReportsTo,
+      adapterConfig: reconciledAdapterConfig,
+      runtimeConfig: runtimeConfig ?? null,
+      metadata: desiredManagedMetadata,
+    };
+    const desiredFingerprint = managedConfigFingerprint(desiredManagedConfiguration);
+
     const createManagedWorker = async (replacesAgentId?: string) => {
       const replacement = Boolean(replacesAgentId);
-      const { promptTemplate: _legacyPromptTemplate, ...createAdapterConfig } = mergedConfig;
+      const { promptTemplate: _legacyPromptTemplate, ...createAdapterConfig } = reconciledAdapterConfig;
       return fetch(`${apiUrl}/api/companies/${companyId}/agents`, {
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
@@ -573,7 +607,7 @@ async function reconcileManagedFleetUncoalesced(
           role: def.role,
           capabilities: def.capabilities,
           adapterType: def.adapterType,
-          reportsTo: managerId || null,
+          reportsTo: desiredReportsTo,
           status: "idle",
           // New Paperclip agents materialize prompts from instructionsBundle;
           // sending the retired promptTemplate field is rejected with 422.
@@ -586,17 +620,11 @@ async function reconcileManagedFleetUncoalesced(
                 },
               }
             : {}),
-          ...(desiredRuntimeConfig(def.key) ? { runtimeConfig: desiredRuntimeConfig(def.key) } : {}),
+          ...(runtimeConfig ? { runtimeConfig } : {}),
           metadata: {
-            managedBy: "paperclip-orchestrator",
-            workerKey: def.key,
-            immutableConfig: true,
-            description: def.description,
+            ...desiredManagedMetadata,
+            managedConfigFingerprint: desiredFingerprint,
             ...(replacesAgentId ? { replacesAgentId } : {}),
-            ...(reviewerInstructionsFor(def.key) ? { nativeReviewProtocolVersion: NATIVE_REVIEW_PROTOCOL_VERSION } : {}),
-            ...(def.key === "luna_reviewer" || def.key === "terra_reviewer"
-              ? { structuredDecisionCapability: NATIVE_REVIEW_DECISION_CAPABILITY }
-              : {}),
           },
         }),
       });
@@ -626,31 +654,27 @@ async function reconcileManagedFleetUncoalesced(
       resolvedIds[def.key] = matching.id;
 
       // Ensure title, capabilities, heartbeat policy, reportsTo, and status are in sync.
-      const runtimeConfig = desiredRuntimeConfig(def.key);
       const currentHeartbeat = (matching as { runtimeConfig?: Record<string, unknown> }).runtimeConfig?.["heartbeat"] as
         | Record<string, unknown>
         | undefined;
-      const needsUpdate =
+      const visibleConfigDrift =
         matching.title !== def.title ||
         matching.capabilities !== def.capabilities ||
         matching.adapterType !== def.adapterType ||
-        matching.name !== def.name ||
-        matching.adapterConfig?.["pollCadenceSeconds"] !== mergedConfig["pollCadenceSeconds"] ||
-        (def.key === "jules" && matching.adapterConfig?.["ciPolicy"] !== mergedConfig["ciPolicy"]) ||
-        matching.adapterConfig?.["engine"] !== mergedConfig["engine"] ||
-        matching.adapterConfig?.["model"] !== mergedConfig["model"] ||
-        matching.adapterConfig?.["dangerouslyBypassApprovalsAndSandbox"] !== mergedConfig["dangerouslyBypassApprovalsAndSandbox"] ||
-        JSON.stringify(matching.adapterConfig?.["extraArgs"] ?? []) !== JSON.stringify(mergedConfig["extraArgs"] ?? []) ||
-        JSON.stringify(matching.adapterConfig?.["networkScope"] ?? null) !== JSON.stringify(mergedConfig["networkScope"] ?? null) ||
-        JSON.stringify(matching.adapterConfig?.["networkAllowlist"] ?? []) !== JSON.stringify(mergedConfig["networkAllowlist"] ?? []) ||
-        (isNativeReviewWorker(def.key) && matching.adapterConfig?.["promptTemplate"] !== mergedConfig["promptTemplate"]) ||
-        (def.key === "jules" && matching.adapterConfig?.["planApprovalPolicy"] !== mergedConfig["planApprovalPolicy"]) ||
-        (def.key === "jules" && matching.adapterConfig?.["planReviewerAgentId"] !== mergedConfig["planReviewerAgentId"]) ||
-        (def.key === "jules" && matching.adapterConfig?.["planStrongReviewerAgentId"] !== mergedConfig["planStrongReviewerAgentId"]) ||
-        (def.key === "jules" && matching.adapterConfig?.["questionReviewerAgentId"] !== mergedConfig["questionReviewerAgentId"]) ||
-        (def.key === "jules" && matching.adapterConfig?.["questionAdjudicatorAgentId"] !== mergedConfig["questionAdjudicatorAgentId"]) ||
-        (def.key === "luna_reviewer" && matching.adapterConfig?.["cwd"] !== mergedConfig["cwd"]) ||
-        (isNativeReviewWorker(def.key) && JSON.stringify(matching.adapterConfig?.["env"] ?? {}) !== JSON.stringify(mergedConfig["env"] ?? {})) ||
+        matching.adapterConfig?.["pollCadenceSeconds"] !== reconciledAdapterConfig["pollCadenceSeconds"] ||
+        (def.key === "jules" && matching.adapterConfig?.["ciPolicy"] !== reconciledAdapterConfig["ciPolicy"]) ||
+        matching.adapterConfig?.["engine"] !== reconciledAdapterConfig["engine"] ||
+        matching.adapterConfig?.["model"] !== reconciledAdapterConfig["model"] ||
+        matching.adapterConfig?.["dangerouslyBypassApprovalsAndSandbox"] !== reconciledAdapterConfig["dangerouslyBypassApprovalsAndSandbox"] ||
+        JSON.stringify(matching.adapterConfig?.["extraArgs"] ?? []) !== JSON.stringify(reconciledAdapterConfig["extraArgs"] ?? []) ||
+        JSON.stringify(matching.adapterConfig?.["networkScope"] ?? null) !== JSON.stringify(reconciledAdapterConfig["networkScope"] ?? null) ||
+        JSON.stringify(matching.adapterConfig?.["networkAllowlist"] ?? []) !== JSON.stringify(reconciledAdapterConfig["networkAllowlist"] ?? []) ||
+        (def.key === "jules" && matching.adapterConfig?.["planApprovalPolicy"] !== reconciledAdapterConfig["planApprovalPolicy"]) ||
+        (def.key === "jules" && matching.adapterConfig?.["planReviewerAgentId"] !== reconciledAdapterConfig["planReviewerAgentId"]) ||
+        (def.key === "jules" && matching.adapterConfig?.["planStrongReviewerAgentId"] !== reconciledAdapterConfig["planStrongReviewerAgentId"]) ||
+        (def.key === "jules" && matching.adapterConfig?.["questionReviewerAgentId"] !== reconciledAdapterConfig["questionReviewerAgentId"]) ||
+        (def.key === "jules" && matching.adapterConfig?.["questionAdjudicatorAgentId"] !== reconciledAdapterConfig["questionAdjudicatorAgentId"]) ||
+        (def.key === "luna_reviewer" && matching.adapterConfig?.["cwd"] !== reconciledAdapterConfig["cwd"]) ||
         (runtimeConfig && (
           currentHeartbeat?.["enabled"] !== runtimeConfig.heartbeat["enabled"] ||
           (runtimeConfig.heartbeat["intervalSec"] !== undefined && currentHeartbeat?.["intervalSec"] !== runtimeConfig.heartbeat["intervalSec"]) ||
@@ -658,46 +682,53 @@ async function reconcileManagedFleetUncoalesced(
           currentHeartbeat?.["maxConcurrentRuns"] !== runtimeConfig.heartbeat["maxConcurrentRuns"] ||
           (runtimeConfig.heartbeat["skipTimerWhenNoActionableWork"] !== undefined && currentHeartbeat?.["skipTimerWhenNoActionableWork"] !== runtimeConfig.heartbeat["skipTimerWhenNoActionableWork"])
         )) ||
-        (managerId && matching.reportsTo !== managerId) ||
+        matching.reportsTo !== desiredReportsTo ||
         matching.metadata?.["managedBy"] !== "paperclip-orchestrator" ||
         matching.metadata?.["workerKey"] !== def.key ||
+        matching.metadata?.["immutableConfig"] !== true ||
+        matching.metadata?.["description"] !== def.description ||
         (reviewerInstructionsFor(def.key) !== null && matching.metadata?.["nativeReviewProtocolVersion"] !== NATIVE_REVIEW_PROTOCOL_VERSION) ||
         ((def.key === "luna_reviewer" || def.key === "terra_reviewer") &&
           JSON.stringify(matching.metadata?.["structuredDecisionCapability"] ?? null) !== JSON.stringify(NATIVE_REVIEW_DECISION_CAPABILITY));
 
-      if (needsUpdate) {
+      const patchDecision = decideManagedAgentPatch({
+        observed: {
+          name: matching.name,
+          managedConfigFingerprint:
+            typeof matching.metadata?.["managedConfigFingerprint"] === "string"
+              ? matching.metadata["managedConfigFingerprint"]
+              : undefined,
+        },
+        desired: {
+          name: def.name,
+          configuration: desiredManagedConfiguration,
+          patch: {
+            title: def.title,
+            capabilities: def.capabilities,
+            adapterType: def.adapterType,
+            errorReason: null,
+            reportsTo: desiredReportsTo,
+            ...(isNativeReviewWorker(def.key) ? { replaceAdapterConfig: true } : {}),
+            adapterConfig: reconciledAdapterConfig,
+            ...(runtimeConfig ? { runtimeConfig } : {}),
+            metadata: {
+              ...matching.metadata,
+              ...desiredManagedMetadata,
+            },
+          },
+        },
+        visibleConfigDrift: visibleConfigDrift ? "stale" : "current",
+      });
+
+      if (patchDecision.kind === "patch") {
         try {
           // Managed workers are fully owned by this adapter. Replacing the
           // config is intentional: merging would preserve retired fields such
           // as the nested Bubblewrap network wrapper forever.
-          const reconciledAdapterConfig = { ...mergedConfig };
           const patchRes = await fetch(`${apiUrl}/api/agents/${matching.id}`, {
             method: "PATCH",
             headers: { ...headers, "Content-Type": "application/json" },
-            body: JSON.stringify({
-              name: def.name,
-              title: def.title,
-              capabilities: def.capabilities,
-              adapterType: def.adapterType,
-              errorReason: null,
-              reportsTo: managerId || matching.reportsTo || null,
-              ...(isNativeReviewWorker(def.key) ? { replaceAdapterConfig: true } : {}),
-              adapterConfig: {
-                ...reconciledAdapterConfig,
-                ...(def.key === "jules" ? { pollCadenceSeconds: JULES_PROVIDER_POLL_CADENCE_SECONDS } : { pollCadenceSeconds: 0 }),
-              },
-              ...(runtimeConfig ? { runtimeConfig } : {}),
-              metadata: {
-                ...matching.metadata,
-                managedBy: "paperclip-orchestrator",
-                workerKey: def.key,
-                description: def.description,
-                ...(reviewerInstructionsFor(def.key) ? { nativeReviewProtocolVersion: NATIVE_REVIEW_PROTOCOL_VERSION } : {}),
-                ...(def.key === "luna_reviewer" || def.key === "terra_reviewer"
-                  ? { structuredDecisionCapability: NATIVE_REVIEW_DECISION_CAPABILITY }
-                  : {}),
-              },
-            }),
+            body: JSON.stringify(patchDecision.patch),
           });
           if (patchRes.status === 401 || patchRes.status === 403) {
             const failure: FleetAuthorizationFailure = { capability: "agents:configure", workerKey: def.key, agentId: matching.id, status: patchRes.status, detail: (await patchRes.text()).slice(0, 300) };

@@ -1,6 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { managedAgentInstructionsPath, reconcileManagedFleet, MANAGED_FLEET_DEFINITIONS } from "../src/core/fleet-manager.js";
 
+type RecordedPatch = Readonly<{
+  url: string;
+  body: Readonly<Record<string, unknown>>;
+}>;
+
+const managedWorkerKeys = MANAGED_FLEET_DEFINITIONS.map((definition) => definition.key);
+
+function reconcileOnly(workerKey: (typeof MANAGED_FLEET_DEFINITIONS)[number]["key"]) {
+  return managedWorkerKeys.filter((key) => key !== workerKey);
+}
+
 describe("Orchestrator Managed Fleet Manager", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -228,7 +239,8 @@ describe("Orchestrator Managed Fleet Manager", () => {
 
     await reconcileManagedFleet("http://127.0.0.1:3100", "company-1", { orchestratorAgentId: "orch-1" });
 
-    const lunaPatch = patches.find((patch) => patch.name === "[Orchestrated] Luna Fast Reviewer");
+    const lunaPatch = patches.find((patch) => patch.adapterConfig?.model === "gpt-5.6-luna");
+    expect(lunaPatch).not.toHaveProperty("name");
     expect(lunaPatch?.replaceAdapterConfig).toBe(true);
     expect(lunaPatch?.adapterConfig.dangerouslyBypassApprovalsAndSandbox).toBe(true);
     expect(lunaPatch?.adapterConfig.extraArgs).toEqual([]);
@@ -531,5 +543,169 @@ describe("Orchestrator Managed Fleet Manager", () => {
         adapterConfig: expect.objectContaining({ ciPolicy: "required" }),
       }),
     }));
+  });
+
+  it.each(["luna_reviewer", "terra_reviewer"] as const)(
+    "omits an unchanged shortname when patching stale %s configuration",
+    async (workerKey) => {
+      const definition = MANAGED_FLEET_DEFINITIONS.find((candidate) => candidate.key === workerKey)!;
+      const agentId = `${workerKey}-1`;
+      const agents: any[] = [
+        { id: "orch-1", name: "Task Orchestrator", adapterType: "orchestrator" },
+        {
+          id: agentId,
+          name: definition.name,
+          title: "stale title",
+          capabilities: definition.capabilities,
+          adapterType: definition.adapterType,
+          reportsTo: "orch-1",
+          adapterConfig: { ...definition.adapterConfig, model: "stale-model" },
+          metadata: { managedBy: "paperclip-orchestrator", workerKey },
+        },
+      ];
+      const successfulPatches: RecordedPatch[] = [];
+
+      global.fetch = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (!init?.method || init.method === "GET") {
+          return { ok: true, status: 200, json: async () => agents };
+        }
+        const body = init.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
+        if (init.method === "PATCH" && body["name"] === definition.name) {
+          return {
+            ok: false,
+            status: 409,
+            text: async () => "Agent shortname is already in use in this company",
+          };
+        }
+        if (init.method === "PATCH") successfulPatches.push({ url, body });
+        return { ok: true, status: 200, json: async () => ({}), text: async () => "" };
+      });
+
+      const result = await reconcileManagedFleet("http://127.0.0.1:3100", "company-1", {
+        orchestratorAgentId: "orch-1",
+        skipWorkerKeys: reconcileOnly(workerKey),
+      });
+
+      expect(result.updatedCount).toBe(1);
+      expect(successfulPatches).toHaveLength(1);
+      expect(successfulPatches[0]).toEqual(expect.objectContaining({
+        url: `http://127.0.0.1:3100/api/agents/${agentId}`,
+        body: expect.objectContaining({
+          title: definition.title,
+          adapterConfig: expect.objectContaining({ model: definition.adapterConfig["model"] }),
+        }),
+      }));
+      expect(successfulPatches[0]?.body).not.toHaveProperty("name");
+    },
+  );
+
+  it("uses a persisted desired-configuration fingerprint when Paperclip redacts adapter environment values", async () => {
+    const definition = MANAGED_FLEET_DEFINITIONS.find((candidate) => candidate.key === "luna_reviewer")!;
+    const agent = {
+      id: "luna-1",
+      name: definition.name,
+      title: definition.title,
+      capabilities: definition.capabilities,
+      adapterType: definition.adapterType,
+      reportsTo: "orch-1",
+      adapterConfig: { ...definition.adapterConfig, env: { CODEX_HOME: "[REDACTED]", PATH: "[REDACTED]" } },
+      metadata: {
+        managedBy: "paperclip-orchestrator",
+        workerKey: "luna_reviewer",
+        nativeReviewProtocolVersion: "v13",
+        structuredDecisionCapability: {
+          version: 1,
+          transports: ["mcp_tool"],
+          decisionKinds: ["plan_review", "pull_request_review"],
+        },
+      } as Record<string, unknown>,
+      runtimeConfig: {
+        heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1, skipTimerWhenNoActionableWork: true },
+      },
+    };
+    const patches: RecordedPatch[] = [];
+
+    global.fetch = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (!init?.method || init.method === "GET") {
+        return { ok: true, status: 200, json: async () => [
+          { id: "orch-1", name: "Task Orchestrator", adapterType: "orchestrator" },
+          agent,
+        ] };
+      }
+      const body = init.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
+      if (init.method === "PATCH") {
+        patches.push({ url, body });
+        agent.metadata = body["metadata"] as Record<string, unknown>;
+      }
+      return { ok: true, status: 200, json: async () => ({}), text: async () => "" };
+    });
+
+    const config = { orchestratorAgentId: "orch-1", skipWorkerKeys: reconcileOnly("luna_reviewer") };
+    const first = await reconcileManagedFleet("http://127.0.0.1:3100", "company-1", config);
+    const second = await reconcileManagedFleet("http://127.0.0.1:3100", "company-1", config);
+
+    expect(first.updatedCount).toBe(1);
+    expect(second.updatedCount).toBe(0);
+    expect(patches).toHaveLength(1);
+    expect(agent.metadata["managedConfigFingerprint"]).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("includes the shortname only for a genuine managed-agent rename", async () => {
+    const definition = MANAGED_FLEET_DEFINITIONS.find((candidate) => candidate.key === "luna_reviewer")!;
+    const patches: RecordedPatch[] = [];
+    global.fetch = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (!init?.method || init.method === "GET") {
+        return { ok: true, status: 200, json: async () => [
+          { id: "orch-1", name: "Task Orchestrator", adapterType: "orchestrator" },
+          {
+            id: "luna-legacy",
+            name: "Legacy Luna Reviewer",
+            adapterType: definition.adapterType,
+            metadata: { managedBy: "paperclip-orchestrator", workerKey: "luna_reviewer" },
+          },
+        ] };
+      }
+      const body = init.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
+      if (init.method === "PATCH") patches.push({ url, body });
+      return { ok: true, status: 200, json: async () => ({}), text: async () => "" };
+    });
+
+    await reconcileManagedFleet("http://127.0.0.1:3100", "company-1", {
+      orchestratorAgentId: "orch-1",
+      skipWorkerKeys: reconcileOnly("luna_reviewer"),
+    });
+
+    expect(patches).toHaveLength(1);
+    expect(patches[0]?.body["name"]).toBe(definition.name);
+  });
+
+  it("does not report a rejected managed-agent patch as an update", async () => {
+    const definition = MANAGED_FLEET_DEFINITIONS.find((candidate) => candidate.key === "luna_reviewer")!;
+    global.fetch = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+      if (!init?.method || init.method === "GET") {
+        return { ok: true, status: 200, json: async () => [
+          { id: "orch-1", name: "Task Orchestrator", adapterType: "orchestrator" },
+          {
+            id: "luna-1",
+            name: definition.name,
+            title: "stale",
+            adapterType: definition.adapterType,
+            metadata: { managedBy: "paperclip-orchestrator", workerKey: "luna_reviewer" },
+          },
+        ] };
+      }
+      if (init.method === "PATCH") {
+        return { ok: false, status: 409, text: async () => "conflict" };
+      }
+      return { ok: true, status: 200, json: async () => ({}), text: async () => "" };
+    });
+
+    const result = await reconcileManagedFleet("http://127.0.0.1:3100", "company-1", {
+      orchestratorAgentId: "orch-1",
+      skipWorkerKeys: reconcileOnly("luna_reviewer"),
+    });
+
+    expect(result.updatedCount).toBe(0);
+    expect(result.lunaReviewerAgentId).toBe("luna-1");
   });
 });
