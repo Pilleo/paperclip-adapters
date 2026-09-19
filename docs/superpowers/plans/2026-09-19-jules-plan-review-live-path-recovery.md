@@ -85,11 +85,11 @@
 - Consumes: `pendingInteraction.type === "plan_native_review"` and configured poll cadence.
 - Produces: a normal scheduled Jules monitor on the parent while the reviewer child owns the verdict card.
 
-- [ ] [10%] Add a failing test proving `yieldHeartbeat` schedules, rather than clears, the parent monitor during Luna and Terra waits.
-- [ ] [0%] Add a failing test proving repeated parent polls before a verdict do not create another child, card, or reviewer wake.
-- [ ] [0%] Remove the obsolete monitor-clear branch whose comment assumes the verdict card lives on the parent; document that reviewer ownership is isolated on a child issue.
-- [ ] [0%] Ensure the pending result declares a durable monitor disposition so Paperclip recovery does not classify the successful run as productive-but-stranded.
-- [ ] [0%] Run the focused Jules tests, Jules build, and recovery E2E script.
+- [x] [100%] Add a failing test proving `yieldHeartbeat` schedules, rather than clears, the parent monitor during Luna and Terra waits.
+- [x] [100%] Add a failing test proving repeated parent polls before a verdict do not create another child, card, or reviewer wake.
+- [x] [100%] Remove the obsolete monitor-clear branch whose comment assumes the verdict card lives on the parent; document that reviewer ownership is isolated on a child issue.
+- [x] [100%] Ensure the pending result declares a durable monitor disposition so Paperclip recovery does not classify the successful run as productive-but-stranded.
+- [x] [100%] Run the focused Jules tests and Jules build; the server-backed recovery E2E remains consolidated in Task 5.
 
 ### Task 4: Make recovery reuse the canonical card and reject unbound runs
 
@@ -104,7 +104,7 @@
 - Consumes: Task 1's action union and exact plan identity `{ parentIssueId, sessionId, revisionId, stage, reviewerAgentId }`.
 - Produces: one recovery wake for the same card only after every prior bound run is terminal; unbound runs such as MAZ-1546's failed automatic wake are diagnostic evidence, not canonical attempts.
 
-- [ ] [0%] Add parameterized RED tests for restart, failed unbound run, failed bound run, active bound run, answered card, stale revision, and duplicate-card protocol failure.
+- [ ] [10%] Add parameterized RED tests for restart, failed unbound run, failed bound run, active bound run, answered card, stale revision, and duplicate-card protocol failure.
 - [ ] [0%] Implement recovery through the typed wake from Task 2; never call the absent `/interactions/:id/dispatch` route.
 - [ ] [0%] Add a bounded retry budget keyed by the immutable card identity; exhaustion creates one visible protocol failure and stops spending reviewer quota.
 - [ ] [0%] Verify Luna rejection never starts Terra, while Luna approval creates and wakes exactly one Terra card.

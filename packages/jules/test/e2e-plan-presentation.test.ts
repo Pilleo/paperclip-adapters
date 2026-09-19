@@ -174,6 +174,38 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
     });
   });
 
+  it("polls a pending Luna card without creating or waking another reviewer", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_PLAN_APPROVAL", id: "session-141" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{
+      id: "act-plan-native",
+      createTime: "2026-08-30T00:01:00.000Z",
+      planGenerated: { plan: { steps: [{ index: 0, title: "Implement the fix", description: "Add tests" }] } },
+    }] } as never);
+
+    const first = await execute(baseContext as AdapterExecutionContext);
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([{
+      id: "native-plan-review-1",
+      status: "pending",
+      kind: "request_item_verdicts",
+    }]);
+    vi.mocked(getPaperclipInteraction).mockResolvedValue({
+      id: "native-plan-review-1",
+      status: "pending",
+      kind: "request_item_verdicts",
+    });
+
+    await execute({
+      ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams: first.sessionParams },
+    } as AdapterExecutionContext);
+
+    expect(createJulesQuestionAdjudication).toHaveBeenCalledTimes(1);
+    expect(createJulesPlanReviewChildInteraction).toHaveBeenCalledTimes(1);
+    expect(wakeJulesPlanReviewer).toHaveBeenCalledTimes(1);
+    expect(scheduleJulesSessionMonitor).toHaveBeenCalledTimes(2);
+    expect(clearJulesSessionMonitor).not.toHaveBeenCalled();
+  });
+
   it("preempts a pending native plan review when Jules emits a newer provider question", async () => {
     vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_PLAN_APPROVAL", id: "session-141" } as never);
     vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [

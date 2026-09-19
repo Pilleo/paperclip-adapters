@@ -10,7 +10,6 @@ import {
   moveIssueToReview,
   scheduleJulesSessionMonitor,
 } from "../src/server/paperclip-client";
-import { PaperclipClientError } from "../src/server/paperclip-client";
 
 vi.mock("../src/server/jules-client", async (importOriginal) => {
   const mod = await importOriginal<typeof import("../src/server/jules-client")>();
@@ -207,7 +206,7 @@ describe("heartbeat yield vs session deadline", () => {
       name: "sessions/recovery-session",
     } as never);
 
-    await execute({
+    const result = await execute({
       ...ctx(),
       context: {
         task: { id: "issue-yield", title: "Ping" },
@@ -298,7 +297,10 @@ describe("heartbeat yield vs session deadline", () => {
     expect(JulesClient.prototype.getActivities).toHaveBeenCalledWith("session-live", undefined, 100);
   });
 
-  it("clears a stale Jules monitor while a native plan card owns the next decision", async () => {
+  it.each([
+    ["luna", "luna-1"],
+    ["terra", "terra-1"],
+  ] as const)("keeps the parent Jules monitor live during %s plan review", async (stage, reviewerAgentId) => {
     vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({
       id: "session-live",
       state: "AWAITING_PLAN_APPROVAL",
@@ -308,41 +310,6 @@ describe("heartbeat yield vs session deadline", () => {
       kind: "request_item_verdicts",
       status: "pending",
     }] as never);
-
-    await execute({
-      ...ctx(),
-      runtime: {
-        sessionId: "session-live",
-        sessionParams: sessionCodec.encode({
-          ...session,
-          phase: "WAITING_FOR_PLAN_APPROVAL",
-          pendingInteraction: {
-            type: "plan_native_review", protocolVersion: 2,
-            julesActivityId: "plan-activity", question: "Plan", paperclipInteractionId: "plan-card-1",
-            planDocumentId: "plan-document-1", planRevisionId: "plan-revision-1", planRevisionNumber: 1,
-            reviewerAgentId: "luna-1", stage: "luna", reviewerChildIssueId: "plan-review-child-1", createdAt: new Date().toISOString(),
-          },
-        } as never),
-      },
-    } as AdapterExecutionContext);
-
-    expect(scheduleJulesSessionMonitor).not.toHaveBeenCalled();
-    expect(clearJulesSessionMonitor).toHaveBeenCalledWith("issue-yield", "token", "run-yield");
-  });
-
-  it("keeps the reviewer-owned plan wait healthy when parent monitor cleanup is forbidden", async () => {
-    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({
-      id: "session-live",
-      state: "AWAITING_PLAN_APPROVAL",
-    } as never);
-    vi.mocked(listPaperclipInteractions).mockResolvedValue([{
-      id: "plan-card-1",
-      kind: "request_item_verdicts",
-      status: "pending",
-    }] as never);
-    vi.mocked(clearJulesSessionMonitor).mockRejectedValueOnce(
-      new PaperclipClientError(403, "Only the assignee agent or a board user can manage issue monitors"),
-    );
 
     const result = await execute({
       ...ctx(),
@@ -355,17 +322,24 @@ describe("heartbeat yield vs session deadline", () => {
             type: "plan_native_review", protocolVersion: 2,
             julesActivityId: "plan-activity", question: "Plan", paperclipInteractionId: "plan-card-1",
             planDocumentId: "plan-document-1", planRevisionId: "plan-revision-1", planRevisionNumber: 1,
-            reviewerAgentId: "luna-1", stage: "luna", reviewerChildIssueId: "plan-review-child-1", createdAt: new Date().toISOString(),
+            reviewerAgentId, stage, reviewerChildIssueId: "plan-review-child-1", createdAt: new Date().toISOString(),
           },
         } as never),
       },
     } as AdapterExecutionContext);
 
-    expect(result.exitCode).toBe(0);
+    expect(clearJulesSessionMonitor).not.toHaveBeenCalled();
+    expect(scheduleJulesSessionMonitor).toHaveBeenCalledWith(
+      "issue-yield",
+      "session-live",
+      expect.any(String),
+      expect.any(String),
+      "token",
+      "run-yield",
+    );
     expect(result.resultJson).toMatchObject({
       pending: true,
-      continuation: "native_plan_review",
-      monitorAuthorizationFallback: true,
+      continuation: "jules_session_monitor",
     });
   });
 

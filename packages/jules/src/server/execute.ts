@@ -1782,41 +1782,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     outcome?: { summary?: string; resultJson?: Record<string, unknown> },
   ): Promise<AdapterExecutionResult> => {
     await persistSessionBestEffort(current, ctx.onLog, { authToken: ctx.authToken, runId: ctx.runId });
-    // A native plan verdict is owned by its addressed reviewer. Scheduling a
-    // Jules monitor here reasserts the worker as parent assignee and can
-    // cancel the queued reviewer run as `issue_assignee_changed`. The typed
-    // card's continuation is the sole owner until it resolves.
-    if (current.pendingInteraction?.type === "plan_native_review") {
-      // A monitor scheduled before the card was created survives an adapter
-      // restart. Remove that stale owner marker as well: merely declining to
-      // schedule a replacement still lets its due callback reclaim Jules and
-      // race the reviewer.
-      try {
-        await clearJulesSessionMonitor(taskId, ctx.authToken, ctx.runId);
-      } catch (error) {
-        // Once Paperclip transfers the parent issue into native review, the
-        // reviewer owns its continuation and the Jules assignee is no longer
-        // authorized to mutate the parent monitor. The card remains the
-        // authoritative wake path, so this expected ownership boundary must
-        // not fail the otherwise healthy provider heartbeat.
-        if (error instanceof PaperclipClientError && error.status === 403) {
-          const pending = createPendingResult(current, initialActivityCheck, reattachDelayMs);
-          return {
-            ...pending,
-            resultJson: {
-              ...(pending.resultJson as Record<string, unknown>),
-              continuation: "native_plan_review",
-              monitorAuthorizationFallback: true,
-            },
-          };
-        }
-        throw error;
-      }
-      return createPendingResult(current, initialActivityCheck, reattachDelayMs);
-    }
-    // Human interactions have their own Paperclip continuation. Internal
-    // reviewer children still need the native monitor so this adapter can
-    // observe both reviewer decisions and new provider activity.
+    // The Jules parent and reviewer child own independent continuations. The
+    // addressed child card wakes only its reviewer; this parent monitor must
+    // remain durable so Jules can observe the verdict or newer provider
+    // activity without Paperclip classifying the parent as stranded.
     const monitor = await scheduleLiveSessionMonitor(current, initialActivityCheck);
     if (!monitor.ok) {
       const nativeQuestionWait = current.pendingInteraction?.type === "agent_adjudication" &&
@@ -1862,7 +1831,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return {
       ...pending,
       ...(outcome?.summary ? { summary: outcome.summary } : {}),
-      resultJson: { ...(pending.resultJson as Record<string, unknown>), ...(outcome?.resultJson ?? {}) },
+      resultJson: {
+        ...(pending.resultJson as Record<string, unknown>),
+        ...(current.pendingInteraction?.type === "plan_native_review"
+          ? { continuation: "jules_session_monitor" }
+          : {}),
+        ...(outcome?.resultJson ?? {}),
+      },
     };
   };
 
