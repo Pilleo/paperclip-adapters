@@ -2,6 +2,7 @@ import { z } from "zod";
 import { JulesSessionId, PaperclipId, JulesActivityId, PrUrl, asJulesSessionId, asPaperclipId, asJulesActivityId, asPrUrl } from "./brands.js";
 import { AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { MutationCheckpointSchema, MutationCheckpoint } from "./mutation-checkpoint.js";
+import { LifecycleEffectJournalSchema, LifecycleEffectJournal } from "./lifecycle-effect-journal.js";
 import type { ProviderContinuation } from "./provider-continuation.js";
 import { PlanRevisionRequestSchema, type PlanRevisionRequest } from "./plan-revision-request.js";
 
@@ -295,6 +296,8 @@ export const JulesAdapterSessionV1Schema = z.object({
   watchdogNudgeCount: z.number().int().min(0).optional(),
   inPlaceRetryCount: z.number().int().min(0).optional(),
   mutationCheckpoint: MutationCheckpointSchema.optional(),
+  /** Durable remote-effect evidence used to classify process interruption. */
+  lifecycleEffectJournal: LifecycleEffectJournalSchema.optional(),
   createdAt: z.string(),
   lastPolledAt: z.string().optional()
 }).superRefine((session, ctx) => {
@@ -497,6 +500,7 @@ export interface JulesAdapterSessionV1 {
   watchdogNudgeCount?: number | undefined;
   inPlaceRetryCount?: number | undefined;
   mutationCheckpoint?: MutationCheckpoint | undefined;
+  lifecycleEffectJournal?: LifecycleEffectJournal | undefined;
   createdAt: string;
   lastPolledAt?: string | undefined;
 }
@@ -567,6 +571,23 @@ function parseSessionRecord(data: unknown): JulesAdapterSessionV1 | null {
   }
 }
 
+function migrateLegacyEffectJournal(session: JulesAdapterSessionV1): LifecycleEffectJournal | undefined {
+  if (session.lifecycleEffectJournal) return session.lifecycleEffectJournal;
+  const checkpoint = session.mutationCheckpoint;
+  if (!checkpoint || checkpoint.status === "succeeded") return undefined;
+  // Historic checkpoints recorded an attempted mutation but did not carry a
+  // provider/Paperclip receipt. Treat them as escaped writes: recovery must
+  // reconcile the remote boundary, never replay blindly.
+  return {
+    version: 1,
+    effects: [{
+      effectId: checkpoint.key,
+      kind: "legacy_unknown",
+      attempt: { kind: "started", startedAt: checkpoint.updatedAt },
+    }],
+  };
+}
+
 export const sessionCodec = {
   deserialize(data: unknown): Record<string, unknown> | null {
       return (parseSessionRecord(data) ?? parseCanonicalSessionParams(data)) as Record<string, unknown> | null;
@@ -585,6 +606,7 @@ export const sessionCodec = {
 
     return {
         ...raw,
+        ...(migrateLegacyEffectJournal(raw) ? { lifecycleEffectJournal: migrateLegacyEffectJournal(raw) } : {}),
         paperclipIssueId: asPaperclipId(raw.paperclipIssueId),
         julesSessionId: raw.julesSessionId ? asJulesSessionId(raw.julesSessionId) : undefined,
         currentPrUrl: raw.currentPrUrl ? asPrUrl(raw.currentPrUrl) : undefined,

@@ -13,6 +13,14 @@ vi.mock("../src/server/jules-client", async (importOriginal) => {
   return { ...mod, JulesClient: Mocked };
 });
 
+// Reattachment tests exercise provider-session identity. The monitor write is
+// a separate Paperclip transport concern; leaving it real turns a unit test
+// into an unbounded localhost retry under full-suite load.
+vi.mock("../src/server/paperclip-client", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("../src/server/paperclip-client")>();
+  return { ...mod, scheduleJulesSessionMonitor: vi.fn().mockResolvedValue(undefined) };
+});
+
 describe("process-lost reattach", () => {
   beforeAll(() => {
     process.env.JULES_API_KEY = "test-key";

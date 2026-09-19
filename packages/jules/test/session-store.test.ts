@@ -52,4 +52,68 @@ describe("Jules local session recovery store", () => {
     await deleteStoredSession("issue-1", "sources/github/owner/repo", "main");
     await expect(loadStoredSession("issue-1", "sources/github/owner/repo", "main")).resolves.toBeNull();
   });
+
+  it("round-trips a started lifecycle effect so restart recovery reconciles it", async () => {
+    await saveStoredSession({
+      version: 1,
+      paperclipIssueId: "issue-1" as any,
+      promptHash: "hash",
+      repository: "owner/repo",
+      source: "sources/github/owner/repo",
+      baseBranch: "main",
+      phase: "RUNNING",
+      sessionId: "session-123",
+      julesSessionId: "session-123" as any,
+      attempt: 1,
+      failedSessions: [],
+      lifecycleEffectJournal: {
+        version: 1,
+        effects: [{
+          effectId: "verdict:card-1",
+          kind: "deliver_verdict",
+          attempt: { kind: "started", startedAt: "2026-09-20T00:00:00.000Z" },
+        }],
+      },
+      createdAt: "2026-08-06T10:00:00.000Z",
+    } as any);
+
+    await expect(loadStoredSession("issue-1", "sources/github/owner/repo", "main"))
+      .resolves.toMatchObject({
+        lifecycleEffectJournal: {
+          effects: [{ effectId: "verdict:card-1", attempt: { kind: "started" } }],
+        },
+      });
+  });
+
+  it("migrates an unconfirmed legacy mutation checkpoint to reconciliation evidence", async () => {
+    await saveStoredSession({
+      version: 1,
+      paperclipIssueId: "issue-1" as any,
+      promptHash: "hash",
+      repository: "owner/repo",
+      source: "sources/github/owner/repo",
+      baseBranch: "main",
+      phase: "RUNNING",
+      sessionId: "session-123",
+      julesSessionId: "session-123" as any,
+      attempt: 1,
+      failedSessions: [],
+      mutationCheckpoint: {
+        version: 1,
+        key: "legacy:message:card-1",
+        operation: "send_message",
+        issueId: "issue-1",
+        status: "pending",
+        updatedAt: "2026-09-20T00:00:00.000Z",
+      },
+      createdAt: "2026-08-06T10:00:00.000Z",
+    } as any);
+
+    await expect(loadStoredSession("issue-1", "sources/github/owner/repo", "main"))
+      .resolves.toMatchObject({
+        lifecycleEffectJournal: {
+          effects: [{ effectId: "legacy:message:card-1", kind: "legacy_unknown", attempt: { kind: "started" } }],
+        },
+      });
+  });
 });
