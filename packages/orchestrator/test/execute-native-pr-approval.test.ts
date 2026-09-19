@@ -156,6 +156,59 @@ describe("orchestrator native PR completion", () => {
     expect(logs.join("\n")).toContain("[Review outcome] [MAZ-1519] pipeline:CREATE_MERGE_APPROVAL");
   });
 
+  it("keeps a red Jules PR in provider remediation for the whole heartbeat", async () => {
+    const redIssueId = "issue-red-ci";
+    const redIssue = {
+      ...issue(),
+      id: redIssueId,
+      identifier: "MAZ-red-ci",
+      status: "in_progress",
+      assigneeAgentId: "jules-1",
+      executionPolicy: null,
+    };
+    vi.mocked(checkPrCiIsGreen).mockResolvedValue({ isGreen: false, status: "failure" });
+    const patches: Record<string, unknown>[] = [];
+    const wakes: Record<string, unknown>[] = [];
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      const method = (init?.method || "GET").toUpperCase();
+      if (href.includes("/agents/jules-1/wakeup") && method === "POST") {
+        wakes.push(JSON.parse(String(init?.body || "{}")));
+        return new Response(JSON.stringify({ status: "started" }), { status: 202 });
+      }
+      if (href.includes("/agents")) return new Response(JSON.stringify(managedAgents()));
+      if (href.includes("/projects")) return new Response(JSON.stringify([{ id: "project-1519", name: "fixture", primaryWorkspace: { cwd: process.cwd() } }]));
+      if (method === "GET" && href.endsWith(`/api/issues/${redIssueId}`)) return new Response(JSON.stringify(redIssue));
+      if (href.endsWith(`/api/issues/${redIssueId}/documents`)) return new Response(JSON.stringify([{
+        key: "jules-session",
+        body: `julesSessionId: session-red-ci\nprUrl: ${prUrl}\nprHeadSha: ${headSha}`,
+      }]));
+      if (href.includes(`/api/issues/${redIssueId}/interactions`)) return new Response(JSON.stringify([]));
+      if (href.includes(`/api/issues/${redIssueId}/children`)) return new Response(JSON.stringify([]));
+      if (href.includes(`/api/issues/${redIssueId}/recovery-actions`)) return new Response(JSON.stringify({ active: null }));
+      if (method === "PATCH" && href.endsWith(`/api/issues/${redIssueId}`)) {
+        patches.push(JSON.parse(String(init?.body || "{}")));
+        return new Response(JSON.stringify({}), { status: 200 });
+      }
+      if (href.includes("/heartbeat-runs")) return new Response(JSON.stringify([]));
+      if (href.includes("/issues") && method === "GET") return new Response(JSON.stringify([redIssue]));
+      if (href.includes("/approvals")) return new Response(JSON.stringify([]));
+      return new Response(JSON.stringify([]));
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const result = await execute(context());
+
+    expect(result.exitCode).toBe(0);
+    expect(patches).toContainEqual(expect.objectContaining({
+      status: "in_progress",
+      assigneeAgentId: "jules-1",
+      executionPolicy: expect.objectContaining({ monitor: expect.objectContaining({ serviceName: "jules", externalRef: "session-red-ci" }) }),
+    }));
+    expect(patches).not.toContainEqual(expect.objectContaining({ status: "in_review" }));
+    expect(wakes).toHaveLength(1);
+  });
+
   it("invalidates only the matching pending merge approval after GitHub confirms an external merge", async () => {
     const logs: string[] = [];
     const mergedIssue = {

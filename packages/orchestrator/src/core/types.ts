@@ -100,7 +100,7 @@ export interface MultiLaneOptions {
   /** Already-approved starts outrank merely pending resource contenders. */
   readonly preferredIssueIds?: ReadonlySet<string> | undefined;
   /** Recoverable provider sessions may resume only on the Jules lane. */
-  readonly julesOnlyIssueIds?: ReadonlySet<string> | undefined;
+  readonly julesOnlyIssueIds: ReadonlySet<string>;
 }
 
 export interface GitHubPullRequest {

@@ -35,6 +35,7 @@ describe("Deterministic Orchestrator Dispatcher Engine", () => {
       julesAgentId: "jules",
       julesCapacity: 1,
       maxToSelect: 1,
+      julesOnlyIssueIds: new Set(),
     });
 
     expect(selections.some((selection) => selection.issue.id === "dependent-issue")).toBe(shouldDispatch);
@@ -76,6 +77,7 @@ describe("Deterministic Orchestrator Dispatcher Engine", () => {
       julesCapacity: 1,
       maxToSelect: 1,
       preferredIssueIds: new Set(["root-issue"]),
+      julesOnlyIssueIds: new Set(),
     });
 
     expect(selections.map((selection) => selection.issue.id)).toEqual(["root-issue"]);
@@ -192,6 +194,7 @@ describe("Multi-Lane Admission & Jules Provider Queue Selection", () => {
       julesRunningCount: 99,
       julesNewSessionBudget: 2,
       maxToSelect: 2,
+      julesOnlyIssueIds: new Set(),
     });
 
     expect(selections.map((selection) => selection.issue.id)).toEqual(["one", "two"]);
@@ -245,6 +248,7 @@ describe("Multi-Lane Admission & Jules Provider Queue Selection", () => {
       julesCapacity: 5,
       julesRunningCount: 0,
       maxToSelect: 5,
+      julesOnlyIssueIds: new Set(),
     });
 
     // Should select task1 and task2, but skip task3 due to collision with task1
@@ -268,6 +272,7 @@ describe("Method-level granularity conflict evaluation", () => {
       julesCapacity: 0,
       vibeCapacity: 0,
       maxToSelect: 0,
+      julesOnlyIssueIds: new Set(),
     });
     expect(selections).toEqual([]);
   });

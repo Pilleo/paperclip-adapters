@@ -109,6 +109,30 @@ describe("native PR review interaction state", () => {
     ], "issue-1", "head-a")).toBe(false);
   });
 
+  it("recognizes only same-contract Luna and Terra approvals for the current head", () => {
+    const contract = "Run the Node 24 control-plane canary.";
+    const lunaKey = reviewInteractionIdempotencyKey({
+      issueId: "issue-1", prUrl: "pr", headSha: "head-a", stage: "luna", reviewContractMarkdown: contract,
+    });
+    const terraKey = reviewInteractionIdempotencyKey({
+      issueId: "issue-1", prUrl: "pr", headSha: "head-a", stage: "terra", reviewContractMarkdown: contract,
+    });
+    const otherTerraKey = reviewInteractionIdempotencyKey({
+      issueId: "issue-1", prUrl: "pr", headSha: "head-a", stage: "terra", reviewContractMarkdown: "Different contract",
+    });
+    const approved = (id: string, idempotencyKey: string) => ({
+      id, kind: "request_item_verdicts", status: "answered", idempotencyKey,
+      result: { items: [{ id: "pull_request", verdict: "approve" }] },
+    });
+
+    expect(hasCompletedNativeApprovalLadderForHead([
+      approved("luna", lunaKey), approved("terra", terraKey),
+    ], "issue-1", "head-a", contract)).toBe(true);
+    expect(hasCompletedNativeApprovalLadderForHead([
+      approved("luna", lunaKey), approved("terra-other", otherTerraKey),
+    ], "issue-1", "head-a", contract)).toBe(false);
+  });
+
   it("selects every other pending review card after a rejection, including legacy stale cards", () => {
     expect(selectReviewCardsToWithdrawAfterRejection([
       { id: "rejected", kind: "request_item_verdicts", status: "answered", idempotencyKey: "pr-review:v13:issue-1:pr:sha:luna" },

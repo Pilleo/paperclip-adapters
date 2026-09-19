@@ -290,12 +290,15 @@ export function hasCompletedNativeApprovalLadderForHead(
   interactions: readonly NativeReviewInteraction[],
   issueId: string,
   headSha: string,
+  reviewContractMarkdown?: string,
 ): boolean {
+  const contractFingerprint = reviewContractFingerprint(reviewContractMarkdown);
   const approvedStages = new Set<"luna" | "terra">();
   for (const interaction of interactions) {
-    const match = new RegExp(`^pr-review:v\\d+:${issueId}:.*:${headSha}:(luna|terra)(?::attempt:[1-9]\\d*)?$`, "i")
+    const match = new RegExp(`^pr-review:v\\d+:${issueId}:.*:${headSha}:(luna|terra)(?::contract:([a-z0-9]+))?(?::attempt:[1-9]\\d*)?$`, "i")
       .exec(interaction.idempotencyKey || "");
     if (!match || reviewVerdictFromInteraction(interaction, interaction.id)?.decision !== "all_good") continue;
+    if (contractFingerprint && match[2]?.toLowerCase() !== contractFingerprint) continue;
     const stage = match[1]?.toLowerCase();
     if (stage === "luna" || stage === "terra") approvedStages.add(stage);
   }

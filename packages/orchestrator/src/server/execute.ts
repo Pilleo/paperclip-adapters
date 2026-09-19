@@ -85,7 +85,7 @@ import { capabilityCircuit, fleetCapabilityCircuitKey } from "../core/capability
 import { evaluateStructuredReviewerEligibility, isReviewerEligibilityFailure } from "../core/reviewer-eligibility.js";
 import { buildReviewWaitState, isReviewWaitState } from "../core/review-wait-state.js";
 import { isSameReviewerUnavailableRecovery, reviewerUnavailableRecoveryPayload } from "../core/review-recovery.js";
-import { canPromoteJulesPrToReview, hasJulesMonitorClaim, isAuthoritativeJulesMonitor } from "../core/jules-monitor-state.js";
+import { classifyJulesPrReviewDisposition, hasJulesMonitorClaim, isAuthoritativeJulesMonitor } from "../core/jules-monitor-state.js";
 import { decideIssueLifecycleReconciliation } from "../core/issue-lifecycle-reconciliation.js";
 import { ConvergenceGuard } from "../core/convergence-guard.js";
 import { planTerminalParentBarrier } from "../core/terminal-parent-barrier.js";
@@ -108,6 +108,7 @@ import { decideReviewSession } from "../core/review-session-state.js";
 import type { IssueState } from "../core/types.js";
 import { selectStaleJulesReviewChildren } from "../core/stale-review-artifacts.js";
 import { isExecutionAdmissionHeld } from "../core/execution-admission.js";
+import { parseJulesPrHandoffHandle } from "../core/pr-handoff-registration.js";
 import { executePaperclipCommand } from "@pilleo/paperclip-adapter-common";
 import { provisionNativeReviewMcpHome, resolveNativeReviewMcpHome, type NativeReviewWorkerKey } from "../core/native-review-mcp-home.js";
 import {
@@ -1273,6 +1274,10 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
   // GitHub confirms its checks are green; the normal native review pipeline
   // then owns reviewer dispatch. This replaces the old external timer bridge.
   const openPrRecoveryIds = new Set<string>();
+  // Same-heartbeat ownership fence: after a rejected/red head is routed back
+  // to Jules, board reconciliation must not immediately reinterpret the stale
+  // pre-PATCH snapshot as review-ready.
+  const ciRemediationIssueIds = new Set<string>();
   if (!ghStatus.error) {
     for (const issue of parsedIssues) {
       // A board approval can cause Paperclip to normalize the linked issue to
@@ -1298,7 +1303,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       // compact issue list is allowed to omit both fields.
       let currentHeadRejected = false;
       let currentHeadReviewComplete = false;
-      let authoritativeExecutionPolicy: unknown = undefined;
+      let authoritativeExecutionPolicy: Record<string, unknown> | null = null;
       try {
         const detail = await pc.getIssue<Record<string, unknown>>(issue.id);
         const policy = detail["executionPolicy"];
@@ -1312,29 +1317,106 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
             status: typeof interaction["status"] === "string" ? interaction["status"] : undefined,
             idempotencyKey: typeof interaction["idempotencyKey"] === "string" ? interaction["idempotencyKey"] : undefined,
             result: interaction["result"],
-          })), issue.id, matchingPr.headRefOid);
+          })), issue.id, matchingPr.headRefOid, issue.description || undefined);
           currentHeadReviewComplete = hasCompletedNativeApprovalLadderForHead(rawInteractions.map((interaction) => ({
             id: String(interaction["id"] ?? ""), kind: typeof interaction["kind"] === "string" ? interaction["kind"] : undefined,
             status: typeof interaction["status"] === "string" ? interaction["status"] : undefined,
             idempotencyKey: typeof interaction["idempotencyKey"] === "string" ? interaction["idempotencyKey"] : undefined,
             result: interaction["result"],
-          })), issue.id, matchingPr.headRefOid);
+          })), issue.id, matchingPr.headRefOid, issue.description || undefined);
         }
       } catch (err: unknown) {
         await log(`[ORCHESTRATOR] Deferring open Jules PR recovery for [${issue.identifier || issue.id}]: could not verify monitor/review state (${String(err)}).`);
         continue;
       }
       if (currentHeadReviewComplete) continue;
-      if (!canPromoteJulesPrToReview({ ciGreen: true, currentHeadRejected, executionPolicy: authoritativeExecutionPolicy })) {
-        await log(`[ORCHESTRATOR] Keeping [${issue.identifier || issue.id}] with Jules: current PR head is rejected or its provider monitor is resumable.`);
-        continue;
+      const reviewDisposition = classifyJulesPrReviewDisposition({
+        currentHeadRejected,
+        executionPolicy: authoritativeExecutionPolicy,
+      });
+      switch (reviewDisposition.kind) {
+        case "await_provider":
+          await log(`[ORCHESTRATOR] Keeping [${issue.identifier || issue.id}] with Jules: its provider monitor remains authoritative.`);
+          continue;
+        case "recover_provider": {
+          if (!julesAgentId || !managedIds.has(julesAgentId)) {
+            await log(`[ORCHESTRATOR] Refusing rejected-head recovery for [${issue.identifier || issue.id}]: managed Jules worker is unavailable.`);
+            continue;
+          }
+          let recoveryPolicy: Record<string, unknown>;
+          try {
+            const documents = asArray<Record<string, unknown>>(await pc.getJson<unknown>(`/api/issues/${encodeURIComponent(issue.id)}/documents`));
+            const handle = parseJulesPrHandoffHandle(documents.find((document) => document["key"] === "jules-session")?.["body"]);
+            const samePr = handle && handle.prUrl.replace(/\/$/, "").toLowerCase() === matchingPr.url.replace(/\/$/, "").toLowerCase() &&
+              handle.headSha === matchingPr.headRefOid;
+            if (!samePr) {
+              await log(`[ORCHESTRATOR] Deferring rejected-head recovery for [${issue.identifier || issue.id}]: the durable Jules session handle does not bind this PR head.`);
+              continue;
+            }
+            recoveryPolicy = buildJulesMonitorReattachment(authoritativeExecutionPolicy ?? { mode: "normal", stages: [] }, handle.sessionId, Date.now());
+          } catch (error: unknown) {
+            await log(`[ORCHESTRATOR] Deferring rejected-head recovery for [${issue.identifier || issue.id}]: could not read the durable Jules session handle (${String(error)}).`);
+            continue;
+          }
+          const recoveryKey = `jules-rejected-head-recovery:${issue.id}:${matchingPr.url}:${matchingPr.headRefOid || "unknown"}`;
+          ciRemediationIssueIds.add(issue.id);
+          await lifecycleConvergenceGuard.runOnce(recoveryKey, async () => {
+            const resumed = await pc.patchIssue(issue.id, {
+              status: "in_progress", assigneeAgentId: julesAgentId,
+              executionPolicy: recoveryPolicy, executionState: null,
+            });
+            if (!resumed.ok) {
+              await log(`[ORCHESTRATOR] Could not recover rejected Jules PR for [${issue.identifier || issue.id}] (${resumed.status}): ${resumed.text}`);
+              return;
+            }
+            statusOverrides.set(issue.id, "in_progress");
+            await managedWakeup(julesAgentId, `Resume existing Jules session for rejected PR #${matchingPr.number}`, issue.id, { idempotencyKey: recoveryKey });
+            wokeThisTick.add(`${julesAgentId}:${issue.id}`);
+          });
+          continue;
+        }
+        case "eligible_for_review":
+          break;
       }
       const ci = resolvePrCiGate(
         managedJulesCiPolicy,
         await checkPrCiIsGreen(matchingPr.number, workspacePath, matchingPr.url),
       );
       if (!ci.isGreen) {
-        await log(`[ORCHESTRATOR] Deferring open Jules PR recovery for [${issue.identifier || issue.id}]: CI is ${ci.status}.`);
+        if (!julesAgentId || !managedIds.has(julesAgentId)) {
+          await log(`[ORCHESTRATOR] Refusing open Jules PR remediation for [${issue.identifier || issue.id}]: managed Jules worker is unavailable while CI is ${ci.status}.`);
+          continue;
+        }
+        let remediationPolicy: Record<string, unknown>;
+        try {
+          const documents = asArray<Record<string, unknown>>(await pc.getJson<unknown>(`/api/issues/${encodeURIComponent(issue.id)}/documents`));
+          const handle = parseJulesPrHandoffHandle(documents.find((document) => document["key"] === "jules-session")?.["body"]);
+          const samePr = handle && handle.prUrl.replace(/\/$/, "").toLowerCase() === matchingPr.url.replace(/\/$/, "").toLowerCase() &&
+            handle.headSha === matchingPr.headRefOid;
+          if (!samePr) {
+            await log(`[ORCHESTRATOR] Deferring failed-CI remediation for [${issue.identifier || issue.id}]: the durable Jules session handle does not bind this PR head.`);
+            continue;
+          }
+          remediationPolicy = buildJulesMonitorReattachment(authoritativeExecutionPolicy ?? { mode: "normal", stages: [] }, handle.sessionId, Date.now());
+        } catch (error: unknown) {
+          await log(`[ORCHESTRATOR] Deferring failed-CI remediation for [${issue.identifier || issue.id}]: could not read the durable Jules session handle (${String(error)}).`);
+          continue;
+        }
+        const remediationKey = `jules-pr-remediation:${issue.id}:${matchingPr.url}:${matchingPr.headRefOid || "unknown"}`;
+        ciRemediationIssueIds.add(issue.id);
+        await lifecycleConvergenceGuard.runOnce(remediationKey, async () => {
+          const resumed = await pc.patchIssue(issue.id, {
+            status: "in_progress", assigneeAgentId: julesAgentId,
+            executionPolicy: remediationPolicy, executionState: null,
+          });
+          if (!resumed.ok) {
+            await log(`[ORCHESTRATOR] Could not route failed Jules PR CI for [${issue.identifier || issue.id}] to Jules (${resumed.status}): ${resumed.text}`);
+            return;
+          }
+          statusOverrides.set(issue.id, "in_progress");
+          await managedWakeup(julesAgentId, `Reconcile failed CI for existing Jules PR #${matchingPr.number}`, issue.id, { idempotencyKey: remediationKey });
+          wokeThisTick.add(`${julesAgentId}:${issue.id}`);
+        });
         continue;
       }
       // The same PR may need recovery again if Paperclip asynchronously
@@ -1657,7 +1739,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       monitorExpired: reattachedJulesMonitorIssueIds.has(issue.id) ? false : monitorExpired,
       nativeReviewInteraction,
       registeredOpenPullRequest,
-      ciRemediationInProgress: false,
+      ciRemediationInProgress: ciRemediationIssueIds.has(issue.id),
       hasPullRequest: issue.status === "in_review" && !ghStatus.error && Boolean(ghStatus.openPrs.find((pr) => matchPrToIssue(pr, issue))),
       parentId: issue.parentId || null,
       reviewGateKey,
@@ -2590,6 +2672,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
       reviewInteractions,
       reviewTask.id,
       reviewHeadSha,
+      reviewTask.description || undefined,
     );
     if (hasLiveNativeReviewRun && !currentHeadReviewComplete) continue;
 
@@ -3190,6 +3273,11 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
       statusOverrides.has(issue.id) ? { ...issue, status: statusOverrides.get(issue.id) as IssueState } : issue
     );
   const conflictForDispatch = calculateConflictMatrix(dispatchIssues);
+  const julesOnlyIssueIds = liveHeartbeatIssueIds(
+    heartbeatRuns.filter((run) => managedJulesIds.has(run.agentId)),
+    nowMs,
+    julesThresholdMs,
+  );
 
   // 10. PHASE 4: Multi-Lane Implementation Dispatching
   let candidateSelections = isSyncHealthy ? selectNextTasksMultiLane(dispatchIssues, conflictForDispatch, {
@@ -3208,6 +3296,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
         .filter((issue) => findTaskStartApproval(existingApprovals, issue.id)?.status === "approved")
         .map((issue) => issue.id),
     ),
+    julesOnlyIssueIds,
   }) : [];
 
   // Authorization belongs to a task, not to a capacity-dependent worker
@@ -3270,6 +3359,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
       const heldCandidates = selectNextTasksMultiLane(dispatchIssues, conflictForDispatch, {
         julesAgentId, vibeAgentId, julesCapacity: 1, vibeCapacity: 1, julesRunningCount: 0, vibeRunningCount: 0,
         maxToSelect: 1, extraLockedFiles: ghStatus.openPrFiles, preferredIssueIds: new Set(),
+        julesOnlyIssueIds,
       });
 
       let topHeldIssue: ParsedIssueMetadata | null = heldCandidates.length > 0 ? heldCandidates[0]!.issue : null;

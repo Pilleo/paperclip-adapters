@@ -168,7 +168,7 @@ export function calculateConflictMatrix(issues: readonly ParsedIssueMetadata[]):
 export function selectNextTasksMultiLane(
   allIssues: readonly ParsedIssueMetadata[],
   conflictResult: ConflictMatrixResult,
-  options: MultiLaneOptions = {}
+  options: MultiLaneOptions = { julesOnlyIssueIds: new Set<string>() }
 ): readonly CandidateSelection[] {
   const julesCapacity = options.julesCapacity ?? 15;
   const vibeCapacity = options.vibeCapacity ?? 1;
