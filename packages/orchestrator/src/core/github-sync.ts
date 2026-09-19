@@ -280,7 +280,11 @@ export async function checkPrCiIsGreen(
       };
       const checksData = await checksResponse.json() as { check_runs?: Array<{ status?: string; conclusion?: string }> };
       const checks = checksData.check_runs ?? [];
-      if (checks.length === 0) return { isGreen: false, status: "none" };
+      // A repository may intentionally declare no CI checks (notably the
+      // disposable canary project). GitHub has completed the check query, so
+      // absence is not a failing or pending check and must not reopen a
+      // completed provider session forever.
+      if (checks.length === 0) return { isGreen: true, status: "none" };
       if (checks.some((check) => check.status !== "completed")) return { isGreen: false, status: "pending" };
       if (checks.some((check) => check.conclusion !== "success")) return { isGreen: false, status: "failed" };
       return { isGreen: true, status: "success" };

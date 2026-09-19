@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { buildGitHubPullRequestListArgs, describeGitHubAccessProblem, hasUnreviewedReadyPullRequest, matchPrToIssue, processRawPullRequests, registeredPullRequestFromIssue } from "../src/core/github-sync.js";
+import { describe, it, expect, vi } from "vitest";
+import { buildGitHubPullRequestListArgs, checkPrCiIsGreen, describeGitHubAccessProblem, hasUnreviewedReadyPullRequest, matchPrToIssue, processRawPullRequests, registeredPullRequestFromIssue } from "../src/core/github-sync.js";
 import { extractIssueMetadata } from "../src/core/parser.js";
 import { GitHubPullRequest } from "../src/core/types.js";
 
@@ -37,6 +37,44 @@ describe("GitHub PR Sync Module", () => {
     expect(describeGitHubAccessProblem(401, "rest")).toContain("authentication was rejected");
     expect(describeGitHubAccessProblem(403, "rest")).toContain("authenticate the Paperclip service");
     expect(describeGitHubAccessProblem(408, "gh")).toContain("timed out");
+  });
+
+  it("treats an authoritative empty check-runs response as green", async () => {
+    const originalFetch = global.fetch;
+    const originalPath = process.env["PATH"];
+    process.env["PATH"] = "";
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ head: { sha: "abc123" } }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ check_runs: [] }), { status: 200 }));
+    try {
+      await expect(checkPrCiIsGreen(
+        1,
+        undefined,
+        "https://github.com/Pilleo/repo/pull/1",
+      )).resolves.toEqual({ isGreen: true, status: "none" });
+    } finally {
+      global.fetch = originalFetch;
+      if (originalPath === undefined) delete process.env["PATH"];
+      else process.env["PATH"] = originalPath;
+    }
+  });
+
+  it.each([500, 401, 403, 429])("keeps HTTP %s fail-closed", async (status) => {
+    const originalFetch = global.fetch;
+    const originalPath = process.env["PATH"];
+    process.env["PATH"] = "";
+    global.fetch = vi.fn().mockResolvedValue(new Response("failure", { status }));
+    try {
+      expect((await checkPrCiIsGreen(
+        1,
+        undefined,
+        "https://github.com/Pilleo/repo/pull/1",
+      )).isGreen).toBe(false);
+    } finally {
+      global.fetch = originalFetch;
+      if (originalPath === undefined) delete process.env["PATH"];
+      else process.env["PATH"] = originalPath;
+    }
   });
 
   it("retains the immutable PR head SHA for review-card invalidation", () => {
