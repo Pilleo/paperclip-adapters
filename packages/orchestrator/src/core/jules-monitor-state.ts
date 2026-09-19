@@ -12,6 +12,26 @@ export function isAuthoritativeJulesMonitor(executionPolicy: unknown): boolean {
   return record["serviceName"] === "jules" && typeof record["externalRef"] === "string" && (record["externalRef"] as string).trim().length > 0;
 }
 
+function hasJulesMonitor(container: unknown): boolean {
+  if (!container || typeof container !== "object" || Array.isArray(container)) return false;
+  const monitor = (container as Record<string, unknown>)["monitor"];
+  if (!monitor || typeof monitor !== "object" || Array.isArray(monitor)) return false;
+  return (monitor as Record<string, unknown>)["serviceName"] === "jules";
+}
+
+/**
+ * Detects which state machine owns a blocked issue, not whether its monitor is
+ * executable. A redacted executionState projection is deliberately enough to
+ * keep generic orphan cleanup away; the stricter monitor reconciliation path
+ * separately proves the durable session before it mutates or resumes work.
+ */
+export function hasJulesMonitorClaim(input: {
+  readonly executionPolicy?: unknown;
+  readonly executionState?: unknown;
+}): boolean {
+  return hasJulesMonitor(input.executionPolicy) || hasJulesMonitor(input.executionState);
+}
+
 export type JulesPrReviewDisposition =
   | { readonly kind: "await_provider" }
   | { readonly kind: "recover_provider" }

@@ -275,6 +275,94 @@ describe("orchestrator live session continuation", () => {
     expect(patches).toHaveLength(1);
   });
 
+  it("reattaches a blocked detached Jules monitor atomically instead of issuing a bare orphan-unblock patch", async () => {
+    const patches: Array<Record<string, unknown>> = [];
+    const issueId = "issue-1535";
+    const sessionId = "jules-session-1535";
+    const future = new Date(Date.now() + 24 * 60 * 60_000).toISOString();
+    const issue = {
+      id: issueId,
+      identifier: "MAZ-1535",
+      title: "detached provider canary",
+      status: "blocked",
+      projectId: "project-1",
+      assigneeAgentId: "jules-orch",
+      updatedAt: new Date().toISOString(),
+      executionState: {
+        status: "idle",
+        monitor: {
+          kind: "external_service",
+          serviceName: "jules",
+          status: "triggered",
+          externalRef: "[redacted]",
+          timeoutAt: future,
+          recoveryPolicy: "wake_owner",
+        },
+      },
+      // Paperclip v2026.916.0 can retain the review stages while stripping
+      // only the provider monitor. This is still a detached Jules monitor;
+      // reattachment must preserve these stages.
+      executionPolicy: {
+        mode: "normal",
+        stages: [{ id: "luna", type: "review", participants: [] }],
+        commentRequired: true,
+      },
+    };
+    globalThis.fetch = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      const method = (init?.method || "GET").toUpperCase();
+      if (method === "PATCH" && href.includes(`/api/issues/${issueId}`)) {
+        const body = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+        patches.push(body);
+        Object.assign(issue, body);
+        return new Response("{}", { status: 200 });
+      }
+      if (method === "GET" && href.endsWith(`/api/issues/${issueId}/documents`)) {
+        return new Response(JSON.stringify([{
+          key: "jules-session",
+          body: `julesSessionId: ${sessionId}\nurl: https://jules.google.com/session/${sessionId}`,
+        }]), { status: 200 });
+      }
+      if (method === "GET" && href.endsWith(`/api/issues/${issueId}`)) {
+        return new Response(JSON.stringify(issue), { status: 200 });
+      }
+      if (href.includes("/heartbeat-runs")) return new Response("[]", { status: 200 });
+      if (href.endsWith("/agents") || href.includes("/agents?")) {
+        return new Response(JSON.stringify([{
+          id: "jules-orch",
+          name: "[Orchestrated] Jules Async Worker",
+          adapterType: "jules",
+          status: "idle",
+          reportsTo: "orch-1",
+          metadata: { managedBy: "paperclip-orchestrator", workerKey: "jules" },
+        }]), { status: 200 });
+      }
+      if (href.includes("/projects")) return new Response(JSON.stringify([
+        { id: "project-1", name: "paperclip-adapters", primaryWorkspace: { cwd: process.cwd() } },
+      ]), { status: 200 });
+      if (href.includes("/issues")) return new Response(JSON.stringify([issue]), { status: 200 });
+      if (href.includes("/approvals")) return new Response("[]", { status: 200 });
+      return new Response("[]", { status: 200 });
+    }) as typeof fetch;
+
+    const result = await execute(ctx());
+    expect(result.exitCode).toBe(0);
+    expect(patches).toHaveLength(1);
+    expect(patches[0]).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: "jules-orch",
+      executionPolicy: {
+        stages: [{ id: "luna", type: "review", participants: [] }],
+        commentRequired: true,
+        monitor: {
+          serviceName: "jules",
+          externalRef: sessionId,
+          recoveryPolicy: "wake_owner",
+        },
+      },
+    });
+  });
+
   it("restores a manually cleared Jules parent and wakes it once after its exact plan verdict", async () => {
     const patches: Array<Record<string, unknown>> = [];
     const childPatches: Array<Record<string, unknown>> = [];

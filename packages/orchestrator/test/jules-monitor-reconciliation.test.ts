@@ -119,6 +119,19 @@ describe("Jules monitor reconciliation", () => {
     });
   });
 
+  it("reattaches a detached Jules monitor while Paperclip has parked its issue as blocked", () => {
+    expect(decideJulesMonitorReconciliation({
+      ...base,
+      issueStatus: "blocked",
+      monitorDetached: true,
+      timeoutAt: "2026-09-05T19:27:11.536Z",
+    }, Date.parse("2026-09-04T01:00:00.000Z"))).toEqual({
+      action: "resume_provider",
+      issueStatus: "in_progress",
+      reason: "stranded Jules monitor has a persisted provider session",
+    });
+  });
+
   it("resumes a manually cleared monitor only after an exact native plan verdict was resolved", () => {
     const snapshot = {
       ...base,

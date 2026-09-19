@@ -85,7 +85,7 @@ import { capabilityCircuit, fleetCapabilityCircuitKey } from "../core/capability
 import { evaluateStructuredReviewerEligibility, isReviewerEligibilityFailure } from "../core/reviewer-eligibility.js";
 import { buildReviewWaitState, isReviewWaitState } from "../core/review-wait-state.js";
 import { isSameReviewerUnavailableRecovery, reviewerUnavailableRecoveryPayload } from "../core/review-recovery.js";
-import { canPromoteJulesPrToReview, isAuthoritativeJulesMonitor } from "../core/jules-monitor-state.js";
+import { canPromoteJulesPrToReview, hasJulesMonitorClaim, isAuthoritativeJulesMonitor } from "../core/jules-monitor-state.js";
 import { decideIssueLifecycleReconciliation } from "../core/issue-lifecycle-reconciliation.js";
 import { ConvergenceGuard } from "../core/convergence-guard.js";
 import { planTerminalParentBarrier } from "../core/terminal-parent-barrier.js";
@@ -1430,12 +1430,16 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       }
     }
     const executionPolicy = executionPolicyRecord;
-    // Compatibility bridge: Paperclip can drop executionPolicy while its
-    // durable projection still says that Jules owns an active monitor. Such
-    // an issue is otherwise invisible to the scheduler because the projected
-    // monitor has no nextCheckAt. Reattach it once from this explicit state;
-    // never infer it from provider prose or a PR alone.
-    const monitorDetached = executionPolicyRecord === null &&
+    // Compatibility bridge: Paperclip can drop either the whole
+    // executionPolicy or only executionPolicy.monitor while its durable
+    // projection still says that Jules owns an active monitor. The latter is
+    // the v2026.916.0 shape: native review stages survive, but the provider
+    // continuation does not. Reattach the monitor while preserving every
+    // other policy field; never infer ownership from provider prose or a PR.
+    const policyHasMonitor = Boolean(
+      policyMonitor && typeof policyMonitor === "object" && !Array.isArray(policyMonitor),
+    );
+    const monitorDetached = !policyHasMonitor &&
       serviceName === "jules" &&
       providerSessionId !== null &&
       (monitorStatus === "triggered" || monitorStatus === null ||
@@ -1888,6 +1892,14 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
       await log(`[ORCHESTRATOR] Preserving blocked delegated review state [${issue.identifier || issue.id}]`);
       continue;
     }
+    // Provider-monitor recovery above is the sole owner of a Jules
+    // continuation. Never replace its atomic status/assignee/policy repair
+    // with a bare generic status change: Paperclip will immediately block
+    // such an issue again because it still has no executable continuation.
+    if (hasJulesMonitorClaim({
+      executionPolicy: issue.rawIssue["executionPolicy"],
+      executionState: issue.rawIssue["executionState"],
+    })) continue;
     const delegatedReviewReleased = hasDelegatedReviewHistory(issue.id, parsedIssues) &&
       Boolean(issue.assigneeAgentId && managedJulesIds.has(issue.assigneeAgentId));
     const missingDep = issue.dependencies.some((depId) => {

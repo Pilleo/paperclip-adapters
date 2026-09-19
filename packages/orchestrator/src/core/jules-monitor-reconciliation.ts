@@ -99,7 +99,7 @@ export function decideJulesMonitorReconciliation(
   // This is still the same proven, detached Jules continuation; ownership and
   // provider-session checks below remain mandatory before it can resume.
   const strandedMonitorRepair =
-    (snapshot.issueStatus === "in_progress" || snapshot.issueStatus === "backlog") &&
+    (snapshot.issueStatus === "in_progress" || snapshot.issueStatus === "backlog" || snapshot.issueStatus === "blocked") &&
     snapshot.monitorDetached === true;
   // Paperclip can normalize a parent that is waiting on a reviewer-owned
   // native form to either backlog or blocked. Both are a suspended Jules
