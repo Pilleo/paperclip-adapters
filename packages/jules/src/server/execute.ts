@@ -99,6 +99,7 @@ import {
   normalizeInternalReviewIssue,
   completeInternalReviewIssue,
   activateInternalReviewIssue,
+  wakeJulesPlanReviewer,
   isPaperclipChildLimitError,
   scheduleJulesSessionMonitor,
   clearJulesSessionMonitor,
@@ -1985,7 +1986,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ctx.runId,
         pendingProviderInteraction.julesActivityId,
       );
-      await activateInternalReviewIssue(reviewerChild.id, config.planReviewerAgentId, ctx.authToken, ctx.runId);
+      await wakeJulesPlanReviewer({
+        reviewerAgentId: config.planReviewerAgentId,
+        childIssueId: reviewerChild.id,
+        interactionId: nativeReview.id,
+        authToken: ctx.authToken,
+        runId: ctx.runId,
+        idempotencyKey: `jules:plan-review-wake:${nativeReview.id}:0`,
+      });
       if (pendingProviderInteraction.paperclipInteractionId) {
         await withdrawPaperclipInteraction(taskId, pendingProviderInteraction.paperclipInteractionId, "Replaced by native ACP plan-review ladder", ctx.authToken, ctx.runId).catch(() => undefined);
       }
@@ -3112,7 +3120,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             nativePlanReview.question, nativePlanReview.stage, nativePlanReview.reviewerAgentId,
             ctx.authToken, ctx.runId, nativePlanReview.julesActivityId,
           );
-          await activateInternalReviewIssue(child.id, nativePlanReview.reviewerAgentId, ctx.authToken, ctx.runId);
+          await wakeJulesPlanReviewer({
+            reviewerAgentId: nativePlanReview.reviewerAgentId,
+            childIssueId: child.id,
+            interactionId: bridged.id,
+            authToken: ctx.authToken,
+            runId: ctx.runId,
+            idempotencyKey: `jules:plan-review-wake:${bridged.id}:0`,
+          });
           session.pendingInteraction = { ...nativePlanReview, protocolVersion: 2, paperclipInteractionId: bridged.id, reviewerChildIssueId: child.id };
           await persistSessionBestEffort(session, ctx.onLog);
           return await yieldHeartbeat(session);
@@ -3250,7 +3265,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               ctx.runId,
               pendingNativePlanReview.julesActivityId,
             );
-            await activateInternalReviewIssue(child.id, pendingNativePlanReview.reviewerAgentId, ctx.authToken, ctx.runId);
+            await wakeJulesPlanReviewer({
+              reviewerAgentId: pendingNativePlanReview.reviewerAgentId,
+              childIssueId: child.id,
+              interactionId: migrated.id,
+              authToken: ctx.authToken,
+              runId: ctx.runId,
+              idempotencyKey: `jules:plan-review-wake:${migrated.id}:0`,
+            });
             session.pendingInteraction = {
               ...pendingNativePlanReview,
               protocolVersion: 2,
@@ -3300,7 +3322,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             ctx.runId,
             pendingNativePlanReview.julesActivityId,
           );
-          await activateInternalReviewIssue(nextChild.id, config.planStrongReviewerAgentId, ctx.authToken, ctx.runId);
+          await wakeJulesPlanReviewer({
+            reviewerAgentId: config.planStrongReviewerAgentId,
+            childIssueId: nextChild.id,
+            interactionId: next.id,
+            authToken: ctx.authToken,
+            runId: ctx.runId,
+            idempotencyKey: `jules:plan-review-wake:${next.id}:0`,
+          });
           session.pendingInteraction = {
             ...pendingNativePlanReview,
             type: "plan_native_review",
@@ -4285,7 +4314,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                   persist: () => persistSessionBestEffort(session!, ctx.onLog),
                   run: () => createJulesPlanReviewChildInteraction(reviewerChild.id, taskId, session!.julesSessionId!, revision, fullPlan, "luna", config.planReviewerAgentId!, ctx.authToken, ctx.runId, activityId),
                 });
-                await activateInternalReviewIssue(reviewerChild.id, config.planReviewerAgentId!, ctx.authToken, ctx.runId);
+                await wakeJulesPlanReviewer({
+                  reviewerAgentId: config.planReviewerAgentId!,
+                  childIssueId: reviewerChild.id,
+                  interactionId: review.id,
+                  authToken: ctx.authToken,
+                  runId: ctx.runId,
+                  idempotencyKey: `jules:plan-review-wake:${review.id}:0`,
+                });
                 session.planReviewRevisionId = revision.revisionId;
                 session.planReviewOutcome = undefined;
             session.pendingInteraction = { type: "plan_native_review", protocolVersion: 2, julesActivityId: asJulesActivityId(activityId), question: fullPlan, planDocumentId: revision.documentId, planRevisionId: revision.revisionId, planRevisionNumber: revision.revisionNumber, paperclipInteractionId: review.id, reviewerAgentId: config.planReviewerAgentId, stage: "luna", reviewerChildIssueId: reviewerChild.id, createdAt: new Date().toISOString() };

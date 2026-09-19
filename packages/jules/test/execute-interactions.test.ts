@@ -25,6 +25,7 @@ import {
   listPaperclipInteractions,
   moveIssueToBlocked,
   moveIssueToInProgress,
+  wakeJulesPlanReviewer,
   withdrawPaperclipInteraction,
 } from "../src/server/paperclip-client";
 
@@ -79,6 +80,7 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
     completeInternalReviewIssue: vi.fn().mockResolvedValue(undefined),
     moveIssueToBlocked: vi.fn(),
     moveIssueToInProgress: vi.fn().mockResolvedValue(undefined),
+    wakeJulesPlanReviewer: vi.fn().mockResolvedValue(undefined),
     withdrawPaperclipInteraction: vi.fn().mockResolvedValue(undefined),
     scheduleJulesSessionMonitor: vi.fn().mockResolvedValue(),
   };
@@ -1022,6 +1024,14 @@ describe("Jules activity interactions", { timeout: 30000 }, () => {
       { documentId: "doc-1", revisionId: "revision-1", revisionNumber: 1 },
       "**Jules plan**", "luna", "00000000-0000-4000-8000-000000000011", "jwt-token", "run-1", "activity-plan",
     );
+    expect(wakeJulesPlanReviewer).toHaveBeenCalledWith({
+      reviewerAgentId: "00000000-0000-4000-8000-000000000011",
+      childIssueId: "child-question-1",
+      interactionId: "plan-review-child-form-1",
+      authToken: "jwt-token",
+      runId: "run-1",
+      idempotencyKey: "jules:plan-review-wake:plan-review-child-form-1:0",
+    });
     expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
       type: "plan_native_review", paperclipInteractionId: "plan-review-child-form-1", reviewerChildIssueId: "child-question-1",
     });

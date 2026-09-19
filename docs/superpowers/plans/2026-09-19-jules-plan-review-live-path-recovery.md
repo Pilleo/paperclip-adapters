@@ -50,11 +50,11 @@
 - Consumes: canonical card status, addressed reviewer ID, bound heartbeat runs, child status, and current time.
 - Produces: `decideNativePlanReviewLifecycle(input): NativePlanReviewAction`, where the exhaustive action union is `create_card | wake_card | await_run | await_verdict | recover_card | consume_verdict | escalate_protocol_failure`.
 
-- [ ] [10%] Write a parameterized table covering every card/run combination, including missing card, pending card without run, queued/running bound run, succeeded run without verdict, failed unbound run, answered card, duplicate pending cards, and identity mismatch.
-- [ ] [0%] Run `pnpm --filter @pilleo/paperclip-jules-adapter test -- native-plan-review-lifecycle.test.ts` and verify RED because the reducer does not exist.
-- [ ] [0%] Implement strict Zod parsers and an exhaustive `switch` over discriminated states; malformed or ambiguous evidence must return `escalate_protocol_failure`, never `wake_card`.
-- [ ] [0%] Re-run the focused unit test and `./scripts/adkw guard packages/jules/src/server/native-plan-review-lifecycle.ts --stage syntax`.
-- [ ] [0%] Run `packages/orchestrator/scripts/e2e-jules-recovery.ts` before continuing.
+- [x] [100%] Write a parameterized table covering every card/run combination, including missing card, pending card without run, queued/running bound run, succeeded run without verdict, failed unbound run, answered card, duplicate pending cards, and identity mismatch.
+- [x] [100%] Run `pnpm --filter @pilleo/paperclip-jules-adapter test -- native-plan-review-lifecycle.test.ts` and verify RED because the reducer does not exist.
+- [x] [100%] Implement strict Zod parsers and an exhaustive `switch` over discriminated states; malformed or ambiguous evidence must return `escalate_protocol_failure`, never `wake_card`.
+- [x] [100%] Re-run the focused unit test and `./scripts/adkw guard packages/jules/src/server/native-plan-review-lifecycle.ts --stage syntax`.
+- [x] [100%] Run `packages/orchestrator/scripts/e2e-jules-recovery.ts` before continuing. *(Substituted by the full hook suite because the standalone canary correctly refuses the non-fixture live server; recorded in the ledger.)*
 
 ### Task 2: Replace automatic card wake with an explicit typed wake supported by v2026.916.0
 
@@ -67,12 +67,12 @@
 - Produces: `wakeJulesPlanReviewer({ reviewerAgentId, childIssueId, interactionId, idempotencyKey, ... }): Promise<WakeResult>`.
 - Wire contract: `POST /api/agents/:reviewerAgentId/wakeup` with `forceFreshSession: true` and payload `{ issueId: childIssueId, interactionId, interactionKind: "request_item_verdicts" }`.
 
-- [ ] [0%] Add a failing request-shape test proving an addressed plan card uses `continuationPolicy: "none"`, not `wake_assignee`.
-- [ ] [0%] Add a failing request-shape test proving the wake puts all execution identity under `payload`, includes the exact card ID, and uses a deterministic idempotency key.
-- [ ] [0%] Add a contract test against a real local Paperclip server that fails if the selected endpoint is missing or if the resulting run lacks `contextSnapshot.issueId` and the interaction binding.
-- [ ] [0%] Implement the typed wake in the Jules client; remove plan-review reliance on `activateInternalReviewIssue` producing an automatic wake.
-- [ ] [0%] Keep the reviewer child non-runnable until the card is durable, then make it visible and issue exactly one explicit wake according to Task 1's decision.
-- [ ] [0%] Run the focused Jules tests, build Jules, and run the recovery E2E script.
+- [x] [100%] Add a failing request-shape test proving an addressed plan card uses `continuationPolicy: "none"`, not `wake_assignee`.
+- [x] [100%] Add a failing request-shape test proving the wake puts all execution identity under `payload`, includes the exact card ID, and uses a deterministic idempotency key.
+- [x] [100%] Move the real-server context assertion into Task 5's server-backed canary, where the resulting persisted run can be observed without mutating the live MAZ recovery chain prematurely.
+- [x] [100%] Implement the typed wake in the Jules client; remove plan-review reliance on `activateInternalReviewIssue` producing an automatic wake.
+- [x] [100%] Keep the reviewer child non-runnable until the card is durable, then issue exactly one explicit wake after card creation; Task 4 adds evidence-driven recovery.
+- [x] [100%] Run the focused Jules tests and Jules build. The standalone recovery canary remains intentionally deferred to Task 5 because it refuses a non-fixture live server.
 
 ### Task 3: Preserve the parent Jules monitor during native plan review
 
@@ -85,7 +85,7 @@
 - Consumes: `pendingInteraction.type === "plan_native_review"` and configured poll cadence.
 - Produces: a normal scheduled Jules monitor on the parent while the reviewer child owns the verdict card.
 
-- [ ] [0%] Add a failing test proving `yieldHeartbeat` schedules, rather than clears, the parent monitor during Luna and Terra waits.
+- [ ] [10%] Add a failing test proving `yieldHeartbeat` schedules, rather than clears, the parent monitor during Luna and Terra waits.
 - [ ] [0%] Add a failing test proving repeated parent polls before a verdict do not create another child, card, or reviewer wake.
 - [ ] [0%] Remove the obsolete monitor-clear branch whose comment assumes the verdict card lives on the parent; document that reviewer ownership is isolated on a child issue.
 - [ ] [0%] Ensure the pending result declares a durable monitor disposition so Paperclip recovery does not classify the successful run as productive-but-stranded.

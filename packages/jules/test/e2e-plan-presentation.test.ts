@@ -20,6 +20,7 @@ import {
   moveIssueToBlocked,
   moveIssueToInProgress,
   scheduleJulesSessionMonitor,
+  wakeJulesPlanReviewer,
 } from "../src/server/paperclip-client";
 
 vi.mock("../src/server/jules-client", async (importOriginal) => {
@@ -53,6 +54,7 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
     moveIssueToBlocked: vi.fn(),
     moveIssueToInProgress: vi.fn(),
     scheduleJulesSessionMonitor: vi.fn(),
+    wakeJulesPlanReviewer: vi.fn(),
   };
 });
 
@@ -124,6 +126,7 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
     vi.mocked(moveIssueToBlocked).mockResolvedValue();
     vi.mocked(moveIssueToInProgress).mockResolvedValue();
     vi.mocked(scheduleJulesSessionMonitor).mockResolvedValue();
+    vi.mocked(wakeJulesPlanReviewer).mockResolvedValue();
     vi.mocked(clearJulesSessionMonitor).mockResolvedValue();
     vi.mocked(upsertJulesSessionHandle).mockResolvedValue();
     vi.mocked(saveJulesPlanDocument).mockResolvedValue({ documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1 });
@@ -157,6 +160,15 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
       expect.stringContaining("Implement the fix"), "luna", "00000000-0000-4000-8000-000000000001", "jwt-token", "run-1", "act-plan-native",
     );
     expect(createJulesPlanApprovalInteraction).not.toHaveBeenCalled();
+    expect(activateInternalReviewIssue).not.toHaveBeenCalled();
+    expect(wakeJulesPlanReviewer).toHaveBeenCalledWith({
+      reviewerAgentId: "00000000-0000-4000-8000-000000000001",
+      childIssueId: "question-child-1",
+      interactionId: "native-plan-review-1",
+      idempotencyKey: "jules:plan-review-wake:native-plan-review-1:0",
+      authToken: "jwt-token",
+      runId: "run-1",
+    });
     expect(result.sessionParams && sessionCodec.decode(result.sessionParams)?.pendingInteraction).toMatchObject({
       type: "plan_native_review", paperclipInteractionId: "native-plan-review-1", reviewerChildIssueId: "question-child-1", stage: "luna",
     });
@@ -291,6 +303,14 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
       "question-child-1", "issue-141", "session-141", { documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1 },
       "Plan", "terra", "00000000-0000-4000-8000-000000000002", "jwt-token", "run-1", "act-plan-native",
     );
+    expect(wakeJulesPlanReviewer).toHaveBeenCalledWith({
+      reviewerAgentId: "00000000-0000-4000-8000-000000000002",
+      childIssueId: "question-child-1",
+      interactionId: "native-plan-review-1",
+      authToken: "jwt-token",
+      runId: "run-1",
+      idempotencyKey: "jules:plan-review-wake:native-plan-review-1:0",
+    });
     expect(JulesClient.prototype.approvePlan).not.toHaveBeenCalled();
     expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({ stage: "terra", paperclipInteractionId: "native-plan-review-1", reviewerChildIssueId: "question-child-1" });
   });

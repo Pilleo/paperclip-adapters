@@ -32,6 +32,7 @@ import {
   registerPullRequestWorkProduct,
   scheduleJulesSessionMonitor,
   upsertJulesSessionHandle,
+  wakeJulesPlanReviewer,
   withdrawPaperclipInteraction,
   isPaperclipChildLimitError,
   paperclipRequestForInternalUse,
@@ -88,7 +89,45 @@ describe("native Jules plan review interaction", () => {
     );
 
     const [, init] = fetchMock.mock.calls[0] ?? [];
-    expect(JSON.parse(String(init?.body)).payload.providerActivityId).toBe("activity-1");
+    const body = JSON.parse(String(init?.body));
+    expect(body.payload.providerActivityId).toBe("activity-1");
+    expect(body.continuationPolicy).toBe("none");
+    fetchMock.mockRestore();
+  });
+
+  it("wakes an addressed plan reviewer with exact issue and interaction context", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      id: "review-run-1", status: "queued",
+    }), { status: 202, headers: { "content-type": "application/json" } }));
+
+    await wakeJulesPlanReviewer({
+      reviewerAgentId: "reviewer-1",
+      childIssueId: "child-1",
+      interactionId: "card-1",
+      idempotencyKey: "jules:plan-review-wake:card-1:0",
+      authToken: "token",
+      runId: "owner-run-1",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(url).toBe("http://127.0.0.1:3100/api/agents/reviewer-1/wakeup");
+    expect(init?.method).toBe("POST");
+    expect(init?.headers).toMatchObject({
+      "Idempotency-Key": "jules:plan-review-wake:card-1:0",
+      "X-Paperclip-Run-Id": "owner-run-1",
+    });
+    expect(JSON.parse(String(init?.body))).toEqual({
+      source: "automation",
+      triggerDetail: "system",
+      reason: "native_plan_review",
+      forceFreshSession: true,
+      payload: {
+        issueId: "child-1",
+        interactionId: "card-1",
+        interactionKind: "request_item_verdicts",
+      },
+    });
     fetchMock.mockRestore();
   });
 

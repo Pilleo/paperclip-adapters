@@ -74,6 +74,44 @@ export interface PlanApprovalInteraction extends PaperclipInteraction {
   planRevision: PlanRevision;
 }
 
+export interface JulesPlanReviewerWakeInput {
+  readonly reviewerAgentId: string;
+  readonly childIssueId: string;
+  readonly interactionId: string;
+  readonly idempotencyKey: string;
+  readonly authToken: string | undefined;
+  readonly runId?: string;
+}
+
+/**
+ * Starts one reviewer run with the exact native verdict card in Paperclip's
+ * runtime context. Addressed cards deliberately use continuationPolicy=none:
+ * the host's automatic issue wake omits this binding and fails with
+ * continuation_source_context_missing on v2026.916.0.
+ */
+export async function wakeJulesPlanReviewer(input: JulesPlanReviewerWakeInput): Promise<void> {
+  await paperclipRequest(
+    `/api/agents/${encodeURIComponent(input.reviewerAgentId)}/wakeup`,
+    input.authToken,
+    {
+      method: "POST",
+      headers: { "Idempotency-Key": input.idempotencyKey },
+      body: JSON.stringify({
+        source: "automation",
+        triggerDetail: "system",
+        reason: "native_plan_review",
+        forceFreshSession: true,
+        payload: {
+          issueId: input.childIssueId,
+          interactionId: input.interactionId,
+          interactionKind: "request_item_verdicts",
+        },
+      }),
+    },
+    input.runId,
+  );
+}
+
 export async function saveJulesPlanDocument(
   issueId: string, activityId: string, planMarkdown: string,
   authToken: string | undefined, runId?: string,
@@ -965,7 +1003,7 @@ export async function createJulesPlanReviewInteraction(
     title: `Review Jules plan (${stageName})`,
     summary: `Review Jules plan revision ${revision.revisionNumber}.`,
     addresseeAgentId: reviewerAgentId,
-    continuationPolicy: "wake_assignee",
+    continuationPolicy: "none",
     resolverPolicy: "anyone",
     payload: {
       version: 1,
@@ -1036,7 +1074,7 @@ export async function createJulesPlanReviewChildInteraction(
     title: `Review Jules plan (${stageName})`,
     summary: `Review Jules plan revision ${revision.revisionNumber}.`,
     addresseeAgentId: reviewerAgentId,
-    continuationPolicy: "wake_assignee",
+    continuationPolicy: "none",
     resolverPolicy: "anyone",
     payload: {
       version: 1,
