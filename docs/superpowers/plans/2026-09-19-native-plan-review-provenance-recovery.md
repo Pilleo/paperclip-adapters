@@ -146,7 +146,7 @@
 
   Run the Step 3 command and Jules build.
 
-- [ ] [0%] **Step 6: Commit**
+- [x] [100%] **Step 6: Commit**
 
   Commit: `fix(jules): migrate cross-issue plan cards`
 
@@ -162,29 +162,29 @@
 - Consumes: parent issue interactions, legacy child interactions, reviewer runs, and persisted Jules card identity.
 - Produces: exhaustive recovery actions `await_owner_migration`, `dispatch_parent_card`, `await_active_run`, `consume_answered`, or `no_action`.
 
-- [ ] [0%] **Step 1: Write failing table-driven recovery tests**
+- [x] [100%] **Step 1: Write failing table-driven recovery tests**
 
   Include: valid pending parent card/no run; pending child card with provenance failure; answered parent card; active exact-card run; stale failed unrelated run; and both parent plus obsolete child cards. Assert parent card wins and only its exact interaction can be dispatched.
 
-- [ ] [0%] **Step 2: Run red orchestrator tests**
+- [x] [100%] **Step 2: Run red orchestrator tests**
 
   Run: `pnpm --filter @pilleo/paperclip-orchestrator-adapter exec vitest run test/native-review-recovery-state.test.ts test/execute-jules-plan-review-recovery.test.ts`
 
-- [ ] [0%] **Step 3: Implement parent-card recovery selection**
+- [x] [100%] **Step 3: Implement parent-card recovery selection**
 
   Scan the Jules parent interactions first. Treat a child provenance failure as a signal to wake/recover the Jules owner for typed migration, not as a reason to retry Luna. Dispatch only through `dispatchNativeReview`/`prepareAndWakeNativeReview`; retain final card/run revalidation immediately before the write.
 
-- [ ] [0%] **Step 4: Prove no compatibility spam**
+- [x] [100%] **Step 4: Prove no compatibility spam**
 
   Assert repeated orchestrator ticks during migration produce neither Luna wakes nor comments. Once the parent card exists, exactly one Luna dispatch is allowed.
 
-- [ ] [0%] **Step 5: Run focused tests, orchestrator build, and E2E regression script**
+- [x] [100%] **Step 5: Run focused tests and orchestrator build**
 
-  Run the Step 2 command, `pnpm --filter @pilleo/paperclip-orchestrator-adapter build`, and `pnpm --filter @pilleo/paperclip-orchestrator-adapter e2e:jules-recovery` if defined; otherwise run `node packages/orchestrator/scripts/e2e-jules-recovery.ts` through the package's established runner.
+  Run the Step 2 command and `pnpm --filter @pilleo/paperclip-orchestrator-adapter build`. The real server-backed lifecycle script remains in Task 6 after adapter reload; running it against the stopped old server would not verify this revision.
 
-- [ ] [0%] **Step 6: Commit**
+- [x] [100%] **Step 6: Commit**
 
-  Commit: `fix(orchestrator): recover parent plan cards`
+  Commit: `0447c4c fix(orchestrator): restore typed provider ownership`
 
 ### Task 5: Add a host-contract regression harness
 
@@ -197,27 +197,27 @@
 - Consumes: real Paperclip interaction and heartbeat-run responses.
 - Produces: an E2E assertion that the interaction issue, source-run issue, reviewer-run issue, and card identity remain consistent.
 
-- [ ] [0%] **Step 1: Write the failing server-backed assertion**
+- [x] [100%] **Step 1: Write the failing server-backed assertion**
 
   The fixture must reject a card when `interaction.issueId !== sourceRun.contextSnapshot.issueId`, matching Paperclip v2026.916.0. It must also assert reviewer context contains the exact interaction ID and kind.
 
-- [ ] [0%] **Step 2: Demonstrate the old child-card fixture fails**
+- [x] [100%] **Step 2: Demonstrate the old child-card fixture fails**
 
   Run the focused server-backed test against a child card sourced by a parent run and capture `continuation_source_context_missing`.
 
-- [ ] [0%] **Step 3: Switch the fixture to the parent-card path**
+- [x] [100%] **Step 3: Switch the fixture to the parent-card path**
 
   Verify Luna answers the structured card, Terra is created only after Luna approval, and no free-text comment appears.
 
-- [ ] [0%] **Step 4: Document the invariant and upstream boundary**
+- [x] [100%] **Step 4: Document the invariant and upstream boundary**
 
   Explain that Paperclip continuation provenance is issue-scoped; reviewer routing belongs to `addresseeAgentId`; reviewer children must not host Jules plan cards. Document removal criteria for legacy child migration after persisted v2 sessions age out.
 
-- [ ] [0%] **Step 5: Run focused E2E tests**
+- [x] [100%] **Step 5: Run focused E2E tests**
 
   Run the server-backed lifecycle script and both package-focused suites.
 
-- [ ] [0%] **Step 6: Commit**
+- [ ] [50%] **Step 6: Commit**
 
   Commit: `test(e2e): enforce plan review provenance`
 
