@@ -83,6 +83,9 @@ export function decideManagedAgentPatch(input: ManagedAgentPatchInput): ManagedA
 
   if (!requiresPatch(state)) return { kind: "unchanged", desiredFingerprint };
 
+  // Paperclip derives and validates the shortname whenever `name` is present.
+  // Resending the current identity can therefore conflict with the same row;
+  // identity is a mutation only when the state machine observed a real rename.
   const { name: _ignoredIdentity, ...patchWithoutIdentity } = input.desired.patch;
   const patch: ManagedAgentPatch = {
     ...patchWithoutIdentity,
