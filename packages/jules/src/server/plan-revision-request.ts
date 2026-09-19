@@ -20,8 +20,7 @@ export type PlanRevisionRequest = z.infer<typeof PlanRevisionRequestSchema>;
 export type PlanRevisionRequestDeliveryDecision =
   | { readonly action: "record_delivery" }
   | { readonly action: "await_echo" }
-  | { readonly action: "await_provider_progress" }
-  | { readonly action: "start_branch_bound_recovery" };
+  | { readonly action: "await_provider_progress" };
 
 export function createPlanRevisionRequest(input: {
   readonly interactionId: string;
@@ -56,12 +55,12 @@ export function decidePlanRevisionRequestDelivery(input: {
   switch (input.request.state) {
     case "delivered":
       // A successful sendMessage response proves only transport acceptance.
-      // Jules can retain a terminal state after accepting that request, where
-      // it can never emit the required planGenerated activity.  A fresh,
-      // branch-bound provider session is then the only safe continuation.
-      return input.terminalProviderState
-        ? { action: "start_branch_bound_recovery" }
-        : { action: "await_provider_progress" };
+      // Jules can retain its previous terminal state briefly after accepting
+      // the message and still publish the requested plan asynchronously. The
+      // typed activity stream, not that stale aggregate state, is authoritative
+      // after delivery. Keep polling this session; creating a replacement here
+      // races the new plan and loses the durable plan-review identity.
+      return { action: "await_provider_progress" };
     case "prepared":
       return input.activities.some(
         (activity) => activity.userMessaged?.userMessage === planRevisionRequestPrompt(input.request),

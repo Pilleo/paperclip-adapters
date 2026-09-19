@@ -52,8 +52,8 @@ describe("native plan-review replan request", () => {
 
   it.each([
     [false, { action: "await_provider_progress" }],
-    [true, { action: "start_branch_bound_recovery" }],
-  ] as const)("uses provider terminal state after a delivered command: terminal=%s", (terminalProviderState, expected) => {
+    [true, { action: "await_provider_progress" }],
+  ] as const)("keeps the same provider session after a delivered command: terminal=%s", (terminalProviderState, expected) => {
     expect(decidePlanRevisionRequestDelivery({
       request: { ...request, state: "delivered" },
       activities: [],

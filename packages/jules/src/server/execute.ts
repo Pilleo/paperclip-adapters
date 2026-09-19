@@ -3113,8 +3113,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               return await yieldHeartbeat(session);
             case "await_provider_progress":
               return await yieldHeartbeat(session);
-            case "start_branch_bound_recovery":
-              return await scheduleTerminalPrRemediation("terminal_plan_revision_unavailable");
             default:
               return assertNever(delivery);
           }

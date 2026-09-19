@@ -769,7 +769,7 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
     );
   });
 
-  it("starts one branch-bound recovery when a terminal Jules session cannot publish the requested plan revision", async () => {
+  it("keeps polling the same terminal Jules session after a delivered plan-revision request", async () => {
     vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "COMPLETED", id: "session-141" } as never);
     vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{
       id: "act-plan-reviewed", createTime: "2026-08-30T00:01:00.000Z",
@@ -796,15 +796,22 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
       }) },
     } as AdapterExecutionContext);
 
-    expect(result.errorCode).toBe("jules_terminal_plan_recovery_scheduled");
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode).toBeUndefined();
+    expect(result.resultJson).toMatchObject({
+      pending: true,
+      provider: "jules",
+      julesSessionId: "session-141",
+    });
     expect(sessionCodec.decode(result.sessionParams!)).toMatchObject({
-      phase: "RETRY_SCHEDULED",
-      prRemediation: {
-        originalSessionId: "session-141",
-        headRefName: "jules-existing-pr-branch",
-        reason: "terminal_plan_revision_unavailable",
+      phase: "WAITING_FOR_PLAN_APPROVAL",
+      pendingPlanRevisionRequest: {
+        interactionId: "expired-native-review-card",
+        planActivityId: "act-plan-reviewed",
+        state: "delivered",
       },
     });
+    expect(scheduleJulesSessionMonitor).toHaveBeenCalledTimes(1);
     expect(createJulesPlanReviewChildInteraction).not.toHaveBeenCalled();
   });
 
