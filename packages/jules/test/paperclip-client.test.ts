@@ -931,10 +931,14 @@ describe("Paperclip issue completion", () => {
       serviceName: "jules",
       externalRef: "s-1",
     });
+    // Paperclip's PATCH semantics preserve omitted nested monitor fields. The
+    // terminal handoff must therefore send an explicit null tombstone rather
+    // than merely leaving `monitor` out of the policy object.
     expect(JSON.parse(fetchMock.mock.calls[2]![1]!.body as string).executionPolicy).toEqual({
       mode: "normal",
       stages: [],
       commentRequired: false,
+      monitor: null,
     });
   });
 

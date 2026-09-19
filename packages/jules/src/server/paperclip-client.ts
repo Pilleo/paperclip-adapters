@@ -433,9 +433,10 @@ export async function moveIssueToReview(
   // work and lets a stale Paperclip projection dispatch Jules again.
   await registerPullRequestWorkProduct(issueId, prUrl, authToken, runId);
 
-  // Note: We do not perform an unbacked status PATCH to in_review here to prevent
-  // Paperclip server 422 invalid_issue_disposition errors on agent-authored transitions.
-  // The Orchestrator automatically detects the registered PR and routes the task to in_review with a reviewer.
+  // Note: We do not perform an unbacked status PATCH to in_review here because
+  // Paperclip requires an agent-authored transition to include a real typed
+  // review owner. The orchestrator creates that native review path from the
+  // registered work product.
 }
 
 export async function moveIssueToInProgress(
@@ -1409,7 +1410,10 @@ export async function clearJulesSessionMonitor(
   await paperclipRequest(`/api/issues/${encodeURIComponent(issueId)}`, authToken, {
     method: "PATCH",
     body: JSON.stringify({
-      executionPolicy: Object.keys(executionPolicy).length > 0 ? executionPolicy : null,
+      // Paperclip PATCH merges nested policy objects. Omission therefore
+      // preserves the prior monitor; use an explicit tombstone to terminate
+      // the provider continuation before the independent review transition.
+      executionPolicy: { ...executionPolicy, monitor: null },
     }),
   }, runId);
 
