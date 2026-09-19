@@ -8,7 +8,7 @@ A suite of modular, zero-dependency bash scripts for operating, triaging, and in
 
 | Script | Purpose | Usage Example |
 |---|---|---|
-| [`wake_orchestrator.sh`](wake_orchestrator.sh) | Forces an immediate deterministic scheduling tick in Orchestrator. | `./scripts/fleet/wake_orchestrator.sh` |
+| [`wake_orchestrator.sh`](wake_orchestrator.sh) | Forces an immediate project-scoped deterministic scheduling tick in Orchestrator. | `./scripts/fleet/wake_orchestrator.sh <project_id>` |
 | [`wake_jules.sh`](wake_jules.sh) | Wakes up Jules Async Worker to process sessions or apply review changes. | `./scripts/fleet/wake_jules.sh` |
 | [`wake_reviewer.sh`](wake_reviewer.sh) | Wakes up Code Reviewer to evaluate in-review PRs. | `./scripts/fleet/wake_reviewer.sh` |
 | [`wake_vibe.sh`](wake_vibe.sh) | Wakes up Vibe Local Worker for interviews, clarifications, or Stage 2 reviews. | `./scripts/fleet/wake_vibe.sh` |
@@ -47,7 +47,7 @@ Prefer the adapter's native recovery path and the isolated
 
 ### 1. Triggering an Immediate Orchestration Cycle
 ```bash
-./scripts/fleet/wake_orchestrator.sh "manual_triage_tick"
+./scripts/fleet/wake_orchestrator.sh "<paperclip-project-id>"
 ```
 
 ### 2. Checking Review Verdicts on a Task

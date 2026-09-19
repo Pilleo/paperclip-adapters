@@ -487,6 +487,17 @@ export async function reconcileManagedFleet(
           JSON.stringify(agent.metadata?.["structuredDecisionCapability"] ?? null) ===
             JSON.stringify(NATIVE_REVIEW_DECISION_CAPABILITY),
       ) ?? matchingCandidates[0];
+    // A create-only compatibility replacement can coexist with the legacy
+    // row whose shortname it could not update. Keep the capable versioned
+    // identity while that sibling owns the canonical name; asking Paperclip
+    // to rename it is guaranteed to fail its company-wide uniqueness check.
+    // When no sibling owns the name, normal genuine-rename reconciliation
+    // remains enabled.
+    const reconciledName = matching && matchingCandidates.some(
+      (candidate) => candidate.id !== matching.id && candidate.name === def.name,
+    )
+      ? matching.name
+      : def.name;
 
     // A deterministic authorization failure must not be retried on every
     // heartbeat. The caller owns the circuit and may clear it after an
@@ -672,7 +683,7 @@ export async function reconcileManagedFleet(
               : undefined,
         },
         desired: {
-          name: def.name,
+          name: reconciledName,
           configuration: desiredManagedConfiguration,
           patch: {
             title: def.title,

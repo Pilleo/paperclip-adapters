@@ -570,6 +570,68 @@ describe("Orchestrator Managed Fleet Manager", () => {
     },
   );
 
+  it.each(["luna_reviewer", "terra_reviewer"] as const)(
+    "keeps a capable versioned %s identity when the desired shortname is occupied by its legacy sibling",
+    async (workerKey) => {
+      const definition = MANAGED_FLEET_DEFINITIONS.find((candidate) => candidate.key === workerKey)!;
+      const replacementId = `${workerKey}-replacement`;
+      const agents: any[] = [
+        { id: "orch-1", name: "Task Orchestrator", adapterType: "orchestrator" },
+        {
+          id: `${workerKey}-legacy`,
+          name: definition.name,
+          adapterType: definition.adapterType,
+          metadata: { managedBy: "paperclip-orchestrator", workerKey },
+        },
+        {
+          id: replacementId,
+          name: `${definition.name} [v10]`,
+          title: "stale title",
+          adapterType: definition.adapterType,
+          metadata: {
+            managedBy: "paperclip-orchestrator",
+            workerKey,
+            structuredDecisionCapability: {
+              version: 1,
+              transports: ["mcp_tool"],
+              decisionKinds: ["plan_review", "pull_request_review"],
+            },
+          },
+        },
+      ];
+      const patches: RecordedPatch[] = [];
+
+      global.fetch = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (!init?.method || init.method === "GET") {
+          return { ok: true, status: 200, json: async () => agents };
+        }
+        const body = init.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
+        if (init.method === "PATCH" && body["name"] === definition.name) {
+          return {
+            ok: false,
+            status: 409,
+            text: async () => "Agent shortname is already in use in this company",
+          };
+        }
+        if (init.method === "PATCH") patches.push({ url, body });
+        return { ok: true, status: 200, json: async () => ({}), text: async () => "" };
+      });
+
+      const result = await reconcileManagedFleet("http://127.0.0.1:3100", "company-1", {
+        orchestratorAgentId: "orch-1",
+        skipWorkerKeys: reconcileOnly(workerKey),
+      });
+
+      expect(result.updatedCount).toBe(1);
+      expect(patches).toHaveLength(1);
+      expect(patches[0]?.url).toBe(`http://127.0.0.1:3100/api/agents/${replacementId}`);
+      expect(patches[0]?.body).not.toHaveProperty("name");
+      expect(patches[0]?.body["metadata"]).toEqual(expect.objectContaining({
+        managedConfigFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+      }));
+    },
+  );
+
   it("uses a persisted desired-configuration fingerprint when Paperclip redacts adapter environment values", async () => {
     const definition = MANAGED_FLEET_DEFINITIONS.find((candidate) => candidate.key === "luna_reviewer")!;
     const agent = {
