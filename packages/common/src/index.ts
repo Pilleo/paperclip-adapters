@@ -22,3 +22,4 @@ export * from "./structured-decision.js";
 export * from "./decision-ladder.js";
 export * from "./structured-decision-dispatch.js";
 export * from "./jules-polling.js";
+export * from "./jules-lifecycle.js";
