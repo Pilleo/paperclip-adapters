@@ -464,6 +464,35 @@ describe("Orchestrator Managed Fleet Manager", () => {
     expect(observedHeaders.every((headers) => headers.Authorization === "Bearer remote-token")).toBe(true);
   });
 
+  it("coalesces concurrent fleet reconciliation for the same company heartbeat run", async () => {
+    const agents: any[] = [
+      { id: "orch-1", name: "Task Orchestrator", adapterType: "orchestrator" },
+      { id: "luna-1", name: "[Orchestrated] Luna Fast Reviewer", adapterType: "codex_local", adapterConfig: { model: "old" }, metadata: { managedBy: "paperclip-orchestrator", workerKey: "luna_reviewer" } },
+    ];
+    let patchCount = 0;
+    global.fetch = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+      if (!init?.method || init.method === "GET") return { ok: true, json: async () => agents };
+      if (init.method === "PATCH") {
+        patchCount += 1;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    const config = {
+      orchestratorAgentId: "orch-1",
+      runId: "heartbeat-run-1",
+      skipWorkerKeys: ["terra_reviewer", "terra_adjudicator", "jules", "vibe", "antigravity"] as const,
+    };
+
+    const [first, second] = await Promise.all([
+      reconcileManagedFleet("http://127.0.0.1:3100", "company-1", config),
+      reconcileManagedFleet("http://127.0.0.1:3100", "company-1", config),
+    ]);
+
+    expect(patchCount).toBe(1);
+    expect(second).toEqual(first);
+  });
+
   it("reconciles a stale Jules CI gate policy even when its other managed settings match", async () => {
     const jules = MANAGED_FLEET_DEFINITIONS.find((definition) => definition.key === "jules");
     expect(jules).toBeDefined();
