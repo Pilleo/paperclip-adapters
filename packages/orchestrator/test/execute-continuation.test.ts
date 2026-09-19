@@ -363,6 +363,114 @@ describe("orchestrator live session continuation", () => {
     });
   });
 
+  it("reconciles a terminal Jules polling blocker before attempting monitor reattachment", async () => {
+    const issueId = "issue-1535-blocked";
+    const recoveryActionId = "9e44e46e-a8eb-422f-a35a-236e3cad1cc0";
+    const failedRunId = "c3c1a60e-12b1-4a7e-8cc3-79498b705f27";
+    const sessionId = "jules-session-1535";
+    const patches: Array<Record<string, unknown>> = [];
+    const resolutions: Array<Record<string, unknown>> = [];
+    const issue = {
+      id: issueId,
+      identifier: "MAZ-1535",
+      title: "provider continuation held by legacy recovery",
+      status: "blocked",
+      projectId: "project-1",
+      assigneeAgentId: "jules-orch",
+      updatedAt: new Date().toISOString(),
+      executionBlocker: {
+        recoveryActionId,
+        runId: failedRunId,
+        agentId: "jules-orch",
+        cause: "legacy_execution_requires_reconciliation",
+        nextAction: "Automatic recovery stopped.",
+      },
+      executionState: {
+        status: "idle",
+        monitor: {
+          kind: "external_service",
+          serviceName: "jules",
+          status: "cleared",
+          clearReason: "invalid_status",
+          externalRef: "[redacted]",
+          timeoutAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+          recoveryPolicy: "wake_owner",
+        },
+      },
+      executionPolicy: {
+        mode: "normal",
+        stages: [{ id: "luna", type: "review", participants: [] }],
+        commentRequired: true,
+      },
+    };
+    globalThis.fetch = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      const method = (init?.method || "GET").toUpperCase();
+      if (method === "POST" && href.endsWith(`/api/issues/${issueId}/recovery-actions/resolve`)) {
+        resolutions.push(JSON.parse(String(init?.body || "{}")) as Record<string, unknown>);
+        issue.status = "todo";
+        return new Response(JSON.stringify({ issue }), { status: 200 });
+      }
+      if (method === "PATCH" && href.includes(`/api/issues/${issueId}`)) {
+        patches.push(JSON.parse(String(init?.body || "{}")) as Record<string, unknown>);
+        return new Response("{}", { status: 200 });
+      }
+      if (method === "GET" && href.endsWith(`/api/heartbeat-runs/${failedRunId}`)) {
+        return new Response(JSON.stringify({
+          id: failedRunId,
+          status: "failed",
+          agentId: "jules-orch",
+          errorCode: "jules_polling_error",
+          error: "Paperclip API request failed (422): Entering blocked requires unresolved blockers, a pending interaction/approval, or unblockDescriptor",
+          finishedAt: new Date().toISOString(),
+        }), { status: 200 });
+      }
+      if (method === "GET" && href.endsWith(`/api/issues/${issueId}/documents`)) {
+        return new Response(JSON.stringify([{
+          key: "jules-session",
+          body: `julesSessionId: ${sessionId}\nurl: https://jules.google.com/session/${sessionId}`,
+        }]), { status: 200 });
+      }
+      if (method === "GET" && href.endsWith(`/api/issues/${issueId}`)) {
+        return new Response(JSON.stringify(issue), { status: 200 });
+      }
+      if (href.includes("/heartbeat-runs")) return new Response("[]", { status: 200 });
+      if (href.endsWith("/agents") || href.includes("/agents?")) {
+        return new Response(JSON.stringify([{
+          id: "jules-orch",
+          name: "[Orchestrated] Jules Async Worker",
+          adapterType: "jules",
+          status: "idle",
+          reportsTo: "orch-1",
+          metadata: { managedBy: "paperclip-orchestrator", workerKey: "jules" },
+        }]), { status: 200 });
+      }
+      if (href.includes("/projects")) return new Response(JSON.stringify([
+        { id: "project-1", name: "paperclip-adapters", primaryWorkspace: { cwd: process.cwd() } },
+      ]), { status: 200 });
+      if (href.includes("/issues")) return new Response(JSON.stringify([issue]), { status: 200 });
+      if (href.includes("/approvals")) return new Response("[]", { status: 200 });
+      return new Response("[]", { status: 200 });
+    }) as typeof fetch;
+
+    const result = await execute(ctx());
+
+    expect(result.exitCode).toBe(0);
+    expect(resolutions).toEqual([{
+      actionId: recoveryActionId,
+      outcome: "restored",
+      sourceIssueStatus: "todo",
+      resolutionNote: expect.stringContaining("Jules polling run"),
+      executionReconciliation: {
+        runId: failedRunId,
+        providerStopped: true,
+        actionOutcome: "mixed",
+        outcomeEvidence: expect.stringContaining(sessionId),
+      },
+    }]);
+    expect(patches).toEqual([]);
+  });
+
   it("restores a manually cleared Jules parent and wakes it once after its exact plan verdict", async () => {
     const patches: Array<Record<string, unknown>> = [];
     const childPatches: Array<Record<string, unknown>> = [];

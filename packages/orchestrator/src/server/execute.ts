@@ -90,6 +90,11 @@ import { decideIssueLifecycleReconciliation } from "../core/issue-lifecycle-reco
 import { ConvergenceGuard } from "../core/convergence-guard.js";
 import { planTerminalParentBarrier } from "../core/terminal-parent-barrier.js";
 import { buildJulesMonitorReattachment, decideJulesMonitorReconciliation, resolveJulesMonitorSessionId } from "../core/jules-monitor-reconciliation.js";
+import {
+  buildJulesExecutionReconciliationPayload,
+  decideJulesExecutionBlockerRecovery,
+  parseJulesExecutionBlockerPointer,
+} from "../core/jules-execution-blocker-reconciliation.js";
 import { resolvedJulesPlanVerdict } from "../core/jules-plan-verdict-continuation.js";
 import { needsFullIssueRecord } from "../core/issue-enrichment-policy.js";
 import { planBoardReconciliation, type BoardIssueSnapshot } from "../core/board-reconciliation.js";
@@ -1408,6 +1413,60 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       }
     }
     const providerSessionId = resolveJulesMonitorSessionId({ monitorExternalRef: externalRef, sessionHandleBody });
+    const executionBlocker = issue.rawIssue["executionBlocker"];
+    // Paperclip's execution blocker is a stronger no-replay boundary than a
+    // detached provider monitor. Never overwrite it with an `in_progress`
+    // monitor patch. A narrow compatibility bridge can instead submit the
+    // server's typed reconciliation evidence for a terminal Jules polling
+    // turn, after which normal todo dispatch lets Jules inspect and resume its
+    // durable provider session. Upstream Paperclip should eventually expose
+    // this as an adapter-owned terminal disposition rather than requiring a
+    // local-trusted board reconciliation.
+    if (issue.status === "blocked" && executionBlocker != null) {
+      const blockerPointer = parseJulesExecutionBlockerPointer({
+        issueStatus: issue.status,
+        assigneeAgentId: issue.assigneeAgentId,
+        julesAgentId,
+        providerSessionId,
+        executionBlocker,
+      });
+      if (!blockerPointer) {
+        await log(`[ORCHESTRATOR] Preserving Paperclip execution hold for [${issue.identifier || issue.id}]; it is not a typed Jules polling continuation.`);
+        continue;
+      }
+      try {
+        const failedRun = await pc.getHeartbeatRun<Record<string, unknown>>(blockerPointer.runId);
+        const blockerDecision = decideJulesExecutionBlockerRecovery({
+          issueStatus: issue.status,
+          assigneeAgentId: issue.assigneeAgentId,
+          julesAgentId,
+          providerSessionId,
+          executionBlocker,
+          failedRun,
+        });
+        switch (blockerDecision.action) {
+          case "preserve":
+            await log(`[ORCHESTRATOR] Preserving Paperclip execution hold for [${issue.identifier || issue.id}]: ${blockerDecision.reason}.`);
+            break;
+          case "resolve_to_todo": {
+            const resolved = await pc.resolveRecoveryAction(
+              issue.id,
+              buildJulesExecutionReconciliationPayload(blockerDecision),
+            );
+            if (!resolved.ok) {
+              await log(`[ORCHESTRATOR] Could not reconcile terminal Jules polling hold for [${issue.identifier || issue.id}] (${resolved.status}): ${resolved.text}`);
+              break;
+            }
+            statusOverrides.set(issue.id, "todo");
+            await log(`[ORCHESTRATOR] Reconciled terminal Jules polling hold for [${issue.identifier || issue.id}] to todo; the persisted provider session remains authoritative.`);
+            break;
+          }
+        }
+      } catch (error: unknown) {
+        await log(`[ORCHESTRATOR] Deferring Jules execution-hold reconciliation for [${issue.identifier || issue.id}]: ${String(error)}.`);
+      }
+      continue;
+    }
     let planVerdictContinuation: ReturnType<typeof resolvedJulesPlanVerdict> = null;
     let planVerdictChild: typeof lifecycleIssues[number] | null = null;
     if (monitorClearReason === "manual" && providerSessionId &&
