@@ -167,14 +167,7 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
     );
     expect(createJulesPlanApprovalInteraction).not.toHaveBeenCalled();
     expect(activateInternalReviewIssue).not.toHaveBeenCalled();
-    expect(wakeJulesPlanReviewer).toHaveBeenCalledWith({
-      reviewerAgentId: "00000000-0000-4000-8000-000000000001",
-      childIssueId: "question-child-1",
-      interactionId: "native-plan-review-1",
-      idempotencyKey: "jules:plan-review-wake:native-plan-review-1:0",
-      authToken: "jwt-token",
-      runId: "run-1",
-    });
+    expect(wakeJulesPlanReviewer).not.toHaveBeenCalled();
     expect(result.sessionParams && sessionCodec.decode(result.sessionParams)?.pendingInteraction).toMatchObject({
       type: "plan_native_review", paperclipInteractionId: "native-plan-review-1", reviewerChildIssueId: "question-child-1", stage: "luna",
     });
@@ -220,7 +213,7 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
 
     expect(createJulesQuestionAdjudication).toHaveBeenCalledTimes(1);
     expect(createJulesPlanReviewChildInteraction).toHaveBeenCalledTimes(1);
-    expect(wakeJulesPlanReviewer).toHaveBeenCalledTimes(1);
+    expect(wakeJulesPlanReviewer).not.toHaveBeenCalled();
     expect(scheduleJulesSessionMonitor).toHaveBeenCalledTimes(2);
     expect(clearJulesSessionMonitor).not.toHaveBeenCalled();
   });
@@ -268,11 +261,7 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
 
     expect(createJulesQuestionAdjudication).not.toHaveBeenCalled();
     expect(createJulesPlanReviewChildInteraction).not.toHaveBeenCalled();
-    expect(wakeJulesPlanReviewer).toHaveBeenCalledWith(expect.objectContaining({
-      childIssueId: "question-child-1",
-      interactionId: "native-plan-review-1",
-      idempotencyKey: "jules:plan-review-wake:native-plan-review-1:1",
-    }));
+    expect(wakeJulesPlanReviewer).not.toHaveBeenCalled();
   });
 
   it("preempts a pending native plan review when Jules emits a newer provider question", async () => {
@@ -404,14 +393,7 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
       "question-child-1", "issue-141", "session-141", { documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1 },
       "Plan", "terra", "00000000-0000-4000-8000-000000000002", "jwt-token", "run-1", "act-plan-native",
     );
-    expect(wakeJulesPlanReviewer).toHaveBeenCalledWith({
-      reviewerAgentId: "00000000-0000-4000-8000-000000000002",
-      childIssueId: "question-child-1",
-      interactionId: "native-plan-review-1",
-      authToken: "jwt-token",
-      runId: "run-1",
-      idempotencyKey: "jules:plan-review-wake:native-plan-review-1:0",
-    });
+    expect(wakeJulesPlanReviewer).not.toHaveBeenCalled();
     expect(JulesClient.prototype.approvePlan).not.toHaveBeenCalled();
     expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({ stage: "terra", paperclipInteractionId: "native-plan-review-1", reviewerChildIssueId: "question-child-1" });
   });
