@@ -22,6 +22,8 @@ export interface BoardIssueSnapshot {
    * native review by a later reconciliation pass.
    */
   readonly ciRemediationInProgress: boolean;
+  /** A typed Paperclip recovery action owns the lifecycle until reconciled. */
+  readonly executionReconciliationRequired: boolean;
   readonly hasPullRequest: boolean;
   readonly parentId: string | null;
   readonly reviewGateKey: string | null;
@@ -42,6 +44,7 @@ export function planBoardReconciliation(issues: readonly BoardIssueSnapshot[]): 
     // repair below. The next heartbeat re-evaluates the provider's new PR
     // head; until then no board transition may replace Jules ownership.
     if (issue.ciRemediationInProgress) continue;
+    if (issue.executionReconciliationRequired) continue;
     if (issue.status === "in_progress" && issue.registeredOpenPullRequest && !issue.resumableMonitor) {
       commands.push({
         action: "recover_to_review",

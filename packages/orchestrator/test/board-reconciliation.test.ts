@@ -14,6 +14,7 @@ const parent = (overrides: Partial<BoardIssueSnapshot> = {}): BoardIssueSnapshot
   nativeReviewInteraction: false,
   registeredOpenPullRequest: false,
   ciRemediationInProgress: false,
+  executionReconciliationRequired: false,
   hasPullRequest: false,
   parentId: null,
   reviewGateKey: null,
@@ -79,6 +80,13 @@ describe("board reconciliation planner", () => {
     expect(planBoardReconciliation([parent({ resumableMonitor: false })])).toEqual([
       expect.objectContaining({ action: "return_to_todo", issueId: "parent-836" }),
     ]);
+  });
+
+  it("does not apply generic lifecycle repair while typed execution reconciliation is required", () => {
+    expect(planBoardReconciliation([parent({
+      resumableMonitor: false,
+      executionReconciliationRequired: true,
+    })])).toEqual([]);
   });
 
   it("recovers an in-progress managed issue with a registered open PR into native review", () => {

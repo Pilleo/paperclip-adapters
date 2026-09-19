@@ -119,6 +119,19 @@ describe("Jules monitor reconciliation", () => {
     });
   });
 
+  it("reattaches a detached Jules monitor after typed recovery parks its issue in todo", () => {
+    expect(decideJulesMonitorReconciliation({
+      ...base,
+      issueStatus: "todo",
+      monitorDetached: true,
+      timeoutAt: "2026-09-05T19:27:11.536Z",
+    }, Date.parse("2026-09-04T01:00:00.000Z"))).toEqual({
+      action: "resume_provider",
+      issueStatus: "in_progress",
+      reason: "stranded Jules monitor has a persisted provider session",
+    });
+  });
+
   it("reattaches a detached Jules monitor while Paperclip has parked its issue as blocked", () => {
     expect(decideJulesMonitorReconciliation({
       ...base,

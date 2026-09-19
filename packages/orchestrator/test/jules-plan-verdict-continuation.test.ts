@@ -28,12 +28,22 @@ describe("resolved Jules native plan verdict", () => {
     expect(resolvedJulesPlanVerdict({
       parentId,
       parentSessionId: sessionId,
+      currentRevisionId: revisionId,
       interactions: [card()],
     })).toEqual({
       interactionId: "plan-card",
       sessionId,
       revisionId,
     });
+  });
+
+  it("rejects an answered card for a superseded plan revision", () => {
+    expect(resolvedJulesPlanVerdict({
+      parentId,
+      parentSessionId: sessionId,
+      currentRevisionId: "newer-revision",
+      interactions: [card()],
+    })).toBeNull();
   });
 
   it.each([
@@ -47,6 +57,7 @@ describe("resolved Jules native plan verdict", () => {
     expect(resolvedJulesPlanVerdict({
       parentId,
       parentSessionId: sessionId,
+      currentRevisionId: revisionId,
       interactions: [interaction],
     })).toBeNull();
   });

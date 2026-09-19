@@ -157,6 +157,18 @@ server; a running dev server does not watch this repository. Confirm the startup
 log names `packages/orchestrator/dist/index.js`, then wait for one orchestrator
 heartbeat to reconcile the managed worker fleet before waking a reviewer.
 
+Paperclip v2026.916.0 can retain a
+`legacy_execution_requires_reconciliation` blocker after a later Jules run has
+already continued the same issue. The adapter may reconcile that stale blocker
+only when the failed run, durable Jules session, issue, and agent identities all
+match and a strictly newer successful run exists for that same issue and agent.
+Generic board repair is fenced while the typed blocker exists. After Paperclip
+accepts the mixed-outcome recovery, a detached monitor may be reattached from
+`todo`, and Jules is woken only when an answered native plan card matches the
+parent issue, provider session, and current plan revision. This compatibility
+bridge can be removed when Paperclip invalidates superseded recovery blockers
+atomically and natively wakes the parent assignee after a plan verdict.
+
 For a failed native review, inspect the addressed card and reviewer runs first.
 Recover only when exactly one card remains pending and the reviewer has no
 queued/running run. The adapter re-reads both immediately before its legacy

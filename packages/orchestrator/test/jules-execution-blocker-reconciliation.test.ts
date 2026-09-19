@@ -34,8 +34,60 @@ describe("Jules execution blocker reconciliation", () => {
       actionId,
       runId,
       providerSessionId: "jules-session-1535",
+      recoveryBasis: "polling_failure",
       reason: "terminal Jules polling run left a durable provider continuation behind a legacy execution hold",
     });
+  });
+
+  it("reconciles a non-polling legacy failure after a newer successful run continued the same issue", () => {
+    expect(decideJulesExecutionBlockerRecovery(snapshot({
+      issueId: "issue-1543",
+      failedRun: {
+        id: runId,
+        status: "failed",
+        agentId: "jules-orch",
+        errorCode: "paperclip_completion_interaction_failed",
+        finishedAt: "2026-09-19T18:47:11.012Z",
+      },
+      supersedingRuns: [{
+        id: "3b7d25a5-1ae2-4068-84f0-3a07f3672a6b",
+        status: "succeeded",
+        agentId: "jules-orch",
+        issueId: "issue-1543",
+        startedAt: "2026-09-19T20:51:28.760Z",
+        finishedAt: "2026-09-19T20:51:40.556Z",
+      }],
+    }))).toMatchObject({
+      action: "resolve_to_todo",
+      recoveryBasis: "superseding_success",
+    });
+  });
+
+  it.each([
+    ["another issue", { issueId: "other-issue" }],
+    ["another owner", { agentId: "other-agent" }],
+    ["a non-success", { status: "failed" }],
+    ["an older run", { startedAt: "2026-09-19T18:46:00.000Z", finishedAt: "2026-09-19T18:46:30.000Z" }],
+  ])("does not let %s supersede a non-polling blocker", (_name, successorOverride) => {
+    expect(decideJulesExecutionBlockerRecovery(snapshot({
+      issueId: "issue-1543",
+      failedRun: {
+        id: runId,
+        status: "failed",
+        agentId: "jules-orch",
+        errorCode: "paperclip_completion_interaction_failed",
+        finishedAt: "2026-09-19T18:47:11.012Z",
+      },
+      supersedingRuns: [{
+        id: "successor-run",
+        status: "succeeded",
+        agentId: "jules-orch",
+        issueId: "issue-1543",
+        startedAt: "2026-09-19T20:51:28.760Z",
+        finishedAt: "2026-09-19T20:51:40.556Z",
+        ...successorOverride,
+      }],
+    }))).toMatchObject({ action: "preserve" });
   });
 
   it.each([

@@ -363,7 +363,7 @@ describe("orchestrator live session continuation", () => {
     });
   });
 
-  it("reconciles a terminal Jules polling blocker before attempting monitor reattachment", async () => {
+  it("reconciles a superseded Jules blocker before attempting monitor reattachment", async () => {
     const issueId = "issue-1535-blocked";
     const recoveryActionId = "9e44e46e-a8eb-422f-a35a-236e3cad1cc0";
     const failedRunId = "c3c1a60e-12b1-4a7e-8cc3-79498b705f27";
@@ -420,9 +420,10 @@ describe("orchestrator live session continuation", () => {
           id: failedRunId,
           status: "failed",
           agentId: "jules-orch",
-          errorCode: "jules_polling_error",
-          error: "Paperclip API request failed (422): Entering blocked requires unresolved blockers, a pending interaction/approval, or unblockDescriptor",
-          finishedAt: new Date().toISOString(),
+          errorCode: "paperclip_completion_interaction_failed",
+          error: "Paperclip API request failed (403): Agent can only invoke itself",
+          startedAt: "2026-09-19T18:46:56.392Z",
+          finishedAt: "2026-09-19T18:47:11.012Z",
         }), { status: 200 });
       }
       if (method === "GET" && href.endsWith(`/api/issues/${issueId}/documents`)) {
@@ -434,7 +435,14 @@ describe("orchestrator live session continuation", () => {
       if (method === "GET" && href.endsWith(`/api/issues/${issueId}`)) {
         return new Response(JSON.stringify(issue), { status: 200 });
       }
-      if (href.includes("/heartbeat-runs")) return new Response("[]", { status: 200 });
+      if (href.includes("/heartbeat-runs")) return new Response(JSON.stringify([{
+        id: "3b7d25a5-1ae2-4068-84f0-3a07f3672a6b",
+        status: "succeeded",
+        agentId: "jules-orch",
+        startedAt: "2026-09-19T20:51:28.760Z",
+        finishedAt: "2026-09-19T20:51:40.556Z",
+        contextSnapshot: { issueId },
+      }]), { status: 200 });
       if (href.endsWith("/agents") || href.includes("/agents?")) {
         return new Response(JSON.stringify([{
           id: "jules-orch",
@@ -468,12 +476,12 @@ describe("orchestrator live session continuation", () => {
       actionId: recoveryActionId,
       outcome: "restored",
       sourceIssueStatus: "todo",
-      resolutionNote: expect.stringContaining("Jules polling run"),
+      resolutionNote: expect.stringContaining("Jules run"),
       executionReconciliation: {
         runId: failedRunId,
         providerStopped: true,
         actionOutcome: "mixed",
-        outcomeEvidence: expect.stringContaining(sessionId),
+        outcomeEvidence: expect.stringContaining("newer successful same-issue Jules run"),
       },
     }]);
     expect(patches).toEqual([]);
@@ -541,10 +549,13 @@ describe("orchestrator live session continuation", () => {
         return new Response("{}", { status: 200 });
       }
       if (href.endsWith(`/api/issues/${parentId}/documents`)) {
-        return new Response(JSON.stringify([{
-          key: "jules-session",
-          body: `julesSessionId: ${sessionId}\nurl: https://jules.google.com/session/${sessionId}`,
-        }]), { status: 200 });
+        return new Response(JSON.stringify([
+          {
+            key: "jules-session",
+            body: `julesSessionId: ${sessionId}\nurl: https://jules.google.com/session/${sessionId}`,
+          },
+          { key: "plan", latestRevisionId: revisionId },
+        ]), { status: 200 });
       }
       if (href.endsWith(`/api/issues/${childId}/interactions`)) {
         return new Response(JSON.stringify([{
@@ -591,5 +602,88 @@ describe("orchestrator live session continuation", () => {
     expect(childPatches).toHaveLength(1);
     expect(patches).toHaveLength(1);
     expect(wakes).toHaveLength(1);
+  });
+
+  it("reattaches a recovered todo monitor and wakes Jules from the exact answered parent card", async () => {
+    const parentId = "issue-1543";
+    const sessionId = "5238456688467209615";
+    const revisionId = "8c21512a-3192-4dc2-b3e7-a2ef8ae83969";
+    const interactionId = "2bd0a4bf-cf52-4508-852b-552014d0ae48";
+    const patches: Array<Record<string, unknown>> = [];
+    const wakes: Array<Record<string, unknown>> = [];
+    const issue = {
+      id: parentId,
+      identifier: "MAZ-1543",
+      title: "resume rejected native plan verdict",
+      status: "todo",
+      projectId: "project-1",
+      assigneeAgentId: "jules-orch",
+      updatedAt: new Date().toISOString(),
+      executionPolicy: null,
+      executionState: {
+        status: "idle",
+        monitor: {
+          kind: "external_service",
+          serviceName: "jules",
+          status: "triggered",
+          externalRef: "[redacted]",
+          timeoutAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+          recoveryPolicy: "wake_owner",
+        },
+      },
+    };
+    globalThis.fetch = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      const method = (init?.method || "GET").toUpperCase();
+      if (method === "POST" && href.includes("/agents/jules-orch/wakeup")) {
+        wakes.push(JSON.parse(String(init?.body || "{}")) as Record<string, unknown>);
+        return new Response("{}", { status: 202 });
+      }
+      if (method === "PATCH" && href.endsWith(`/api/issues/${parentId}`)) {
+        const patch = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+        patches.push(patch);
+        Object.assign(issue, patch);
+        return new Response("{}", { status: 200 });
+      }
+      if (href.endsWith(`/api/issues/${parentId}/documents`)) {
+        return new Response(JSON.stringify([
+          { key: "jules-session", body: `julesSessionId: ${sessionId}\nurl: https://jules.google.com/session/${sessionId}` },
+          { key: "plan", latestRevisionId: revisionId },
+        ]), { status: 200 });
+      }
+      if (href.endsWith(`/api/issues/${parentId}/interactions`)) {
+        return new Response(JSON.stringify([{
+          id: interactionId,
+          kind: "request_item_verdicts",
+          status: "answered",
+          idempotencyKey: `jules:plan-review:v2:${parentId}:${sessionId}:${revisionId}:luna`,
+          payload: { target: { type: "issue_document", issueId: parentId, key: "plan", revisionId } },
+        }]), { status: 200 });
+      }
+      if (href.includes("/heartbeat-runs")) return new Response("[]", { status: 200 });
+      if (href.endsWith("/agents") || href.includes("/agents?")) return new Response(JSON.stringify([{
+        id: "jules-orch", name: "[Orchestrated] Jules Async Worker", adapterType: "jules", status: "idle", reportsTo: "orch-1",
+        metadata: { managedBy: "paperclip-orchestrator", workerKey: "jules" },
+      }]), { status: 200 });
+      if (href.includes("/projects")) return new Response(JSON.stringify([
+        { id: "project-1", name: "paperclip-adapters", primaryWorkspace: { cwd: process.cwd() } },
+      ]), { status: 200 });
+      if (method === "GET" && href.endsWith(`/api/issues/${parentId}`)) return new Response(JSON.stringify(issue), { status: 200 });
+      if (href.includes("/issues")) return new Response(JSON.stringify([issue]), { status: 200 });
+      if (href.includes("/approvals")) return new Response("[]", { status: 200 });
+      return new Response("[]", { status: 200 });
+    }) as typeof fetch;
+
+    expect((await execute(ctx())).exitCode).toBe(0);
+    expect(patches).toHaveLength(1);
+    expect(patches[0]).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: "jules-orch",
+      executionPolicy: { monitor: { serviceName: "jules", externalRef: sessionId } },
+    });
+    expect(wakes).toEqual([expect.objectContaining({
+      reason: "synchronize_provider_plan_ready",
+      payload: { issueId: parentId },
+    })]);
   });
 });

@@ -1487,10 +1487,13 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     const serviceName = typeof monitorRecord?.["serviceName"] === "string" ? monitorRecord["serviceName"] : null;
     const externalRef = monitorRecord?.["externalRef"];
     let sessionHandleBody: unknown;
+    let currentPlanRevisionId: string | null = null;
     if (serviceName === "jules") {
       try {
         const documents = asArray<Record<string, unknown>>(await pc.getJson<unknown>(`/api/issues/${encodeURIComponent(issue.id)}/documents`));
         sessionHandleBody = documents.find((document) => document["key"] === "jules-session")?.["body"];
+        const planRevision = documents.find((document) => document["key"] === "plan")?.["latestRevisionId"];
+        currentPlanRevisionId = typeof planRevision === "string" && planRevision.trim() ? planRevision : null;
       } catch (error: unknown) {
         await log(`[ORCHESTRATOR] Deferring Jules monitor recovery for [${issue.identifier || issue.id}]: could not read its durable session handle (${String(error)}).`);
       }
@@ -1520,12 +1523,14 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       try {
         const failedRun = await pc.getHeartbeatRun<Record<string, unknown>>(blockerPointer.runId);
         const blockerDecision = decideJulesExecutionBlockerRecovery({
+          issueId: issue.id,
           issueStatus: issue.status,
           assigneeAgentId: issue.assigneeAgentId,
           julesAgentId,
           providerSessionId,
           executionBlocker,
           failedRun,
+          supersedingRuns: heartbeatRuns,
         });
         switch (blockerDecision.action) {
           case "preserve":
@@ -1552,14 +1557,26 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     }
     let planVerdictContinuation: ReturnType<typeof resolvedJulesPlanVerdict> = null;
     let planVerdictChild: typeof lifecycleIssues[number] | null = null;
-    if (monitorClearReason === "manual" && providerSessionId &&
-        (issue.status === "backlog" || issue.status === "blocked") && issue.assigneeAgentId === julesAgentId) {
+    if (providerSessionId && currentPlanRevisionId &&
+        (issue.status === "backlog" || issue.status === "blocked" || issue.status === "todo") &&
+        issue.assigneeAgentId === julesAgentId) {
+      try {
+        planVerdictContinuation = resolvedJulesPlanVerdict({
+          parentId: issue.id,
+          parentSessionId: providerSessionId,
+          currentRevisionId: currentPlanRevisionId,
+          interactions: asArray<Record<string, unknown>>(await pc.listInteractions(issue.id)),
+        });
+      } catch (error: unknown) {
+        await log(`[ORCHESTRATOR] Deferring resolved native plan verdict recovery for [${issue.identifier || issue.id}]: could not read parent interaction (${String(error)}).`);
+      }
       for (const child of lifecycleIssues.filter((candidate) =>
-        candidate.parentId === issue.id && isDelegatedReviewChild(candidate) && candidate.status !== "cancelled")) {
+        !planVerdictContinuation && candidate.parentId === issue.id && isDelegatedReviewChild(candidate) && candidate.status !== "cancelled")) {
         try {
           planVerdictContinuation = resolvedJulesPlanVerdict({
             parentId: issue.id,
             parentSessionId: providerSessionId,
+            currentRevisionId: currentPlanRevisionId,
             interactions: asArray<Record<string, unknown>>(await pc.listInteractions(child.id)),
           });
           if (planVerdictContinuation) {
@@ -1740,6 +1757,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       nativeReviewInteraction,
       registeredOpenPullRequest,
       ciRemediationInProgress: ciRemediationIssueIds.has(issue.id),
+      executionReconciliationRequired: issue.rawIssue["executionBlocker"] != null,
       hasPullRequest: issue.status === "in_review" && !ghStatus.error && Boolean(ghStatus.openPrs.find((pr) => matchPrToIssue(pr, issue))),
       parentId: issue.parentId || null,
       reviewGateKey,

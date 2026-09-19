@@ -5,12 +5,14 @@ const TERMINAL_RUN_STATUSES = new Set(["failed", "interrupted", "timed_out", "ca
 const RECOVERABLE_ISSUE_STATUSES = new Set(["blocked", "todo", "in_progress"]);
 
 export interface JulesExecutionBlockerSnapshot {
+  readonly issueId?: unknown;
   readonly issueStatus: unknown;
   readonly assigneeAgentId: unknown;
   readonly julesAgentId: unknown;
   readonly providerSessionId: unknown;
   readonly executionBlocker: unknown;
   readonly failedRun: unknown;
+  readonly supersedingRuns?: readonly unknown[];
 }
 
 export interface JulesExecutionBlockerPointer {
@@ -26,6 +28,7 @@ export type JulesExecutionBlockerRecovery =
       readonly actionId: string;
       readonly runId: string;
       readonly providerSessionId: string;
+      readonly recoveryBasis: "polling_failure" | "superseding_success";
       readonly reason: string;
     }
   | { readonly action: "preserve"; readonly reason: string };
@@ -40,6 +43,31 @@ function nonEmptyString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim();
   return normalized ? normalized : null;
+}
+
+function timestamp(value: unknown): number | null {
+  const candidate = nonEmptyString(value);
+  if (!candidate) return null;
+  const parsed = Date.parse(candidate);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function hasSupersedingSuccess(
+  snapshot: JulesExecutionBlockerSnapshot,
+  pointer: JulesExecutionBlockerPointer,
+  failedRun: UnknownRecord,
+): boolean {
+  const issueId = nonEmptyString(snapshot.issueId);
+  const failedAt = timestamp(failedRun["finishedAt"]);
+  if (!issueId || failedAt === null || !Array.isArray(snapshot.supersedingRuns)) return false;
+  return snapshot.supersedingRuns.some((candidate) => {
+    const run = record(candidate);
+    if (!run || run["status"] !== "succeeded") return false;
+    if (run["agentId"] !== pointer.agentId || run["issueId"] !== issueId) return false;
+    const startedAt = timestamp(run["startedAt"]);
+    const finishedAt = timestamp(run["finishedAt"]);
+    return startedAt !== null && finishedAt !== null && startedAt > failedAt && finishedAt >= startedAt;
+  });
 }
 
 /**
@@ -86,7 +114,9 @@ export function decideJulesExecutionBlockerRecovery(
   if (!TERMINAL_RUN_STATUSES.has(String(run["status"] ?? "")) || !nonEmptyString(run["finishedAt"])) {
     return { action: "preserve", reason: "blocking run is not terminal" };
   }
-  if (run["errorCode"] !== "jules_polling_error") {
+  const pollingFailure = run["errorCode"] === "jules_polling_error";
+  const supersedingSuccess = hasSupersedingSuccess(snapshot, pointer, run);
+  if (!pollingFailure && !supersedingSuccess) {
     return { action: "preserve", reason: "blocking run did not fail in Jules polling" };
   }
   return {
@@ -94,7 +124,10 @@ export function decideJulesExecutionBlockerRecovery(
     actionId: pointer.actionId,
     runId: pointer.runId,
     providerSessionId: pointer.providerSessionId,
-    reason: "terminal Jules polling run left a durable provider continuation behind a legacy execution hold",
+    recoveryBasis: pollingFailure ? "polling_failure" : "superseding_success",
+    reason: pollingFailure
+      ? "terminal Jules polling run left a durable provider continuation behind a legacy execution hold"
+      : "terminal Jules run was superseded by a successful same-issue continuation",
   };
 }
 
@@ -105,12 +138,14 @@ export function buildJulesExecutionReconciliationPayload(
     actionId: decision.actionId,
     outcome: "restored",
     sourceIssueStatus: "todo",
-    resolutionNote: `Jules polling run ${decision.runId} stopped locally; return the durable provider continuation to its adapter.`,
+    resolutionNote: `Jules run ${decision.runId} stopped locally; return the durable provider continuation to its adapter.`,
     executionReconciliation: {
       runId: decision.runId,
       providerStopped: true,
       actionOutcome: "mixed",
-      outcomeEvidence: `Jules polling run ${decision.runId} is terminal and durable session ${decision.providerSessionId} remains recorded. Remote action outcomes are intentionally treated as mixed; the Jules adapter must inspect that session before continuing.`,
+      outcomeEvidence: decision.recoveryBasis === "polling_failure"
+        ? `Jules polling run ${decision.runId} is terminal and durable session ${decision.providerSessionId} remains recorded. Remote action outcomes are intentionally treated as mixed; the Jules adapter must inspect that session before continuing.`
+        : `Jules run ${decision.runId} is terminal, a newer successful same-issue Jules run superseded it, and durable session ${decision.providerSessionId} remains recorded. Remote action outcomes are intentionally treated as mixed; the Jules adapter must inspect that session before continuing.`,
     },
   };
 }

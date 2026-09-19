@@ -217,9 +217,9 @@
 
   Run the server-backed lifecycle script and both package-focused suites.
 
-- [ ] [50%] **Step 6: Commit**
+- [x] [100%] **Step 6: Commit**
 
-  Commit: `test(e2e): enforce plan review provenance`
+  Commit: `25cbe2c test(e2e): enforce plan review provenance`
 
 ### Task 6: Reload and recover MAZ-1543 without manual verdicts
 
@@ -230,15 +230,15 @@
 - Consumes: built adapters and existing MAZ-1543/1547 persisted state.
 - Produces: one migrated parent Luna card, one Luna verdict, conditional Terra verdict, and resumed Jules execution.
 
-- [ ] [0%] **Step 1: Run complete static verification**
+- [x] [100%] **Step 1: Run complete static verification**
 
   Run: `pnpm test`, `pnpm build`, `pnpm fleet:doctor`, `./scripts/adkw check-backlog`, and `git diff --check`.
 
-- [ ] [0%] **Step 2: Restart Paperclip and verify adapter load paths**
+- [x] [100%] **Step 2: Restart Paperclip and verify adapter load paths**
 
   Confirm startup logs name the current orchestrator and Jules `dist/index.js`. Allow one orchestrator heartbeat to reconcile managed agents.
 
-- [ ] [0%] **Step 3: Observe bounded legacy migration**
+- [ ] [70%] **Step 3: Observe bounded legacy migration**
 
   Verify MAZ-1547's pending child card is replaced by exactly one parent MAZ-1543 Luna card and withdrawn only after replacement persistence. Verify no duplicate Luna run and no ordinary issue comment.
 

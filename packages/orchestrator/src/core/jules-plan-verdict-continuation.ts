@@ -47,6 +47,7 @@ function targetMatches(
 export function resolvedJulesPlanVerdict(input: {
   readonly parentId: string;
   readonly parentSessionId: string;
+  readonly currentRevisionId: string;
   readonly interactions: readonly NativeInteractionSnapshot[];
 }): ResolvedJulesPlanVerdict | null {
   for (const interaction of input.interactions) {
@@ -58,7 +59,7 @@ export function resolvedJulesPlanVerdict(input: {
     const sessionId = key[2];
     const revisionId = key[3];
     if (!keyParentId || !sessionId || !revisionId) continue;
-    if (keyParentId !== input.parentId || sessionId !== input.parentSessionId || !targetMatches(interaction.payload, input.parentId, revisionId)) continue;
+    if (keyParentId !== input.parentId || sessionId !== input.parentSessionId || revisionId !== input.currentRevisionId || !targetMatches(interaction.payload, input.parentId, revisionId)) continue;
     return { interactionId: interaction.id, sessionId, revisionId };
   }
   return null;
