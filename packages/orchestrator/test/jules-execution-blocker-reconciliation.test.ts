@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decideJulesExecutionBlockerRecovery } from "../src/core/jules-execution-blocker-reconciliation.js";
+import { buildJulesExecutionReconciliationPayload, decideJulesExecutionBlockerRecovery } from "../src/core/jules-execution-blocker-reconciliation.js";
 
 const actionId = "9e44e46e-a8eb-422f-a35a-236e3cad1cc0";
 const runId = "c3c1a60e-12b1-4a7e-8cc3-79498b705f27";
@@ -36,6 +36,18 @@ describe("Jules execution blocker reconciliation", () => {
       providerSessionId: "jules-session-1535",
       recoveryBasis: "polling_failure",
       reason: "terminal Jules polling run left a durable provider continuation behind a legacy execution hold",
+    });
+  });
+
+  it("reports that the external provider is still running so Paperclip preserves the session", () => {
+    const decision = decideJulesExecutionBlockerRecovery(snapshot());
+    expect(decision.action).toBe("resolve_to_todo");
+    if (decision.action !== "resolve_to_todo") return;
+    expect(buildJulesExecutionReconciliationPayload(decision)).toMatchObject({
+      executionReconciliation: {
+        providerStopped: false,
+        actionOutcome: "mixed",
+      },
     });
   });
 

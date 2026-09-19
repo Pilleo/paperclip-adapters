@@ -479,7 +479,7 @@ describe("orchestrator live session continuation", () => {
       resolutionNote: expect.stringContaining("Jules run"),
       executionReconciliation: {
         runId: failedRunId,
-        providerStopped: true,
+        providerStopped: false,
         actionOutcome: "mixed",
         outcomeEvidence: expect.stringContaining("newer successful same-issue Jules run"),
       },

@@ -141,7 +141,10 @@ export function buildJulesExecutionReconciliationPayload(
     resolutionNote: `Jules run ${decision.runId} stopped locally; return the durable provider continuation to its adapter.`,
     executionReconciliation: {
       runId: decision.runId,
-      providerStopped: true,
+      // The Paperclip heartbeat stopped, not the durable Jules cloud session.
+      // Reporting the provider as stopped makes core force a fresh session and
+      // severs every typed plan/question identity bound to the existing one.
+      providerStopped: false,
       actionOutcome: "mixed",
       outcomeEvidence: decision.recoveryBasis === "polling_failure"
         ? `Jules polling run ${decision.runId} is terminal and durable session ${decision.providerSessionId} remains recorded. Remote action outcomes are intentionally treated as mixed; the Jules adapter must inspect that session before continuing.`

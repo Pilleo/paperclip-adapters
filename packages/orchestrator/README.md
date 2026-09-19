@@ -168,6 +168,10 @@ accepts the mixed-outcome recovery, a detached monitor may be reattached from
 parent issue, provider session, and current plan revision. This compatibility
 bridge can be removed when Paperclip invalidates superseded recovery blockers
 atomically and natively wakes the parent assignee after a plan verdict.
+The recovery reports `providerStopped: false`: the failed component is the
+local heartbeat, while the Jules cloud session remains authoritative. Marking
+the provider stopped makes Paperclip force a fresh session and invalidates the
+typed interaction identities tied to the durable session.
 
 For a failed native review, inspect the addressed card and reviewer runs first.
 Recover only when exactly one card remains pending and the reviewer has no
