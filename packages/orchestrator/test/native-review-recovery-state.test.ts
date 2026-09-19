@@ -223,13 +223,18 @@ describe("native review recovery state", () => {
     });
   });
 
-  it("waits for the one live unbound native reviewer run instead of waking a second Terra", () => {
+  it("ignores an unbound reviewer run when deciding recovery for the typed Terra card", () => {
     expect(decideJulesPlanNativeReviewRecovery(planRecoveryInput([terraPlanCard], [{
       id: "terra-run",
       agentId: "terra-1",
       status: "running",
       issueId: "issue-1",
-    }]))).toEqual({ action: "await_run", interactionId: "terra-plan-card", runId: "terra-run" });
+    }]))).toEqual({
+      action: "recover",
+      interactionId: "terra-plan-card",
+      reviewerAgentId: "terra-1",
+      recoveryRunId: undefined,
+    });
   });
 
   it("fails closed for an ambiguous Jules plan ladder", () => {

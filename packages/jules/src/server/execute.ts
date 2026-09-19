@@ -112,6 +112,7 @@ import { isNativeAgentAdjudication } from "./session.js";
 import { createJulesPlanReviewChild } from "./plan-review-client.js";
 import { parsePlanAdjudication } from "./plan-adjudication.js";
 import { createTelemetry } from "./telemetry.js";
+import { decideNativePlanReviewLifecycle } from "./native-plan-review-lifecycle.js";
 
 function assertNever(value: never): never {
   throw new Error(`Unhandled Jules adapter state: ${String(value)}`);
@@ -167,6 +168,77 @@ async function nativePlanVerdictIsAttested(input: {
     // human override.
   }
   return false;
+}
+
+type NativePlanReviewRunEvidence = {
+  readonly id: string;
+  readonly status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "timed_out";
+  readonly issueId: string;
+  readonly agentId: string;
+  readonly interactionId: string | null;
+  readonly interactionKind: string | null;
+  readonly startedAt: string | null;
+  readonly finishedAt: string | null;
+  readonly error?: string;
+};
+
+function normalizeNativePlanReviewRuns(rawRuns: readonly unknown[]): NativePlanReviewRunEvidence[] {
+  const status = (value: unknown): NativePlanReviewRunEvidence["status"] | null => {
+    switch (value) {
+      case "queued": return "queued";
+      case "running":
+      case "active":
+      case "claimed": return "running";
+      case "succeeded": return "succeeded";
+      case "failed": return "failed";
+      case "cancelled":
+      case "interrupted": return "cancelled";
+      case "timed_out": return "timed_out";
+      default: return null;
+    }
+  };
+  const nonEmpty = (value: unknown): string | null =>
+    typeof value === "string" && value.trim().length > 0 ? value : null;
+
+  return rawRuns.flatMap((raw): NativePlanReviewRunEvidence[] => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+    const record = raw as Record<string, unknown>;
+    const context = record["contextSnapshot"] && typeof record["contextSnapshot"] === "object" &&
+      !Array.isArray(record["contextSnapshot"])
+      ? record["contextSnapshot"] as Record<string, unknown>
+      : {};
+    const normalizedStatus = status(record["status"]);
+    const id = nonEmpty(record["id"]);
+    const agentId = nonEmpty(record["agentId"]);
+    const issueId = nonEmpty(context["issueId"]);
+    if (!normalizedStatus || !id || !agentId || !issueId) return [];
+    const error = nonEmpty(record["error"]);
+    return [{
+      id,
+      status: normalizedStatus,
+      issueId,
+      agentId,
+      interactionId: nonEmpty(context["interactionId"]),
+      interactionKind: nonEmpty(context["interactionKind"]),
+      startedAt: nonEmpty(record["startedAt"]),
+      finishedAt: nonEmpty(record["finishedAt"]),
+      ...(error ? { error } : {}),
+    }];
+  });
+}
+
+async function readNativePlanReviewRuns(input: {
+  readonly companyId: string;
+  readonly reviewerAgentId: string;
+  readonly authToken: string | undefined;
+  readonly runId: string | undefined;
+}): Promise<NativePlanReviewRunEvidence[]> {
+  const runs = await getPaperclipJson<unknown[]>(
+    `/api/companies/${encodeURIComponent(input.companyId)}/heartbeat-runs?agentId=${encodeURIComponent(input.reviewerAgentId)}&limit=50`,
+    input.authToken,
+    input.runId,
+  );
+  return normalizeNativePlanReviewRuns(runs);
 }
 
 /**
@@ -3206,6 +3278,99 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           parsedPlanInteraction.kind === "legacy" && parsedPlanInteraction.state !== "pending";
         if (hasUnresolvedProviderQuestion && !hasAnsweredPlanVerdict) return await yieldHeartbeat(session);
         if (interaction.status === "pending") {
+          if (nativePlanReview.protocolVersion === 2 && nativePlanReview.reviewerChildIssueId) {
+            let lifecycle;
+            try {
+              const [reviewerChild, reviewerRuns] = await Promise.all([
+                getPaperclipIssue(nativePlanReview.reviewerChildIssueId, ctx.authToken, ctx.runId),
+                ctx.agent.companyId
+                  ? readNativePlanReviewRuns({
+                    companyId: ctx.agent.companyId,
+                    reviewerAgentId: nativePlanReview.reviewerAgentId,
+                    authToken: ctx.authToken,
+                    runId: ctx.runId,
+                  })
+                  : Promise.resolve([]),
+              ]);
+              const canonicalCards = interactions.filter((candidate) =>
+                candidate.kind === "request_item_verdicts" &&
+                candidate.status === "pending" &&
+                candidate.addresseeAgentId === nativePlanReview.reviewerAgentId,
+              );
+              lifecycle = decideNativePlanReviewLifecycle({
+                identity: {
+                  childIssueId: nativePlanReview.reviewerChildIssueId,
+                  interactionId: interaction.id,
+                  reviewerAgentId: nativePlanReview.reviewerAgentId,
+                },
+                childStatus: reviewerChild.status,
+                card: canonicalCards.length > 1
+                  ? { duplicate: canonicalCards }
+                  : interaction,
+                runs: reviewerRuns,
+                nowMs: Date.now(),
+                maxRecoveryAttempts: 1,
+              });
+            } catch (error) {
+              await ctx.onLog?.(
+                "stderr",
+                `[jules] Native plan-review evidence unavailable for card ${interaction.id}: ${sanitizeError(error)}\n`,
+              );
+              const authorizationFailure = error instanceof PaperclipClientError &&
+                (error.status === 401 || error.status === 403);
+              return {
+                exitCode: 1, signal: null, timedOut: false, clearSession: false,
+                errorCode: authorizationFailure
+                  ? "paperclip_plan_review_evidence_unauthorized"
+                  : "paperclip_plan_review_evidence_unavailable",
+                errorFamily: authorizationFailure ? null : "transient_upstream",
+                errorMessage: sanitizeError(error),
+                sessionParams: serializeSession(session),
+                ...(!authorizationFailure
+                  ? { retryNotBefore: new Date(Date.now() + reattachDelayMs).toISOString() }
+                  : {}),
+              };
+            }
+
+            switch (lifecycle.action) {
+              case "wake_card":
+              case "recover_card":
+                await wakeJulesPlanReviewer({
+                  reviewerAgentId: nativePlanReview.reviewerAgentId,
+                  childIssueId: nativePlanReview.reviewerChildIssueId,
+                  interactionId: interaction.id,
+                  authToken: ctx.authToken,
+                  runId: ctx.runId,
+                  idempotencyKey: `jules:plan-review-wake:${interaction.id}:${lifecycle.action === "recover_card" ? lifecycle.attempt : 0}`,
+                });
+                return await yieldHeartbeat(session);
+              case "await_run":
+              case "await_verdict":
+                return await yieldHeartbeat(session);
+              case "consume_verdict":
+                break;
+              case "create_card":
+                await moveIssueToBlocked(taskId, ctx.authToken, ctx.runId).catch(() => undefined);
+                return {
+                  exitCode: 1, signal: null, timedOut: false, clearSession: false,
+                  errorCode: "native_plan_review_protocol_failure",
+                  errorFamily: null,
+                  errorMessage: `Native plan-review card ${interaction.id} disappeared from its canonical pointer.`,
+                  sessionParams: serializeSession(session),
+                };
+              case "escalate_protocol_failure":
+                await moveIssueToBlocked(taskId, ctx.authToken, ctx.runId).catch(() => undefined);
+                return {
+                  exitCode: 1, signal: null, timedOut: false, clearSession: false,
+                  errorCode: "native_plan_review_protocol_failure",
+                  errorFamily: null,
+                  errorMessage: `Native plan-review protocol failure for card ${interaction.id}: ${lifecycle.reason}.`,
+                  sessionParams: serializeSession(session),
+                };
+              default:
+                return assertNever(lifecycle);
+            }
+          }
           // v1 used request_confirmation. Paperclip cannot authorize that card
           // to run a non-assignee reviewer, so its automatic wake is cancelled
           // as issue_assignee_changed. Migrate only a still-pending legacy card;

@@ -3,7 +3,7 @@ import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { execute } from "../src/server/execute.js";
 import { JulesClient } from "../src/server/jules-client.js";
 import { sessionCodec } from "../src/server/session.js";
-import { listIssueComments, listPaperclipInteractions, readJulesSessionHandleState, withdrawPaperclipInteraction } from "../src/server/paperclip-client.js";
+import { getPaperclipIssue, getPaperclipJson, listIssueComments, listPaperclipInteractions, readJulesSessionHandleState, withdrawPaperclipInteraction } from "../src/server/paperclip-client.js";
 
 vi.mock("../src/server/ci-status.js", () => ({
   getPullRequestDetails: vi.fn().mockResolvedValue({ merged: false, ciStatus: "success", state: "OPEN", headSha: "abc123" }),
@@ -31,6 +31,8 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
     createNoPrCompletionInteraction: vi.fn().mockResolvedValue({ id: "inter-comp-1" }),
     listIssueComments: vi.fn().mockResolvedValue([]),
     getPaperclipInteraction: vi.fn(),
+    getPaperclipIssue: vi.fn(),
+    getPaperclipJson: vi.fn(),
     moveIssueToBlocked: vi.fn(),
     moveIssueToInProgress: vi.fn(),
     moveIssueToReview: vi.fn(),
@@ -71,6 +73,8 @@ describe("Review Feedback Relay to Jules", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(readJulesSessionHandleState).mockResolvedValue(null);
+    vi.mocked(getPaperclipIssue).mockResolvedValue({ id: "replacement-plan-review-child-1", status: "backlog" } as never);
+    vi.mocked(getPaperclipJson).mockResolvedValue([]);
   });
 
   it("does not relay a comment-shaped review decision to Jules", async () => {
@@ -223,6 +227,13 @@ describe("Review Feedback Relay to Jules", () => {
   });
 
   it("does not withdraw a new plan card when the same PR rejection was already delivered", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({
+      id: "session-141", state: "AWAITING_PLAN_APPROVAL", url: "https://jules.example/session-141",
+    } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{
+      id: "replacement-plan-activity", createTime: "2026-09-06T01:25:00.000Z",
+      planGenerated: { plan: { steps: [{ index: 0, title: "Replacement plan" }] } },
+    }] } as never);
     const deliveredFeedback = {
       version: 1 as const, kind: "code_review_rejection" as const,
       deliveryId: "native-review:luna-reject-1:abc123", issueId: "issue-141",
@@ -255,7 +266,17 @@ describe("Review Feedback Relay to Jules", () => {
       id: "replacement-luna-plan-1",
       kind: "request_item_verdicts",
       status: "pending",
+      addresseeAgentId: "luna-1",
     }] as never);
+    vi.mocked(getPaperclipJson).mockResolvedValue([{
+      id: "replacement-luna-run", agentId: "luna-1", status: "running",
+      startedAt: "2026-09-19T18:00:00.000Z", finishedAt: null,
+      contextSnapshot: {
+        issueId: "replacement-plan-review-child-1",
+        interactionId: "replacement-luna-plan-1",
+        interactionKind: "request_item_verdicts",
+      },
+    }]);
 
     const result = await execute(ctx);
 

@@ -29,7 +29,7 @@ const ChildStatusSchema = z.enum(["backlog", "todo", "in_progress", "blocked", "
 
 export interface NativePlanReviewLifecycleInput {
   readonly identity: z.input<typeof ReviewIdentitySchema>;
-  readonly childStatus: z.input<typeof ChildStatusSchema>;
+  readonly childStatus: unknown;
   readonly card: unknown | null;
   readonly runs: readonly unknown[];
   readonly nowMs: number;

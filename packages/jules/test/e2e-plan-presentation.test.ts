@@ -16,6 +16,8 @@ import {
   saveJulesPlanDocument,
   listPaperclipInteractions,
   getPaperclipInteraction,
+  getPaperclipIssue,
+  getPaperclipJson,
   withdrawPaperclipInteraction,
   moveIssueToBlocked,
   moveIssueToInProgress,
@@ -50,6 +52,8 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
     saveJulesPlanDocument: vi.fn(),
     listPaperclipInteractions: vi.fn().mockResolvedValue([]),
     getPaperclipInteraction: vi.fn(),
+    getPaperclipIssue: vi.fn(),
+    getPaperclipJson: vi.fn(),
     withdrawPaperclipInteraction: vi.fn(),
     moveIssueToBlocked: vi.fn(),
     moveIssueToInProgress: vi.fn(),
@@ -130,6 +134,8 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
     vi.mocked(clearJulesSessionMonitor).mockResolvedValue();
     vi.mocked(upsertJulesSessionHandle).mockResolvedValue();
     vi.mocked(saveJulesPlanDocument).mockResolvedValue({ documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1 });
+    vi.mocked(getPaperclipIssue).mockResolvedValue({ id: "question-child-1", status: "backlog" } as never);
+    vi.mocked(getPaperclipJson).mockResolvedValue([]);
     vi.mocked(createJulesPlanReviewInteraction).mockResolvedValue({ id: "native-plan-review-1", status: "pending", kind: "request_confirmation", planRevision: { documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1 } });
     vi.mocked(createJulesPlanReviewChildInteraction).mockResolvedValue({ id: "native-plan-review-1", status: "pending", kind: "request_item_verdicts", planRevision: { documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1 } });
     vi.mocked(createJulesAgentAdjudicationInteraction).mockResolvedValue({ id: "question-card-1", status: "pending", kind: "ask_user_questions" });
@@ -187,12 +193,25 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
       id: "native-plan-review-1",
       status: "pending",
       kind: "request_item_verdicts",
+      addresseeAgentId: "00000000-0000-4000-8000-000000000001",
     }]);
     vi.mocked(getPaperclipInteraction).mockResolvedValue({
       id: "native-plan-review-1",
       status: "pending",
       kind: "request_item_verdicts",
     });
+    vi.mocked(getPaperclipJson).mockResolvedValue([{
+      id: "active-luna-run",
+      agentId: "00000000-0000-4000-8000-000000000001",
+      status: "running",
+      startedAt: "2026-09-19T18:00:00.000Z",
+      finishedAt: null,
+      contextSnapshot: {
+        issueId: "question-child-1",
+        interactionId: "native-plan-review-1",
+        interactionKind: "request_item_verdicts",
+      },
+    }]);
 
     await execute({
       ...baseContext,
@@ -204,6 +223,56 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
     expect(wakeJulesPlanReviewer).toHaveBeenCalledTimes(1);
     expect(scheduleJulesSessionMonitor).toHaveBeenCalledTimes(2);
     expect(clearJulesSessionMonitor).not.toHaveBeenCalled();
+  });
+
+  it("recovers the same pending Luna card after its bound reviewer run fails", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_PLAN_APPROVAL", id: "session-141" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{
+      id: "act-plan-native",
+      createTime: "2026-08-30T00:01:00.000Z",
+      planGenerated: { plan: { steps: [{ index: 0, title: "Implement the fix", description: "Add tests" }] } },
+    }] } as never);
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([{
+      id: "native-plan-review-1",
+      status: "pending",
+      kind: "request_item_verdicts",
+      addresseeAgentId: "00000000-0000-4000-8000-000000000001",
+    }]);
+    vi.mocked(getPaperclipJson).mockResolvedValue([{
+      id: "failed-luna-run",
+      agentId: "00000000-0000-4000-8000-000000000001",
+      status: "failed",
+      startedAt: "2026-09-19T18:00:00.000Z",
+      finishedAt: "2026-09-19T18:00:01.000Z",
+      contextSnapshot: {
+        issueId: "question-child-1",
+        interactionId: "native-plan-review-1",
+        interactionKind: "request_item_verdicts",
+      },
+    }]);
+
+    await execute({
+      ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({
+        ...session,
+        phase: "WAITING_FOR_PLAN_APPROVAL",
+        pendingInteraction: {
+          type: "plan_native_review", protocolVersion: 2,
+          julesActivityId: "act-plan-native", paperclipInteractionId: "native-plan-review-1",
+          question: "Plan", planDocumentId: "doc-1", planRevisionId: "rev-1", planRevisionNumber: 1,
+          reviewerAgentId: "00000000-0000-4000-8000-000000000001", stage: "luna",
+          reviewerChildIssueId: "question-child-1", createdAt: "2026-09-19T18:00:00.000Z",
+        },
+      }) },
+    } as AdapterExecutionContext);
+
+    expect(createJulesQuestionAdjudication).not.toHaveBeenCalled();
+    expect(createJulesPlanReviewChildInteraction).not.toHaveBeenCalled();
+    expect(wakeJulesPlanReviewer).toHaveBeenCalledWith(expect.objectContaining({
+      childIssueId: "question-child-1",
+      interactionId: "native-plan-review-1",
+      idempotencyKey: "jules:plan-review-wake:native-plan-review-1:1",
+    }));
   });
 
   it("preempts a pending native plan review when Jules emits a newer provider question", async () => {

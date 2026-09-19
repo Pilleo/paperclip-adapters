@@ -169,7 +169,7 @@ export function decideJulesPlanNativeReviewRecovery(input: {
 
   const runs = input.reviewerRuns.filter((run) =>
     run.issueId === input.issueId && run.agentId === reviewerAgentId &&
-    (run.interactionId === card.id || run.interactionId == null),
+    run.interactionId === card.id,
   );
   const liveRun = runs.find((run) => LIVE_RUN_STATUSES.has(run.status));
   if (liveRun) return { action: "await_run", interactionId: card.id, runId: liveRun.id };

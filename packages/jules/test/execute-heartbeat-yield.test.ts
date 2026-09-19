@@ -6,6 +6,8 @@ import { sessionCodec } from "../src/server/session";
 import {
   clearJulesSessionMonitor,
   hasFutureJulesSessionMonitor,
+  getPaperclipIssue,
+  getPaperclipJson,
   listPaperclipInteractions,
   moveIssueToReview,
   scheduleJulesSessionMonitor,
@@ -30,6 +32,8 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
     listPaperclipInteractions: vi.fn().mockResolvedValue([]),
     listIssueComments: vi.fn().mockResolvedValue([]),
     getPaperclipInteraction: vi.fn(),
+    getPaperclipIssue: vi.fn(),
+    getPaperclipJson: vi.fn(),
     createNoPrCompletionInteraction: vi.fn().mockResolvedValue({ id: "no-pr-card", status: "pending" }),
     moveIssueToBlocked: vi.fn().mockResolvedValue(undefined),
     createJulesPlanApprovalInteraction: vi.fn().mockResolvedValue({
@@ -309,7 +313,18 @@ describe("heartbeat yield vs session deadline", () => {
       id: "plan-card-1",
       kind: "request_item_verdicts",
       status: "pending",
+      addresseeAgentId: reviewerAgentId,
     }] as never);
+    vi.mocked(getPaperclipIssue).mockResolvedValue({ id: "plan-review-child-1", status: "backlog" } as never);
+    vi.mocked(getPaperclipJson).mockResolvedValue([{
+      id: `${stage}-run`, agentId: reviewerAgentId, status: "running",
+      startedAt: "2026-09-19T18:00:00.000Z", finishedAt: null,
+      contextSnapshot: {
+        issueId: "plan-review-child-1",
+        interactionId: "plan-card-1",
+        interactionKind: "request_item_verdicts",
+      },
+    }]);
 
     const result = await execute({
       ...ctx(),

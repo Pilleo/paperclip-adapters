@@ -104,11 +104,11 @@
 - Consumes: Task 1's action union and exact plan identity `{ parentIssueId, sessionId, revisionId, stage, reviewerAgentId }`.
 - Produces: one recovery wake for the same card only after every prior bound run is terminal; unbound runs such as MAZ-1546's failed automatic wake are diagnostic evidence, not canonical attempts.
 
-- [ ] [10%] Add parameterized RED tests for restart, failed unbound run, failed bound run, active bound run, answered card, stale revision, and duplicate-card protocol failure.
-- [ ] [0%] Implement recovery through the typed wake from Task 2; never call the absent `/interactions/:id/dispatch` route.
-- [ ] [0%] Add a bounded retry budget keyed by the immutable card identity; exhaustion creates one visible protocol failure and stops spending reviewer quota.
-- [ ] [0%] Verify Luna rejection never starts Terra, while Luna approval creates and wakes exactly one Terra card.
-- [ ] [0%] Run focused Jules and orchestrator tests, both package builds, and recovery E2E.
+- [x] [100%] Add parameterized tests for restart-equivalent missing runs, failed unbound run, failed bound run, active bound run, answered card, stale identity, and duplicate-card protocol failure.
+- [x] [100%] Implement recovery through the typed wake from Task 2; never call the absent `/interactions/:id/dispatch` route.
+- [x] [100%] Add a bounded one-recovery budget keyed by the immutable card identity; exhaustion creates one visible protocol failure and stops spending reviewer quota.
+- [x] [100%] Verify Luna rejection never starts Terra, while Luna approval creates and wakes exactly one Terra card.
+- [x] [100%] Run focused Jules and orchestrator tests and both package builds; the server-backed recovery E2E remains consolidated in Task 5.
 
 ### Task 5: Add a true server-backed regression for the MAZ-1543 failure
 
@@ -120,7 +120,7 @@
 **Interfaces:**
 - Exercises real Paperclip HTTP routes, persisted interactions, heartbeat runs, monitor projection, and dependency scheduling.
 
-- [ ] [0%] Add a canary scenario that creates parent A plus dependent B, persists a fake-but-durable Jules session, emits a plan, and waits for Luna then Terra verdicts.
+- [ ] [10%] Add a canary scenario that creates parent A plus dependent B, persists a fake-but-durable Jules session, emits a plan, and waits for Luna then Terra verdicts.
 - [ ] [0%] Assert the reviewer run context contains the child issue and exact interaction ID; fail on `continuation_source_context_missing`.
 - [ ] [0%] Advance simulated time/recovery sweeps beyond the old escalation threshold and assert the parent remains `in_progress` with a scheduled Jules monitor.
 - [ ] [0%] Assert there is one Luna card/run, then one Terra card/run, no replacement cards, no generic continuation comments, and no free-text verdict comments.
