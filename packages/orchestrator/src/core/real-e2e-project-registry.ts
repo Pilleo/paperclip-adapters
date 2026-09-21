@@ -51,6 +51,16 @@ export function assertProjectReadyForCanary(
   return blockingIssueIds.length === 0 ? { ok: true } : { ok: false, blockingIssueIds };
 }
 
+/**
+ * The company-wide issues route is paginated. A canary safety check must read
+ * the exact project with an explicit limit, otherwise an older unfinished B/C
+ * can be omitted and a new A is created beside it.
+ */
+export function canaryProjectIssuesPath(companyId: string, projectId: string): string {
+  const query = new URLSearchParams({ projectId, limit: "200" });
+  return `/api/companies/${encodeURIComponent(companyId)}/issues?${query.toString()}`;
+}
+
 function isTerminal(status: string): boolean {
   switch (status) {
     case "done":

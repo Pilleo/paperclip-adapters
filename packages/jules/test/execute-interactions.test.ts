@@ -68,6 +68,7 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
     createJulesQuestionAdjudication: vi.fn(),
     createJulesPlanApprovalInteraction: vi.fn(),
     createJulesPlanReviewInteraction: vi.fn(),
+    createNoPrCompletionInteraction: vi.fn().mockResolvedValue({ id: "no-pr-card", status: "pending" }),
     clearJulesSessionMonitor: vi.fn(),
     getPaperclipInteraction: vi.fn(),
     listPaperclipInteractions: vi.fn().mockResolvedValue([]),
@@ -81,6 +82,8 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
     wakeJulesPlanReviewer: vi.fn().mockResolvedValue(undefined),
     withdrawPaperclipInteraction: vi.fn().mockResolvedValue(undefined),
     scheduleJulesSessionMonitor: vi.fn().mockResolvedValue(),
+    upsertJulesSessionHandle: vi.fn().mockResolvedValue(undefined),
+    registerPullRequestWorkProduct: vi.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -659,10 +662,14 @@ describe("Jules activity interactions", { timeout: 30000 }, () => {
   it("supersedes a persisted question bridge when the provider completes with a PR", async () => {
     vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({
       state: "COMPLETED",
+      rawOutputs: [{ pullRequest: { url: "https://github.com/example/repository/pull/1" } }],
     } as never);
     vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [
       { id: "activity-question", createTime: "2026-08-08T00:00:00.000Z", agentMessaged: { agentMessage: "Which monitor API clears terminal state?" } },
-      { id: "activity-completed", createTime: "2026-08-08T00:01:00.000Z", sessionCompleted: {} },
+      {
+        id: "activity-completed", createTime: "2026-08-08T00:01:00.000Z", sessionCompleted: {},
+        pullRequestCreated: { pullRequest: { url: "https://github.com/example/repository/pull/1" } },
+      },
     ] } as never);
     vi.mocked(getPaperclipIssue).mockResolvedValue(null);
     vi.mocked(getPaperclipInteraction).mockResolvedValue(null);

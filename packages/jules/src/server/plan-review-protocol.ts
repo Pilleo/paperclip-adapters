@@ -1,4 +1,8 @@
 import { z } from "zod";
+import {
+  parsePlanReviewIdempotencyKey,
+  planReviewIdempotencyKey as nativePlanReviewIdempotencyKey,
+} from "@pilleo/paperclip-adapter-common";
 
 export const PlanReviewStageSchema = z.enum(["luna", "terra"]);
 export type PlanReviewStage = z.infer<typeof PlanReviewStageSchema>;
@@ -11,6 +15,8 @@ export interface PlanReviewIdentity {
   readonly revisionNumber: number;
   readonly stage: PlanReviewStage;
   readonly reviewerAgentId: string;
+  /** Generation zero is the original card; one is the only infrastructure recovery card. */
+  readonly generation?: 0 | 1;
 }
 
 const RawInteractionSchema = z.object({
@@ -82,7 +88,22 @@ function key(identity: PlanReviewIdentity, version: "v1" | "v2"): string {
 
 function hasKey(rawKey: string | undefined, identity: PlanReviewIdentity, version: "v1" | "v2"): boolean {
   if (!rawKey) return false;
-  return rawKey === key(identity, version);
+  switch (version) {
+    case "v1":
+      return rawKey === key(identity, version);
+    case "v2": {
+      const parsed = parsePlanReviewIdempotencyKey(rawKey);
+      return parsed !== null &&
+        parsed.issueId === identity.issueId &&
+        parsed.sessionId === identity.sessionId &&
+        parsed.revisionId === identity.revisionId &&
+        parsed.stage === identity.stage;
+    }
+    default: {
+      const exhaustive: never = version;
+      return exhaustive;
+    }
+  }
 }
 
 function sameTarget(target: unknown, identity: PlanReviewIdentity): boolean {
@@ -170,5 +191,20 @@ function assertNever(value: never): never {
 }
 
 export function planReviewIdempotencyKey(identity: PlanReviewIdentity, version: "v1" | "v2" = "v2"): string {
-  return key(identity, version);
+  switch (version) {
+    case "v1":
+      return key(identity, version);
+    case "v2":
+      return nativePlanReviewIdempotencyKey({
+        issueId: identity.issueId,
+        sessionId: identity.sessionId,
+        revisionId: identity.revisionId,
+        stage: identity.stage,
+        generation: identity.generation ?? 0,
+      });
+    default: {
+      const exhaustive: never = version;
+      return exhaustive;
+    }
+  }
 }

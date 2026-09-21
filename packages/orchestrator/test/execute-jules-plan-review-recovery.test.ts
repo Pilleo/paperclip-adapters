@@ -40,10 +40,11 @@ describe("orchestrator Jules plan native-review recovery", () => {
     rmSync(paperclipHome, { recursive: true, force: true });
   });
 
-  it("wakes an overdue addressed Terra plan card without changing the Jules issue projection", async () => {
+  it("observes an overdue addressed Terra plan card without changing the Jules issue projection", async () => {
     const patches: unknown[] = [];
     const comments: unknown[] = [];
     const wakes: unknown[] = [];
+    const nativeReviewWrites: string[] = [];
     const createdAt = new Date(Date.now() - 2 * 60_000).toISOString();
     const issue = {
       id: issueId,
@@ -83,6 +84,10 @@ describe("orchestrator Jules plan native-review recovery", () => {
       if (method === "POST" && href.includes("/agents/terra-1/wakeup")) {
         wakes.push(JSON.parse(String(init?.body || "{}")));
         return new Response(JSON.stringify({ status: "started" }), { status: 202 });
+      }
+      if (method === "POST" && href.includes(`/api/issues/${issueId}/interactions/${terraCardId}/`)) {
+        nativeReviewWrites.push(href);
+        return new Response(JSON.stringify({ error: "adapter must not dispatch native review" }), { status: 500 });
       }
       if (method === "PATCH" && href.includes(`/api/issues/${issueId}`)) {
         patches.push(JSON.parse(String(init?.body || "{}")));
@@ -125,30 +130,19 @@ describe("orchestrator Jules plan native-review recovery", () => {
     const result = await execute(context());
 
     expect(result.exitCode).toBe(0);
-    expect(wakes).toHaveLength(1);
-    expect(wakes[0]).toMatchObject({
-      // Paperclip v831 permits an addressed foreign reviewer only for a
-      // recognized comment-origin wake. The anchor is the existing Jules
-      // session-link comment; recovery never posts a fresh comment.
-      reason: "issue_commented",
-      forceFreshSession: true,
-      payload: {
-        issueId,
-        interactionId: terraCardId,
-        interactionKind: "request_item_verdicts",
-        commentId: "jules-session-link",
-      },
-    });
+    expect(nativeReviewWrites).toEqual([]);
+    expect(wakes).toEqual([]);
     expect(patches).not.toContainEqual(expect.objectContaining({ status: expect.anything() }));
     expect(patches).not.toContainEqual(expect.objectContaining({ assigneeAgentId: expect.anything() }));
     expect(comments).toEqual([]);
 
     await execute(context());
-    expect(wakes).toHaveLength(1);
+    expect(nativeReviewWrites).toEqual([]);
+    expect(wakes).toEqual([]);
     expect(comments).toEqual([]);
   });
 
-  it("does not emit a compatibility wake when the addressed card is answered during final revalidation", async () => {
+  it("does not inspect or wake Jules plan-review cards because Jules owns their replacement lifecycle", async () => {
     const wakes: unknown[] = [];
     const comments: unknown[] = [];
     const createdAt = new Date(Date.now() - 2 * 60_000).toISOString();
@@ -214,7 +208,7 @@ describe("orchestrator Jules plan native-review recovery", () => {
     const result = await execute(context());
 
     expect(result.exitCode).toBe(0);
-    expect(terraRunReads).toBeGreaterThanOrEqual(1);
+    expect(terraRunReads).toBe(0);
     expect(wakes).toEqual([]);
     expect(comments).toEqual([]);
   });

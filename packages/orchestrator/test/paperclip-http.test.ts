@@ -83,10 +83,70 @@ describe("createPaperclipHttp wakeup", () => {
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(JSON.parse(String(init.body)).payload).toEqual({
       issueId: "issue-955",
+      mutation: "interaction",
       interactionId: "interaction-955",
       interactionKind: "request_item_verdicts",
     });
     expect(JSON.parse(String(init.body)).forceFreshSession).toBe(true);
+  });
+
+  it("recovers a stranded native review through one interaction-bound public wake", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ id: "review-run-1551", status: "queued" }), { status: 202 }));
+    globalThis.fetch = fetchMock as typeof fetch;
+    const pc = createPaperclipHttp({ apiUrl: "http://127.0.0.1:3100", localTrustedBoardWrites: true });
+
+    await expect(pc.wakeNativeReview({
+      reviewerAgentId: "agent-luna",
+      issueId: "issue-1551",
+      interactionId: "card-1551",
+      interactionKind: "request_item_verdicts",
+    })).resolves.toEqual({ kind: "started", runId: "review-run-1551" });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({
+      source: "automation",
+      triggerDetail: "system",
+      reason: "native_review_dispatch_recovery",
+      forceFreshSession: true,
+      payload: {
+        issueId: "issue-1551",
+        mutation: "interaction",
+        interactionId: "card-1551",
+        interactionKind: "request_item_verdicts",
+      },
+    });
+    expect(new Headers(init.headers).get("Idempotency-Key")).toBe(
+      "native-review-dispatch-recovery:v1:issue-1551:card-1551:agent-luna",
+    );
+    expect(new Headers(init.headers).get("Authorization")).toBeNull();
+  });
+
+  it.each([
+    [new Response(JSON.stringify({ status: "skipped", reason: "already_running" }), { status: 202 }), { kind: "skipped", reason: "already_running" }],
+    [new Response(JSON.stringify({ error: "forbidden" }), { status: 403 }), { kind: "rejected", status: 403, reason: "forbidden" }],
+    [new Response(JSON.stringify({}), { status: 202 }), { kind: "invalid_response" }],
+  ])("classifies native review recovery host responses", async (response, expected) => {
+    globalThis.fetch = vi.fn(async () => response) as typeof fetch;
+    const pc = createPaperclipHttp({ apiUrl: "http://127.0.0.1:3100", localTrustedBoardWrites: true });
+
+    await expect(pc.wakeNativeReview({
+      reviewerAgentId: "agent-luna",
+      issueId: "issue-1551",
+      interactionId: "card-1551",
+      interactionKind: "request_item_verdicts",
+    })).resolves.toEqual(expected);
+  });
+
+  it("classifies a transport failure without treating it as a started reviewer run", async () => {
+    globalThis.fetch = vi.fn(async () => { throw new Error("socket reset"); }) as typeof fetch;
+    const pc = createPaperclipHttp({ apiUrl: "http://127.0.0.1:3100", localTrustedBoardWrites: true });
+
+    await expect(pc.wakeNativeReview({
+      reviewerAgentId: "agent-luna",
+      issueId: "issue-1551",
+      interactionId: "card-1551",
+      interactionKind: "request_item_verdicts",
+    })).resolves.toEqual({ kind: "transport_failure", reason: "socket reset" });
   });
 
   it("sends a stable idempotency key for a wakeup mutation", async () => {
@@ -114,6 +174,7 @@ describe("createPaperclipHttp wakeup", () => {
     const body = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body));
     expect(body.payload).toMatchObject({
       issueId: "issue-834",
+      mutation: "interaction",
       interactionId: "card-834",
       interactionKind: "request_item_verdicts",
       commentId: "comment-834",

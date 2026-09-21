@@ -164,9 +164,7 @@ export function createServerAdapter(): ServerAdapterModule {
     supportsInstructionsBundle: true,
     instructionsPathKey: "instructionsFilePath",
     models: [],
-    modelProfiles: [],
     listModels: async () => [],
-    listModelProfiles: async () => [],
     agentConfigurationDoc: orchestratorAgentConfigurationDoc,
     getConfigSchema: () => orchestratorAdapterConfigSchema,
   };

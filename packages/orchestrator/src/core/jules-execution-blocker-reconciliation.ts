@@ -28,7 +28,7 @@ export type JulesExecutionBlockerRecovery =
       readonly actionId: string;
       readonly runId: string;
       readonly providerSessionId: string;
-      readonly recoveryBasis: "polling_failure" | "superseding_success";
+      readonly recoveryBasis: "polling_failure" | "server_shutdown" | "superseding_success";
       readonly reason: string;
     }
   | { readonly action: "preserve"; readonly reason: string };
@@ -97,10 +97,11 @@ export function parseJulesExecutionBlockerPointer(
 
 /**
  * Decide whether a legacy Paperclip execution hold belongs to a stopped Jules
- * polling turn. `jules_polling_error` means the adapter did not establish a
- * completed local continuation; it does not authorize replaying remote work.
- * The resulting `mixed` reconciliation deliberately returns control to the
- * Jules adapter, which must inspect its persisted provider session first.
+ * polling turn. `jules_polling_error` and a graceful server-shutdown
+ * interruption both mean the adapter did not establish a completed local
+ * continuation; neither authorizes replaying remote work. The resulting
+ * `mixed` reconciliation deliberately returns control to the Jules adapter,
+ * which must inspect its persisted provider session first.
  */
 export function decideJulesExecutionBlockerRecovery(
   snapshot: JulesExecutionBlockerSnapshot,
@@ -115,8 +116,14 @@ export function decideJulesExecutionBlockerRecovery(
     return { action: "preserve", reason: "blocking run is not terminal" };
   }
   const pollingFailure = run["errorCode"] === "jules_polling_error";
+  // Paperclip records an in-flight native monitor as `interrupted` during a
+  // graceful service restart. The persisted Jules session remains the only
+  // authority for the next action, so leaving the server-owned hold in place
+  // would permanently strand a resumable provider turn after every reload.
+  const serverShutdownInterruption =
+    run["status"] === "interrupted" && run["errorCode"] === "server_shutdown_interrupted";
   const supersedingSuccess = hasSupersedingSuccess(snapshot, pointer, run);
-  if (!pollingFailure && !supersedingSuccess) {
+  if (!pollingFailure && !serverShutdownInterruption && !supersedingSuccess) {
     return { action: "preserve", reason: "blocking run did not fail in Jules polling" };
   }
   return {
@@ -124,10 +131,16 @@ export function decideJulesExecutionBlockerRecovery(
     actionId: pointer.actionId,
     runId: pointer.runId,
     providerSessionId: pointer.providerSessionId,
-    recoveryBasis: pollingFailure ? "polling_failure" : "superseding_success",
+    recoveryBasis: pollingFailure
+      ? "polling_failure"
+      : serverShutdownInterruption
+        ? "server_shutdown"
+        : "superseding_success",
     reason: pollingFailure
       ? "terminal Jules polling run left a durable provider continuation behind a legacy execution hold"
-      : "terminal Jules run was superseded by a successful same-issue continuation",
+      : serverShutdownInterruption
+        ? "Paperclip shutdown interrupted a Jules monitor while its durable provider continuation remained recorded"
+        : "terminal Jules run was superseded by a successful same-issue continuation",
   };
 }
 
@@ -141,14 +154,18 @@ export function buildJulesExecutionReconciliationPayload(
     resolutionNote: `Jules run ${decision.runId} stopped locally; return the durable provider continuation to its adapter.`,
     executionReconciliation: {
       runId: decision.runId,
-      // The Paperclip heartbeat stopped, not the durable Jules cloud session.
-      // Reporting the provider as stopped makes core force a fresh session and
-      // severs every typed plan/question identity bound to the existing one.
-      providerStopped: false,
+      // Paperclip's recovery endpoint defines this as acknowledgement that
+      // its *local execution* stopped; v2026.916.0 validates only `true`.
+      // The durable Jules provider handle stays in the issue document and the
+      // `mixed` outcome below forces the adapter to inspect it before taking
+      // any remote action. Sending `false` is rejected and strands the task.
+      providerStopped: true,
       actionOutcome: "mixed",
       outcomeEvidence: decision.recoveryBasis === "polling_failure"
         ? `Jules polling run ${decision.runId} is terminal and durable session ${decision.providerSessionId} remains recorded. Remote action outcomes are intentionally treated as mixed; the Jules adapter must inspect that session before continuing.`
-        : `Jules run ${decision.runId} is terminal, a newer successful same-issue Jules run superseded it, and durable session ${decision.providerSessionId} remains recorded. Remote action outcomes are intentionally treated as mixed; the Jules adapter must inspect that session before continuing.`,
+        : decision.recoveryBasis === "server_shutdown"
+          ? `Paperclip shutdown interrupted Jules run ${decision.runId}; durable session ${decision.providerSessionId} remains recorded. Remote action outcomes are intentionally treated as mixed; the Jules adapter must inspect that session before continuing.`
+          : `Jules run ${decision.runId} is terminal, a newer successful same-issue Jules run superseded it, and durable session ${decision.providerSessionId} remains recorded. Remote action outcomes are intentionally treated as mixed; the Jules adapter must inspect that session before continuing.`,
     },
   };
 }

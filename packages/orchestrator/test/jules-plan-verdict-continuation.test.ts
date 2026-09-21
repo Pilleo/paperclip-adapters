@@ -51,6 +51,7 @@ describe("resolved Jules native plan verdict", () => {
     ["comment", card({ kind: "comment" })],
     ["another parent", card({ idempotencyKey: `jules:plan-review:v2:other:${sessionId}:${revisionId}:luna` })],
     ["another session", card({ idempotencyKey: `jules:plan-review:v2:${parentId}:other:${revisionId}:luna` })],
+    ["unsupported recovery generation", card({ idempotencyKey: `jules:plan-review:v2:${parentId}:${sessionId}:${revisionId}:luna:recovery:2` })],
     ["wrong target", card({ payload: { target: { type: "issue_document", issueId: "other", key: "plan", revisionId } } })],
     ["wrong revision", card({ payload: { target: { type: "issue_document", issueId: parentId, key: "plan", revisionId: "other" } } })],
   ])("rejects %s", (_name, interaction) => {

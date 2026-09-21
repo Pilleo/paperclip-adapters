@@ -24,7 +24,7 @@ export function buildCanaryA(projectId: string, runKey: string): Record<string, 
   return buildCanaryIssue(projectId, runKey, {
     title: "Canary A: implement increment",
     priority: "high",
-    targetFile: "increment.js",
+    targetFile: canaryTargetFile(runKey, "increment"),
     body: "Implement the increment helper and its focused behavioral test.",
   });
 }
@@ -34,7 +34,7 @@ export function buildCanaryB(projectId: string, runKey: string, aId: string): Re
     ...buildCanaryIssue(projectId, runKey, {
       title: "Canary B: implement decrement",
       priority: "medium",
-      targetFile: "decrement.js",
+      targetFile: canaryTargetFile(runKey, "decrement"),
       body: "Implement the decrement helper and its focused behavioral test after Canary A merges.",
     }),
     blockedByIssueIds: [aId],
@@ -46,7 +46,7 @@ export function buildCanaryC(projectId: string, runKey: string, bId: string): Re
     ...buildCanaryIssue(projectId, runKey, {
       title: "Canary C: implement is-zero",
       priority: "low",
-      targetFile: "is-zero.js",
+      targetFile: canaryTargetFile(runKey, "is-zero"),
       body: "Implement the zero predicate and its focused behavioral test after Canary B merges.",
     }),
     blockedByIssueIds: [bId],
@@ -73,12 +73,35 @@ function buildCanaryIssue(
   input: { readonly title: string; readonly priority: string; readonly targetFile: string; readonly body: string },
 ): Record<string, unknown> {
   return {
-    title: input.title,
-    description: `<!-- paperclip-adapters:e2e-run:${runKey} -->\n---\norchestrator_managed: true\ncomponent: "core"\ntarget_files: ["${input.targetFile}"]\n---\n\n${input.body}`,
+    // Paperclip's create endpoint can deduplicate a same-title card even when
+    // its requested dependency and target file differ. The run marker must be
+    // part of the card identity, not only its description, or a new B/C can
+    // silently resolve to an older canary and break the native dependency DAG.
+    title: `${input.title} [e2e:${runKey}]`,
+    // The metadata contract must be the first Markdown block.  Jules shares
+    // this description with the orchestrator but parses strict front matter,
+    // whereas the E2E run marker is only an audit annotation.
+    description: `---\norchestrator_managed: true\ncomponent: "core"\ntarget_files: ["${input.targetFile}"]\n---\n<!-- paperclip-adapters:e2e-run:${runKey} -->\n\n${input.body}`,
     projectId,
     status: "todo",
     priority: input.priority,
+    // The disposable repository intentionally has no GitHub Actions workflow.
+    // Keep fleet-wide Jules CI requirements intact while making this explicit
+    // E2E fixture review-eligible after its focused provider-side test passes.
+    assigneeAdapterOverrides: { adapterConfig: { ciPolicy: "skip" } },
   };
+}
+
+/**
+ * The disposable repository is deliberately reused.  A fixed filename makes
+ * every later canary ask Jules to reimplement already-merged work, producing
+ * a legitimate no-change plan rather than an end-to-end implementation proof.
+ * Keep every run's scope unique while making only a safe file-name fragment
+ * from the server-generated run key.
+ */
+function canaryTargetFile(runKey: string, capability: string): string {
+  const safeRunKey = runKey.replace(/[^a-zA-Z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "run";
+  return `canary-${safeRunKey}-${capability}.js`;
 }
 
 export function assertAuthoritativeCanaryChain(

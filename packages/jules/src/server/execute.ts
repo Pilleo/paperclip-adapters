@@ -18,7 +18,7 @@ import { MAX_ACTIVITY_PAGES, activityScanPageLimit, listAllActivities, mirrorAct
 import { reconcileProviderContinuation } from "./provider-continuation.js";
 import { persistSessionBestEffort } from "./session-initializer.js";
 import { evaluatePlanClarity, composePlanForReview, createCheapReviewer, createTerraCodexReviewer, defaultCheapReviewer } from "./plan-reviewer.js";
-import { buildHostImplementationPlan, decideReviewHandoff, nativePrRejectionDeliveryId, parseWorkerFeedback, PR_REJECTION_SUPERSEDED_PLAN_REASON, workerFeedbackPrompt } from "@pilleo/paperclip-adapter-common";
+import { buildHostImplementationPlan, decideReviewHandoff, evaluateScopeConformity, nativePrRejectionDeliveryId, parseTaskContract, parseWorkerFeedback, planReviewIdempotencyKey as nativePlanReviewIdempotencyKey, PR_REJECTION_SUPERSEDED_PLAN_REASON, projectEffectAttempt, workerFeedbackPrompt } from "@pilleo/paperclip-adapter-common";
 import { evaluateSessionFailure } from "./failure-recovery.js";
 import { extractResolvedInteraction } from "./interaction-relay.js";
 import {
@@ -31,7 +31,13 @@ import {
   determinePaperclipIssueStatus,
 } from "./interaction-engine.js";
 import { formatCardPrompt, formatCardSummary } from "./card-prompt.js";
-import { getPullRequestCiStatus, getPullRequestDetails, getPullRequestPatch, listPullRequestChangedFiles } from "./ci-status.js";
+import {
+  getPullRequestCiStatus,
+  getPullRequestDetails,
+  getPullRequestPatch,
+  listPullRequestChangedFiles,
+  type GitHubCommandOptions,
+} from "./ci-status.js";
 import { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { AdapterConfig, validateConfig, requireJulesApiKey, resolveJulesBaseUrl, discoverLocalGitRepository, discoverLocalGitDefaultBranch } from "./config.js";
 import { isGhCliAuthenticated, createRemoteGitHubRepo } from "./git-remote-creator.js";
@@ -50,7 +56,6 @@ import { JulesActivity, JulesClient, JulesClientError, extractPullRequestUrl, ow
 import { buildPrompt, hashPromptIdentity, PROMPT_IDENTITY_HASH_VERSION } from "./prompt-builder.js";
 import { handleJulesState } from "./state-machine.js";
 import { evaluateJulesLifecycleState } from "./state-engine.js";
-import { evaluateScopeConformity } from "@pilleo/paperclip-adapter-common";
 import { classifyFailure, toErrorFamily, summarizeJulesFailure } from "./failure-classifier.js";
 import { shouldRetry, getRetryNotBefore } from "./retry-policy.js";
 import { asJulesActivityId, asJulesSessionId, asPaperclipId, asPrUrl } from "./brands.js";
@@ -76,6 +81,7 @@ import {
   resolveJulesAgentAdjudicationInteraction,
   createJulesPlanApprovalInteraction,
   createJulesPlanReviewInteraction,
+  wakeJulesPlanReviewer,
   saveJulesPlanDocument,
   getPaperclipInteraction,
   listPaperclipApprovals,
@@ -108,11 +114,12 @@ import { evaluateQuestionAdjudicationChild } from "./question-adjudication-state
 import { parseQuestionAdjudication } from "./question-adjudication.js";
 import { classifyNativeQuestionReview, evaluateTerminalQuestionDisposition, evaluateTerminalQuestionRecovery, isExpiredQuestionBridge } from "./question-workflow.js";
 import { isNativeAgentAdjudication } from "./session.js";
-import { createJulesPlanReviewChild } from "./plan-review-client.js";
-import { parsePlanAdjudication } from "./plan-adjudication.js";
 import { createTelemetry } from "./telemetry.js";
 import { decideNativePlanReviewLifecycle } from "./native-plan-review-lifecycle.js";
 import { decideNativePlanReviewMigration } from "./native-review-provenance.js";
+import { runJulesLifecycle } from "./lifecycle-runner.js";
+import { reconcileNativePlanEffect } from "./native-plan-effect-reconciler.js";
+import { beginEffect, confirmEffect, type LifecycleEffectJournal } from "./lifecycle-effect-journal.js";
 
 function assertNever(value: never): never {
   throw new Error(`Unhandled Jules adapter state: ${String(value)}`);
@@ -314,6 +321,24 @@ function readContextRecord(context: Record<string, unknown>, key: string): Recor
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+}
+
+/**
+ * Paperclip resolves `secret_ref` values and injects the GitHub connector's
+ * run-scoped launchers into `ctx.config.env` before this adapter executes.
+ * Forward only concrete string entries: config is untrusted JSON and must not
+ * leak arbitrary values into a child-process environment.
+ */
+function githubCommandOptions(config: unknown): GitHubCommandOptions {
+  const configRecord = config && typeof config === "object" && !Array.isArray(config)
+    ? config as Record<string, unknown>
+    : {};
+  const rawEnv = readContextRecord(configRecord, "env");
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(rawEnv)) {
+    if (typeof value === "string") env[key] = value;
+  }
+  return { env };
 }
 
 /**
@@ -777,6 +802,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (ctx.onLog) await ctx.onLog("stdout", `${JSON.stringify(record)}\n`);
   });
   const apiKey = requireJulesApiKey(ctx.config);
+  const runGitHub = githubCommandOptions(ctx.config);
   const client = new JulesClient(apiKey, telemetry, resolveJulesBaseUrl(ctx.agent.adapterConfig as Record<string, unknown>));
   const scheduleLiveSessionMonitor = async (
     current: JulesAdapterSessionV1,
@@ -878,7 +904,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   if (earlyPrUrl) {
     try {
-      const prDetails = await getPullRequestDetails(earlyPrUrl);
+      const prDetails = await getPullRequestDetails(earlyPrUrl, runGitHub);
       earlyPrDetails = prDetails;
       if (prDetails.merged) {
         if (ctx.onLog) {
@@ -1133,7 +1159,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // rejection and leave the session stuck behind an old plan card.
       let currentHeadSha = session.currentPrHeadSha;
       try {
-        const currentPrDetails = await getPullRequestDetails(session.currentPrUrl);
+        const currentPrDetails = await getPullRequestDetails(session.currentPrUrl, runGitHub);
         currentHeadSha = currentPrDetails.headSha ?? currentHeadSha;
       } catch (error) {
         if (!currentHeadSha) throw error;
@@ -2382,8 +2408,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (ctx.agent.adapterConfig as Record<string, unknown> | undefined)?.["ciPolicy"] === "skip" ||
         (ctx.config as Record<string, unknown> | undefined)?.["ciPolicy"] === "skip";
       if (prUrl && !session.pendingInteraction && awaitingFeedbackWithoutQuestion && !skipCi &&
-          ["failed", "stalled"].includes(await getPullRequestCiStatus(prUrl))) {
-        const prDetails = await getPullRequestDetails(prUrl).catch(() => null);
+          ["failed", "stalled"].includes(await getPullRequestCiStatus(prUrl, runGitHub))) {
+        const prDetails = await getPullRequestDetails(prUrl, runGitHub).catch(() => null);
         const ciStatus = prDetails?.ciStatus;
         return await relayCiRemediationOnce(prUrl, prDetails?.headSha, ciStatus === "stalled" ? "stalled" : "failed");
       }
@@ -2400,36 +2426,67 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // stale `planApprovedActivityId` can send the issue to review before a
       // native card exists. This is deliberately based on session/activity
       // identities and a typed outcome, never plan or comment prose.
+      const terminalPlanReviewNeedsPrecedence = terminalProviderState &&
+        session?.planReviewOutcome === "revision_requested" &&
+        activities.some((activity) =>
+          Boolean(activity.planGenerated) && activity.id !== session?.supersededPlanActivityId,
+        );
       const branchBoundRecoveryNeedsPlanGate = terminalProviderState &&
         session.prRemediation?.recoverySessionId === session.julesSessionId &&
         session.planReviewOutcome !== "approved" &&
         activities.some((activity) => Boolean(activity.planGenerated));
       if (prUrl && terminalProviderState && !preflightQuestion && !scannedPostCompletionQuestion &&
-          !branchBoundRecoveryNeedsPlanGate) {
-          if (session.currentPrUrl !== prUrl || !session.prRegisteredOnBoard) {
-            session.currentPrUrl = prUrl;
+          !branchBoundRecoveryNeedsPlanGate && !terminalPlanReviewNeedsPrecedence) {
+          // A pending no-PR card is a provisional conclusion about this exact
+          // provider session. A later typed PR handoff disproves it. Clear the
+          // card before entering the PR lifecycle so a resumed heartbeat cannot
+          // leave Paperclip simultaneously waiting for human confirmation and
+          // reviewing the already-discovered pull request (MAZ-1549).
+          if (pendingCompletion && !completionResolutionStatus) {
+            await withdrawPaperclipInteraction(
+              taskId,
+              pendingCompletion.paperclipInteractionId,
+              "Superseded by a pull request discovered for the same Jules session",
+              ctx.authToken,
+              ctx.runId,
+            );
+            session.pendingInteraction = undefined;
+            await persistSessionBestEffort(session, ctx.onLog, { authToken: ctx.authToken, runId: ctx.runId });
+          }
+          const prDetails = await getPullRequestDetails(prUrl, runGitHub);
+          terminalPrDetails = prDetails;
+          const changedFiles = await listPullRequestChangedFiles(prUrl, runGitHub).catch(() => [] as string[]);
+          const prEvidence = {
+            ...(prDetails.headSha ? { headSha: prDetails.headSha } : {}),
+            ...(prDetails.headRefName ? { headRefName: prDetails.headRefName } : {}),
+            ...(prDetails.mergeableStatus ? { mergeableStatus: prDetails.mergeableStatus } : {}),
+            ciStatus: prDetails.ciStatus,
+            changedFiles,
+          } as const;
+          const registrationRequired = session.currentPrUrl !== prUrl ||
+            !session.prRegisteredOnBoard ||
+            (prDetails.headSha !== undefined && session.currentPrHeadSha !== prDetails.headSha);
+          session.currentPrUrl = prUrl;
+          if (registrationRequired) {
             if (ctx.onLog) {
               await ctx.onLog("stdout", `[jules] Discovered pull request created by Jules: ${prUrl}\n`);
             }
-            try {
-              await runCheckpointedMutation({
-                session: session!,
-                key: `jules:work-product:${taskId}:${prUrl}`,
-                operation: "register_pull_request_work_product",
-                issueId: taskId,
-                sessionId: session!.julesSessionId,
-                persist: () => persistSessionBestEffort(session!, ctx.onLog),
-                run: () => registerPullRequestWorkProduct(taskId, prUrl, ctx.authToken, ctx.runId),
-              });
-              session.prRegisteredOnBoard = true;
-            } catch {
-              /* best-effort early registration of work product */
-            }
+            // Work-product evidence is the durable review handoff. This write
+            // must converge or retry; swallowing it previously made valid PRs
+            // look empty to Paperclip and allowed later heartbeats to drift.
+            await runCheckpointedMutation({
+              session: session!,
+              key: `jules:work-product:${taskId}:${prUrl}:${prDetails.headSha ?? "uninspected"}`,
+              operation: "register_pull_request_work_product",
+              issueId: taskId,
+              sessionId: session!.julesSessionId,
+              persist: () => persistSessionBestEffort(session!, ctx.onLog),
+              run: () => registerPullRequestWorkProduct(taskId, prUrl, ctx.authToken, ctx.runId, prEvidence),
+            });
+            session.prRegisteredOnBoard = true;
           }
 
           await persistSessionBestEffort(session, ctx.onLog);
-          const prDetails = await getPullRequestDetails(prUrl);
-          terminalPrDetails = prDetails;
           if (prDetails.headSha && session.currentPrHeadSha !== prDetails.headSha) {
             session.currentPrHeadSha = prDetails.headSha;
             // Persist before any review/card transition. This is the durable
@@ -2441,12 +2498,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             session.currentPrHeadRef = prDetails.headRefName;
             await persistSessionBestEffort(session, ctx.onLog, { authToken: ctx.authToken, runId: ctx.runId });
           }
-          const changedFiles = await listPullRequestChangedFiles(prUrl).catch(() => [] as string[]);
-          const rawDiff = await getPullRequestPatch(prUrl).catch(() => "");
-          const hostContract = buildHostImplementationPlan(taskDescription ?? "", taskId, workspaceCwd ?? undefined);
+          const rawDiff = await getPullRequestPatch(prUrl, runGitHub).catch(() => "");
+          // Scope is advisory telemetry. Reuse the prompt contract parser so
+          // inline metadata cannot become a phantom hard plan in this later
+          // lifecycle stage.
+          const hostContract = parseTaskContract(taskDescription ?? "");
           const scope = evaluateScopeConformity({
-            declaredTargetFiles: hostContract.plan.targetFiles,
-            declaredTargetSymbols: hostContract.plan.targetSymbols.map((s) => s.symbol),
+            declaredTargetFiles: hostContract.kind === "structured" ? hostContract.targetFiles : [],
+            declaredTargetSymbols: hostContract.kind === "structured" ? hostContract.targetSymbols : [],
             modifiedFiles: changedFiles,
             rawDiff,
           });
@@ -3096,7 +3155,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         throw new Error("Native plan-review lifecycle requires a persisted Jules session.");
       }
       const nativePlanSession = session;
-      const requestFreshPlanRevision = async (
+      const deliverFreshPlanRevision = async (
         interactionId: string,
         planActivityId: string,
         reviewerFeedback?: string,
@@ -3117,6 +3176,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         nativePlanSession.terminalActivityScan = undefined;
         await saveStoredSession(nativePlanSession);
         await persistSessionBestEffort(nativePlanSession, ctx.onLog);
+        return request;
+      };
+      const requestFreshPlanRevision = async (
+        interactionId: string,
+        planActivityId: string,
+        reviewerFeedback?: string,
+      ) => {
+        await deliverFreshPlanRevision(interactionId, planActivityId, reviewerFeedback);
         return await yieldHeartbeat(nativePlanSession);
       };
 
@@ -3155,6 +3222,55 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       if (pendingNativePlanReview) {
         const nativePlanReview = pendingNativePlanReview;
+        const approvalEffectId = `approve:${nativePlanSession.julesSessionId}:${nativePlanReview.planRevisionId}`;
+        const approvalJournalEntry = nativePlanSession.lifecycleEffectJournal?.effects.find(
+          (entry) => entry.effectId === approvalEffectId,
+        );
+        if (nativePlanReview.stage === "terra" && state === "IN_PROGRESS" &&
+            approvalJournalEntry?.attempt.kind === "started") {
+          const lifecycle = await runJulesLifecycle({
+            state: {
+              provider: { kind: "in_progress", sessionId: nativePlanSession.julesSessionId! },
+              review: {
+                kind: "resolved",
+                cardId: nativePlanReview.paperclipInteractionId,
+                revisionId: nativePlanReview.planRevisionId,
+                reviewer: "terra",
+                verdict: "approve",
+                runId: nativePlanReview.paperclipInteractionId,
+              },
+              effect: projectEffectAttempt(approvalEffectId, approvalJournalEntry),
+              monitor: { kind: "scheduled", monitorId: nativePlanSession.julesSessionId! },
+            },
+            event: { kind: "run_interrupted" },
+            journal: nativePlanSession.lifecycleEffectJournal ?? { version: 1, effects: [] },
+            now: new Date().toISOString(),
+            dependencies: {
+              persistJournal: async (journal) => {
+                nativePlanSession.lifecycleEffectJournal = journal;
+                await saveStoredSession(nativePlanSession);
+              },
+              reconcileNativePlanEffect: async ({ effect, effectId }) => {
+                if (effect.kind !== "approve_plan" || effectId !== approvalEffectId ||
+                    effect.sessionId !== nativePlanSession.julesSessionId || effect.revisionId !== nativePlanReview.planRevisionId) {
+                  return { kind: "inconsistent", reason: "unexpected Terra approval lifecycle effect" };
+                }
+                return reconcileNativePlanEffect(effect, {
+                  approval: { kind: "same_session_progressed", state },
+                });
+              },
+            },
+          });
+          if (lifecycle.disposition !== "executed") {
+            throw new Error("Terra approval reconciliation deferred despite Jules reporting provider progress.");
+          }
+          nativePlanSession.planApprovedAt = new Date().toISOString();
+          nativePlanSession.planApprovedActivityId = nativePlanReview.julesActivityId;
+          nativePlanSession.planReviewOutcome = "approved";
+          nativePlanSession.pendingInteraction = undefined;
+          await persistSessionBestEffort(nativePlanSession, ctx.onLog);
+          return await yieldHeartbeat(nativePlanSession);
+        }
         if (nativePlanReview.legacyPlanReviewCleanup) {
           await withdrawPaperclipInteraction(
             nativePlanReview.legacyPlanReviewCleanup.issueId,
@@ -3437,11 +3553,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 candidate.status === "pending" &&
                 candidate.addresseeAgentId === nativePlanReview.reviewerAgentId,
               );
+              if (!interaction.idempotencyKey) {
+                throw new Error(`Native plan-review card ${interaction.id} has no immutable idempotency key`);
+              }
               lifecycle = decideNativePlanReviewLifecycle({
                 identity: {
                   childIssueId: nativePlanReview.reviewerChildIssueId,
                   interactionId: interaction.id,
                   reviewerAgentId: nativePlanReview.reviewerAgentId,
+                  immutableKey: interaction.idempotencyKey,
                 },
                 childStatus: reviewerChild.status,
                 card: canonicalCards.length > 1
@@ -3449,6 +3569,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                   : interaction,
                 runs: reviewerRuns,
                 nowMs: Date.now(),
+                graceMs: 60_000,
                 maxRecoveryAttempts: 1,
               });
             } catch (error) {
@@ -3473,16 +3594,120 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             }
 
             switch (lifecycle.action) {
-              case "wake_card":
-              case "recover_card":
-                // Paperclip agent tokens may invoke only their own agent.
-                // The Jules worker owns the parent/session monitor; the
-                // orchestrator owns cross-agent reviewer dispatch and bounded
-                // recovery for this durable child card.
-                return await yieldHeartbeat(session);
+              case "await_native_dispatch":
+              return await yieldHeartbeat(session);
               case "await_run":
               case "await_verdict":
                 return await yieldHeartbeat(session);
+              case "recover_dispatch": {
+                // Card creation can persist while Paperclip loses its
+                // fire-and-forget interaction wake. Journal the same-card
+                // public wake before issuing it so a restart reuses the exact
+                // idempotency key instead of creating another review card.
+                const effectId = `recover-plan-dispatch:${reviewIssueId}:${lifecycle.interactionId}:${lifecycle.reviewerAgentId}`;
+                const existingEffect = session.lifecycleEffectJournal?.effects.find((entry) => entry.effectId === effectId);
+                if (existingEffect?.attempt.kind === "confirmed") return await yieldHeartbeat(session);
+                const startedJournal: LifecycleEffectJournal = existingEffect
+                  ? session.lifecycleEffectJournal!
+                  : beginEffect(session.lifecycleEffectJournal ?? { version: 1, effects: [] }, {
+                    effectId,
+                    kind: "recover_plan_dispatch",
+                    startedAt: new Date().toISOString(),
+                  });
+                if (!existingEffect) {
+                  session.lifecycleEffectJournal = startedJournal;
+                  await persistSessionBestEffort(session, ctx.onLog);
+                }
+                const wake = await wakeJulesPlanReviewer({
+                  reviewerAgentId: lifecycle.reviewerAgentId,
+                  childIssueId: nativePlanReview.reviewerChildIssueId,
+                  interactionId: lifecycle.interactionId,
+                  idempotencyKey: `native-plan-review-dispatch-recovery:v1:${reviewIssueId}:${lifecycle.interactionId}:${lifecycle.reviewerAgentId}`,
+                  authToken: ctx.authToken,
+                  runId: ctx.runId,
+                });
+                session.lifecycleEffectJournal = confirmEffect(startedJournal, effectId, wake.runId);
+                await persistSessionBestEffort(session, ctx.onLog);
+                return await yieldHeartbeat(session);
+              }
+              case "replace_card": {
+                // Paperclip owns dispatch after the addressed replacement is
+                // created.  The adapter journals this composite transition so
+                // a crash cannot create a second reviewer card or consume a
+                // second reviewer run.
+                if (lifecycle.nextAttempt !== 1) {
+                  throw new Error(`Native plan-review replacement attempt ${lifecycle.nextAttempt} exceeds the one-card budget`);
+                }
+                const replacementAttempt = lifecycle.nextAttempt;
+                const replacementKey = nativePlanReviewIdempotencyKey({
+                  issueId: reviewIssueId,
+                  sessionId: session.julesSessionId!,
+                  revisionId: nativePlanReview.planRevisionId,
+                  stage: nativePlanReview.stage,
+                  generation: replacementAttempt,
+                });
+                const effectId = `replace-plan-card:${reviewIssueId}:${replacementKey}`;
+                const existingEffect = session.lifecycleEffectJournal?.effects.find((entry) => entry.effectId === effectId);
+                if (existingEffect?.attempt.kind === "confirmed") {
+                  if (session.pendingInteraction?.type === "plan_native_review" &&
+                      session.pendingInteraction.paperclipInteractionId !== existingEffect.attempt.receipt) {
+                    session.pendingInteraction = { ...session.pendingInteraction, paperclipInteractionId: existingEffect.attempt.receipt };
+                    await persistSessionBestEffort(session, ctx.onLog);
+                  }
+                  return await yieldHeartbeat(session);
+                }
+                const startedJournal: LifecycleEffectJournal = existingEffect
+                  ? session.lifecycleEffectJournal!
+                  : beginEffect(session.lifecycleEffectJournal ?? { version: 1, effects: [] }, {
+                    effectId,
+                    kind: "replace_plan_card",
+                    startedAt: new Date().toISOString(),
+                  });
+                if (!existingEffect) {
+                  session.lifecycleEffectJournal = startedJournal;
+                  await persistSessionBestEffort(session, ctx.onLog);
+                }
+                // Reconcile first: a prior process may have created the card
+                // after withdrawing the old one but before recording receipt.
+                const currentCards = await listPaperclipInteractions(reviewIssueId, ctx.authToken, ctx.runId);
+                const observed = currentCards.filter((candidate) => candidate.idempotencyKey === replacementKey);
+                if (observed.length > 1) {
+                  throw new Error(`Duplicate recovered Jules plan cards for ${replacementKey}`);
+                }
+                const replacement = observed[0] ?? await (async () => {
+                  await withdrawPaperclipInteraction(
+                    reviewIssueId,
+                    interaction.id,
+                    "Infrastructure recovery: replaced orphaned native plan-review card; Paperclip will dispatch the addressed replacement.",
+                    ctx.authToken,
+                    ctx.runId,
+                  );
+                  return createJulesPlanReviewInteraction(
+                    reviewIssueId,
+                    session.julesSessionId!,
+                    {
+                      documentId: nativePlanReview.planDocumentId,
+                      revisionId: nativePlanReview.planRevisionId,
+                      revisionNumber: nativePlanReview.planRevisionNumber,
+                    },
+                    nativePlanReview.question,
+                    nativePlanReview.stage,
+                    nativePlanReview.reviewerAgentId,
+                    ctx.authToken,
+                    ctx.runId,
+                    nativePlanReview.julesActivityId,
+                    replacementAttempt,
+                  );
+                })();
+                session.lifecycleEffectJournal = confirmEffect(startedJournal, effectId, replacement.id);
+                session.pendingInteraction = {
+                  ...nativePlanReview,
+                  paperclipInteractionId: replacement.id,
+                  reviewIssueId,
+                };
+                await persistSessionBestEffort(session, ctx.onLog);
+                return await yieldHeartbeat(session);
+              }
               case "consume_verdict":
                 break;
               case "create_card":
@@ -3561,29 +3786,155 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             : null;
         if (!verdict) return await yieldHeartbeat(session);
         if (verdict.decision === "reject") {
-          return await requestFreshPlanRevision(
-            interaction.id,
-            pendingNativePlanReview.julesActivityId,
-            verdict.reason,
+          const rejectedPlanReview = pendingNativePlanReview;
+          const revisionRunId = interaction.resolvedByRunId ?? interaction.id;
+          const revisionEffectId = `revision:${interaction.id}:${revisionRunId}`;
+          const revisionJournalEntry = nativePlanSession.lifecycleEffectJournal?.effects.find(
+            (entry) => entry.effectId === revisionEffectId,
           );
+          const lifecycle = await runJulesLifecycle({
+            state: {
+              provider: { kind: "awaiting_plan", sessionId: nativePlanSession.julesSessionId!, revisionId: rejectedPlanReview.planRevisionId },
+              review: {
+                kind: "resolved",
+                cardId: interaction.id,
+                revisionId: rejectedPlanReview.planRevisionId,
+                reviewer: rejectedPlanReview.stage,
+                verdict: "reject",
+                runId: revisionRunId,
+              },
+              effect: projectEffectAttempt(revisionEffectId, revisionJournalEntry),
+              monitor: { kind: "scheduled", monitorId: nativePlanSession.julesSessionId! },
+            },
+            event: { kind: "heartbeat" },
+            journal: nativePlanSession.lifecycleEffectJournal ?? { version: 1, effects: [] },
+            now: new Date().toISOString(),
+            dependencies: {
+              persistJournal: async (journal) => {
+                nativePlanSession.lifecycleEffectJournal = journal;
+                await saveStoredSession(nativePlanSession);
+              },
+              requestPlanRevision: async ({ cardId, revisionId, reviewer, runId }) => {
+                if (cardId !== interaction.id || revisionId !== rejectedPlanReview.planRevisionId || reviewer !== rejectedPlanReview.stage || runId !== (interaction.resolvedByRunId ?? interaction.id)) {
+                  throw new Error("Native-plan reducer emitted an invalid revision-request transition.");
+                }
+                await deliverFreshPlanRevision(interaction.id, rejectedPlanReview.julesActivityId, verdict.reason);
+                return { receipt: `revision-request:${interaction.id}` };
+              },
+              reconcileNativePlanEffect: async ({ effect, effectId }) => {
+                if (effect.kind !== "request_plan_revision" || effectId !== revisionEffectId ||
+                    effect.cardId !== interaction.id || effect.revisionId !== rejectedPlanReview.planRevisionId ||
+                    effect.reviewer !== rejectedPlanReview.stage || effect.runId !== revisionRunId) {
+                  return { kind: "inconsistent", reason: "unexpected native plan-revision lifecycle effect" };
+                }
+                const request = createPlanRevisionRequest({
+                  interactionId: interaction.id,
+                  planActivityId: rejectedPlanReview.julesActivityId,
+                  reviewerFeedback: verdict.reason,
+                });
+                const marker = planRevisionRequestPrompt(request);
+                const markerActivity = activities.find(
+                  (activity) => activity.userMessaged?.userMessage === marker,
+                );
+                return reconcileNativePlanEffect(effect, {
+                  revisionRequest: markerActivity
+                    ? { kind: "marker_mirrored", activityId: markerActivity.id }
+                    : { kind: "marker_not_observed" },
+                });
+              },
+            },
+          });
+          return await yieldHeartbeat(nativePlanSession);
         }
-        if (pendingNativePlanReview.stage === "luna" && config.planStrongReviewerAgentId) {
-          const next = await createJulesPlanReviewInteraction(
-            taskId,
-            session.julesSessionId!,
-            { documentId: pendingNativePlanReview.planDocumentId, revisionId: pendingNativePlanReview.planRevisionId, revisionNumber: pendingNativePlanReview.planRevisionNumber },
-            pendingNativePlanReview.question,
-            "terra",
-            config.planStrongReviewerAgentId,
-            ctx.authToken,
-            ctx.runId,
-            pendingNativePlanReview.julesActivityId,
-          );
+        const lunaPlanReview = pendingNativePlanReview;
+        const lunaPlanSession = session;
+        if (lunaPlanReview?.stage === "luna" && lunaPlanSession && config.planStrongReviewerAgentId) {
+          const terraReviewerAgentId = config.planStrongReviewerAgentId;
+          let terraCardId: string | undefined;
+          const terraEffectId = `card:terra:${lunaPlanReview.planRevisionId}`;
+          const lifecycle = await runJulesLifecycle({
+            state: {
+              provider: { kind: "awaiting_plan", sessionId: lunaPlanSession.julesSessionId!, revisionId: lunaPlanReview.planRevisionId },
+              review: {
+                kind: "resolved",
+                cardId: interaction.id,
+                revisionId: lunaPlanReview.planRevisionId,
+                reviewer: "luna",
+                verdict: "approve",
+                runId: interaction.resolvedByRunId ?? interaction.id,
+              },
+              effect: projectEffectAttempt(
+                terraEffectId,
+                lunaPlanSession.lifecycleEffectJournal?.effects.find(
+                  (entry) => entry.effectId === terraEffectId,
+                ),
+              ),
+              monitor: { kind: "scheduled", monitorId: lunaPlanSession.julesSessionId! },
+            },
+            event: { kind: "heartbeat" },
+            journal: lunaPlanSession.lifecycleEffectJournal ?? { version: 1, effects: [] },
+            now: new Date().toISOString(),
+            dependencies: {
+              persistJournal: async (journal) => {
+                lunaPlanSession.lifecycleEffectJournal = journal;
+                await saveStoredSession(lunaPlanSession);
+              },
+              createCard: async ({ reviewer, revisionId }) => {
+                if (reviewer !== "terra" || revisionId !== lunaPlanReview.planRevisionId) {
+                  throw new Error("Native-plan reducer emitted an invalid Luna-to-Terra transition.");
+                }
+                const next = await createJulesPlanReviewInteraction(
+                  taskId,
+                  lunaPlanSession.julesSessionId!,
+                  { documentId: lunaPlanReview.planDocumentId, revisionId: lunaPlanReview.planRevisionId, revisionNumber: lunaPlanReview.planRevisionNumber },
+                  lunaPlanReview.question,
+                  "terra",
+                  config.planStrongReviewerAgentId!,
+                  ctx.authToken,
+                  ctx.runId,
+                  lunaPlanReview.julesActivityId,
+                );
+                terraCardId = next.id;
+                return { receipt: next.id };
+              },
+              reconcileNativePlanEffect: async ({ effect, effectId }) => {
+                if (effect.kind !== "create_card" || effectId !== terraEffectId ||
+                    effect.reviewer !== "terra" || effect.revisionId !== lunaPlanReview.planRevisionId) {
+                  return { kind: "inconsistent", reason: "unexpected Luna-to-Terra lifecycle effect" };
+                }
+                const terraIdentity = {
+                  issueId: taskId,
+                  sessionId: lunaPlanSession.julesSessionId!,
+                  documentId: lunaPlanReview.planDocumentId,
+                  revisionId: lunaPlanReview.planRevisionId,
+                  revisionNumber: lunaPlanReview.planRevisionNumber,
+                  stage: "terra" as const,
+                  reviewerAgentId: terraReviewerAgentId,
+                };
+                const exactCards = interactions.flatMap((candidate) => {
+                  const parsed = parsePlanReviewInteraction(candidate, terraIdentity);
+                  return parsed.kind === "v2" ? [candidate.id] : [];
+                });
+                return reconcileNativePlanEffect(effect, {
+                  card: exactCards.length === 1
+                    ? { kind: "exact", cardId: exactCards[0]! }
+                    : exactCards.length === 0
+                      ? { kind: "absent" }
+                      : { kind: "ambiguous" },
+                });
+              },
+            },
+          });
+          const confirmedTerraCard = lifecycle.journal.effects.find((effect) => effect.effectId === `card:terra:${lunaPlanReview.planRevisionId}`);
+          if (!terraCardId && confirmedTerraCard?.attempt.kind === "confirmed") {
+            terraCardId = confirmedTerraCard.attempt.receipt;
+          }
+          if (!terraCardId) throw new Error("Native-plan Terra-card execution completed without a durable card receipt.");
           session.pendingInteraction = {
             ...pendingNativePlanReview,
             type: "plan_native_review",
             protocolVersion: 2,
-            paperclipInteractionId: next.id,
+            paperclipInteractionId: terraCardId,
             reviewerAgentId: config.planStrongReviewerAgentId,
             stage: "terra",
             reviewIssueId: taskId,
@@ -3592,71 +3943,74 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           await persistSessionBestEffort(session, ctx.onLog);
           return await yieldHeartbeat(session);
         }
-        if (pendingNativePlanReview.stage === "terra") {
-          await client.approvePlan(session.julesSessionId!);
-          session.planApprovedAt = new Date().toISOString();
-          session.planApprovedActivityId = pendingNativePlanReview.julesActivityId;
-          session.planReviewOutcome = "approved";
-          session.pendingInteraction = undefined;
-          await persistSessionBestEffort(session, ctx.onLog);
-          return await yieldHeartbeat(session);
+        const terraPlanReview = pendingNativePlanReview;
+        const terraPlanSession = session;
+        if (terraPlanReview?.stage === "terra" && terraPlanSession) {
+          const approvalEffectId = `approve:${terraPlanSession.julesSessionId}:${terraPlanReview.planRevisionId}`;
+          const approvalJournalEntry = terraPlanSession.lifecycleEffectJournal?.effects.find(
+            (entry) => entry.effectId === approvalEffectId,
+          );
+          const lifecycle = await runJulesLifecycle({
+            state: {
+              provider: { kind: "awaiting_plan", sessionId: terraPlanSession.julesSessionId!, revisionId: terraPlanReview.planRevisionId },
+              review: {
+                kind: "resolved",
+                cardId: interaction.id,
+                revisionId: terraPlanReview.planRevisionId,
+                reviewer: "terra",
+                verdict: "approve",
+                runId: interaction.resolvedByRunId ?? interaction.id,
+              },
+              effect: projectEffectAttempt(approvalEffectId, approvalJournalEntry),
+              monitor: { kind: "scheduled", monitorId: terraPlanSession.julesSessionId! },
+            },
+            event: { kind: "heartbeat" },
+            journal: terraPlanSession.lifecycleEffectJournal ?? { version: 1, effects: [] },
+            now: new Date().toISOString(),
+            dependencies: {
+              persistJournal: async (journal) => {
+                terraPlanSession.lifecycleEffectJournal = journal;
+                await saveStoredSession(terraPlanSession);
+              },
+              approvePlan: async ({ sessionId, revisionId }) => {
+                if (sessionId !== terraPlanSession.julesSessionId || revisionId !== terraPlanReview.planRevisionId) {
+                  throw new Error("Native-plan reducer emitted an invalid Terra approval transition.");
+                }
+                await client.approvePlan(asJulesSessionId(sessionId));
+                return { receipt: `approved:${sessionId}:${revisionId}` };
+              },
+              reconcileNativePlanEffect: async ({ effect, effectId }) => {
+                if (effect.kind !== "approve_plan" || effectId !== approvalEffectId ||
+                    effect.sessionId !== terraPlanSession.julesSessionId ||
+                    effect.revisionId !== terraPlanReview.planRevisionId) {
+                  return { kind: "inconsistent", reason: "unexpected Terra approval lifecycle effect" };
+                }
+                return reconcileNativePlanEffect(effect, {
+                  approval: { kind: "same_plan_pending" },
+                });
+              },
+            },
+          });
+          if (lifecycle.disposition !== "executed") return await yieldHeartbeat(terraPlanSession);
+          terraPlanSession.planApprovedAt = new Date().toISOString();
+          terraPlanSession.planApprovedActivityId = terraPlanReview.julesActivityId;
+          terraPlanSession.planReviewOutcome = "approved";
+          terraPlanSession.pendingInteraction = undefined;
+          await persistSessionBestEffort(terraPlanSession, ctx.onLog);
+          return await yieldHeartbeat(terraPlanSession);
         }
         return await yieldHeartbeat(session);
         }
       }
 
       if (pendingPlanAgentReview && !hasUnresolvedProviderQuestion && !terminalProviderState) {
-        const child = await getPaperclipIssue(pendingPlanAgentReview.reviewIssueId, ctx.authToken, ctx.runId).catch(() => null);
-        if (child) {
-          const comments = await listIssueComments(child.id, ctx.authToken, ctx.runId);
-          const comment = [...comments].reverse().find((c) => c.authorAgentId === pendingPlanAgentReview.reviewerAgentId);
-          const decision = comment ? parsePlanAdjudication(comment.body) : null;
-          // The structured reviewer comment is the durable completion event;
-          // child status is intentionally not used as the protocol signal.
-          if (decision && child.status !== "done") {
-            await moveIssueToDone(child.id, session.julesSessionId!, ctx.authToken, ctx.runId, "Jules consumed the structured ACP plan-review decision.").catch(() => undefined);
-          }
-          if (pendingPlanAgentReview.stage === "vibe" && decision?.kind === "PASS_TO_STRONG" && config.planStrongReviewerAgentId) {
-            const next = await createJulesPlanReviewChild(taskId, config.planStrongReviewerAgentId, "strong", pendingPlanAgentReview.question, pendingPlanAgentReview.planRevisionId, ctx.authToken, ctx.runId, ctx.agent.companyId);
-            session.pendingInteraction = { ...pendingPlanAgentReview, stage: "strong", reviewIssueId: next.id, reviewerAgentId: config.planStrongReviewerAgentId };
-            await persistSessionBestEffort(session, ctx.onLog);
-            return await yieldHeartbeat(session);
-          }
-          if (decision?.kind === "REQUEST_REVISION") {
-            await client.sendMessage(session.julesSessionId!, { prompt: ["The ACP plan reviewer found concrete issues. Revise the plan and publish a new plan activity.", ...decision.findings, ...decision.questions].join("\n") });
-            session.pendingInteraction = undefined;
-            session.planReviewOutcome = "revision_requested";
-            await persistSessionBestEffort(session, ctx.onLog);
-            return await yieldHeartbeat(session);
-          }
-          if (pendingPlanAgentReview.stage === "strong" && decision?.kind === "APPROVE") {
-            await client.approvePlan(session.julesSessionId!);
-            session.planApprovedAt = new Date().toISOString();
-            session.planApprovedActivityId = pendingPlanAgentReview.julesActivityId;
-            session.pendingInteraction = undefined;
-            session.planReviewOutcome = "approved";
-            await persistSessionBestEffort(session, ctx.onLog);
-            return await yieldHeartbeat(session);
-          }
-          if (pendingPlanAgentReview.stage === "strong" && decision?.kind === "ESCALATE") {
-            const interaction = await runCheckpointedMutation({
-              session: session!,
-              key: `confirmation:${taskId}:plan:${pendingPlanAgentReview.planRevisionId}`,
-              operation: "create_plan_approval_interaction",
-              issueId: taskId,
-              sessionId: session!.julesSessionId,
-              activityId: pendingPlanAgentReview.julesActivityId,
-              persist: () => persistSessionBestEffort(session!, ctx.onLog),
-              run: () => createJulesPlanApprovalInteraction(taskId, session!.julesSessionId!, pendingPlanAgentReview.julesActivityId, pendingPlanAgentReview.question, ctx.authToken, ctx.runId),
-            });
-            session.pendingInteraction = { type: "plan_approval", julesActivityId: pendingPlanAgentReview.julesActivityId, paperclipInteractionId: interaction.id, question: pendingPlanAgentReview.question, planDocumentId: interaction.planRevision.documentId, planRevisionId: interaction.planRevision.revisionId, planRevisionNumber: interaction.planRevision.revisionNumber, createdAt: new Date().toISOString() };
-            session.planReviewOutcome = "human_escalation";
-            await persistSessionBestEffort(session, ctx.onLog);
-            return await yieldHeartbeat(session);
-          }
-          // A missing child decision is a reviewer wait, not permission to
-          // invent a human question or reset the plan gate.
-        }
+        // `plan_agent_review` stored an ACP-child comment as control state.
+        // It has no authenticated, typed verdict receipt, so it cannot be
+        // replayed after restart. Retire it without reading its prose; the
+        // next heartbeat rebuilds the immutable provider plan as a native
+        // Luna card and resumes through the only supported protocol.
+        session.pendingInteraction = undefined;
+        await persistSessionBestEffort(session, ctx.onLog);
         return await yieldHeartbeat(session);
       }
 
@@ -4533,6 +4887,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               const activity = latestPlan(activities);
               const activityId = activity?.id ?? "awaiting-plan-approval";
               session.supersededPlanActivityId = undefined;
+              if (config.planApprovalPolicy === "required" &&
+                  (!config.planReviewerAgentId || !config.planStrongReviewerAgentId)) {
+                return {
+                  exitCode: 1,
+                  signal: null,
+                  timedOut: false,
+                  clearSession: false,
+                  errorCode: "native_plan_review_agents_unconfigured",
+                  errorFamily: null,
+                  errorMessage: "Required Jules plan approval needs both configured native reviewers: Luna and Terra.",
+                  sessionParams: serializeSession(session),
+                };
+              }
               const { plan: hostPlan, markdown: hostPlanMarkdown } = buildHostImplementationPlan(
                 taskDescription ?? "",
                 taskId,

@@ -31,11 +31,13 @@ or when a native Jules/Luna/Terra interaction is stuck or has failed.
 1. Read the issue's interactions and the addressed reviewer's recent runs.
 2. If the existing card is answered, let the normal state machine route the
    result; do not recover it.
-3. If exactly one card is pending and no reviewer run is queued/running, reuse
-   the card through `packages/orchestrator/scripts/recover-native-review.mjs`.
-4. Verify that same interaction becomes `answered` and inspect the verdict.
-   A reject is a valid review result; transport, authentication, and runtime
-   failures are not.
+3. If exactly one card is pending and no reviewer run is queued/running, let
+   the adapter perform its one public, interaction-bound wake automatically;
+   `recover-native-review.mjs` is diagnosis-only.
+4. If a bound run is terminal, let the adapter perform its one deterministic
+   replacement; never issue a second manual wake. Verify the addressed card
+   becomes `answered` and inspect its verdict. A reject is valid; transport,
+   authentication, and runtime failures are not.
 
 See [the fleet runbook](../../../scripts/fleet/README.md) for operator commands
 and [the orchestrator README](../../../packages/orchestrator/README.md) for

@@ -49,7 +49,8 @@ export type JulesLifecycleEvent =
 
 export type JulesLifecycleEffect =
   | { readonly kind: "create_card"; readonly reviewer: "luna" | "terra"; readonly revisionId: string }
-  | { readonly kind: "deliver_verdict"; readonly cardId: string; readonly verdict: "approve" | "reject"; readonly runId: string }
+  | { readonly kind: "approve_plan"; readonly sessionId: string; readonly revisionId: string }
+  | { readonly kind: "request_plan_revision"; readonly cardId: string; readonly revisionId: string; readonly reviewer: "luna" | "terra"; readonly runId: string }
   | { readonly kind: "poll_provider"; readonly sessionId: string }
   | { readonly kind: "rearm_monitor"; readonly sessionId: string; readonly monitorId: string }
   | { readonly kind: "reconcile_effect"; readonly effectId: string }
@@ -115,6 +116,33 @@ function decideInterrupted(state: JulesLifecycleState): JulesLifecycleDecision {
   }
 }
 
+function decideResolvedPlanReview(
+  provider: Extract<JulesProviderState, { readonly kind: "awaiting_plan" | "awaiting_feedback" }>,
+  review: Extract<JulesReviewGate, { readonly kind: "resolved" }>,
+): JulesLifecycleEffect {
+  switch (review.verdict) {
+    case "reject":
+      return {
+        kind: "request_plan_revision",
+        cardId: review.cardId,
+        revisionId: review.revisionId,
+        reviewer: review.reviewer,
+        runId: review.runId,
+      };
+    case "approve":
+      switch (review.reviewer) {
+        case "luna":
+          return { kind: "create_card", reviewer: "terra", revisionId: provider.revisionId };
+        case "terra":
+          return { kind: "approve_plan", sessionId: provider.sessionId, revisionId: provider.revisionId };
+        default:
+          return assertNever(review.reviewer);
+      }
+    default:
+      return assertNever(review.verdict);
+  }
+}
+
 function decideHeartbeat(state: JulesLifecycleState): JulesLifecycleDecision {
   switch (state.provider.kind) {
     case "completed":
@@ -136,12 +164,7 @@ function decideHeartbeat(state: JulesLifecycleState): JulesLifecycleDecision {
             case "not_started":
               return {
                 state,
-                effect: {
-                  kind: "deliver_verdict",
-                  cardId: state.review.cardId,
-                  verdict: state.review.verdict,
-                  runId: state.review.runId,
-                },
+                effect: decideResolvedPlanReview(state.provider, state.review),
               };
             case "started":
               return { state, effect: { kind: "reconcile_effect", effectId: state.effect.effectId } };

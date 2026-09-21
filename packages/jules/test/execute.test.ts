@@ -3,7 +3,7 @@ import { execute } from '../src/server/execute';
 import { AdapterExecutionContext } from '@paperclipai/adapter-utils';
 import { JulesClient } from '../src/server/jules-client';
 import { sessionCodec } from '../src/server/session';
-import { getPaperclipIssue, listPaperclipInteractions, moveIssueToReview } from '../src/server/paperclip-client';
+import { getPaperclipInteraction, getPaperclipIssue, listPaperclipInteractions, moveIssueToReview, registerPullRequestWorkProduct, withdrawPaperclipInteraction } from '../src/server/paperclip-client';
 import { getPullRequestCiStatus, getPullRequestDetails } from '../src/server/ci-status';
 
 vi.mock('../src/server/jules-client', async (importOriginal) => {
@@ -45,6 +45,8 @@ vi.mock('../src/server/paperclip-client', async (importOriginal) => {
     createJulesAgentAdjudicationInteraction: vi.fn().mockResolvedValue({ id: "visible-question-1", status: "pending" }),
     createJulesQuestionAdjudication: vi.fn().mockResolvedValue({ id: "adjudication-1" }),
     scheduleJulesSessionMonitor: vi.fn().mockResolvedValue(undefined),
+    getPaperclipInteraction: vi.fn().mockResolvedValue({ id: "test-interaction", status: "pending" }),
+    registerPullRequestWorkProduct: vi.fn().mockResolvedValue(undefined),
     getPaperclipIssue: vi.fn().mockResolvedValue({ id: "plan-review-1", status: "blocked" }),
     moveIssueToReview: vi.fn().mockResolvedValue(undefined),
     completeInternalReviewIssue: vi.fn().mockResolvedValue(undefined),
@@ -153,11 +155,62 @@ beforeAll(() => {
         } as never),
       },
       authToken: 'jwt-token',
+      config: {
+        ...baseCtx.config,
+        env: { JULES_API_KEY: 'test-key', PAPERCLIP_GITHUB_BROKER_TOKEN: 'run-scoped-token' },
+      },
     } as any);
     expect(res.exitCode).toBe(0);
     expect(res.clearSession).toBe(false);
     expect(res.resultJson?.prUrl).toBe('http://pr/1');
     expect(res.resultJson?.issueStatus).toBe('in_review');
+    expect(getPullRequestDetails).toHaveBeenCalledWith(
+      'http://pr/1',
+      expect.objectContaining({
+        env: expect.objectContaining({ PAPERCLIP_GITHUB_BROKER_TOKEN: 'run-scoped-token' }),
+      }),
+    );
+  });
+
+  it('withdraws a same-session no-PR confirmation before handing a later discovered PR to review', async () => {
+    (JulesClient.prototype.getSession as any).mockResolvedValue({
+      state: 'COMPLETED',
+      rawOutputs: [{ pullRequest: { url: 'https://github.com/pilleo/test/pull/1549' } }],
+    });
+    vi.mocked(getPullRequestDetails).mockResolvedValue({
+      state: 'OPEN', merged: false, ciStatus: 'success', inspectionStatus: 'observed',
+      mergeableStatus: 'mergeable', headSha: 'a'.repeat(40), headRefName: 'jules-1549',
+    });
+    vi.mocked(getPaperclipInteraction).mockResolvedValue({ id: 'stale-no-pr-card', status: 'pending' } as never);
+
+    const result = await execute({
+      ...baseCtx,
+      agent: { ...baseCtx.agent, adapterConfig: { ...baseCtx.agent.adapterConfig, ciPolicy: 'skip' } },
+      runtime: {
+        ...baseCtx.runtime,
+        sessionParams: sessionCodec.encode({
+          version: 1, paperclipIssueId: 'task-1', promptHash: 'stable-hash', promptHashVersion: 2,
+          repository: 'pilleo/test', source: 'github', baseBranch: 'master', phase: 'COMPLETED',
+          sessionId: '123', julesSessionId: '123', attempt: 1, failedSessions: [], createdAt: new Date().toISOString(),
+          pendingInteraction: {
+            type: 'completion_confirmation', paperclipInteractionId: 'stale-no-pr-card',
+            question: 'Jules completed without a PR. Is this task complete?', createdAt: new Date().toISOString(),
+          },
+        } as never),
+      },
+      authToken: 'jwt-token',
+    } as any);
+
+    expect(withdrawPaperclipInteraction).toHaveBeenCalledWith(
+      'task-1', 'stale-no-pr-card', 'Superseded by a pull request discovered for the same Jules session', 'jwt-token', 'run-1',
+    );
+    expect(registerPullRequestWorkProduct).toHaveBeenCalledWith(
+      'task-1', 'https://github.com/pilleo/test/pull/1549', 'jwt-token', 'run-1', expect.objectContaining({
+        headSha: 'a'.repeat(40), headRefName: 'jules-1549', ciStatus: 'success', changedFiles: [],
+      }),
+    );
+    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toBeUndefined();
+    expect(result.resultJson).toMatchObject({ prUrl: 'https://github.com/pilleo/test/pull/1549', issueStatus: 'in_review' });
   });
 
   it("schedules branch-bound remediation instead of messaging a terminal Jules session with red CI", async () => {

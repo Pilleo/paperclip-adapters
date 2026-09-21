@@ -10,6 +10,7 @@ const identity = {
   childIssueId: "child-1",
   interactionId: "card-1",
   reviewerAgentId: "luna-1",
+  immutableKey: "jules:plan-review:v2:issue-1:session-1:revision-1:luna",
 } as const;
 
 function input(
@@ -23,9 +24,12 @@ function input(
       kind: "request_item_verdicts",
       status: "pending",
       addresseeAgentId: "luna-1",
+      idempotencyKey: identity.immutableKey,
+      createdAt: "2026-09-19T17:55:00.000Z",
     },
     runs: [],
     nowMs: NOW,
+    graceMs: 60_000,
     maxRecoveryAttempts: 1,
     ...overrides,
   };
@@ -43,9 +47,15 @@ describe("native plan review lifecycle", () => {
       expected: { action: "create_card" },
     },
     {
-      name: "wakes one pending card that has never had a bound run",
+      name: "recovers dispatch on one overdue pending card that has never had a bound run",
       input: input(),
-      expected: { action: "wake_card", interactionId: "card-1" },
+      expected: {
+        action: "recover_dispatch",
+        interactionId: "card-1",
+        reviewerAgentId: "luna-1",
+        immutableKey: identity.immutableKey,
+        attempt: 0,
+      },
     },
     {
       name: "awaits a queued bound run",
@@ -63,23 +73,29 @@ describe("native plan review lifecycle", () => {
       expected: { action: "await_verdict", runId: "run-1" },
     },
     {
-      name: "ignores a failed unbound automatic wake and starts the canonical card",
+      name: "ignores a failed unbound automatic wake and recovers dispatch on the canonical card",
       input: input({ runs: [{ id: "run-unbound", status: "failed", issueId: "child-1", agentId: "luna-1", interactionId: null, interactionKind: null, startedAt: "2026-09-19T17:58:00.000Z", finishedAt: "2026-09-19T17:58:01.000Z", error: "continuation_source_context_missing" }] }),
-      expected: { action: "wake_card", interactionId: "card-1" },
+      expected: {
+        action: "recover_dispatch",
+        interactionId: "card-1",
+        reviewerAgentId: "luna-1",
+        immutableKey: identity.immutableKey,
+        attempt: 0,
+      },
     },
     {
-      name: "recovers the same card after one failed bound run",
+      name: "replaces the card after one failed bound run",
       input: input({ runs: [{ id: "run-1", status: "failed", issueId: "child-1", agentId: "luna-1", interactionId: "card-1", interactionKind: "request_item_verdicts", startedAt: "2026-09-19T17:58:00.000Z", finishedAt: "2026-09-19T17:58:01.000Z", error: "transport_error" }] }),
-      expected: { action: "recover_card", interactionId: "card-1", failedRunId: "run-1", attempt: 1 },
+      expected: { action: "replace_card", interactionId: "card-1", nextAttempt: 1, cause: "terminal_run", failedRunId: "run-1" },
     },
     {
       name: "consumes an answered canonical card",
-      input: input({ card: { id: "card-1", kind: "request_item_verdicts", status: "answered", addresseeAgentId: "luna-1" } }),
+      input: input({ card: { id: "card-1", kind: "request_item_verdicts", status: "answered", addresseeAgentId: "luna-1", idempotencyKey: identity.immutableKey, createdAt: "2026-09-19T17:55:00.000Z" } }),
       expected: { action: "consume_verdict", interactionId: "card-1" },
     },
     {
       name: "fails closed when the card belongs to another reviewer",
-      input: input({ card: { id: "card-1", kind: "request_item_verdicts", status: "pending", addresseeAgentId: "terra-1" } }),
+      input: input({ card: { id: "card-1", kind: "request_item_verdicts", status: "pending", addresseeAgentId: "terra-1", idempotencyKey: identity.immutableKey, createdAt: "2026-09-19T17:55:00.000Z" } }),
       expected: { action: "escalate_protocol_failure", reason: "card_identity_mismatch" },
     },
     {
@@ -87,8 +103,8 @@ describe("native plan review lifecycle", () => {
       input: input({
         card: {
           duplicate: [
-            { id: "card-1", kind: "request_item_verdicts", status: "pending", addresseeAgentId: "luna-1" },
-            { id: "card-2", kind: "request_item_verdicts", status: "pending", addresseeAgentId: "luna-1" },
+            { id: "card-1", kind: "request_item_verdicts", status: "pending", addresseeAgentId: "luna-1", idempotencyKey: identity.immutableKey, createdAt: "2026-09-19T17:55:00.000Z" },
+            { id: "card-2", kind: "request_item_verdicts", status: "pending", addresseeAgentId: "luna-1", idempotencyKey: identity.immutableKey, createdAt: "2026-09-19T17:55:00.000Z" },
           ],
         },
       }),
@@ -100,14 +116,31 @@ describe("native plan review lifecycle", () => {
       expected: { action: "escalate_protocol_failure", reason: "invalid_run_evidence" },
     },
     {
-      name: "stops after the recovery budget is exhausted",
+      name: "recovers dispatch when the replacement generation is also orphaned",
       input: input({
-        runs: [
-          { id: "run-1", status: "failed", issueId: "child-1", agentId: "luna-1", interactionId: "card-1", interactionKind: "request_item_verdicts", startedAt: "2026-09-19T17:56:00.000Z", finishedAt: "2026-09-19T17:56:01.000Z", error: "transport_error" },
-          { id: "run-2", status: "failed", issueId: "child-1", agentId: "luna-1", interactionId: "card-1", interactionKind: "request_item_verdicts", startedAt: "2026-09-19T17:58:00.000Z", finishedAt: "2026-09-19T17:58:01.000Z", error: "transport_error" },
-        ],
+        identity: { ...identity, immutableKey: `${identity.immutableKey}:recovery:1` },
+        card: {
+          id: "card-1", kind: "request_item_verdicts", status: "pending", addresseeAgentId: "luna-1",
+          idempotencyKey: `${identity.immutableKey}:recovery:1`, createdAt: "2026-09-19T17:55:00.000Z",
+        },
       }),
-      expected: { action: "escalate_protocol_failure", reason: "recovery_budget_exhausted" },
+      expected: {
+        action: "recover_dispatch",
+        interactionId: "card-1",
+        reviewerAgentId: "luna-1",
+        immutableKey: `${identity.immutableKey}:recovery:1`,
+        attempt: 1,
+      },
+    },
+    {
+      name: "waits during the host dispatch grace period",
+      input: input({
+        card: {
+          id: "card-1", kind: "request_item_verdicts", status: "pending", addresseeAgentId: "luna-1",
+          idempotencyKey: identity.immutableKey, createdAt: "2026-09-19T17:59:30.000Z",
+        },
+      }),
+      expected: { action: "await_native_dispatch" },
     },
   ])("$name", ({ input: lifecycleInput, expected }) => {
     expect(decideNativePlanReviewLifecycle(lifecycleInput)).toEqual(expected);

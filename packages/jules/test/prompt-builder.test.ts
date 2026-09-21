@@ -13,6 +13,7 @@ beforeAll(() => {
   describe('Prompt Builder', () => {
   const config = {
     source: 'github.com/org/repo',
+    repository: 'org/repo',
     baseBranch: 'main'
   } as AdapterConfig;
 
@@ -24,7 +25,7 @@ beforeAll(() => {
     isRetry: false
   };
 
-  it('embeds the host work-package plan in the scope contract', () => {
+  it('renders structured frontmatter as concise scope hints instead of a synthetic plan', () => {
     const prompt = buildPrompt(
       {
         ...ctx,
@@ -38,9 +39,30 @@ target_symbols: ["SandboxDispatcher#getOrCreate"]
       },
       config,
     );
-    expect(prompt).toContain('scope contract');
+    expect(prompt).toContain('Scope hints:');
     expect(prompt).toContain('SandboxDispatcher.kt');
     expect(prompt).toContain('SandboxDispatcher#getOrCreate');
+    expect(prompt).not.toContain('Implementation plan');
+    expect(prompt).not.toContain('No explicit context specified.');
+  });
+
+  it('keeps an unstructured task literal and omits fabricated scope boilerplate', () => {
+    const prompt = buildPrompt({
+      ...ctx,
+      title: 'Canary A: implement increment',
+      description: 'orchestrator_managed: true component: "core" target_files: ["canary-increment.js"]\n\nImplement the increment helper and its focused behavioral test.',
+    }, config);
+
+    expect(prompt).toContain('Task: Canary A: implement increment');
+    expect(prompt).toContain('Implement the increment helper and its focused behavioral test.');
+    expect(prompt).toContain('Repository: org/repo');
+    expect(prompt).toContain('Implement the task and relevant tests; run the relevant tests; commit and create or update a PR. Do not merge it.');
+    expect(prompt).not.toContain('Implementation plan');
+    expect(prompt).not.toContain('scope contract');
+    expect(prompt).not.toContain('Target Files:');
+    expect(prompt).not.toContain('No explicit context specified.');
+    expect(prompt).not.toContain('Implement the fix or feature according to requirements.');
+    expect(prompt).not.toContain('Do not add files or scope outside it without asking.');
   });
 
   it('builds standard prompt correctly', () => {
@@ -49,10 +71,9 @@ target_symbols: ["SandboxDispatcher#getOrCreate"]
     expect(prompt).toContain('Paperclip Issue ID: 123');
     expect(prompt).toContain('[paperclip-run:run-456]');
     expect(prompt).toContain('Base Branch: main');
-    expect(prompt).toContain('Instruction');
-    expect(prompt).toContain('If repository changes are needed, create a pull request');
-    expect(prompt).toContain('complete without a PR');
-    expect(prompt).toContain('scope contract');
+    expect(prompt).toContain('Workflow:');
+    expect(prompt).toContain('Implement the task and relevant tests; run the relevant tests; commit and create or update a PR. Do not merge it.');
+    expect(prompt).not.toContain('scope contract');
     expect(prompt).not.toContain('A previous Jules session failed');
   });
 

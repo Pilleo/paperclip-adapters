@@ -30,6 +30,14 @@ vi.mock('../src/server/retry-policy', async (importOriginal) => {
         shouldRetry: vi.fn((c, a, config) => mod.shouldRetry(c, a, config))
     };
 });
+vi.mock('../src/server/paperclip-client', async (importOriginal) => {
+    const mod = await importOriginal<typeof import('../src/server/paperclip-client')>();
+    return {
+        ...mod,
+        upsertJulesSessionHandle: vi.fn().mockResolvedValue(undefined),
+        scheduleJulesSessionMonitor: vi.fn().mockResolvedValue(undefined),
+    };
+});
 
 beforeAll(() => {
     process.env['JULES_API_KEY'] = 'test-key';
@@ -64,7 +72,7 @@ beforeAll(() => {
     (JulesClient.prototype.listSessions as any).mockResolvedValue({ sessions: [] });
   });
 
-  it('logs warning if task identity changed but not retry', async () => {
+  it('migrates a legacy prompt-identity hash before resuming the same session', async () => {
        (JulesClient.prototype.getSession as any).mockResolvedValueOnce({ name: 'sess-1', state: 'IN_PROGRESS' });
 
        const sessionParams = sessionCodec.encode({
@@ -93,8 +101,8 @@ beforeAll(() => {
        } as any);
        const decoded = sessionCodec.decode(res.sessionParams!);
 
-       expect(baseCtx.onLog).toHaveBeenCalledWith('stderr', expect.stringContaining('[WARN] Task identity changed. Using original prompt hash for session sess-1'));
-       expect(decoded.promptHash).toBe('old-hash'); // Remains same
+       expect(decoded.promptHash).not.toBe('old-hash');
+       expect(decoded.promptHashVersion).toBeGreaterThan(2);
   });
 
   it('handles early crash creation returning jules_create_failure', async () => {

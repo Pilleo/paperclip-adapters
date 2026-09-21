@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   decidePullRequestReconciliation,
+  selectRegisteredPullRequestObservation,
   type PullRequestReconciliationInput,
 } from "../src/core/pull-request-reconciliation.js";
 
@@ -25,6 +26,46 @@ const baseInput = (overrides: Partial<PullRequestReconciliationInput> = {}): Pul
 });
 
 describe("pull-request reconciliation reducer", () => {
+  it.each([
+    ["probes a blocked managed PR missing from bounded discovery", {
+      registeredPrUrl: "https://github.com/Pilleo/repo/pull/10",
+      discoveredPrUrls: new Set<string>(),
+      hasPendingMergeApproval: false,
+      orchestratorManaged: true,
+      issueStatus: "blocked",
+    }, { kind: "probe", reason: "managed_active_pr_outside_discovery" }],
+    ["probes an in-review managed PR missing from bounded discovery", {
+      registeredPrUrl: "https://github.com/Pilleo/repo/pull/10",
+      discoveredPrUrls: new Set<string>(),
+      hasPendingMergeApproval: false,
+      orchestratorManaged: true,
+      issueStatus: "in_review",
+    }, { kind: "probe", reason: "managed_active_pr_outside_discovery" }],
+    ["keeps historical pending merge approval cleanup probeable", {
+      registeredPrUrl: "https://github.com/Pilleo/repo/pull/10",
+      discoveredPrUrls: new Set<string>(),
+      hasPendingMergeApproval: true,
+      orchestratorManaged: false,
+      issueStatus: "done",
+    }, { kind: "probe", reason: "pending_merge_approval" }],
+    ["skips a PR already present in discovery", {
+      registeredPrUrl: "https://github.com/Pilleo/repo/pull/10",
+      discoveredPrUrls: new Set(["https://github.com/Pilleo/repo/pull/10"]),
+      hasPendingMergeApproval: true,
+      orchestratorManaged: true,
+      issueStatus: "blocked",
+    }, { kind: "skip", reason: "already_discovered" }],
+    ["does not probe an unmanaged blocked task without a merge gate", {
+      registeredPrUrl: "https://github.com/Pilleo/repo/pull/10",
+      discoveredPrUrls: new Set<string>(),
+      hasPendingMergeApproval: false,
+      orchestratorManaged: false,
+      issueStatus: "blocked",
+    }, { kind: "skip", reason: "not_a_merge_cleanup_candidate" }],
+  ] as const)("%s", (_name, input, expected) => {
+    expect(selectRegisteredPullRequestObservation(input)).toMatchObject(expected);
+  });
+
   it("gives a merged PR terminal precedence over stale ready-for-review metadata", () => {
     expect(decidePullRequestReconciliation(baseInput())).toMatchObject({
       action: "COMPLETE_MERGED_PR",

@@ -39,13 +39,13 @@ describe("Jules execution blocker reconciliation", () => {
     });
   });
 
-  it("reports that the external provider is still running so Paperclip preserves the session", () => {
+  it("acknowledges Paperclip's terminal execution while retaining the durable provider handle", () => {
     const decision = decideJulesExecutionBlockerRecovery(snapshot());
     expect(decision.action).toBe("resolve_to_todo");
     if (decision.action !== "resolve_to_todo") return;
     expect(buildJulesExecutionReconciliationPayload(decision)).toMatchObject({
       executionReconciliation: {
-        providerStopped: false,
+        providerStopped: true,
         actionOutcome: "mixed",
       },
     });
@@ -72,6 +72,21 @@ describe("Jules execution blocker reconciliation", () => {
     }))).toMatchObject({
       action: "resolve_to_todo",
       recoveryBasis: "superseding_success",
+    });
+  });
+
+  it("reconciles an interrupted monitor run caused by a graceful Paperclip restart", () => {
+    expect(decideJulesExecutionBlockerRecovery(snapshot({
+      failedRun: {
+        id: runId,
+        status: "interrupted",
+        agentId: "jules-orch",
+        errorCode: "server_shutdown_interrupted",
+        finishedAt: "2026-09-20T18:00:01.000Z",
+      },
+    }))).toMatchObject({
+      action: "resolve_to_todo",
+      recoveryBasis: "server_shutdown",
     });
   });
 

@@ -24,7 +24,13 @@ export interface HeartbeatRunSummary {
   readonly sessionIdAfter: string | null;
   readonly issueId: string | null;
   readonly retryNotBefore: string | null;
+  /** Provider discriminator recorded by an external worker result. */
+  readonly provider: string | null;
   readonly providerSessionId: string | null;
+  /** Jules terminal state; absent for non-Jules workers and legacy records. */
+  readonly julesState: string | null;
+  /** Jules terminal reason, used to distinguish a completed handoff from a retry. */
+  readonly stopReason: string | null;
   /** Native Paperclip review binding, when the heartbeat was launched by a card. */
   readonly interactionId: string | null;
   readonly interactionKind: string | null;
@@ -72,7 +78,10 @@ export function parseHeartbeatRun(raw: Record<string, unknown>): HeartbeatRunSum
     sessionIdAfter: nonEmpty(raw["sessionIdAfter"]),
     issueId: nonEmpty(contextRecord["issueId"]) ?? nonEmpty(resultRecord["issueId"]),
     retryNotBefore: nonEmpty(resultRecord["retryNotBefore"]) ?? nonEmpty(raw["retryNotBefore"]),
+    provider: nonEmpty(resultRecord["provider"]),
     providerSessionId: nonEmpty(resultRecord["julesSessionId"]) ?? nonEmpty(resultRecord["sessionId"]),
+    julesState: nonEmpty(resultRecord["julesState"]),
+    stopReason: nonEmpty(resultRecord["stopReason"]),
     interactionId: nonEmpty(contextRecord["interactionId"]) ?? nonEmpty(resultRecord["interactionId"]),
     interactionKind: nonEmpty(contextRecord["interactionKind"]) ?? nonEmpty(resultRecord["interactionKind"]),
     reviewStage: nonEmpty(contextRecord["reviewStage"]) ?? nonEmpty(resultRecord["reviewStage"]),

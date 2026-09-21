@@ -13,7 +13,8 @@ Google Jules sessions can run for days, executing complex coding tasks. Papercli
 4. **Resumption**: Paperclip resumes the adapter later, injecting the durable state. If Paperclip drops that state after a host configuration change, the adapter recovers the original session from Jules by Paperclip issue marker and repository before it is allowed to create another session.
 5. **Activity bridge**: New Jules agent messages, generated plans, and progress updates are mirrored to the Paperclip issue thread with the Jules activity ID. User-message echoes and terminal/provider bookkeeping activities are not copied.
 6. **Two-way decisions**: A Jules question creates a Paperclip reply card; its typed answer is sent to Jules with `sendMessage`. A generated plan creates a parent-issue `request_item_verdicts` card for Luna. Luna approval creates the Terra card; Terra approval calls Jules `approvePlan`. A rejection is relayed to the same Jules session as plan-revision feedback. Ordinary Paperclip comments are not verdicts and are never forwarded as a substitute.
-7. **Completion**: If Jules completes and creates a PR, the adapter moves the Paperclip issue to `in_review` and clears the completed Jules session from its active/recovery state. If Jules completes without a PR, the adapter blocks the issue and creates an idempotent Paperclip confirmation. Accepting it marks the issue `done`; rejecting it leaves the issue `blocked`. Either decision clears the terminal Jules session so the confirmation cannot accidentally start another Jules task.
+7. **Prompt contract**: Jules receives the issue requirements, canonical repository, branch, concise structured scope hints when valid YAML frontmatter exists, and one recovery marker. Inline metadata-looking prose is preserved as requirements; it never becomes an invented plan or a hard scope restriction.
+8. **Completion**: If Jules completes and creates a PR, the adapter records the PR's inspected head, changed-file evidence, CI state, and mergeability before handing it to review. A pending no-PR confirmation for that same session is withdrawn first: a typed PR handoff disproves the provisional no-PR conclusion. If Jules genuinely completes without a PR, the adapter blocks the issue and creates an idempotent Paperclip confirmation. Accepting it marks the issue `done`; rejecting it leaves the issue `blocked`. Either decision clears the terminal Jules session so the confirmation cannot accidentally start another Jules task.
 8. **Reopening**: Reopening an issue after a PR-backed completion starts a new Jules task from the issue's current title and description; terminal Jules sessions are not resumed.
 9. **Recovery**: Network transient failures, crashes, and 500s trigger a reliable backoff continuation without failing the task. Exhausted retries request human intervention via interaction blocks.
 
@@ -28,6 +29,17 @@ The adapter requires `JULES_API_KEY` to securely access the Google Jules API. Cr
 Paperclip resolves the binding into the adapter runtime for each run. The key must not be put in the Jules adapter configuration, issue overrides, prompts, or the Paperclip server process environment.
 
 The adapter deliberately does not fall back to `process.env.JULES_API_KEY`; a missing binding produces a diagnostic explaining how to create it.
+
+### GitHub connector binding
+
+PR state, CI, and diff inspection run through Paperclip's run-scoped GitHub
+connector launcher injected into the resolved adapter environment. The adapter
+passes that environment to `gh` without a shell and never falls back to a
+direct unauthenticated GitHub REST request. If the connector is unavailable,
+inspection is explicitly `unavailable`; the adapter will not infer a merged,
+green, or review-ready PR from missing GitHub data. This connector is separate
+from the Jules API secret: Jules remains authenticated exclusively by the
+`JULES_API_KEY` secret binding above.
 
 ### Heartbeat requirement
 
@@ -66,7 +78,7 @@ card. The legacy writer can be removed after no persisted v2 session contains
 `reviewerChildIssueId` and one release has passed without a migration event.
 
 ## Development Requirements
-- Node 22
+- Node 24.11.0 or newer
 - `pnpm`
 - Vitest
 

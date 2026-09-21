@@ -1,7 +1,8 @@
 import process from "node:process";
 import { assertProjectBackedGitWorkspace } from "../src/core/real-e2e-project-contract.js";
 import { assertAuthoritativeCanaryChain, buildCanaryA, buildCanaryB, buildCanaryC, buildCanaryOrchestratorWake } from "../src/core/real-e2e-canary-fixture.js";
-import { assertProjectReadyForCanary, selectExistingDisposableProject } from "../src/core/real-e2e-project-registry.js";
+import { parseCanaryIssueSnapshot } from "../src/core/real-e2e-canary-progress.js";
+import { assertProjectReadyForCanary, canaryProjectIssuesPath, selectExistingDisposableProject } from "../src/core/real-e2e-project-registry.js";
 
 const apiUrl = process.env["PAPERCLIP_TEST_API_URL"]?.replace(/\/+$/, "");
 const companyId = process.env["PAPERCLIP_E2E_COMPANY_ID"];
@@ -46,19 +47,23 @@ async function main(): Promise<void> {
   const projectRecord = selection.project;
   const contract = assertProjectBackedGitWorkspace(projectRecord, repoUrl, "master");
   if (!contract.ok) throw new Error(`Disposable project must already own the configured SSH repository: ${contract.reason}`);
-  const issues = await request(`/api/companies/${companyId}/issues`, "GET");
-  const readiness = assertProjectReadyForCanary((Array.isArray(issues) ? issues : []).filter((issue) => issue?.projectId === projectId));
+  const issues = await request(canaryProjectIssuesPath(companyId, projectId), "GET");
+  const readiness = assertProjectReadyForCanary(Array.isArray(issues) ? issues : []);
   if (!readiness.ok) throw new Error(`Previous canary remains nonterminal: ${readiness.blockingIssueIds.join(", ")}`);
   const runKey = `${Date.now()}-${process.pid}`;
   const issueA = object(await request(`/api/companies/${companyId}/issues`, "POST", buildCanaryA(projectId, runKey)), "issue A");
   const issueB = object(await request(`/api/companies/${companyId}/issues`, "POST", buildCanaryB(projectId, runKey, String(issueA["id"]))), "issue B");
   const issueC = object(await request(`/api/companies/${companyId}/issues`, "POST", buildCanaryC(projectId, runKey, String(issueB["id"]))), "issue C");
-  const chain = assertAuthoritativeCanaryChain(
-    object(await request(`/api/issues/${issueA["id"]}`, "GET"), "issue A detail"),
-    object(await request(`/api/issues/${issueB["id"]}`, "GET"), "issue B detail"),
-    object(await request(`/api/issues/${issueC["id"]}`, "GET"), "issue C detail"),
-  );
+  const issueADetail = object(await request(`/api/issues/${issueA["id"]}`, "GET"), "issue A detail");
+  const issueBDetail = object(await request(`/api/issues/${issueB["id"]}`, "GET"), "issue B detail");
+  const issueCDetail = object(await request(`/api/issues/${issueC["id"]}`, "GET"), "issue C detail");
+  const chain = assertAuthoritativeCanaryChain(issueADetail, issueBDetail, issueCDetail);
   if (!chain.ok) throw new Error(`Paperclip did not persist native canary blockers: ${chain.reason}`);
+  for (const [label, detail] of [["A", issueADetail], ["B", issueBDetail], ["C", issueCDetail]] as const) {
+    const snapshot = parseCanaryIssueSnapshot(detail);
+    if ("kind" in snapshot) throw new Error(`Paperclip persisted malformed ${label} canary detail: ${snapshot.reason}`);
+    if (!snapshot.orchestratorManaged) throw new Error(`Paperclip persisted ${label} as unmanaged despite its canonical task contract`);
+  }
   const wake = object(await request(
     `/api/agents/${orchestratorId}/wakeup`,
     "POST",

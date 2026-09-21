@@ -156,6 +156,71 @@ describe("orchestrator native PR completion", () => {
     expect(logs.join("\n")).toContain("[Review outcome] [MAZ-1519] pipeline:CREATE_MERGE_APPROVAL");
   });
 
+  it("recovers one overdue orphaned Luna card through one interaction-bound public wake", async () => {
+    const interactions = [{
+      id: "orphaned-luna-card",
+      kind: "request_item_verdicts",
+      status: "pending",
+      continuationPolicy: "none",
+      addresseeAgentId: "luna-1",
+      idempotencyKey: `pr-review:v13:${issueId}:${prUrl}:${headSha}:luna`,
+      createdAt: "2026-09-20T10:00:00.000Z",
+    }];
+    const withdrawals: string[] = [];
+    const creations: Record<string, unknown>[] = [];
+    const reviewerWakes: Record<string, unknown>[] = [];
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      const method = (init?.method || "GET").toUpperCase();
+      if (href.includes("/agents/") && href.endsWith("/wakeup") && method === "POST") {
+        reviewerWakes.push(JSON.parse(String(init?.body || "{}")));
+        return new Response(JSON.stringify({ id: "luna-recovery-run", status: "queued" }), { status: 202 });
+      }
+      if (href.includes("/agents")) return new Response(JSON.stringify(managedAgents()));
+      if (href.includes("/projects")) return new Response(JSON.stringify([{ id: "project-1519", name: "fixture", primaryWorkspace: { cwd: process.cwd() } }]));
+      if (method === "GET" && href.endsWith(`/api/issues/${issueId}`)) return new Response(JSON.stringify(issue()));
+      if (method === "POST" && href.endsWith(`/api/issues/${issueId}/interactions/orphaned-luna-card/withdraw`)) {
+        withdrawals.push("orphaned-luna-card");
+        interactions[0]!.status = "cancelled";
+        return new Response(JSON.stringify({ id: "orphaned-luna-card", status: "cancelled" }));
+      }
+      if (method === "POST" && href.endsWith(`/api/issues/${issueId}/interactions`)) {
+        const body = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+        if (body["kind"] === "request_item_verdicts") creations.push(body);
+        return new Response(JSON.stringify({ id: body["kind"] === "request_item_verdicts" ? "replacement-luna-card" : "other-card", status: "pending" }), { status: 201 });
+      }
+      if (href.endsWith(`/api/issues/${issueId}/interactions`)) return new Response(JSON.stringify(interactions));
+      if (href.includes(`/api/issues/${issueId}/children`)) return new Response(JSON.stringify([]));
+      if (href.includes(`/api/issues/${issueId}/recovery-actions`)) return new Response(JSON.stringify({ active: null }));
+      if (method === "PATCH" && href.endsWith(`/api/issues/${issueId}`)) return new Response(JSON.stringify(issue()));
+      if (href.includes("/heartbeat-runs")) return new Response(JSON.stringify([]));
+      if (href.includes("/issues") && method === "GET") return new Response(JSON.stringify([issue()]));
+      if (href.includes("/approvals")) return new Response(JSON.stringify([]));
+      return new Response(JSON.stringify([]));
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const result = await execute(context());
+    const repeated = await execute(context());
+
+    expect(result.exitCode).toBe(0);
+    expect(repeated.exitCode).toBe(0);
+    expect(withdrawals).toEqual([]);
+    expect(creations).toEqual([]);
+    expect(reviewerWakes).toEqual([{
+      source: "automation",
+      triggerDetail: "system",
+      reason: "native_review_dispatch_recovery",
+      forceFreshSession: true,
+      payload: {
+        issueId,
+        mutation: "interaction",
+        interactionId: "orphaned-luna-card",
+        interactionKind: "request_item_verdicts",
+      },
+    }]);
+  });
+
   it("keeps a red Jules PR in provider remediation for the whole heartbeat", async () => {
     const redIssueId = "issue-red-ci";
     const redIssue = {
@@ -209,6 +274,98 @@ describe("orchestrator native PR completion", () => {
     expect(wakes).toHaveLength(1);
   });
 
+  it("hands a completed Jules PR producer to native review instead of retaining its stale monitor", async () => {
+    const terminalProducerRunId = "jules-pr-producer";
+    const terminalIssue = {
+      ...issue(),
+      status: "in_progress",
+      assigneeAgentId: "jules-1",
+      executionPolicy: {
+        mode: "normal",
+        stages: [],
+        monitor: {
+          kind: "external_service",
+          serviceName: "jules",
+          externalRef: "session-pr-11",
+          nextCheckAt: "2026-09-21T09:31:46.000Z",
+        },
+      },
+      executionState: { status: "idle", monitor: { kind: "external_service", serviceName: "jules", status: "scheduled" } },
+      workProducts: [{
+        ...issue().workProducts[0],
+        id: "work-product-terminal-handoff",
+        createdByRunId: terminalProducerRunId,
+        metadata: { source: "jules", producer: "paperclip-jules-adapter", headSha },
+      }],
+    };
+    let persistedIssue = terminalIssue;
+    const patches: Record<string, unknown>[] = [];
+    const wakes: string[] = [];
+    const logs: string[] = [];
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      const method = (init?.method || "GET").toUpperCase();
+      if (method === "POST" && href.includes("/wakeup")) {
+        wakes.push(href);
+        return new Response(JSON.stringify({ status: "started" }), { status: 202 });
+      }
+      if (href.includes("/agents")) return new Response(JSON.stringify(managedAgents()));
+      if (href.includes("/projects")) return new Response(JSON.stringify([{ id: "project-1519", name: "fixture", primaryWorkspace: { cwd: process.cwd() } }]));
+      if (method === "GET" && href.endsWith(`/api/issues/${issueId}`)) return new Response(JSON.stringify(persistedIssue));
+      if (method === "PATCH" && href.endsWith(`/api/issues/${issueId}`)) {
+        const patch = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+        patches.push(patch);
+        persistedIssue = { ...persistedIssue, ...patch };
+        return new Response(JSON.stringify(persistedIssue));
+      }
+      if (href.includes(`/api/issues/${issueId}/interactions`)) return new Response(JSON.stringify([]));
+      if (href.includes(`/api/issues/${issueId}/children`)) return new Response(JSON.stringify([]));
+      if (href.includes(`/api/issues/${issueId}/recovery-actions`)) return new Response(JSON.stringify({ active: null }));
+      if (method === "GET" && href.endsWith(`/api/heartbeat-runs/${terminalProducerRunId}`)) return new Response(JSON.stringify({
+        id: terminalProducerRunId,
+        agentId: "jules-1",
+        status: "succeeded",
+        startedAt: "2026-09-21T09:16:30.000Z",
+        finishedAt: "2026-09-21T09:16:46.000Z",
+        contextSnapshot: { issueId },
+        resultJson: {
+          provider: "jules",
+          julesSessionId: "session-pr-11",
+          julesState: "COMPLETED",
+          stopReason: "completed",
+          pending: true,
+          retryNotBefore: "2099-09-21T09:31:46.000Z",
+        },
+      }));
+      // Paperclip's list endpoint omits `resultJson`; the recovery decision
+      // must hydrate the exact work-product producer rather than treating a
+      // lossy list projection as an active provider session.
+      if (href.includes("/heartbeat-runs")) return new Response(JSON.stringify([{
+        id: terminalProducerRunId,
+        agentId: "jules-1",
+        status: "succeeded",
+        startedAt: "2026-09-21T09:16:30.000Z",
+        finishedAt: "2026-09-21T09:16:46.000Z",
+        resultJson: null,
+      }]));
+      if (method === "GET" && href.includes("/issues")) return new Response(JSON.stringify([persistedIssue]));
+      if (method === "GET" && href.includes("/approvals")) return new Response(JSON.stringify([]));
+      return new Response(JSON.stringify([]));
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    await expect(execute({ ...context(), onLog: async (_stream, line) => { logs.push(line); } })).resolves.toMatchObject({ exitCode: 0 });
+
+    expect(patches).toContainEqual({
+      status: "in_review",
+      assigneeAgentId: null,
+      executionPolicy: null,
+      executionState: null,
+    });
+    expect(wakes).toEqual([]);
+    expect(logs.join("\n")).toContain("Recovered open Jules PR for [MAZ-1519] into native review.");
+  });
+
   it("invalidates only the matching pending merge approval after GitHub confirms an external merge", async () => {
     const logs: string[] = [];
     const mergedIssue = {
@@ -218,6 +375,7 @@ describe("orchestrator native PR completion", () => {
         id: "work-product-1519",
       }],
     };
+    let persistedIssue = mergedIssue;
     vi.mocked(fetchGitHubPullRequests).mockResolvedValue({
       openPrs: [],
       mergedPrs: [{
@@ -238,13 +396,13 @@ describe("orchestrator native PR completion", () => {
       const method = (init?.method || "GET").toUpperCase();
       if (href.includes("/agents")) return new Response(JSON.stringify(managedAgents()));
       if (href.includes("/projects")) return new Response(JSON.stringify([{ id: "project-1519", name: "fixture", primaryWorkspace: { cwd: process.cwd() } }]));
-      if (method === "GET" && href.endsWith(`/api/issues/${issueId}`)) return new Response(JSON.stringify(mergedIssue));
+      if (method === "GET" && href.endsWith(`/api/issues/${issueId}`)) return new Response(JSON.stringify(persistedIssue));
       if (href.includes(`/api/issues/${issueId}/comments`)) return new Response(JSON.stringify([]));
       if (href.includes(`/api/issues/${issueId}/interactions`)) return new Response(JSON.stringify([]));
       if (href.includes(`/api/issues/${issueId}/children`)) return new Response(JSON.stringify([]));
       if (href.includes(`/api/issues/${issueId}/recovery-actions`)) return new Response(JSON.stringify({ active: null }));
       if (href.includes("/heartbeat-runs")) return new Response(JSON.stringify([]));
-      if (method === "GET" && href.includes("/issues")) return new Response(JSON.stringify([mergedIssue]));
+      if (method === "GET" && href.includes("/issues")) return new Response(JSON.stringify([persistedIssue]));
       if (method === "GET" && href.includes("/approvals")) {
         return new Response(JSON.stringify([{
           id: "approval-wrong-pr",
@@ -268,9 +426,11 @@ describe("orchestrator native PR completion", () => {
       if (method === "POST" && href.endsWith("/api/approvals/approval-1519/reject")) {
         return new Response(JSON.stringify({ id: "approval-1519", status: "rejected" }));
       }
-      if (method === "PATCH" && (href.endsWith(`/api/issues/${issueId}`) || href.endsWith("/api/work-products/work-product-1519"))) {
-        return new Response(JSON.stringify({}));
+      if (method === "PATCH" && href.endsWith(`/api/issues/${issueId}`)) {
+        persistedIssue = { ...persistedIssue, ...JSON.parse(String(init?.body || "{}")) };
+        return new Response(JSON.stringify(persistedIssue));
       }
+      if (method === "PATCH" && href.endsWith("/api/work-products/work-product-1519")) return new Response(JSON.stringify({}));
       return new Response(JSON.stringify([]));
     });
     globalThis.fetch = fetchMock as typeof fetch;
@@ -290,33 +450,107 @@ describe("orchestrator native PR completion", () => {
   });
 
   it("hydrates a registered PR outside the discovery window before invalidating its stale merge approval", async () => {
+    const logs: string[] = [];
     const mergedIssue = {
       ...issue(),
       status: "done",
       workProducts: [{ ...issue().workProducts[0], id: "work-product-outside-window", status: "merged", reviewState: "approved" }],
     };
+    let persistedIssue = mergedIssue;
     vi.mocked(fetchGitHubPullRequests).mockResolvedValue({ openPrs: [], mergedPrs: [], openPrFiles: new Set() });
     vi.mocked(fetchGitHubPullRequest).mockResolvedValue({
       number: 3, title: "MAZ-1519 Jules PR", state: "MERGED", headRefName: "jules/1519", headRefOid: headSha,
-      baseRefName: "main", mergedAt: "2026-09-16T12:39:29Z", url: prUrl, files: [],
+      baseRefName: "main", mergedAt: "2026-09-16T12:39:30Z", url: prUrl, files: [],
     });
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
       const href = String(url);
       const method = (init?.method || "GET").toUpperCase();
       if (href.includes("/agents")) return new Response(JSON.stringify(managedAgents()));
       if (href.includes("/projects")) return new Response(JSON.stringify([{ id: "project-1519", name: "fixture", primaryWorkspace: { cwd: process.cwd() } }]));
-      if (method === "GET" && href.endsWith(`/api/issues/${issueId}`)) return new Response(JSON.stringify(mergedIssue));
+      if (method === "GET" && href.endsWith(`/api/issues/${issueId}`)) return new Response(JSON.stringify(persistedIssue));
       if (href.includes(`/api/issues/${issueId}/comments`)) return new Response(JSON.stringify([{ body: "merge audit already recorded" }]));
       if (href.includes(`/api/issues/${issueId}/interactions`)) return new Response(JSON.stringify([]));
       if (href.includes(`/api/issues/${issueId}/children`)) return new Response(JSON.stringify([]));
       if (href.includes(`/api/issues/${issueId}/recovery-actions`)) return new Response(JSON.stringify({ active: null }));
       if (href.includes("/heartbeat-runs")) return new Response(JSON.stringify([]));
-      if (method === "GET" && href.includes("/issues")) return new Response(JSON.stringify([mergedIssue]));
+      if (method === "GET" && href.includes("/issues")) return new Response(JSON.stringify([persistedIssue]));
       if (method === "GET" && href.includes("/approvals")) return new Response(JSON.stringify([{
         id: "approval-outside-window", type: "request_board_approval", status: "pending", issueIds: [issueId],
         payload: { action: "task_merge", issueId, prNumber: 3, prUrl },
       }]));
       if (method === "POST" && href.endsWith("/api/approvals/approval-outside-window/reject")) return new Response(JSON.stringify({ id: "approval-outside-window", status: "rejected" }));
+      if (method === "PATCH" && href.endsWith(`/api/issues/${issueId}`)) {
+        persistedIssue = { ...persistedIssue, ...JSON.parse(String(init?.body || "{}")) };
+        return new Response(JSON.stringify(persistedIssue));
+      }
+      return new Response(JSON.stringify([]));
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    await expect(execute({ ...context(), onLog: async (_stream, line) => { logs.push(line); } })).resolves.toMatchObject({ exitCode: 0 });
+
+    expect(fetchGitHubPullRequest).toHaveBeenCalledWith(process.cwd(), prUrl);
+    expect(fetchMock.mock.calls.some(([url, init]) =>
+      String(url).endsWith("/api/approvals/approval-outside-window/reject") && (init?.method || "GET").toUpperCase() === "POST",
+    )).toBe(true);
+    expect(logs.join("\n")).not.toContain("Failed to reconcile merged issue");
+  });
+
+  it("directly reconciles an omitted merged PR before host review recovery can revive its blocked task", async () => {
+    const mergedIssue = {
+      ...issue(),
+      status: "blocked",
+      assigneeAgentId: "luna-1",
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{ type: "review", participants: [{ type: "agent", agentId: "luna-1" }] }],
+      },
+      executionState: { status: "pending", currentStage: "luna" },
+      workProducts: [{
+        ...issue().workProducts[0],
+        id: "work-product-blocked-merged",
+        status: "ready_for_review",
+        reviewState: "none",
+      }],
+    };
+    let persistedIssue = mergedIssue;
+    const issuePatches: Record<string, unknown>[] = [];
+    const cancelledRunIds: string[] = [];
+    vi.mocked(fetchGitHubPullRequests).mockResolvedValue({ openPrs: [], mergedPrs: [], openPrFiles: new Set() });
+    vi.mocked(fetchGitHubPullRequest).mockResolvedValue({
+      number: 3, title: "MAZ-1519 Jules PR", state: "MERGED", headRefName: "jules/1519", headRefOid: headSha,
+      baseRefName: "main", mergedAt: "2026-09-21T07:13:23Z", url: prUrl, files: [],
+    });
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      const method = (init?.method || "GET").toUpperCase();
+      if (href.includes("/agents")) return new Response(JSON.stringify(managedAgents()));
+      if (href.includes("/projects")) return new Response(JSON.stringify([{ id: "project-1519", name: "fixture", primaryWorkspace: { cwd: process.cwd() } }]));
+      if (method === "POST" && href.endsWith("/api/heartbeat-runs/host-luna-run/cancel")) {
+        cancelledRunIds.push("host-luna-run");
+        return new Response(JSON.stringify({ id: "host-luna-run", status: "cancelled" }));
+      }
+      if (method === "GET" && href.endsWith(`/api/issues/${issueId}`)) return new Response(JSON.stringify(persistedIssue));
+      if (method === "PATCH" && href.endsWith(`/api/issues/${issueId}`)) {
+        const patch = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+        issuePatches.push(patch);
+        persistedIssue = { ...persistedIssue, ...patch };
+        return new Response(JSON.stringify(persistedIssue));
+      }
+      if (method === "PATCH" && href.endsWith("/api/work-products/work-product-blocked-merged")) return new Response(JSON.stringify({}));
+      if (href.includes(`/api/issues/${issueId}/comments`)) return new Response(JSON.stringify([]));
+      if (href.includes(`/api/issues/${issueId}/interactions`)) return new Response(JSON.stringify([]));
+      if (href.includes(`/api/issues/${issueId}/children`)) return new Response(JSON.stringify([]));
+      if (href.includes(`/api/issues/${issueId}/recovery-actions`)) return new Response(JSON.stringify({ active: null }));
+      if (href.includes("/heartbeat-runs")) return new Response(JSON.stringify([
+        { id: "host-luna-run", agentId: "luna-1", status: "running", contextSnapshot: { issueId } },
+      ]));
+      if (method === "GET" && href.includes("/issues")) return new Response(JSON.stringify([persistedIssue]));
+      if (method === "GET" && href.includes("/approvals")) return new Response(JSON.stringify([]));
+      if (href.includes("/wakeup") || href.includes("/interactions") && method === "POST") {
+        return new Response(JSON.stringify({ error: "a merged task must not wake an executor or reviewer" }), { status: 500 });
+      }
       return new Response(JSON.stringify([]));
     });
     globalThis.fetch = fetchMock as typeof fetch;
@@ -324,9 +558,17 @@ describe("orchestrator native PR completion", () => {
     await expect(execute(context())).resolves.toMatchObject({ exitCode: 0 });
 
     expect(fetchGitHubPullRequest).toHaveBeenCalledWith(process.cwd(), prUrl);
+    expect(cancelledRunIds).toEqual(["host-luna-run"]);
+    expect(issuePatches).toContainEqual({
+      status: "done",
+      assigneeAgentId: null,
+      executionPolicy: null,
+      executionState: null,
+    });
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/wakeup"))).toBe(false);
     expect(fetchMock.mock.calls.some(([url, init]) =>
-      String(url).endsWith("/api/approvals/approval-outside-window/reject") && (init?.method || "GET").toUpperCase() === "POST",
-    )).toBe(true);
+      String(url).includes("/interactions") && (init?.method || "GET").toUpperCase() === "POST",
+    )).toBe(false);
   });
 
   it("retries failed stale-approval invalidation without reviving a merged task", async () => {
@@ -335,7 +577,7 @@ describe("orchestrator native PR completion", () => {
       ...issue(),
       workProducts: [{ ...issue().workProducts[0], id: "work-product-retry" }],
     };
-    let persistedStatus = "in_review";
+    let persistedIssue = mergedIssue;
     vi.mocked(fetchGitHubPullRequests).mockResolvedValue({
       openPrs: [],
       mergedPrs: [{
@@ -350,13 +592,13 @@ describe("orchestrator native PR completion", () => {
       const method = (init?.method || "GET").toUpperCase();
       if (href.includes("/agents")) return new Response(JSON.stringify(managedAgents()));
       if (href.includes("/projects")) return new Response(JSON.stringify([{ id: "project-1519", name: "fixture", primaryWorkspace: { cwd: process.cwd() } }]));
-      if (method === "GET" && href.endsWith(`/api/issues/${issueId}`)) return new Response(JSON.stringify({ ...mergedIssue, status: persistedStatus }));
+      if (method === "GET" && href.endsWith(`/api/issues/${issueId}`)) return new Response(JSON.stringify(persistedIssue));
       if (href.includes(`/api/issues/${issueId}/comments`)) return new Response(JSON.stringify([]));
       if (href.includes(`/api/issues/${issueId}/interactions`)) return new Response(JSON.stringify([]));
       if (href.includes(`/api/issues/${issueId}/children`)) return new Response(JSON.stringify([]));
       if (href.includes(`/api/issues/${issueId}/recovery-actions`)) return new Response(JSON.stringify({ active: null }));
       if (href.includes("/heartbeat-runs")) return new Response(JSON.stringify([]));
-      if (method === "GET" && href.includes("/issues")) return new Response(JSON.stringify([{ ...mergedIssue, status: persistedStatus }]));
+      if (method === "GET" && href.includes("/issues")) return new Response(JSON.stringify([persistedIssue]));
       if (method === "GET" && href.includes("/approvals")) return new Response(JSON.stringify([{
         id: "approval-retry", type: "request_board_approval", status: "pending", issueIds: [issueId],
         payload: { action: "task_merge", issueId, prNumber: 3, prUrl },
@@ -368,8 +610,8 @@ describe("orchestrator native PR completion", () => {
           : new Response(JSON.stringify({ id: "approval-retry", status: "rejected" }));
       }
       if (method === "PATCH" && href.endsWith(`/api/issues/${issueId}`)) {
-        persistedStatus = JSON.parse(String(init?.body || "{}")).status || persistedStatus;
-        return new Response(JSON.stringify({}));
+        persistedIssue = { ...persistedIssue, ...JSON.parse(String(init?.body || "{}")) };
+        return new Response(JSON.stringify(persistedIssue));
       }
       if (method === "PATCH" && href.endsWith("/api/work-products/work-product-retry")) return new Response(JSON.stringify({}));
       return new Response(JSON.stringify([]));
@@ -380,9 +622,10 @@ describe("orchestrator native PR completion", () => {
     await expect(execute({ ...context(), onLog: async (_stream, line) => { logs.push(line); } })).resolves.toMatchObject({ exitCode: 0 });
 
     expect(rejectAttempts).toBe(2);
-    expect(persistedStatus).toBe("done");
+    expect(persistedIssue.status).toBe("done");
     expect(logs.join("\n")).toContain("The task will remain terminal and cleanup will retry.");
     expect(logs.join("\n")).toContain("invalidated stale final merge approval approval-retry");
+    expect(logs.join("\n")).not.toContain("Failed to reconcile merged issue");
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/wakeup"))).toBe(false);
   });
 });

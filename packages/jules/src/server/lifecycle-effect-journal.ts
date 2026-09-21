@@ -1,10 +1,20 @@
 import { z } from "zod";
 
-export const LifecycleEffectKindSchema = z.enum(["deliver_verdict", "send_provider_message", "approve_plan", "rearm_monitor", "legacy_unknown"]);
+export const LifecycleEffectKindSchema = z.enum([
+  "deliver_verdict",
+  "send_provider_message",
+  "create_card",
+  "replace_plan_card",
+  "recover_plan_dispatch",
+  "approve_plan",
+  "request_plan_revision",
+  "rearm_monitor",
+  "legacy_unknown",
+]);
 export type LifecycleEffectKind = z.infer<typeof LifecycleEffectKindSchema>;
 
 export type LifecycleEffectAttempt =
-  | { readonly kind: "started"; readonly startedAt: string }
+  | { readonly kind: "started"; readonly startedAt: string; readonly attempts: number }
   | { readonly kind: "confirmed"; readonly receipt: string };
 
 export interface LifecycleEffectEntry {
@@ -24,7 +34,13 @@ export const LifecycleEffectJournalSchema = z.object({
     effectId: z.string().min(1),
     kind: LifecycleEffectKindSchema,
     attempt: z.discriminatedUnion("kind", [
-      z.object({ kind: z.literal("started"), startedAt: z.string().datetime() }),
+      z.object({
+        kind: z.literal("started"),
+        startedAt: z.string().datetime(),
+        // Sessions persisted before retry tracking have one already-issued
+        // attempt; decode them rather than treating them as a new mutation.
+        attempts: z.number().int().positive().max(2).optional().transform((value) => value ?? 1),
+      }),
       z.object({ kind: z.literal("confirmed"), receipt: z.string().min(1) }),
     ]),
   })).max(50),
@@ -47,9 +63,39 @@ export function beginEffect(
     effects: [...journal.effects, {
       effectId: input.effectId,
       kind: input.kind,
-      attempt: { kind: "started", startedAt: input.startedAt },
+      attempt: { kind: "started", startedAt: input.startedAt, attempts: 1 },
     }],
   };
+}
+
+/**
+ * Records the only permitted replay: a read-after-write reconciliation has
+ * authoritatively proved the native operation absent. Native effects have at
+ * most two total attempts so a broken remote cannot cause session churn.
+ */
+export function retryStartedEffect(
+  journal: LifecycleEffectJournal,
+  effectId: string,
+  startedAt: string,
+): LifecycleEffectJournal {
+  let found = false;
+  const effects = journal.effects.map((effect): LifecycleEffectEntry => {
+    if (effect.effectId !== effectId) return effect;
+    found = true;
+    if (effect.attempt.kind !== "started") {
+      throw new Error(`Cannot retry confirmed lifecycle effect ${effectId}`);
+    }
+    const attempts = effect.attempt.attempts ?? 1;
+    if (attempts >= 2) {
+      throw new Error(`Native-plan retry limit reached for ${effectId}`);
+    }
+    return {
+      ...effect,
+      attempt: { kind: "started", startedAt, attempts: attempts + 1 },
+    };
+  });
+  if (!found) throw new Error(`Cannot retry unknown lifecycle effect ${effectId}`);
+  return { version: 1, effects };
 }
 
 /** A receipt is the only evidence that allows a restart to skip reconciliation. */

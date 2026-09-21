@@ -3,7 +3,7 @@ import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { execute } from "../src/server/execute.js";
 import { JulesClient } from "../src/server/jules-client.js";
 import { sessionCodec } from "../src/server/session.js";
-import { createJulesPlanApprovalInteraction } from "../src/server/paperclip-client.js";
+import { createJulesPlanApprovalInteraction, createJulesPlanReviewInteraction } from "../src/server/paperclip-client.js";
 import { createCheapReviewer, createTerraCodexReviewer } from "../src/server/plan-reviewer.js";
 
 vi.mock("../src/server/jules-client", async (importOriginal) => {
@@ -36,7 +36,15 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
       id: "inter-plan-1",
       planRevision: { documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1 },
     }),
+    saveJulesPlanDocument: vi.fn().mockResolvedValue({
+      documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1,
+    }),
+    createJulesPlanReviewInteraction: vi.fn().mockResolvedValue({
+      id: "native-plan-luna-1", status: "pending", kind: "request_item_verdicts",
+    }),
     createIssueComment: vi.fn().mockResolvedValue(undefined),
+    upsertJulesSessionHandle: vi.fn().mockResolvedValue(undefined),
+    registerPullRequestWorkProduct: vi.fn().mockResolvedValue(undefined),
     getPaperclipInteraction: vi.fn(),
     moveIssueToBlocked: vi.fn(),
     moveIssueToInProgress: vi.fn(),
@@ -233,7 +241,7 @@ describe("E2E plan review ladder (static → Mistral → Luna → Terra/Codex �
     expect(result.summary).toMatch(/operator/);
   });
 
-  it("auto-approves when planApprovalPolicy is required and Terra/Codex is confident", async () => {
+  it("creates the addressed Luna card when planApprovalPolicy is required", async () => {
     await presentPlan([
       { title: "Modify SandboxDispatcher.kt to add bounded cache" },
       { title: "Add unit tests in SandboxDispatcherTest.kt and run ./gradlew test" },
@@ -245,13 +253,19 @@ describe("E2E plan review ladder (static → Mistral → Luna → Terra/Codex �
           companyId: "c-1",
           name: "Jules",
           adapterType: "jules",
-          adapterConfig: { ...adapterConfig, planApprovalPolicy: "required" },
+          adapterConfig: {
+            ...adapterConfig,
+            planApprovalPolicy: "required",
+            planReviewerAgentId: "00000000-0000-4000-8000-000000000123",
+            planStrongReviewerAgentId: "00000000-0000-4000-8000-000000000124",
+          },
         },
         config: { ...adapterConfig, planApprovalPolicy: "required" },
       }),
     );
-    expect(terraSpy).toHaveBeenCalled();
-    expect(JulesClient.prototype.approvePlan).toHaveBeenCalledWith("session-141");
+    expect(terraSpy).not.toHaveBeenCalled();
+    expect(createJulesPlanReviewInteraction).toHaveBeenCalledTimes(1);
+    expect(JulesClient.prototype.approvePlan).not.toHaveBeenCalled();
     expect(createJulesPlanApprovalInteraction).not.toHaveBeenCalled();
     expect(result.exitCode).toBe(0);
   });

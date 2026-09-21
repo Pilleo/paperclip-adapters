@@ -77,13 +77,14 @@ wake a reviewer before that reconciliation finishes, otherwise a stale
 ### 6. Recovering One Failed Native Review Without Spam
 
 First inspect the issue interactions and the addressed reviewer's latest
-heartbeat runs. Only if there is exactly one pending native verdict card and
-no active reviewer run, reuse that card with
-`packages/orchestrator/scripts/recover-native-review.mjs`. The expected outcome
-is the same card becoming `answered`. A new card, a normal issue comment, or a
-second concurrent wake is a recovery failure, not progress.
+heartbeat runs. Do not wake a reviewer or reuse a card manually. After its
+grace period the adapter either observes a bound run, sends one idempotent
+public interaction wake for that exact no-run card, replaces exactly one card
+after a terminal bound reviewer run, or records a visible protocol failure.
+Normal comments and a second concurrent wake are recovery failures, not
+progress. `recover-native-review.mjs` is intentionally diagnostic-only.
 
 If the reviewer reports `missing_runtime_context`, treat the terminal run as a
-transport failure, not a review decision. The orchestrator reuses the same
-pending card once with its terminal-run idempotency key. Do not reassign the
-issue to Jules or write a prose fallback while that card remains pending.
+transport failure, not a review decision. The orchestrator uses its bounded
+terminal-run replacement path; do not reassign the issue to Jules or write a
+prose fallback.

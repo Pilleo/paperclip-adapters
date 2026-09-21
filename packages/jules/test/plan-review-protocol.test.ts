@@ -63,11 +63,26 @@ describe("typed Jules plan-review protocol", () => {
     );
   });
 
+  it("accepts the one bounded recovery generation through the shared identity parser", () => {
+    const observation = parsePlanReviewInteraction(
+      v2Card({ idempotencyKey: "jules:plan-review:v2:issue-985:session-985:revision-29:luna:recovery:1" }),
+      identity,
+    );
+    expect(observation).toMatchObject({ kind: "v2", state: "pending" });
+  });
+
+  it("generates the deterministic recovery key only when explicitly requested", () => {
+    expect(planReviewIdempotencyKey({ ...identity, generation: 1 })).toBe(
+      "jules:plan-review:v2:issue-985:session-985:revision-29:luna:recovery:1",
+    );
+    expect(planReviewIdempotencyKey(identity)).not.toContain(":recovery:");
+  });
+
   it.each([
-    "jules:plan-review:v2:issue-985:session-985:revision-29:luna:recovery:1",
     "jules:plan-review:v2:issue-985:session-985:revision-29:luna:recovery:one",
     "jules:plan-review:v2:issue-985:session-985:revision-29:luna:recovery:0",
-  ])("does not accept recovery-suffixed v2 key %s", (idempotencyKey) => {
+    "jules:plan-review:v2:issue-985:session-985:revision-29:luna:recovery:2",
+  ])("rejects an unsupported recovery generation %s", (idempotencyKey) => {
     const observation = parsePlanReviewInteraction(v2Card({ idempotencyKey }), identity);
     expect(observation).toMatchObject({ kind: "unrecognized" });
   });

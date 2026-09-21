@@ -23,3 +23,6 @@ export * from "./decision-ladder.js";
 export * from "./structured-decision-dispatch.js";
 export * from "./jules-polling.js";
 export * from "./jules-lifecycle.js";
+export * from "./jules-plan-review-identity.js";
+export * from "./native-review-dispatch.js";
+export * from "./task-contract.js";

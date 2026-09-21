@@ -49,23 +49,24 @@ import { identifyStalledIssues } from "../core/stalled-session-reaper.js";
 import { hasDelegatedReviewChild, hasDelegatedReviewHistory, isDelegatedReviewChild } from "../core/recovery-eligibility.js";
 import { evaluateReviewPipelineProgress, hasStaleReviewerOwnership, isReviewDispatchDecision, operatorGateReconciliationPatch, reviewDispatchStage } from "../core/review-pipeline.js";
 import { buildReviewInteractionRequest, hasCompletedNativeApprovalLadderForHead, hasNativeRejectionForHead, isCanonicalReviewCardKey, isReviewInteractionForIssue, planReviewDialog, reviewInteractionIdempotencyKey, reviewInteractionIdempotencyKeys, selectReviewAttempt, selectReviewCardsToWithdrawAfterRejection, selectReviewRunDispatch, shouldDeferPrReviewDispatch, type PrReviewStage } from "../core/review-interaction-state.js";
-import { findReviewCardBinding, nativeReviewRecoveryWakeKey } from "../core/review-session-state.js";
-import { prepareAndWakeNativeReview, revalidateNativeReviewWake, selectNativeReviewWakeAnchor } from "../core/native-review-recovery.js";
+import { findReviewCardBinding } from "../core/review-session-state.js";
 import {
-  buildMazewallExecutionPolicy,
   NATIVE_PR_REVIEW_STAGE_IDS,
   issueHasExecutionPolicy,
-  issueHasUnsafeVibeReviewParticipant,
-  issueNeedsExecutionPolicyBackfill,
+  isMergedPrTerminalProjection,
+  mergedPrTerminalPatch,
+  nativeManagedExecutionDispatchPatch,
   nativePrReviewCleanupPatch,
   nativePrReviewWaitPatch,
+  requiresMergedPrTerminalOwnershipCleanup,
+  isNativePrReviewHandoffProjection,
   shouldTakeOverNativePrReview,
   shouldRecoverNativePrReview,
 } from "../core/execution-policy.js";
 import { rebasePrBranchLocally } from "../core/local-rebase.js";
 import { evaluateAgentHealth, AgentHealthReport } from "../core/agent-health-monitor.js";
 import { mergeAuditMarker, synthesizeAuditDigest } from "../core/audit-digest.js";
-import { decidePullRequestReconciliation } from "../core/pull-request-reconciliation.js";
+import { decidePullRequestReconciliation, selectRegisteredPullRequestObservation } from "../core/pull-request-reconciliation.js";
 import { resolveManagedFleet, type FleetAgentRecord } from "../core/managed-workers.js";
 import { MANAGED_FLEET_DEFINITIONS, canReconcileManagedFleet, reconcileManagedFleet } from "../core/fleet-manager.js";
 import { asArray, createPaperclipHttp, issuePatch } from "../core/paperclip-http.js";
@@ -85,7 +86,7 @@ import { capabilityCircuit, fleetCapabilityCircuitKey } from "../core/capability
 import { evaluateStructuredReviewerEligibility, isReviewerEligibilityFailure } from "../core/reviewer-eligibility.js";
 import { buildReviewWaitState, isReviewWaitState } from "../core/review-wait-state.js";
 import { isSameReviewerUnavailableRecovery, reviewerUnavailableRecoveryPayload } from "../core/review-recovery.js";
-import { classifyJulesPrReviewDisposition, hasJulesMonitorClaim, isAuthoritativeJulesMonitor } from "../core/jules-monitor-state.js";
+import { classifyJulesPrReviewDisposition, deriveJulesPrHandoffEvidence, hasJulesMonitorClaim, isAuthoritativeJulesMonitor, openJulesPrRecoveryKey } from "../core/jules-monitor-state.js";
 import { decideIssueLifecycleReconciliation } from "../core/issue-lifecycle-reconciliation.js";
 import { ConvergenceGuard } from "../core/convergence-guard.js";
 import { planTerminalParentBarrier } from "../core/terminal-parent-barrier.js";
@@ -111,11 +112,8 @@ import { isExecutionAdmissionHeld } from "../core/execution-admission.js";
 import { parseJulesPrHandoffHandle } from "../core/pr-handoff-registration.js";
 import { executePaperclipCommand } from "@pilleo/paperclip-adapter-common";
 import { provisionNativeReviewMcpHome, resolveNativeReviewMcpHome, type NativeReviewWorkerKey } from "../core/native-review-mcp-home.js";
-import {
-  decideJulesPlanNativeReviewRecovery,
-  decideNativeReviewRecovery,
-  nativeReviewRecoveryIssuePatch,
-} from "../core/native-review-recovery-state.js";
+import { decideNativeReviewRecovery } from "../core/native-review-recovery-state.js";
+import { revalidateNativeReviewWake } from "../core/native-review-recovery.js";
 
 // One orchestrator process can receive overlapping Paperclip heartbeats. Keep
 // merge effects single-flight so concurrent ticks cannot duplicate comments or
@@ -142,6 +140,22 @@ const agentIncidentDeduper = new IncidentDeduper();
 // before taking the compatibility wake path. This is deliberately internal:
 // no status mutation, comment, or provider poll is emitted while waiting.
 const JULES_PLAN_NATIVE_REVIEW_RECOVERY_GRACE_MS = 60_000;
+
+function registeredJulesPrProducerRunId(rawIssue: Readonly<Record<string, unknown>>, prUrl: string): string | null {
+  const rawProducts = rawIssue["workProducts"] ?? rawIssue["work_products"];
+  const normalizedPrUrl = prUrl.replace(/\/$/, "").toLowerCase();
+  for (const product of asArray<Record<string, unknown>>(rawProducts)) {
+    const productUrl = typeof product["url"] === "string" ? product["url"].replace(/\/$/, "").toLowerCase() : null;
+    const metadata = product["metadata"];
+    const source = metadata && typeof metadata === "object" && !Array.isArray(metadata)
+      ? (metadata as Record<string, unknown>)["source"]
+      : null;
+    if (productUrl !== normalizedPrUrl || source !== "jules") continue;
+    const producerRunId = product["createdByRunId"] ?? product["created_by_run_id"];
+    return typeof producerRunId === "string" && producerRunId.trim() ? producerRunId : null;
+  }
+  return null;
+}
 
 export interface OrchestratorAdapterConfig {
   readonly reconciliationMode?: "normal" | "freeze" | undefined;
@@ -546,77 +560,15 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
         return;
       }
     }
-    const idempotencyKey = options?.idempotencyKey ?? (options?.recoveryRunId && options.reviewInteractionId && issueId
-      ? nativeReviewRecoveryWakeKey(agentId, issueId, options.reviewInteractionId, options.recoveryRunId)
-      : `orchestrator:wakeup:${agentId}:${issueId || "company"}:${options?.reviewInteractionId || options?.resumeFromRunId || "current"}`);
-    // A recovery decision is made from the scheduler's earlier snapshot. Do
-    // not let that stale snapshot turn into a compatibility wake after
-    // Paperclip has already started, or completed, the addressed native
-    // reviewer. This is deliberately a final read immediately before the
-    // write; failure is fail-closed because an unnecessary wake spends model
-    // quota and can create a second reviewer run for the same card.
-    const canWakeNativeReviewCard = async (): Promise<boolean> => {
-      if (!options?.reviewInteractionId || !issueId) return true;
-      try {
-        const decision = await revalidateNativeReviewWake({
-          paperclip: pc,
-          companyId,
-          agentId,
-          issueId,
-          interactionId: options.reviewInteractionId,
-          nowMs: Date.now(),
-          graceMs: JULES_PLAN_NATIVE_REVIEW_RECOVERY_GRACE_MS,
-        });
-        switch (decision.action) {
-          case "compatibility_wake":
-            return true;
-          case "answered":
-            await log(`[ORCHESTRATOR] Suppressed native-review compatibility wake for ${issueId}; card ${options.reviewInteractionId} is already answered.`);
-            return false;
-          case "await_run":
-            await log(`[ORCHESTRATOR] Suppressed native-review compatibility wake for ${issueId}; card ${options.reviewInteractionId} already has live reviewer run ${decision.runId}.`);
-            return false;
-          case "await_native_dispatch":
-            await log(`[ORCHESTRATOR] Deferred native-review compatibility wake for ${issueId}; card ${options.reviewInteractionId} remains inside Paperclip's native dispatch grace period.`);
-            return false;
-          case "retry_exhausted":
-            await log(`[ORCHESTRATOR] Suppressed native-review compatibility wake for ${issueId}; card ${options.reviewInteractionId} has exhausted its bounded recovery attempts.`);
-            return false;
-          case "no_action":
-            await log(`[ORCHESTRATOR] Suppressed native-review compatibility wake for ${issueId}; addressed card ${options.reviewInteractionId} is no longer pending.`);
-            return false;
-          default: {
-            const exhaustive: never = decision;
-            return exhaustive;
-          }
-        }
-      } catch (error) {
-        await log(`[ORCHESTRATOR] Suppressed native-review compatibility wake for ${issueId}; final card/run revalidation failed: ${error instanceof Error ? error.message : String(error)}`);
-        return false;
-      }
-    };
-    const wakeNativeReviewCard = async () => {
-      let wakeCommentId: string | undefined;
-      try {
-        const comments = asArray<{ id?: unknown; body?: unknown }>(await pc.listComments(issueId!));
-        wakeCommentId = selectNativeReviewWakeAnchor(comments);
-      } catch (error) {
-        // The v831 compatibility path needs an existing durable comment. A
-        // comment-read outage must not invent a free-text anchor; retain the
-        // native dispatch fallback for newer hosts that preserve the card.
-        await log(`[ORCHESTRATOR] Native review wake anchor unavailable for ${issueId}: ${error instanceof Error ? error.message : String(error)}`);
-      }
-      return prepareAndWakeNativeReview({
-        paperclip: pc,
-        agentId,
-        issueId: issueId!,
-        interactionId: options!.reviewInteractionId!,
-        reason,
-        idempotencyKey,
-        ...(wakeCommentId ? { wakeCommentId } : {}),
-      });
-    };
-    if (options?.reviewInteractionId && issueId && !(await canWakeNativeReviewCard())) return false;
+    const idempotencyKey = options?.idempotencyKey ??
+      `orchestrator:wakeup:${agentId}:${issueId || "company"}:${options?.reviewInteractionId || options?.resumeFromRunId || "current"}`;
+    // Addressed native verdict cards are dispatched by Paperclip at creation.
+    // A later scheduler pass may observe or replace an orphan, but it must
+    // never wake the reviewer: that creates an unbound second review run.
+    if (options?.reviewInteractionId && issueId) {
+      await log(`[ORCHESTRATOR] Native review ${options.reviewInteractionId} is host-dispatched; suppressing adapter wake.`);
+      return true;
+    }
     const result = await executePaperclipCommand(
       {
         key: idempotencyKey,
@@ -624,9 +576,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
         action: "wakeup",
         payload: { agentId, reason, ...options },
       },
-      () => options?.reviewInteractionId && issueId
-        ? wakeNativeReviewCard()
-        : pc.wakeup(agentId, reason, issueId, { ...options, idempotencyKey }),
+      () => pc.wakeup(agentId, reason, issueId, { ...options, idempotencyKey }),
     );
     const normalizedResult = { ...result, text: result.text ?? "" };
     const circuitState = capabilityCircuit.record(circuitKey, normalizedResult);
@@ -644,23 +594,16 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       await log(
         `[ORCHESTRATOR] Managed-worker wakeup skipped for ${issueId || "unscoped"}: ${String(wakeResponse["reason"] || "unknown")}. Next scheduled poll will retry.`,
       );
-      // Paperclip can retain a running execution lock after a reviewer process
-      // dies during a restart. A later review stage is then permanently
-      // deferred behind the dead prior-stage run. Review dispatch is the one
-      // safe recovery point: the state machine has already observed the prior
-      // review verdict, so cancel only the different stale owner reported by
-      // Paperclip, then retry the intended reviewer wake once.
+      // Generic worker continuations may safely clear a proven stale owner.
+      // Native-review cards are deliberately excluded: Paperclip's typed
+      // reconciliation endpoint owns their blocker, wake, and run lifecycle.
       const staleRunId = typeof wakeResponse["executionRunId"] === "string" ? wakeResponse["executionRunId"] : undefined;
       const staleOwnerId = typeof wakeResponse["executionAgentId"] === "string" ? wakeResponse["executionAgentId"] : undefined;
-      if (options?.recoverStaleExecution && issueId && staleRunId && staleOwnerId && staleOwnerId !== agentId) {
+      if (options?.recoverStaleExecution && !options.reviewInteractionId && issueId && staleRunId && staleOwnerId && staleOwnerId !== agentId) {
         const cancelled = await pc.cancelHeartbeatRun(staleRunId, `Cancelled stale prior-stage execution before delegated review of ${issueId}`);
         if (cancelled.ok) {
           await log(`[ORCHESTRATOR] Cleared stale execution ${staleRunId} owned by ${staleOwnerId}; retrying delegated review wake.`);
-          if (options.reviewInteractionId && issueId) {
-            if (await canWakeNativeReviewCard()) await wakeNativeReviewCard();
-          } else {
-            await pc.wakeup(agentId, reason, issueId, { resumeFromRunId: options?.resumeFromRunId });
-          }
+          await pc.wakeup(agentId, reason, issueId, { resumeFromRunId: options?.resumeFromRunId });
         } else {
           await log(`[ORCHESTRATOR] 🚨 Could not clear stale execution ${staleRunId} (${cancelled.status}): ${cancelled.text}`);
         }
@@ -1167,18 +1110,26 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     });
   };
 
-  // `gh pr list --limit 50` is intentionally bounded. A pending final merge
-  // approval is the only historical state that can keep a completed task
-  // visibly stale, so hydrate only its board-registered PR when it falls
-  // outside that discovery window.
+  // `gh pr list --limit 50` is intentionally bounded. Board-registered PRs
+  // in an active managed review lane are lifecycle authority too: a merged
+  // one must be terminalized before any host-review recovery can see the
+  // stale blocked/in_review snapshot and dispatch another reviewer.
   const mergedPrs = [...ghStatus.mergedPrs];
-  if (approvalsSnapshotLoaded) {
-    for (const issue of parsedIssues) {
-      const registeredPr = registeredPullRequestFromIssue(issue);
-      if (!registeredPr || mergedPrs.some((pr) => pr.url.replace(/\/$/, "").toLowerCase() === registeredPr.url.replace(/\/$/, "").toLowerCase())) continue;
-      if (!pendingMergeApprovalFor(issue, registeredPr.url)) continue;
-      const observedPr = await fetchGitHubPullRequest(workspacePath, registeredPr.url);
-      if (observedPr?.state === "MERGED") mergedPrs.push(observedPr);
+  const discoveredPrUrls = new Set([...ghStatus.openPrs, ...ghStatus.mergedPrs].map((pr) => pr.url));
+  for (const issue of parsedIssues) {
+    const registeredPr = registeredPullRequestFromIssue(issue);
+    const observation = selectRegisteredPullRequestObservation({
+      registeredPrUrl: registeredPr?.url,
+      discoveredPrUrls,
+      hasPendingMergeApproval: Boolean(registeredPr && pendingMergeApprovalFor(issue, registeredPr.url)),
+      orchestratorManaged: issue.orchestratorManaged,
+      issueStatus: issue.status,
+    });
+    if (observation.kind === "skip" || !registeredPr) continue;
+    const observedPr = await fetchGitHubPullRequest(workspacePath, registeredPr.url);
+    if (observedPr?.state === "MERGED") {
+      mergedPrs.push(observedPr);
+      discoveredPrUrls.add(observedPr.url);
     }
   }
 
@@ -1238,17 +1189,30 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
           ...(pendingMergeApproval ? { mergeApproval: { id: pendingMergeApproval.id, status: pendingMergeApproval.status } } : {}),
           auditAlreadyRecorded: comments.some((comment) => typeof comment.body === "string" && comment.body.includes(auditMarker)),
         });
-        if (decision.action !== "COMPLETE_MERGED_PR" && decision.action !== "NORMALIZE_MERGED_METADATA") return;
+        const reconcilesMetadata = decision.action === "COMPLETE_MERGED_PR" || decision.action === "NORMALIZE_MERGED_METADATA";
+        const terminalOwnershipCleanupNeeded = requiresMergedPrTerminalOwnershipCleanup(issue.rawIssue);
+        if (!reconcilesMetadata && !terminalOwnershipCleanupNeeded) return;
 
-        await log(`[ORCHESTRATOR] Reconciling [${issue.identifier || issue.id}] "${issue.title}" (${decision.reason})`);
-        if (issue.status !== "done") {
-          const patch = await pc.patchIssue(issue.id, issuePatch("done"));
+        await log(`[ORCHESTRATOR] Reconciling [${issue.identifier || issue.id}] "${issue.title}" (${decision.reason}; terminal_ownership_cleanup=${terminalOwnershipCleanupNeeded})`);
+        if (terminalOwnershipCleanupNeeded) {
+          for (const run of heartbeatRuns.filter((candidate) =>
+            candidate.issueId === issue.id && ["queued", "running", "active", "claimed"].includes(candidate.status),
+          )) {
+            const cancelled = await pc.cancelHeartbeatRun(run.id, `Superseded by verified merge of ${issue.identifier || issue.id}`);
+            if (!cancelled.ok && cancelled.status !== 404 && cancelled.status !== 409) {
+              await log(`[ORCHESTRATOR] Warning: Could not cancel run ${run.id} before merged-task terminalization (${cancelled.status}): ${cancelled.text}`);
+            }
+          }
+          const patch = await pc.patchIssue(issue.id, mergedPrTerminalPatch());
           if (!patch.ok) {
-            await log(`[ORCHESTRATOR] Warning: Failed to transition merged issue (${patch.status}): ${patch.text}`);
-            return;
+            throw new Error(`Failed to terminalize merged issue (${patch.status}): ${patch.text}`);
+          }
+          const terminalIssue = await pc.getIssue<Record<string, unknown>>(issue.id);
+          if (!isMergedPrTerminalProjection(terminalIssue)) {
+            throw new Error("Paperclip did not persist the required merged-task terminal projection.");
           }
         }
-        if (rawProduct?.["id"]) {
+        if (reconcilesMetadata && rawProduct?.["id"]) {
           const productPatch = await pc.patchWorkProduct(String(rawProduct["id"]), {
             status: decision.workProductStatus,
             reviewState: decision.workProductReviewState,
@@ -1257,7 +1221,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
             await log(`[ORCHESTRATOR] Warning: Failed to normalize merged work product (${productPatch.status}): ${productPatch.text}`);
           }
         }
-        if (decision.shouldPostAudit) {
+        if (reconcilesMetadata && decision.shouldPostAudit) {
           await pc.comment(issue.id, synthesizeAuditDigest({ issue, pr: mergedPr }));
         }
         statusOverrides.set(issue.id, "done");
@@ -1304,8 +1268,10 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       let currentHeadRejected = false;
       let currentHeadReviewComplete = false;
       let authoritativeExecutionPolicy: Record<string, unknown> | null = null;
+      let authoritativeIssue: Record<string, unknown> | null = null;
       try {
         const detail = await pc.getIssue<Record<string, unknown>>(issue.id);
+        authoritativeIssue = detail;
         const policy = detail["executionPolicy"];
         const policyRecord = policy && typeof policy === "object" && !Array.isArray(policy) ? policy as Record<string, unknown> : null;
         authoritativeExecutionPolicy = policyRecord;
@@ -1330,9 +1296,31 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
         continue;
       }
       if (currentHeadReviewComplete) continue;
+      const producerRunId = registeredJulesPrProducerRunId(authoritativeIssue ?? issue.rawIssue, matchingPr.url);
+      let producerRun: HeartbeatRunSummary | null = null;
+      if (producerRunId) {
+        try {
+          // The company run-list response is intentionally a lightweight
+          // summary and omits resultJson. Fetch only the work-product's exact
+          // producer: its terminal provider result is the proof that lets a
+          // retained Jules monitor hand the immutable PR to native review.
+          producerRun = parseHeartbeatRun(await pc.getHeartbeatRun<Record<string, unknown>>(producerRunId));
+        } catch (error: unknown) {
+          await log(`[ORCHESTRATOR] Deferring open Jules PR recovery for [${issue.identifier || issue.id}]: could not hydrate its PR producer run (${String(error)}).`);
+        }
+      }
+      const handoff = deriveJulesPrHandoffEvidence({
+        executionPolicy: authoritativeExecutionPolicy,
+        executionState: (authoritativeIssue ?? issue.rawIssue)["executionState"],
+        issueId: issue.id,
+        producerRunId,
+        producerRun,
+        heartbeatRuns,
+      });
       const reviewDisposition = classifyJulesPrReviewDisposition({
         currentHeadRejected,
         executionPolicy: authoritativeExecutionPolicy,
+        handoff,
       });
       switch (reviewDisposition.kind) {
         case "await_provider":
@@ -1419,12 +1407,16 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
         });
         continue;
       }
-      // The same PR may need recovery again if Paperclip asynchronously
-      // reprojects the issue after creating an approval. Include the board's
-      // current version/state in the fence: stable `in_review` heartbeats do
-      // not enter this branch, while a later regression gets a fresh key and
-      // is repaired instead of being hidden by a lifetime `runOnce` marker.
-      const recoveryKey = `jules-open-pr-recovery:${issue.id}:${matchingPr.url}:${issue.updatedAt || "unknown"}:${issue.status}:${issue.assigneeAgentId || "unassigned"}`;
+      // A later status, owner, or PR-head regression produces a new key and
+      // is repaired. `updatedAt` is intentionally absent: this recovery's own
+      // PATCH changes it, which otherwise re-runs the same recovery forever.
+      const recoveryKey = openJulesPrRecoveryKey({
+        issueId: issue.id,
+        prUrl: matchingPr.url,
+        headSha: matchingPr.headRefOid ?? null,
+        issueStatus: issue.status,
+        assigneeAgentId: issue.assigneeAgentId ?? null,
+      });
       await lifecycleConvergenceGuard.runOnce(recoveryKey, async () => {
         await retireStaleJulesChildren(issue.id, issue.identifier || issue.id);
         // Paperclip can still consider a host execution policy active when it
@@ -1434,6 +1426,14 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
         const recovered = await pc.patchIssue(issue.id, nativePrReviewCleanupPatch());
         if (!recovered.ok) {
           await log(`[ORCHESTRATOR] Could not recover open Jules PR for [${issue.identifier || issue.id}] (${recovered.status}): ${recovered.text}`);
+          return;
+        }
+        const verified = await pc.getIssue<Record<string, unknown>>(issue.id);
+        if (!isNativePrReviewHandoffProjection(verified, {
+          terminalJulesProducer: handoff.kind === "terminal_pr_handoff",
+        })) {
+          lifecycleConvergenceGuard.clear(recoveryKey);
+          await log(`[ORCHESTRATOR] Native review handoff for [${issue.identifier || issue.id}] has not converged; deferring reviewer dispatch.`);
           return;
         }
         statusOverrides.set(issue.id, "in_review");
@@ -2119,47 +2119,6 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
       : issue
   );
 
-  let executionPolicyBackfillCount = 0;
-  const mazewallPolicy = buildMazewallExecutionPolicy({
-    vibeReviewerAgentId: lunaReviewerAgentId,
-    reviewerAgentId: terraReviewerAgentId,
-  });
-  const delegatedReviewParentIds = new Set(
-    parsedIssues
-      .filter((issue) => isDelegatedReviewChild(issue) && issue.parentId)
-      .map((issue) => issue.parentId as string),
-  );
-  if (mazewallPolicy) {
-    for (const issue of overlayedIssues) {
-      if (isDelegatedReviewChild(issue) || delegatedReviewParentIds.has(issue.id)) continue;
-      const policyIssue = { ...issue, hasReadyPullRequest: hasUnreviewedReadyPullRequest(issue) };
-      if (!issueNeedsExecutionPolicyBackfill(policyIssue, managedIds) &&
-          !issueHasUnsafeVibeReviewParticipant(issue.rawIssue, vibeAgentId)) continue;
-      const circuitKey = `execution-policy-backfill:${issue.id}`;
-      if (capabilityCircuit.isOpen(circuitKey)) continue;
-      await log(
-        `[ORCHESTRATOR] Reconciling executionPolicy on [${issue.identifier || issue.id}] (assigned without dispatch; no status/assignee change)`,
-      );
-      try {
-        const patch = await pc.patchIssue(issue.id, { executionPolicy: mazewallPolicy });
-        const circuitState = capabilityCircuit.record(circuitKey, patch);
-        if (!patch.ok) {
-          const suffix = circuitState === "opened"
-            ? " Capability circuit opened; this backfill will not be retried until the adapter is reloaded after a Paperclip authorization change."
-            : "";
-          await log(
-            `[ORCHESTRATOR] Warning: Failed to backfill executionPolicy (${patch.status}): ${patch.text}${suffix}`,
-          );
-          continue;
-        }
-        executionPolicyBackfillCount++;
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        await log(`[ORCHESTRATOR] Warning: Failed to backfill executionPolicy: ${msg}`);
-      }
-    }
-  }
-
   let continuationWakeCount = 0;
   const continuations = selectSessionContinuations({
     issues: overlayedIssues.filter((issue) => issue.orchestratorManaged),
@@ -2223,82 +2182,10 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
       await log(`[ORCHESTRATOR] Warning: failed to contain orphaned review cards for ${issue.identifier || issue.id}: ${String(err)}`);
     }
   }
-  // Jules plan review cards have no PR/head identity, so they cannot enter the
-  // PR recovery loop below. Recover only one overdue, typed Luna/Terra card
-  // while retaining Jules as the issue owner; the plan gate is provider-owned.
+  // PR cards are owned here. Jules plan cards are deliberately excluded: the
+  // Jules adapter owns their provider revision and journals any bounded native
+  // card replacement itself. Cross-adapter wakes used to race that lifecycle.
   const nativeReviewRecoveryIds = new Set<string>();
-  const planReviewRecoveryAgents = julesAgentId && lunaReviewerAgentId && terraReviewerAgentId
-    ? { jules: julesAgentId, reviewers: { luna: lunaReviewerAgentId, terra: terraReviewerAgentId } }
-    : null;
-  if (planReviewRecoveryAgents) {
-    for (const issue of overlayedIssues.filter((candidate) =>
-      candidate.orchestratorManaged && candidate.assigneeAgentId === planReviewRecoveryAgents.jules && !mergedIssueIds.has(candidate.id),
-    )) {
-      let interactions: Array<{ id: string; kind?: string; status?: string; idempotencyKey?: string; addresseeAgentId?: string | null; createdAt?: string }>;
-      try {
-        interactions = asArray<Record<string, unknown>>(await pc.listInteractions(issue.id))
-          .filter((interaction): interaction is Record<string, unknown> & { id: string } => typeof interaction["id"] === "string")
-          .map((interaction) => ({
-            id: interaction["id"],
-            ...(typeof interaction["kind"] === "string" ? { kind: interaction["kind"] } : {}),
-            ...(typeof interaction["status"] === "string" ? { status: interaction["status"] } : {}),
-            ...(typeof interaction["idempotencyKey"] === "string" ? { idempotencyKey: interaction["idempotencyKey"] } : {}),
-            ...(typeof interaction["addresseeAgentId"] === "string" ? { addresseeAgentId: interaction["addresseeAgentId"] } : {}),
-            ...(typeof interaction["createdAt"] === "string" ? { createdAt: interaction["createdAt"] } : {}),
-          }));
-      } catch (error) {
-        await log(`[ORCHESTRATOR] Warning: could not inspect Jules plan cards for ${issue.identifier || issue.id}: ${String(error)}`);
-        continue;
-      }
-
-      const recovery = decideJulesPlanNativeReviewRecovery({
-        issueId: issue.id,
-        orchestratorManaged: issue.orchestratorManaged,
-        issueAssigneeAgentId: issue.assigneeAgentId,
-        julesAgentId: planReviewRecoveryAgents.jules,
-        reviewerAgentIds: planReviewRecoveryAgents.reviewers,
-        nowMs,
-        graceMs: JULES_PLAN_NATIVE_REVIEW_RECOVERY_GRACE_MS,
-        cards: interactions,
-        reviewerRuns: heartbeatRuns,
-      });
-      switch (recovery.action) {
-        case "no_action":
-          continue;
-        case "await_run":
-          await log(`[ORCHESTRATOR] Preserving Jules plan card ${recovery.interactionId} for ${issue.identifier || issue.id}; reviewer run ${recovery.runId} is live.`);
-          continue;
-        case "retry_exhausted":
-          await log(`[ORCHESTRATOR] Jules plan review recovery exhausted for ${issue.identifier || issue.id}, card ${recovery.interactionId}; leaving its typed card pending without another wake.`);
-          continue;
-        case "protocol_failure":
-          await log(`[ORCHESTRATOR] Jules plan recovery refused for ${issue.identifier || issue.id}: ${recovery.reason}.`);
-          continue;
-        case "recover":
-          break;
-      }
-
-      const recoveryKey = `native-review-plan-recovery:${issue.id}:${recovery.interactionId}:${recovery.recoveryRunId || "initial"}`;
-      await nativeReviewRecoveryConvergenceGuard.runOnce(recoveryKey, async () => {
-        const woke = await managedWakeup(
-          recovery.reviewerAgentId,
-          `Recover Jules plan review interaction ${recovery.interactionId}; submit only its structured verdict.`,
-          issue.id,
-          {
-            recoverStaleExecution: true,
-            reviewInteractionId: recovery.interactionId,
-            forceFreshSession: true,
-            ...(recovery.recoveryRunId ? { recoveryRunId: recovery.recoveryRunId } : {}),
-            idempotencyKey: `native-review-plan-recovery:v1:${recovery.reviewerAgentId}:${issue.id}:${recovery.interactionId}:${recovery.recoveryRunId || "initial"}`,
-          },
-        );
-        if (woke) {
-          await log(`[ORCHESTRATOR] Recovered Jules plan review for ${issue.identifier || issue.id} using card ${recovery.interactionId}.`);
-        }
-        return true;
-      });
-    }
-  }
 
   // Paperclip can interrupt a reviewer during hot reload and transiently
   // project its source issue as backlog or reassign it. Reconstruct only the
@@ -2315,7 +2202,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
     const reviewHeadSha = matchingPr.headRefOid || await fetchPullRequestHeadSha(matchingPr.url);
     if (!reviewHeadSha) continue;
 
-    let interactions: Array<{ id: string; kind?: string; status?: string; idempotencyKey?: string; addresseeAgentId?: string | null }>;
+    let interactions: Array<{ id: string; kind?: string; status?: string; idempotencyKey?: string; addresseeAgentId?: string | null; createdAt?: string }>;
     try {
       interactions = asArray<Record<string, unknown>>(await pc.listInteractions(issue.id))
         .filter((interaction): interaction is Record<string, unknown> & { id: string } => typeof interaction["id"] === "string")
@@ -2325,6 +2212,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
           ...(typeof interaction["status"] === "string" ? { status: interaction["status"] } : {}),
           ...(typeof interaction["idempotencyKey"] === "string" ? { idempotencyKey: interaction["idempotencyKey"] } : {}),
           ...(typeof interaction["addresseeAgentId"] === "string" ? { addresseeAgentId: interaction["addresseeAgentId"] } : {}),
+          ...(typeof interaction["createdAt"] === "string" ? { createdAt: interaction["createdAt"] } : {}),
         }));
     } catch (error) {
       await log(`[ORCHESTRATOR] Warning: could not inspect native review cards for ${issue.identifier || issue.id}: ${String(error)}`);
@@ -2337,32 +2225,99 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
       issueAssigneeAgentId: issue.assigneeAgentId,
       orchestratorManaged: issue.orchestratorManaged,
       prIdentity: { url: matchingPr.url, headSha: reviewHeadSha },
+      nowMs,
+      graceMs: JULES_PLAN_NATIVE_REVIEW_RECOVERY_GRACE_MS,
+      maxReplacementAttempts: 1,
       cards: interactions,
       reviewerRuns: heartbeatRuns,
     });
     switch (recovery.action) {
       case "no_action":
         continue;
+      case "await_native_dispatch":
+        nativeReviewRecoveryIds.add(issue.id);
+        await log(`[ORCHESTRATOR] Preserving native card ${recovery.interactionId} for ${issue.identifier || issue.id} inside Paperclip's dispatch grace period.`);
+        continue;
       case "await_run":
         nativeReviewRecoveryIds.add(issue.id);
         await log(`[ORCHESTRATOR] Preserving native card ${recovery.interactionId} for ${issue.identifier || issue.id}; reviewer run ${recovery.runId} is live.`);
         continue;
+      case "await_verdict":
+        nativeReviewRecoveryIds.add(issue.id);
+        await log(`[ORCHESTRATOR] Preserving native card ${recovery.interactionId} for ${issue.identifier || issue.id}; reviewer run ${recovery.runId} completed and its typed verdict is pending.`);
+        continue;
+      case "retry_exhausted":
+        nativeReviewRecoveryIds.add(issue.id);
+        await log(`[ORCHESTRATOR] 🚨 Native review replacement exhausted for ${issue.identifier || issue.id}, card ${recovery.interactionId}, attempt ${recovery.attempt}; no further card or wake will be created.`);
+        continue;
       case "protocol_failure":
+        nativeReviewRecoveryIds.add(issue.id);
         await log(`[ORCHESTRATOR] Native review recovery refused for ${issue.identifier || issue.id}: ${recovery.reason}.`);
         continue;
-      case "restore_and_recover":
+      case "recover_dispatch": {
+        nativeReviewRecoveryIds.add(issue.id);
+        const recoveryKey = `native-review-dispatch:${issue.id}:${recovery.interactionId}:${recovery.reviewerAgentId}`;
+        await nativeReviewRecoveryConvergenceGuard.runOnce(recoveryKey, async () => {
+        // The scheduler snapshot can race a native verdict or a newly-bound
+        // reviewer run. Re-read immediately before the only recovery write.
+        const fresh = await revalidateNativeReviewWake({
+          paperclip: pc,
+          companyId,
+          agentId: recovery.reviewerAgentId,
+          issueId: issue.id,
+          interactionId: recovery.interactionId,
+          immutableKey: recovery.immutableKey,
+          nowMs,
+          graceMs: JULES_PLAN_NATIVE_REVIEW_RECOVERY_GRACE_MS,
+        });
+        if (fresh.action !== "recover_dispatch") {
+          await log(`[ORCHESTRATOR] Native dispatch recovery for ${issue.identifier || issue.id}, card ${recovery.interactionId} was superseded by fresh evidence (${fresh.action}).`);
+          return false;
+        }
+        const wake = await pc.wakeNativeReview({
+          reviewerAgentId: recovery.reviewerAgentId,
+          issueId: issue.id,
+          interactionId: recovery.interactionId,
+          interactionKind: "request_item_verdicts",
+        });
+        switch (wake.kind) {
+          case "started":
+            await log(`[ORCHESTRATOR] Recovered native dispatch for ${issue.identifier || issue.id}, card ${recovery.interactionId}; reviewer run ${wake.runId} is now authoritative.`);
+            break;
+          case "skipped":
+          case "rejected":
+          case "transport_failure":
+            await log(`[ORCHESTRATOR] 🚨 Native dispatch recovery failed for ${issue.identifier || issue.id}, card ${recovery.interactionId}: ${wake.kind} (${wake.reason}).`);
+            break;
+          case "invalid_response":
+            await log(`[ORCHESTRATOR] 🚨 Native dispatch recovery failed for ${issue.identifier || issue.id}, card ${recovery.interactionId}: Paperclip returned no reviewer run.`);
+            break;
+          default: {
+            const impossible: never = wake;
+            throw new Error(`Unhandled native dispatch wake result: ${String(impossible)}`);
+          }
+        }
+        return wake.kind === "started";
+        });
+        continue;
+      }
+      case "replace_card":
         break;
     }
 
-    const recoveryKey = `native-review-projection-recovery:${issue.id}:${recovery.interactionId}:${recovery.failedRunId || "dispatch"}`;
+    const recoveryKey = `native-review-card-replacement:${issue.id}:${recovery.interactionId}:attempt:${recovery.nextAttempt}`;
     await nativeReviewRecoveryConvergenceGuard.runOnce(recoveryKey, async () => {
-      // Do not mutate executionPolicy/currentParticipant. The existing card
-      // remains the sole durable review authority. Paperclip's released
-      // ownership gate requires the addressed reviewer to own the issue
-      // before it starts the card-bound run; see the pure patch selector.
-      const recoveryPatch = nativeReviewRecoveryIssuePatch(recovery);
-      if (issue.status !== recoveryPatch.status || issue.assigneeAgentId !== recoveryPatch.assigneeAgentId) {
-        const restored = await pc.patchIssue(issue.id, recoveryPatch);
+      // Native interaction history is the recovery journal. Paperclip strips
+      // adapter-private executionState fields, so the cancelled old card plus
+      // deterministic replacement idempotency key are the crash-safe
+      // checkpoint; no private host dispatch endpoint is involved.
+      if (issue.status !== "in_review" || issue.assigneeAgentId != null) {
+        const restored = await pc.patchIssue(issue.id, {
+          status: "in_review",
+          assigneeAgentId: null,
+          executionPolicy: null,
+          executionState: null,
+        });
         if (!restored.ok) {
           await log(`[ORCHESTRATOR] Warning: native review state restore failed for ${issue.identifier || issue.id} (${restored.status}): ${restored.text}`);
           return false;
@@ -2379,20 +2334,32 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
           return false;
         }
       }
-      await managedWakeup(
-        recovery.reviewerAgentId,
-        `Recover native review interaction ${recovery.interactionId}; submit only its structured verdict.`,
+      const withdrawn = await pc.withdrawInteraction(
         issue.id,
-        {
-          recoverStaleExecution: true,
-          reviewInteractionId: recovery.interactionId,
-          forceFreshSession: true,
-          ...(recovery.failedRunId ? { recoveryRunId: recovery.failedRunId } : {}),
-        },
+        recovery.interactionId,
+        `Native reviewer dispatch was absent or terminal after the grace period; replaced by attempt ${recovery.nextAttempt}.`,
       );
+      if (!withdrawn.ok && withdrawn.status !== 404 && withdrawn.status !== 409) {
+        await log(`[ORCHESTRATOR] Warning: orphaned native card withdrawal failed for ${issue.identifier || issue.id} (${withdrawn.status}): ${withdrawn.text}`);
+        return false;
+      }
+      const replacementRequest = buildReviewInteractionRequest({
+        issueId: issue.id,
+        prUrl: matchingPr.url,
+        headSha: reviewHeadSha,
+        stage: recovery.stage,
+        reviewerAgentId: recovery.reviewerAgentId,
+        attempt: recovery.nextAttempt,
+        reviewContractMarkdown: issue.description || undefined,
+      });
+      const replacement = await pc.createInteraction(issue.id, replacementRequest);
+      if (!replacement.ok) {
+        await log(`[ORCHESTRATOR] Warning: native replacement card creation failed for ${issue.identifier || issue.id} (${replacement.status}): ${replacement.text}`);
+        return false;
+      }
       nativeReviewRecoveryIds.add(issue.id);
       statusOverrides.set(issue.id, "in_review");
-      await log(`[ORCHESTRATOR] Restored native PR review for ${issue.identifier || issue.id} using card ${recovery.interactionId}.`);
+      await log(`[ORCHESTRATOR] Replaced orphaned native PR review card ${recovery.interactionId} for ${issue.identifier || issue.id} with deterministic attempt ${recovery.nextAttempt}; Paperclip owns its dispatch.`);
       return true;
     });
   }
@@ -2534,6 +2501,10 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
   // 8. PHASE 2: Multi-Tier Review Pipeline (CI -> Vibe Fast Review -> Strong Model Review -> Operator Merge Approval)
   let reviewDispatchedCount = 0;
   for (const listedReviewTask of inReviewIssues) {
+    if (nativeReviewRecoveryIds.has(listedReviewTask.id)) {
+      await log(`[ORCHESTRATOR] Native review recovery already handled ${listedReviewTask.identifier || listedReviewTask.id} in this heartbeat; deferring pipeline evaluation to fresh host evidence.`);
+      continue;
+    }
     // The company issue-list projection intentionally omits execution details
     // in some Paperclip versions. Review decisions must use the enriched issue
     // record; otherwise a human-escalated stage looks idle and is redispatched
@@ -2725,18 +2696,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
         continue;
       }
       if (sessionDecision.action === "recover") {
-        await log(`[ORCHESTRATOR] ♻️ Recovering native review card ${sessionInteractionId} after terminal reviewer run ${sessionDecision.runId}.`);
-        await managedWakeup(
-          sessionReviewerId,
-          `Recover native review interaction ${sessionInteractionId} after reviewer run ${sessionDecision.runId} ended without a structured verdict. Use the existing card exactly once; do not create a new card or post a comment.`,
-          reviewTask.id,
-          {
-            recoverStaleExecution: true,
-            reviewInteractionId: sessionInteractionId,
-            forceFreshSession: true,
-            recoveryRunId: sessionDecision.runId,
-          },
-        );
+        await log(`[ORCHESTRATOR] 🚨 Native review card ${sessionInteractionId} has terminal reviewer run ${sessionDecision.runId}, but no canonical replacement transition was available from fresh card evidence; refusing a synthetic wake.`);
         continue;
       }
     }
@@ -3062,9 +3022,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
           // A just-created addressed card starts one run natively. Do not
           // change the issue owner or issue a second wake: Paperclip treats
           // that extra run as an unbound review path after the first verdict.
-          // Recovery remains the sole explicit-wake path because it reuses an
-          // existing unanswered card whose original run is terminal.
-          if (reviewInteractionId && (runDispatch === "manual_wake" || runDispatch === "recovery_wake")) {
+          if (reviewInteractionId && runDispatch === "manual_wake") {
             await managedWakeup(
               targetAgentId,
               `Review PR #${matchingPr.number} for ${reviewTask.identifier || reviewTask.id}; respond to native review interaction ${reviewInteractionId}. This is a read-only review; do not modify files.`,
@@ -3371,7 +3329,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
         : "No unblocked implementation tasks ready in backlog/todo";
 
     await log(`[ORCHESTRATOR] Implementation dispatch: ${reason}.`);
-    const summary = `Orchestrator tick: ${mergedAutoCompleted} merged tasks reconciled, ${archiveResult.archivedCount} archived, ${reviewDispatchedCount} reviews routed, ${clarifierDispatchedCount} clarified, backfilled ${executionPolicyBackfillCount} execution policies, continued ${continuationWakeCount} live sessions, 0 new dev tasks dispatched (${reason}).`;
+    const summary = `Orchestrator tick: ${mergedAutoCompleted} merged tasks reconciled, ${archiveResult.archivedCount} archived, ${reviewDispatchedCount} reviews routed, ${clarifierDispatchedCount} clarified, continued ${continuationWakeCount} live sessions, 0 new dev tasks dispatched (${reason}).`;
 
     if (!isSyncHealthy) {
       const heldCandidates = selectNextTasksMultiLane(dispatchIssues, conflictForDispatch, {
@@ -3506,14 +3464,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
         await log(`[ORCHESTRATOR] Refusing to dispatch [${selection.issue.identifier}] to unmanaged agent ${effectiveAssigneeId}`);
         continue;
       }
-      const policy = buildMazewallExecutionPolicy({
-        vibeReviewerAgentId: lunaReviewerAgentId,
-        reviewerAgentId: terraReviewerAgentId,
-      });
-      const updateRes = await pc.patchIssue(targetIssueId, {
-        ...issuePatch(transition.toStatus as "in_progress", effectiveAssigneeId),
-        ...(policy ? { executionPolicy: policy } : {}),
-      });
+      const updateRes = await pc.patchIssue(targetIssueId, nativeManagedExecutionDispatchPatch(effectiveAssigneeId));
 
       if (!updateRes.ok) {
         throw new Error(`Failed to update issue status: HTTP ${updateRes.status} ${updateRes.text}`);
@@ -3533,7 +3484,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
   }
 
   const elapsed = Date.now() - t0;
-  const summary = `Reconciled with remote (${mergedAutoCompleted} merged PRs completed, ${archiveResult.archivedCount} files archived), requested ${approvalsRequestedCount} approvals (${awaitingApprovalCount} pending), backfilled ${executionPolicyBackfillCount} execution policies, continued ${continuationWakeCount} live sessions, dispatched ${dispatchedCount} tasks in ${elapsed}ms.`;
+  const summary = `Reconciled with remote (${mergedAutoCompleted} merged PRs completed, ${archiveResult.archivedCount} files archived), requested ${approvalsRequestedCount} approvals (${awaitingApprovalCount} pending), continued ${continuationWakeCount} live sessions, dispatched ${dispatchedCount} tasks in ${elapsed}ms.`;
   
   const dashboardCard = formatOrchestratorDashboardCard({
     companyId,

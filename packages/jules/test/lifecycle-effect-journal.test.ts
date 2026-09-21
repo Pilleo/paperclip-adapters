@@ -3,6 +3,8 @@ import {
   beginEffect,
   classifyInterruptedEffect,
   confirmEffect,
+  LifecycleEffectJournalSchema,
+  retryStartedEffect,
   type LifecycleEffectJournal,
 } from "../src/server/lifecycle-effect-journal.js";
 
@@ -38,5 +40,39 @@ describe("durable lifecycle effect journal", () => {
         attempt: { kind: "confirmed", receipt: "activity-1" },
       }],
     });
+  });
+
+  it("accepts durable entries for each typed native-plan mutation", () => {
+    const journal = LifecycleEffectJournalSchema.parse({
+      version: 1,
+      effects: [
+        { effectId: "card:terra:rev-1", kind: "create_card", attempt: { kind: "started", startedAt: "2026-09-20T00:00:00.000Z" } },
+        { effectId: "approve:session-1:rev-1", kind: "approve_plan", attempt: { kind: "started", startedAt: "2026-09-20T00:00:00.000Z" } },
+        { effectId: "revision:card-1:run-luna-1", kind: "request_plan_revision", attempt: { kind: "started", startedAt: "2026-09-20T00:00:00.000Z" } },
+        { effectId: "replace-plan-card:issue-1:key", kind: "replace_plan_card", attempt: { kind: "started", startedAt: "2026-09-20T00:00:00.000Z" } },
+        { effectId: "recover-plan-dispatch:issue-1:card-1", kind: "recover_plan_dispatch", attempt: { kind: "started", startedAt: "2026-09-20T00:00:00.000Z" } },
+      ],
+    });
+
+    expect(journal.effects.map((effect) => effect.kind)).toEqual(["create_card", "approve_plan", "request_plan_revision", "replace_plan_card", "recover_plan_dispatch"]);
+  });
+
+  it("permits one verified retry and refuses a third native-plan attempt", () => {
+    const started: LifecycleEffectJournal = {
+      version: 1,
+      effects: [{
+        effectId: "card:terra:rev-1",
+        kind: "create_card",
+        attempt: { kind: "started", startedAt: "2026-09-20T00:00:00.000Z" },
+      }],
+    };
+
+    const retried = retryStartedEffect(started, "card:terra:rev-1", "2026-09-20T00:01:00.000Z");
+    expect(retried.effects[0]?.attempt).toEqual({
+      kind: "started", startedAt: "2026-09-20T00:01:00.000Z", attempts: 2,
+    });
+    expect(() => retryStartedEffect(retried, "card:terra:rev-1", "2026-09-20T00:02:00.000Z")).toThrow(
+      "retry limit",
+    );
   });
 });

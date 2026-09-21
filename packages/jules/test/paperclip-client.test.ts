@@ -104,14 +104,14 @@ describe("native Jules plan review interaction", () => {
       id: "review-run-1", status: "queued",
     }), { status: 202, headers: { "content-type": "application/json" } }));
 
-    await wakeJulesPlanReviewer({
+    await expect(wakeJulesPlanReviewer({
       reviewerAgentId: "reviewer-1",
       childIssueId: "child-1",
       interactionId: "card-1",
       idempotencyKey: "jules:plan-review-wake:card-1:0",
       authToken: "token",
       runId: "owner-run-1",
-    });
+    })).resolves.toEqual({ runId: "review-run-1" });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] ?? [];
@@ -128,6 +128,7 @@ describe("native Jules plan review interaction", () => {
       forceFreshSession: true,
       payload: {
         issueId: "child-1",
+        mutation: "interaction",
         interactionId: "card-1",
         interactionKind: "request_item_verdicts",
       },
@@ -749,6 +750,35 @@ describe("Paperclip issue completion", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
       isPrimary: true,
       metadata: { source: "jules", producer: "paperclip-jules-adapter", schemaVersion: 1 },
+    });
+  });
+
+  it("records inspected PR evidence when creating a work product", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => [] })
+      .mockResolvedValueOnce({ ok: true, status: 201, json: async () => ({ id: "wp-1549" }) });
+    global.fetch = fetchMock as unknown as typeof global.fetch;
+
+    await registerPullRequestWorkProduct("issue-1", "https://github.com/o/r/pull/1549", "jwt-token", "run-1", {
+      headSha: "a".repeat(40),
+      headRefName: "jules-1549",
+      mergeableStatus: "mergeable",
+      ciStatus: "success",
+      changedFiles: ["increment.js", "increment.test.js"],
+    });
+
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toMatchObject({
+      type: "pull_request",
+      url: "https://github.com/o/r/pull/1549",
+      summary: "2 changed files at aaaaaaaa; CI success",
+      metadata: expect.objectContaining({
+        source: "jules",
+        headSha: "a".repeat(40),
+        headRefName: "jules-1549",
+        changedFileCount: 2,
+        changedFiles: ["increment.js", "increment.test.js"],
+        ciStatus: "success",
+      }),
     });
   });
 

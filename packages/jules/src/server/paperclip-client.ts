@@ -1,6 +1,10 @@
 import { appendCardHelpText, formatCardPrompt, formatCardSummary, formatCardPromptAndHelpText, formatConfirmationDetails, MAX_CONFIRMATION_PROMPT_LENGTH, SafeCardPrompt, SafeCardSummary } from "./card-prompt.js";
 import { createHash } from "node:crypto";
-import { executePaperclipCommand, type PaperclipCommandResponse } from "@pilleo/paperclip-adapter-common";
+import {
+  buildNativeInteractionWakeRequest,
+  executePaperclipCommand,
+  type PaperclipCommandResponse,
+} from "@pilleo/paperclip-adapter-common";
 import {
   extractJulesSessionId,
   extractJulesSessionIdFromComments,
@@ -96,27 +100,31 @@ export interface JulesPlanReviewerWakeInput {
  * the host's automatic issue wake omits this binding and fails with
  * continuation_source_context_missing on v2026.916.0.
  */
-export async function wakeJulesPlanReviewer(input: JulesPlanReviewerWakeInput): Promise<void> {
-  await paperclipRequest(
-    `/api/agents/${encodeURIComponent(input.reviewerAgentId)}/wakeup`,
+export async function wakeJulesPlanReviewer(input: JulesPlanReviewerWakeInput): Promise<{ readonly runId: string }> {
+  const request = buildNativeInteractionWakeRequest({
+    issueId: input.childIssueId,
+    reviewerAgentId: input.reviewerAgentId,
+    interactionId: input.interactionId,
+    reason: "native_plan_review",
+  });
+  const response = await paperclipRequest(
+    request.path,
     input.authToken,
     {
       method: "POST",
       headers: { "Idempotency-Key": input.idempotencyKey },
-      body: JSON.stringify({
-        source: "automation",
-        triggerDetail: "system",
-        reason: "native_plan_review",
-        forceFreshSession: true,
-        payload: {
-          issueId: input.childIssueId,
-          interactionId: input.interactionId,
-          interactionKind: "request_item_verdicts",
-        },
-      }),
+      body: JSON.stringify(request.body),
     },
     input.runId,
   );
+  const raw: unknown = await response.json().catch(() => null);
+  const runId = typeof raw === "object" && raw !== null && !Array.isArray(raw)
+    ? (raw as Record<string, unknown>)["id"]
+    : null;
+  if (typeof runId !== "string" || !runId.trim()) {
+    throw new PaperclipClientError(response.status, "Paperclip native plan-review wake did not return a reviewer run id");
+  }
+  return { runId: runId.trim() };
 }
 
 export async function saveJulesPlanDocument(
@@ -261,7 +269,7 @@ export async function listWorkProducts(
   issueId: string,
   authToken: string | undefined,
   runId?: string,
-): Promise<Array<{ id?: string; url?: string; isPrimary?: boolean; metadata?: Record<string, unknown> }>> {
+): Promise<Array<{ id?: string; url?: string; isPrimary?: boolean; summary?: string; metadata?: Record<string, unknown> }>> {
   const response = await paperclipRequest(
     `/api/issues/${encodeURIComponent(issueId)}/work-products`,
     authToken,
@@ -279,11 +287,43 @@ export async function listWorkProducts(
           ...(typeof w["id"] === "string" ? { id: w["id"] } : {}),
           url: w["url"] as string,
           ...(typeof w["isPrimary"] === "boolean" ? { isPrimary: w["isPrimary"] } : {}),
+          ...(typeof w["summary"] === "string" ? { summary: w["summary"] } : {}),
           ...(w["metadata"] && typeof w["metadata"] === "object" && !Array.isArray(w["metadata"])
             ? { metadata: w["metadata"] as Record<string, unknown> }
             : {}),
         }))
     : [];
+}
+
+export interface PullRequestWorkProductEvidence {
+  readonly headSha?: string;
+  readonly headRefName?: string;
+  readonly mergeableStatus?: "mergeable" | "conflicting" | "unknown";
+  readonly ciStatus?: "success" | "pending" | "stalled" | "failed" | "unknown";
+  readonly changedFiles: readonly string[];
+}
+
+function pullRequestEvidencePayload(evidence: PullRequestWorkProductEvidence | undefined): {
+  readonly metadata: Record<string, unknown>;
+  readonly summary?: string;
+} {
+  const base = { source: "jules", producer: "paperclip-jules-adapter", schemaVersion: 1 } as const;
+  if (!evidence) return { metadata: base };
+
+  const changedFiles = evidence.changedFiles.slice(0, 50);
+  const metadata = {
+    ...base,
+    ...(evidence.headSha ? { headSha: evidence.headSha } : {}),
+    ...(evidence.headRefName ? { headRefName: evidence.headRefName } : {}),
+    ...(evidence.mergeableStatus ? { mergeableStatus: evidence.mergeableStatus } : {}),
+    ...(evidence.ciStatus ? { ciStatus: evidence.ciStatus } : {}),
+    changedFileCount: evidence.changedFiles.length,
+    changedFiles,
+    ...(evidence.changedFiles.length > changedFiles.length ? { changedFilesTruncated: true } : {}),
+  };
+  const sha = evidence.headSha ? ` at ${evidence.headSha.slice(0, 8)}` : "";
+  const ci = evidence.ciStatus ? `; CI ${evidence.ciStatus}` : "";
+  return { metadata, summary: `${evidence.changedFiles.length} changed files${sha}${ci}` };
 }
 
 /**
@@ -437,17 +477,18 @@ export async function registerPullRequestWorkProduct(
   prUrl: string,
   authToken: string | undefined,
   runId?: string,
+  evidence?: PullRequestWorkProductEvidence,
 ): Promise<void> {
   const existing = await listWorkProducts(issueId, authToken, runId).catch(
     () => [] as Awaited<ReturnType<typeof listWorkProducts>>,
   );
   const normalizedPrUrl = prUrl.replace(/\/$/, "").toLowerCase();
   const matching = existing.find((workProduct) => workProduct.url?.replace(/\/$/, "").toLowerCase() === normalizedPrUrl);
-  const canonicalMetadata = { source: "jules", producer: "paperclip-jules-adapter", schemaVersion: 1 } as const;
-  if (matching?.id && (matching.isPrimary !== true || matching.metadata?.["producer"] !== canonicalMetadata.producer)) {
+  const payload = pullRequestEvidencePayload(evidence);
+  if (matching?.id && (matching.isPrimary !== true || matching.metadata?.["producer"] !== payload.metadata["producer"] || matching.summary !== payload.summary)) {
     await paperclipRequest(`/api/work-products/${encodeURIComponent(matching.id)}`, authToken, {
       method: "PATCH",
-      body: JSON.stringify({ isPrimary: true, metadata: canonicalMetadata }),
+      body: JSON.stringify({ isPrimary: true, ...payload }),
     }, runId);
   } else if (!matching) {
     await paperclipRequest(`/api/issues/${encodeURIComponent(issueId)}/work-products`, authToken, {
@@ -460,7 +501,7 @@ export async function registerPullRequestWorkProduct(
         externalId: prUrl,
         status: "ready_for_review",
         isPrimary: true,
-        metadata: canonicalMetadata,
+        ...payload,
       }),
     }, runId);
   }
@@ -997,6 +1038,7 @@ export async function createJulesPlanReviewInteraction(
   authToken: string | undefined,
   runId?: string,
   providerActivityId?: string,
+  generation: 0 | 1 = 0,
 ): Promise<PlanApprovalInteraction> {
   const idempotencyKey = planReviewIdempotencyKey({
     issueId,
@@ -1006,6 +1048,7 @@ export async function createJulesPlanReviewInteraction(
     revisionNumber: revision.revisionNumber,
     stage,
     reviewerAgentId,
+    generation,
   }, "v2");
   const stageName = stage === "luna" ? "Luna" : "Terra";
   const requestBody = {

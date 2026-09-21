@@ -34,7 +34,7 @@ describe("native PR review interaction state", () => {
     expect(selectReviewRunDispatch({ dialogCreated: true, recovery: false, request })).toBe("native_card");
   });
 
-  it("uses an explicit wake only to recover an existing unanswered card", () => {
+  it("never wakes an existing addressed card because recovery replaces it through native creation", () => {
     const request = buildReviewInteractionRequest({
       issueId: "issue-1",
       prUrl: "https://github.com/acme/repo/pull/1",
@@ -43,7 +43,7 @@ describe("native PR review interaction state", () => {
       reviewerAgentId: "luna-1",
     });
 
-    expect(selectReviewRunDispatch({ dialogCreated: false, recovery: true, request })).toBe("recovery_wake");
+    expect(selectReviewRunDispatch({ dialogCreated: false, recovery: true, request })).toBe("none");
   });
 
   it.each([

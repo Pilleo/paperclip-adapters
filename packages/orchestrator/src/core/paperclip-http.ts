@@ -2,7 +2,11 @@ import { createHash } from "node:crypto";
 import { resilientFetch } from "./resilient-fetch.js";
 import { createUpdateIssuePayload, type UpdateIssuePayload } from "./paperclip-orchestrator-client.js";
 import type { IssueStatus } from "./types.js";
-import { executePaperclipCommand, type PaperclipCommandResponse } from "@pilleo/paperclip-adapter-common";
+import {
+  buildNativeInteractionWakeRequest,
+  executePaperclipCommand,
+  type PaperclipCommandResponse,
+} from "@pilleo/paperclip-adapter-common";
 
 export class OrchestratorPaperclipError extends Error {
   constructor(
@@ -32,6 +36,20 @@ export interface IssueListOptions {
   readonly parentId?: string | undefined;
 }
 
+export interface NativeReviewWakeInput {
+  readonly reviewerAgentId: string;
+  readonly issueId: string;
+  readonly interactionId: string;
+  readonly interactionKind: "request_item_verdicts";
+}
+
+export type NativeReviewWakeResult =
+  | { readonly kind: "started"; readonly runId: string }
+  | { readonly kind: "skipped"; readonly reason: string }
+  | { readonly kind: "rejected"; readonly status: number; readonly reason: string }
+  | { readonly kind: "invalid_response" }
+  | { readonly kind: "transport_failure"; readonly reason: string };
+
 function apiBase(apiUrl: string): string {
   return apiUrl.replace(/\/+$/, "").replace(/\/api$/i, "");
 }
@@ -46,6 +64,49 @@ function requireToken(authToken?: string): string {
     throw new OrchestratorPaperclipError(null, "Paperclip agent token is unavailable");
   }
   return token;
+}
+
+export function nativeReviewWakeIdempotencyKey(input: NativeReviewWakeInput): string {
+  return [
+    "native-review-dispatch-recovery:v1",
+    input.issueId,
+    input.interactionId,
+    input.reviewerAgentId,
+  ].join(":");
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function textField(value: Record<string, unknown>, key: string): string | null {
+  const field = value[key];
+  return typeof field === "string" && field.trim() ? field.trim() : null;
+}
+
+export function classifyNativeReviewWakeResponse(response: {
+  readonly ok: boolean;
+  readonly status: number;
+  readonly text: string;
+  readonly data?: unknown;
+}): NativeReviewWakeResult {
+  const data = record(response.data);
+  if (!response.ok) {
+    const reason = textField(data ?? {}, "error") ?? response.text;
+    return {
+      kind: "rejected",
+      status: response.status,
+      reason: reason || `HTTP ${response.status}`,
+    };
+  }
+  const runId = data ? textField(data, "id") : null;
+  if (runId) return { kind: "started", runId };
+  if (data?.["status"] === "skipped") {
+    return { kind: "skipped", reason: textField(data, "reason") ?? "Paperclip skipped the wake" };
+  }
+  return { kind: "invalid_response" };
 }
 
 export function createPaperclipHttp(options: PaperclipHttpOptions) {
@@ -261,19 +322,24 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
     async cancelHeartbeatRun(runId: string, reason = "Cancelled stale delegated execution") {
       return sendJson(`/api/heartbeat-runs/${encodeURIComponent(runId)}/cancel`, "POST", { reason });
     },
-    /**
-     * Paperclip's typed native-review dispatch endpoint preserves the card
-     * binding in the reviewer runtime context. Do not replace this with a
-     * generic agent wake: that run has no interaction identity and cannot
-     * submit the structured verdict.
-     */
-    async dispatchNativeReview(issueId: string, interactionId: string, idempotencyKey?: string) {
-      return sendJson(
-        `/api/issues/${encodeURIComponent(issueId)}/interactions/${encodeURIComponent(interactionId)}/dispatch`,
-        "POST",
-        {},
-        idempotencyKey,
-      );
+    async wakeNativeReview(input: NativeReviewWakeInput): Promise<NativeReviewWakeResult> {
+      const request = buildNativeInteractionWakeRequest({
+        ...input,
+        reason: "native_review_dispatch_recovery",
+      });
+      try {
+        return classifyNativeReviewWakeResponse(await sendJson(
+          request.path,
+          "POST",
+          request.body,
+          nativeReviewWakeIdempotencyKey(input),
+        ));
+      } catch (error) {
+        if (error instanceof OrchestratorPaperclipError && error.status !== null) {
+          return { kind: "rejected", status: error.status, reason: error.message };
+        }
+        return { kind: "transport_failure", reason: error instanceof Error ? error.message : String(error) };
+      }
     },
     async wakeup(
       agentId: string,
@@ -308,7 +374,16 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
               payload: {
                 ...(issueId ? { issueId } : {}),
                 ...(options?.resumeFromRunId ? { resumeFromRunId: options.resumeFromRunId } : {}),
-                ...(options?.reviewInteractionId ? { interactionId: options.reviewInteractionId, interactionKind: "request_item_verdicts" } : {}),
+                // Vanilla Paperclip deliberately clears interactionId unless
+                // this marks an interaction continuation. Without it a
+                // reviewer wake loses the addressed native-card binding.
+                ...(options?.reviewInteractionId
+                  ? {
+                      mutation: "interaction",
+                      interactionId: options.reviewInteractionId,
+                      interactionKind: "request_item_verdicts",
+                    }
+                  : {}),
                 ...(options?.wakeCommentId ? { commentId: options.wakeCommentId } : {}),
               },
             }

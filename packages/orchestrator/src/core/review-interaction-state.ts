@@ -370,20 +370,18 @@ export function shouldExplicitlyWakeReviewCard(request: ReviewInteractionRequest
 }
 
 /**
- * Paperclip dispatches a newly created addressed native card itself.  The
- * adapter may wake only a previously-created unanswered card during explicit
- * recovery.  Treating both paths alike creates an unbound second run after a
- * verdict has already resolved the card, which Paperclip later tries to
- * repair as a lost review path.
+ * Paperclip dispatches a newly created addressed native card itself. Recovery
+ * replaces one orphaned card with another addressed card; it never wakes the
+ * old card, because that bypasses the host's native interaction transition.
  */
-export type ReviewRunDispatch = "native_card" | "manual_wake" | "recovery_wake" | "none";
+export type ReviewRunDispatch = "native_card" | "manual_wake" | "none";
 
 export function selectReviewRunDispatch(input: {
   readonly dialogCreated: boolean;
   readonly recovery: boolean;
   readonly request?: ReviewInteractionRequest | undefined;
 }): ReviewRunDispatch {
-  if (input.recovery) return "recovery_wake";
+  if (input.recovery) return "none";
   if (!input.dialogCreated) return "none";
   return input.request && shouldExplicitlyWakeReviewCard(input.request) ? "manual_wake" : "native_card";
 }

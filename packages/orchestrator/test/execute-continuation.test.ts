@@ -479,7 +479,10 @@ describe("orchestrator live session continuation", () => {
       resolutionNote: expect.stringContaining("Jules run"),
       executionReconciliation: {
         runId: failedRunId,
-        providerStopped: false,
+        // v2026.916 accepts only true here: this acknowledges the stopped
+        // Paperclip-local run while preserving the durable Jules handle for
+        // adapter-side reconciliation.
+        providerStopped: true,
         actionOutcome: "mixed",
         outcomeEvidence: expect.stringContaining("newer successful same-issue Jules run"),
       },

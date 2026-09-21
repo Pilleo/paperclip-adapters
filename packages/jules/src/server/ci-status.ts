@@ -1,11 +1,13 @@
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 export type CiCheckStatus = "success" | "pending" | "stalled" | "failed" | "unknown";
 export const CI_STALL_TIMEOUT_MS = 90 * 60 * 1_000;
 export type PullRequestState = "OPEN" | "MERGED" | "CLOSED" | "UNKNOWN";
+export type GitHubInspectionStatus = "observed" | "unavailable";
+export type GitHubInspectionUnavailableReason = "authentication" | "not_found" | "timeout" | "command_failed";
 
 export interface CheckItem {
   name?: string;
@@ -21,6 +23,10 @@ export interface PullRequestDetails {
   state: PullRequestState;
   merged: boolean;
   ciStatus: CiCheckStatus;
+  /** Whether the run-scoped GitHub broker successfully inspected this PR. */
+  inspectionStatus: GitHubInspectionStatus;
+  /** Present only when the run-scoped GitHub inspection could not be performed. */
+  unavailableReason?: GitHubInspectionUnavailableReason;
   mergeableStatus?: MergeableStatus;
   /** Immutable GitHub head used to fence review decisions to one revision. */
   headSha?: string;
@@ -28,192 +34,199 @@ export interface PullRequestDetails {
   headRefName?: string;
 }
 
-export function evaluateChecks(checks: CheckItem[], now = Date.now()): CiCheckStatus {
-  if (!Array.isArray(checks) || checks.length === 0) {
-    return "pending";
+export interface GitHubCommandOutput {
+  stdout: string;
+  stderr: string;
+}
+
+export interface GitHubCommandOptions {
+  readonly cwd?: string;
+  /** Resolved adapter environment, including Paperclip's run-scoped GitHub launcher. */
+  readonly env?: NodeJS.ProcessEnv;
+  /** Test seam; production uses the Paperclip-provided `gh` launcher on PATH. */
+  readonly commandRunner?: GitHubCommandRunner;
+}
+
+/**
+ * Runs `gh` without a shell so a provider-supplied PR URL is always an argument,
+ * never executable syntax. The resolved environment is mandatory in production:
+ * Paperclip v2026.916 injects its run-scoped GitHub broker there.
+ */
+export type GitHubCommandRunner = (
+  args: readonly string[],
+  options: Readonly<{ cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number }>,
+) => Promise<GitHubCommandOutput>;
+
+type GitHubCommandInput = string | GitHubCommandOptions | undefined;
+
+interface GitHubCommandFailure {
+  readonly reason: GitHubInspectionUnavailableReason;
+  readonly output: GitHubCommandOutput;
+}
+
+type GitHubCommandResult =
+  | { readonly ok: true; readonly output: GitHubCommandOutput }
+  | { readonly ok: false; readonly failure: GitHubCommandFailure };
+
+function normalizeOptions(input: GitHubCommandInput): Required<Pick<GitHubCommandOptions, "cwd">> & GitHubCommandOptions {
+  return typeof input === "string"
+    ? { cwd: input }
+    : { cwd: input?.cwd || process.cwd(), ...input };
+}
+
+function resolvedCommandEnvironment(env: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv {
+  return { ...process.env, ...env };
+}
+
+function commandFailure(error: unknown): GitHubCommandFailure {
+  const record = error && typeof error === "object" ? error as Record<string, unknown> : {};
+  const stdout = typeof record["stdout"] === "string" ? record["stdout"] : "";
+  const stderr = typeof record["stderr"] === "string" ? record["stderr"] : "";
+  const message = [error instanceof Error ? error.message : String(error), stderr].join(" ").toLowerCase();
+  const timedOut = record["killed"] === true || record["code"] === "ETIMEDOUT" || record["signal"] === "SIGTERM";
+  const reason: GitHubInspectionUnavailableReason = timedOut
+    ? "timeout"
+    : /authentication|required|bad credentials|not logged in|401|403/.test(message)
+      ? "authentication"
+      : /not found|could not resolve|unknown repository|404/.test(message)
+        ? "not_found"
+        : "command_failed";
+  return { reason, output: { stdout, stderr } };
+}
+
+async function runGh(
+  args: readonly string[],
+  input: GitHubCommandInput,
+  timeoutMs: number,
+): Promise<GitHubCommandResult> {
+  const options = normalizeOptions(input);
+  const commandOptions = {
+    cwd: options.cwd,
+    env: resolvedCommandEnvironment(options.env),
+    timeoutMs,
+  };
+  const runner: GitHubCommandRunner = options.commandRunner || (async (commandArgs, runnerOptions) => {
+    const output = await execFileAsync("gh", [...commandArgs], {
+      cwd: runnerOptions.cwd,
+      env: runnerOptions.env,
+      timeout: runnerOptions.timeoutMs,
+      maxBuffer: 1_024 * 1_024,
+    });
+    return { stdout: output.stdout, stderr: output.stderr };
+  });
+  try {
+    return { ok: true, output: await runner(args, commandOptions) };
+  } catch (error) {
+    return { ok: false, failure: commandFailure(error) };
   }
+}
+
+function parseJson(value: string): unknown | undefined {
+  try {
+    return JSON.parse(value.trim());
+  } catch {
+    return undefined;
+  }
+}
+
+function readPullRequestState(value: unknown): PullRequestState {
+  switch (typeof value === "string" ? value.toUpperCase() : "") {
+    case "OPEN": return "OPEN";
+    case "MERGED": return "MERGED";
+    case "CLOSED": return "CLOSED";
+    default: return "UNKNOWN";
+  }
+}
+
+function textField(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function mergeableStatus(value: unknown): MergeableStatus {
+  switch (String(value || "").toUpperCase()) {
+    case "MERGEABLE": return "mergeable";
+    case "CONFLICTING": return "conflicting";
+    default: return "unknown";
+  }
+}
+
+export function evaluateChecks(checks: CheckItem[], now = Date.now()): CiCheckStatus {
+  if (!Array.isArray(checks) || checks.length === 0) return "pending";
 
   let hasPending = false;
   let hasFreshPending = false;
   for (const check of checks) {
     const bucket = (check.bucket || "").toLowerCase();
     const state = (check.state || "").toUpperCase();
-
-    if (bucket === "fail" || state === "FAILURE" || state === "ERROR" || state === "CANCELLED") {
-      return "failed";
-    }
+    if (bucket === "fail" || state === "FAILURE" || state === "ERROR" || state === "CANCELLED") return "failed";
     if (bucket === "pending" || state === "PENDING" || state === "IN_PROGRESS" || state === "QUEUED") {
       hasPending = true;
       const startedAt = typeof check.startedAt === "string" ? Date.parse(check.startedAt) : NaN;
       if (!Number.isFinite(startedAt) || now - startedAt < CI_STALL_TIMEOUT_MS) hasFreshPending = true;
     }
   }
-
-  if (hasPending && !hasFreshPending) return "stalled";
-  if (hasPending) return "pending";
-  return "success";
+  return hasPending ? (hasFreshPending ? "pending" : "stalled") : "success";
 }
 
-export async function listPullRequestChangedFiles(prUrl: string, cwd?: string): Promise<string[]> {
-  try {
-    const { stdout } = await execAsync(`gh pr diff "${prUrl}" --name-only`, {
-      cwd: cwd || process.cwd(),
-      timeout: 5_000,
-    });
-    return stdout
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-  } catch {
-    return [];
-  }
+export async function listPullRequestChangedFiles(prUrl: string, options?: GitHubCommandInput): Promise<string[]> {
+  const result = await runGh(["pr", "diff", prUrl, "--name-only"], options, 5_000);
+  return result.ok
+    ? result.output.stdout.split("\n").map((line) => line.trim()).filter(Boolean)
+    : [];
 }
 
-/** Full PR patch for symbol-level scope checks. Empty when `gh` is unavailable. */
-export async function getPullRequestPatch(prUrl: string, cwd?: string): Promise<string> {
-  try {
-    const { stdout } = await execAsync(`gh pr diff "${prUrl}"`, {
-      cwd: cwd || process.cwd(),
-      timeout: 8_000,
-    });
-    return stdout;
-  } catch {
-    return "";
-  }
+/** Full PR patch for informational scope checks. Empty when brokered GitHub access is unavailable. */
+export async function getPullRequestPatch(prUrl: string, options?: GitHubCommandInput): Promise<string> {
+  const result = await runGh(["pr", "diff", prUrl], options, 8_000);
+  return result.ok ? result.output.stdout : "";
 }
 
-export async function getPullRequestDetails(
-  prUrl: string,
-  cwd?: string,
-): Promise<PullRequestDetails> {
-  let prState: PullRequestState = "UNKNOWN";
-  let isMerged = false;
-  let prHeadSha: string | undefined;
-  let prHeadRefName: string | undefined;
-
-  // 1. Check PR State via gh CLI
-  try {
-    const { stdout } = await execAsync(
-      `gh pr view "${prUrl}" --json state,mergedAt,mergeable,mergeStateStatus,headRefOid,headRefName`,
-      { cwd: cwd || process.cwd(), timeout: 3_000 },
-    );
-    const parsed = JSON.parse(stdout.trim());
-    if (parsed && typeof parsed.state === "string") {
-      prState = parsed.state.toUpperCase() as PullRequestState;
-      isMerged = prState === "MERGED" || Boolean(parsed.mergedAt);
-      const mergeable = String(parsed.mergeable || "").toUpperCase();
-      const mergeableStatus: MergeableStatus = mergeable === "CONFLICTING" ? "conflicting" : mergeable === "MERGEABLE" ? "mergeable" : "unknown";
-      const headSha = typeof parsed.headRefOid === "string" && parsed.headRefOid.trim()
-        ? parsed.headRefOid.trim()
-        : undefined;
-      if (isMerged) {
-        return {
-          state: "MERGED",
-          merged: true,
-          ciStatus: "success",
-          mergeableStatus: "mergeable",
-          ...(headSha ? { headSha } : {}),
-        };
-      }
-      prHeadSha = headSha;
-      prHeadRefName = typeof parsed.headRefName === "string" && parsed.headRefName.trim()
-        ? parsed.headRefName.trim()
-        : undefined;
-    }
-  } catch {
-    // Fall back to checks or REST API
+export async function getPullRequestDetails(prUrl: string, options?: GitHubCommandInput): Promise<PullRequestDetails> {
+  const view = await runGh(
+    ["pr", "view", prUrl, "--json", "state,mergedAt,mergeable,mergeStateStatus,headRefOid,headRefName"],
+    options,
+    3_000,
+  );
+  if (!view.ok) {
+    return {
+      state: "UNKNOWN", merged: false, ciStatus: "unknown", inspectionStatus: "unavailable", unavailableReason: view.failure.reason,
+    };
   }
 
-  // 2. Check CI Checks via gh CLI
-  try {
-    const { stdout } = await execAsync(
-      `gh pr checks "${prUrl}" --json bucket,state,name,workflow,startedAt`,
-      { cwd: cwd || process.cwd(), timeout: 3_000 },
-    );
-    const parsed = JSON.parse(stdout.trim());
-    if (Array.isArray(parsed)) {
-      return {
-        state: prState,
-        merged: isMerged,
-        ciStatus: evaluateChecks(parsed),
-        mergeableStatus: (typeof (parsed as any).mergeableStatus === "string" ? (parsed as any).mergeableStatus : undefined),
-        ...(prHeadSha ? { headSha: prHeadSha } : {}),
-        ...(prHeadRefName ? { headRefName: prHeadRefName } : {}),
-      };
-    }
-  } catch {
-    // gh CLI checks might fail
+  const parsedView = parseJson(view.output.stdout);
+  if (!parsedView || typeof parsedView !== "object" || Array.isArray(parsedView)) {
+    return {
+      state: "UNKNOWN", merged: false, ciStatus: "unknown", inspectionStatus: "unavailable", unavailableReason: "command_failed",
+    };
   }
-
-  // 3. Fallback to GitHub REST API
-  const match = prUrl.match(/github\.com\/([^\/]+)\/([^\/]+)\/pull\/(\d+)/);
-  if (match) {
-    const [, owner, repo, pullNumber] = match;
-    try {
-      const headers: Record<string, string> = {
-        "User-Agent": "paperclip-jules-adapter",
-        Accept: "application/vnd.github+json",
-      };
-      const prRes = await fetch(
-        `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}`,
-        { headers, signal: AbortSignal.timeout(3_000) },
-      );
-      if (prRes.ok) {
-        const prData: any = await prRes.json();
-        if (prData?.merged === true || prData?.state === "closed") {
-          return {
-            state: prData?.merged ? "MERGED" : "CLOSED",
-            merged: Boolean(prData?.merged),
-            ciStatus: "success",
-            ...(typeof prData?.head?.sha === "string" ? { headSha: prData.head.sha } : {}),
-            ...(typeof prData?.head?.ref === "string" ? { headRefName: prData.head.ref } : {}),
-          };
-        }
-        const headSha = prData?.head?.sha;
-        if (headSha) {
-          const checkRunsRes = await fetch(
-            `https://api.github.com/repos/${owner}/${repo}/commits/${headSha}/check-runs`,
-            { headers, signal: AbortSignal.timeout(3_000) },
-          );
-          if (checkRunsRes.ok) {
-            const checkData: any = await checkRunsRes.json();
-            const checkRuns = checkData?.check_runs || [];
-            if (checkRuns.length === 0) {
-              return { state: "OPEN", merged: false, ciStatus: "pending", headSha,
-                ...(typeof prData?.head?.ref === "string" ? { headRefName: prData.head.ref } : {}) };
-            }
-            const items: CheckItem[] = checkRuns.map((cr: any) => ({
-              name: cr.name,
-              state: (cr.conclusion || cr.status || "").toUpperCase(),
-              bucket: cr.conclusion === "success" ? "pass" : cr.status === "completed" ? "fail" : "pending",
-              startedAt: cr.started_at,
-            }));
-            return {
-              state: "OPEN",
-              merged: false,
-              ciStatus: evaluateChecks(items),
-              headSha,
-              ...(typeof prData?.head?.ref === "string" ? { headRefName: prData.head.ref } : {}),
-            };
-          }
-        }
-      }
-    } catch {
-      // Ignore network errors
-    }
-  }
-
-  return {
-    state: prState,
-    merged: isMerged,
-    ciStatus: isMerged ? "success" : "pending",
+  const viewRecord = parsedView as Record<string, unknown>;
+  const state = readPullRequestState(viewRecord["state"]);
+  const merged = state === "MERGED" || Boolean(viewRecord["mergedAt"]);
+  const headSha = textField(viewRecord, "headRefOid");
+  const headRefName = textField(viewRecord, "headRefName");
+  const base = {
+    state: merged ? "MERGED" as const : state,
+    merged,
+    inspectionStatus: "observed" as const,
+    mergeableStatus: mergeableStatus(viewRecord["mergeable"]),
+    ...(headSha ? { headSha } : {}),
+    ...(headRefName ? { headRefName } : {}),
   };
+  if (merged) return { ...base, ciStatus: "success" };
+
+  const checks = await runGh(
+    ["pr", "checks", prUrl, "--json", "bucket,state,name,workflow,startedAt"],
+    options,
+    3_000,
+  );
+  const parsedChecks = parseJson(checks.ok ? checks.output.stdout : checks.failure.output.stdout);
+  if (Array.isArray(parsedChecks)) return { ...base, ciStatus: evaluateChecks(parsedChecks as CheckItem[]) };
+
+  // The PR itself was observed; unavailable checks must not be interpreted as passing or pending.
+  return { ...base, ciStatus: "unknown" };
 }
 
-export async function getPullRequestCiStatus(
-  prUrl: string,
-  cwd?: string,
-): Promise<CiCheckStatus> {
-  const details = await getPullRequestDetails(prUrl, cwd);
-  return details.ciStatus;
+export async function getPullRequestCiStatus(prUrl: string, options?: GitHubCommandInput): Promise<CiCheckStatus> {
+  return (await getPullRequestDetails(prUrl, options)).ciStatus;
 }

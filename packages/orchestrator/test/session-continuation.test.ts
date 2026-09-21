@@ -37,11 +37,20 @@ describe("session continuation", () => {
       sessionIdBefore: null,
       sessionIdAfter: "sess-live",
       contextSnapshot: { issueId: "issue-821" },
-      resultJson: { retryNotBefore: "2026-08-30T15:05:00.000Z", julesSessionId: "sess-live" },
+      resultJson: {
+        provider: "jules",
+        retryNotBefore: "2026-08-30T15:05:00.000Z",
+        julesSessionId: "sess-live",
+        julesState: "COMPLETED",
+        stopReason: "completed",
+      },
     });
     expect(parsed.issueId).toBe("issue-821");
     expect(liveSessionId(parsed)).toBe("sess-live");
     expect(parsed.retryNotBefore).toBe("2026-08-30T15:05:00.000Z");
+    expect(parsed.provider).toBe("jules");
+    expect(parsed.julesState).toBe("COMPLETED");
+    expect(parsed.stopReason).toBe("completed");
   });
 
   it("does not wake Jules: native issue monitors own its continuation", () => {

@@ -30,23 +30,6 @@ describe("Jules lifecycle reducer", () => {
       "preserve",
     ],
     [
-      "delivers the exact resolved rejection before polling again",
-      {
-        ...baseState,
-        provider: { kind: "awaiting_feedback", sessionId: "session-1", revisionId: "rev-1" },
-        review: {
-          kind: "resolved",
-          cardId: "card-1",
-          revisionId: "rev-1",
-          reviewer: "luna",
-          verdict: "reject",
-          runId: "run-luna-1",
-        },
-      },
-      { kind: "heartbeat" },
-      "deliver_verdict",
-    ],
-    [
       "reconciles an uncertain provider mutation after interruption",
       {
         ...baseState,
@@ -100,5 +83,34 @@ describe("Jules lifecycle reducer", () => {
   ])("%s", (_name, state, event, expectedEffect) => {
     const decision = reduceJulesLifecycle(state, event);
     expect(decision.effect.kind).toBe(expectedEffect);
+  });
+
+  it.each<readonly [string, JulesLifecycleState, unknown]>([
+    [
+      "creates the Terra card after Luna approves the exact plan revision",
+      {
+        ...baseState,
+        review: { kind: "resolved", cardId: "card-luna", revisionId: "rev-1", reviewer: "luna", verdict: "approve", runId: "run-luna-1" },
+      },
+      { kind: "create_card", reviewer: "terra", revisionId: "rev-1" },
+    ],
+    [
+      "uses typed provider approval only after Terra approves the exact plan revision",
+      {
+        ...baseState,
+        review: { kind: "resolved", cardId: "card-terra", revisionId: "rev-1", reviewer: "terra", verdict: "approve", runId: "run-terra-1" },
+      },
+      { kind: "approve_plan", sessionId: "session-1", revisionId: "rev-1" },
+    ],
+    [
+      "requests a fresh plan revision after either native reviewer rejects",
+      {
+        ...baseState,
+        review: { kind: "resolved", cardId: "card-luna", revisionId: "rev-1", reviewer: "luna", verdict: "reject", runId: "run-luna-1" },
+      },
+      { kind: "request_plan_revision", cardId: "card-luna", revisionId: "rev-1", reviewer: "luna", runId: "run-luna-1" },
+    ],
+  ])("%s", (_name, state, expected) => {
+    expect(reduceJulesLifecycle(state, { kind: "heartbeat" }).effect).toEqual(expected);
   });
 });

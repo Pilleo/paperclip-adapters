@@ -1,5 +1,6 @@
 import { isCanonicalReviewCardKey, reviewInteractionKeyPrefix } from "./review-interaction-state.js";
 import type { HeartbeatRunSummary } from "./session-continuation.js";
+import { decideNativeReviewDispatch, type NativeReviewRunStatus } from "@pilleo/paperclip-adapter-common";
 
 export interface RecoverableNativeReviewCard {
   readonly id: string;
@@ -17,15 +18,29 @@ export interface NativeReviewRecoveryPrIdentity {
 
 export type NativeReviewRecoveryDecision =
   | { readonly action: "no_action" }
+  | { readonly action: "await_native_dispatch"; readonly interactionId: string }
   | { readonly action: "await_run"; readonly interactionId: string; readonly runId: string }
+  | { readonly action: "await_verdict"; readonly interactionId: string; readonly runId: string }
   | {
-      readonly action: "restore_and_recover";
+      readonly action: "recover_dispatch";
       readonly interactionId: string;
       readonly reviewerAgentId: string;
+      readonly stage: "luna" | "terra";
+      /** Exact canonical card key; revalidation must fence a stale PR head. */
+      readonly immutableKey: string;
+    }
+  | { readonly action: "retry_exhausted"; readonly interactionId: string; readonly attempt: number }
+  | {
+      readonly action: "replace_card";
+      readonly interactionId: string;
+      readonly reviewerAgentId: string;
+      readonly stage: "luna" | "terra";
+      readonly nextAttempt: number;
+      readonly cause: "missing_dispatch" | "terminal_run";
       readonly failedRunId?: string | undefined;
       readonly withdrawInteractionIds: readonly string[];
     }
-  | { readonly action: "protocol_failure"; readonly reason: "multiple_pending_canonical_pr_cards" };
+  | { readonly action: "protocol_failure"; readonly reason: string };
 
 export type JulesPlanNativeReviewRecoveryDecision =
   | { readonly action: "no_action" }
@@ -48,8 +63,9 @@ export type NativeReviewWakeDecision =
   | { readonly action: "answered" }
   | { readonly action: "await_native_dispatch" }
   | { readonly action: "await_run"; readonly runId: string }
-  | { readonly action: "compatibility_wake"; readonly recoveryRunId: string | undefined }
+  | { readonly action: "recover_dispatch" }
   | { readonly action: "retry_exhausted" }
+  | { readonly action: "protocol_failure"; readonly reason: "card_identity_mismatch" }
   | { readonly action: "no_action" };
 
 /**
@@ -57,18 +73,6 @@ export type NativeReviewWakeDecision =
  * reassign the issue to its reviewer: that recreates Paperclip's independent
  * execution-review lane and can produce recovery spam after a verdict.
  */
-export function nativeReviewRecoveryIssuePatch(
-  decision: Extract<NativeReviewRecoveryDecision, { readonly action: "restore_and_recover" }>,
-): { readonly status: "in_review"; readonly assigneeAgentId: null; readonly executionPolicy: null; readonly executionState: null } {
-  void decision;
-  return {
-    status: "in_review",
-    assigneeAgentId: null,
-    executionPolicy: null,
-    executionState: null,
-  };
-}
-
 const LIVE_RUN_STATUSES = new Set(["queued", "running", "active", "claimed"]);
 const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out", "interrupted"]);
 
@@ -97,8 +101,10 @@ export function decideNativeReviewWake(input: {
   }
 
   const terminalRuns = runs.filter((run) => TERMINAL_RUN_STATUSES.has(run.status));
-  if (new Set(terminalRuns.map((run) => run.id)).size >= 2) return { action: "retry_exhausted" };
-  return { action: "compatibility_wake", recoveryRunId: terminalRuns[0]?.id };
+  // A terminal run proves the card was dispatched. The outer reducer owns the
+  // bounded replacement transition; a same-card wake would run the reviewer twice.
+  if (terminalRuns.length > 0) return { action: "no_action" };
+  return { action: "recover_dispatch" };
 }
 
 function isCanonicalPrCard(
@@ -106,7 +112,7 @@ function isCanonicalPrCard(
   issueId: string,
   prIdentity: NativeReviewRecoveryPrIdentity,
 ): boolean {
-  if (card.kind !== "request_item_verdicts" || card.status !== "pending") return false;
+  if (card.kind !== "request_item_verdicts") return false;
   const key = card.idempotencyKey;
   if (!key) return false;
   const lunaPrefix = reviewInteractionKeyPrefix({ issueId, prUrl: prIdentity.url, headSha: prIdentity.headSha, stage: "luna" });
@@ -119,6 +125,20 @@ function isCanonicalPrCard(
   // authoritative PR verdict card.
   return (matchesStagePrefix(lunaPrefix) || matchesStagePrefix(terraPrefix)) &&
     isCanonicalReviewCardKey(key);
+}
+
+function prCardStageAndAttempt(card: RecoverableNativeReviewCard): {
+  readonly stage: "luna" | "terra";
+  readonly attempt: number;
+} | null {
+  const key = card.idempotencyKey;
+  if (!key || !isCanonicalReviewCardKey(key)) return null;
+  const match = key.match(/:(luna|terra)(?::contract:[a-z0-9]+)?(?::attempt:([1-9]\d*))?$/);
+  if (!match) return null;
+  return {
+    stage: match[1] as "luna" | "terra",
+    attempt: match[2] ? Number(match[2]) : 0,
+  };
 }
 
 type JulesPlanReviewStage = "luna" | "terra";
@@ -202,6 +222,9 @@ export function decideNativeReviewRecovery(input: {
   readonly issueAssigneeAgentId?: string | null | undefined;
   readonly orchestratorManaged: boolean;
   readonly prIdentity: NativeReviewRecoveryPrIdentity;
+  readonly nowMs: number;
+  readonly graceMs: number;
+  readonly maxReplacementAttempts: number;
   readonly cards: readonly RecoverableNativeReviewCard[];
   readonly reviewerRuns: readonly Pick<HeartbeatRunSummary, "id" | "agentId" | "status" | "issueId" | "interactionId">[];
 }): NativeReviewRecoveryDecision {
@@ -209,43 +232,81 @@ export function decideNativeReviewRecovery(input: {
 
   const canonicalCards = input.cards.filter((card) => isCanonicalPrCard(card, input.issueId, input.prIdentity));
   if (canonicalCards.length === 0) return { action: "no_action" };
-  if (canonicalCards.length > 1) return { action: "protocol_failure", reason: "multiple_pending_canonical_pr_cards" };
-
-  const canonical = canonicalCards[0]!;
+  const pendingCards = canonicalCards.filter((card) => card.status === "pending");
+  if (pendingCards.length > 1) return { action: "protocol_failure", reason: "multiple_pending_canonical_pr_cards" };
+  const canonical = pendingCards[0] ?? [...canonicalCards]
+    .filter((card) => card.status !== "answered")
+    .sort((left, right) => (prCardStageAndAttempt(right)?.attempt ?? -1) - (prCardStageAndAttempt(left)?.attempt ?? -1))[0];
+  if (!canonical) return { action: "no_action" };
   const reviewerAgentId = canonical.addresseeAgentId;
   if (!reviewerAgentId) return { action: "no_action" };
-  const runs = input.reviewerRuns.filter((run) =>
-    run.issueId === input.issueId && run.agentId === reviewerAgentId &&
-    (run.interactionId === canonical.id || run.interactionId == null),
-  );
-  const liveRun = runs.find((run) => LIVE_RUN_STATUSES.has(run.status));
-  if (liveRun) return { action: "await_run", interactionId: canonical.id, runId: liveRun.id };
-
-  const failedRun = runs.find((run) => TERMINAL_RUN_STATUSES.has(run.status));
-  // A pending card without a reviewer execution is normal immediately after
-  // the review pipeline creates it. Recovery is justified only when the host
-  // projection left the native review lane or the bound reviewer run ended.
-  // Otherwise this compatibility fence would bypass the regular availability
-  // gate and manufacture an unnecessary reviewer wake on every new card.
-  if (
-    input.issueStatus === "in_review" &&
-    (input.issueAssigneeAgentId == null || input.issueAssigneeAgentId === reviewerAgentId) &&
-    !failedRun
-  ) {
-    return { action: "no_action" };
-  }
+  const parsed = prCardStageAndAttempt(canonical);
+  if (!parsed) return { action: "protocol_failure", reason: "invalid_card_identity" };
   const withdrawInteractionIds = input.cards
     .filter((card) => card.id !== canonical.id && card.kind === "request_item_verdicts" && card.status === "pending")
     .filter((card) => card.idempotencyKey?.startsWith(`jules:plan-review:v2:${input.issueId}:`))
     .map((card) => card.id);
+  // Only a pending card can be dispatched. A cancelled/withdrawn card is not
+  // evidence of a terminal reviewer run and must not trigger card churn.
+  if (canonical.status !== "pending") return { action: "no_action" };
 
-  // A pending card with no run is dispatchable. A terminal run needs the same
-  // card recovered. Both paths restore the host's review projection first.
-  return {
-    action: "restore_and_recover",
-    interactionId: canonical.id,
-    reviewerAgentId,
-    ...(failedRun ? { failedRunId: failedRun.id } : {}),
-    withdrawInteractionIds,
-  };
+  const exactRuns = input.reviewerRuns.filter((run) =>
+    run.issueId === input.issueId && run.agentId === reviewerAgentId && run.interactionId === canonical.id,
+  );
+  const decision = decideNativeReviewDispatch({
+    identity: {
+      issueId: input.issueId,
+      reviewerAgentId,
+      immutableKey: canonical.idempotencyKey!,
+    },
+    card: {
+      id: canonical.id,
+      status: "pending",
+      createdAt: canonical.createdAt ?? "",
+      reviewerAgentId,
+      immutableKey: canonical.idempotencyKey!,
+      attempt: parsed.attempt,
+    },
+    runs: exactRuns.map((run) => ({
+      id: run.id,
+      status: run.status as NativeReviewRunStatus,
+      issueId: run.issueId ?? input.issueId,
+      reviewerAgentId: run.agentId ?? reviewerAgentId,
+      interactionId: run.interactionId ?? null,
+      startedAt: null,
+      finishedAt: null,
+    })),
+    nowMs: input.nowMs,
+    graceMs: input.graceMs,
+    maxReplacementAttempts: input.maxReplacementAttempts,
+  });
+  switch (decision.action) {
+    case "await_native_dispatch":
+      return { action: "await_native_dispatch", interactionId: canonical.id };
+    case "await_run":
+      return { action: "await_run", interactionId: canonical.id, runId: decision.runId };
+    case "await_verdict":
+      return { action: "await_verdict", interactionId: canonical.id, runId: decision.runId };
+    case "recover_dispatch":
+      return {
+        action: "recover_dispatch",
+        interactionId: decision.interactionId,
+        reviewerAgentId: decision.reviewerAgentId,
+        stage: parsed.stage,
+        immutableKey: decision.immutableKey,
+      };
+    case "consume_verdict":
+      return { action: "no_action" };
+    case "retry_exhausted":
+      return decision;
+    case "replace_card":
+      return {
+        ...decision,
+        reviewerAgentId,
+        stage: parsed.stage,
+        withdrawInteractionIds,
+      };
+    case "protocol_failure":
+      return decision;
+  }
 }

@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import { AdapterConfig } from './config.js';
-import { buildHostImplementationPlan, stripPaperclipIdentityMetadata } from '@pilleo/paperclip-adapter-common';
+import { parseTaskContract, stripPaperclipIdentityMetadata } from '@pilleo/paperclip-adapter-common';
 
 export interface PromptContext {
   issueId: string;
@@ -17,37 +17,42 @@ export interface PromptContext {
   workspacePath?: string | undefined;
 }
 
-export const PROMPT_IDENTITY_HASH_VERSION = 2;
+export const PROMPT_IDENTITY_HASH_VERSION = 3;
 
 export function hashPrompt(prompt: string): string {
   return createHash('sha256').update(prompt).digest('hex');
 }
 
 export function buildPrompt(ctx: PromptContext, config: AdapterConfig): string {
-  let prompt = `Task: ${ctx.title}\n\n`;
   const taskDescription = stripPaperclipIdentityMetadata(ctx.description);
-  prompt += `Description:\n${taskDescription}\n\n`;
+  const contract = parseTaskContract(taskDescription);
+  const repository = config.repository || config.source;
+  const lines = [
+    `Task: ${ctx.title}`,
+    "",
+    "Requirements:",
+    contract.requirements,
+    "",
+  ];
 
-  prompt += `Paperclip Issue ID: ${ctx.issueId}\n`;
-  prompt += `Paperclip Run Marker: [paperclip-run:${ctx.runId}]\n\n`;
-
-  prompt += `Repository: ${config.source}\n`;
-  prompt += `Base Branch: ${config.baseBranch}\n\n`;
-
-  try {
-    const { markdown } = buildHostImplementationPlan(taskDescription, ctx.issueId, ctx.workspacePath);
-    prompt += `### Implementation plan (scope contract — follow this, do not expand):\n\n${markdown}\n\n`;
-  } catch {
-    // Fallback if markdown parsing encounters non-standard format
+  if (contract.kind === "structured") {
+    lines.push("Scope hints:", ...contract.targetFiles.map((file) => `- ${file}`));
+    if (contract.targetSymbols.length > 0) lines.push(...contract.targetSymbols.map((symbol) => `- ${symbol}`));
+    lines.push("");
   }
 
-  prompt += `Instructions:\n`;
-  prompt += `- Implement the attached plan. Do not add files or scope outside it without asking.\n`;
-  prompt += `- If repository changes are needed, create a pull request (PR) upon completion.\n`;
-  prompt += `- If no repository changes are needed or the task explicitly requests no changes, explain the result and complete without a PR.\n`;
-  prompt += `- When creating a PR, include the Paperclip Issue ID (${ctx.issueId}) in its description or title.\n`;
-  prompt += `- Do not merge the PR automatically.\n`;
-  prompt += `- If you are blocked or need clarification, ask a focused question.\n\n`;
+  lines.push(
+    `Repository: ${repository}`,
+    `Base Branch: ${config.baseBranch}`,
+    "",
+    "Workflow:",
+    "Implement the task and relevant tests; run the relevant tests; commit and create or update a PR. Do not merge it.",
+    "Ask a focused question only for a concrete ambiguity or blocker.",
+    "",
+    `Paperclip Issue ID: ${ctx.issueId}; Run Marker: [paperclip-run:${ctx.runId}]`,
+    "",
+  );
+  let prompt = lines.join("\n");
 
   if (ctx.isRetry) {
     if (ctx.resumeAttempt && ctx.resumeAttempt > 1) {

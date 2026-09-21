@@ -4,10 +4,15 @@ import {
   issueHasExecutionPolicy,
   issueHasUnsafeVibeReviewParticipant,
   issueNeedsExecutionPolicyBackfill,
+  isMergedPrTerminalProjection,
+  isNativePrReviewHandoffProjection,
+  mergedPrTerminalPatch,
+  nativeManagedExecutionDispatchPatch,
   nativePrReviewCleanupPatch,
   nativePrReviewOwnershipPatch,
   nativePrReviewParticipantPatch,
   nativePrReviewWaitPatch,
+  requiresMergedPrTerminalOwnershipCleanup,
   shouldTakeOverNativePrReview,
   shouldRecoverNativePrReview,
 } from "../src/core/execution-policy.js";
@@ -47,6 +52,84 @@ describe("mazewall execution policy builder", () => {
       executionPolicy: null,
       executionState: null,
     });
+  });
+
+  it.each([
+    ["accepts a fully cleared native review handoff", { status: "in_review", assigneeAgentId: null, executionPolicy: null, executionState: null }, true],
+    ["accepts an inert normalized Paperclip state", { status: "in_review", assigneeAgentId: null, executionPolicy: null, executionState: { status: "idle", monitor: { status: "cleared" } } }, true],
+    ["rejects residual Jules ownership", { status: "in_review", assigneeAgentId: "jules-1", executionPolicy: null, executionState: null }, false],
+    ["rejects a scheduled provider monitor", { status: "in_review", assigneeAgentId: null, executionPolicy: null, executionState: { status: "idle", monitor: { status: "scheduled", serviceName: "jules" } } }, false],
+    ["rejects a triggered provider monitor without terminal producer evidence", { status: "in_review", assigneeAgentId: null, executionPolicy: null, executionState: { status: "idle", monitor: { status: "triggered", serviceName: "jules" } } }, false],
+  ] as const)("%s", (_name, issue, expected) => {
+    expect(isNativePrReviewHandoffProjection(issue)).toBe(expected);
+  });
+
+  it("accepts Paperclip's retained triggered Jules monitor only with terminal producer evidence", () => {
+    const retainedProviderTelemetry = {
+      status: "in_review",
+      assigneeAgentId: null,
+      executionPolicy: null,
+      executionState: { status: "idle", monitor: { status: "triggered", serviceName: "jules" } },
+    };
+
+    expect(isNativePrReviewHandoffProjection(retainedProviderTelemetry, { terminalJulesProducer: true })).toBe(true);
+  });
+
+  it("clears every host-owned execution field when a registered PR is merged", () => {
+    expect(mergedPrTerminalPatch()).toEqual({
+      status: "done",
+      assigneeAgentId: null,
+      executionPolicy: null,
+      executionState: null,
+    });
+  });
+
+  it("starts managed implementation without installing a host review policy", () => {
+    expect(nativeManagedExecutionDispatchPatch("jules-1")).toEqual({
+      status: "in_progress",
+      assigneeAgentId: "jules-1",
+      executionPolicy: null,
+      executionState: null,
+    });
+  });
+
+  it.each([
+    ["accepts a fully cleared terminal projection", { status: "done", assigneeAgentId: null, executionPolicy: null, executionState: null }, true],
+    ["accepts Paperclip's normalized idle state with a cleared external monitor", {
+      status: "done",
+      assigneeAgentId: null,
+      executionPolicy: null,
+      executionState: {
+        status: "idle",
+        monitor: { kind: "external_service", status: "cleared", serviceName: "jules" },
+        reviewRequest: null,
+        currentStageId: null,
+        currentStageType: null,
+        currentStageIndex: null,
+        currentParticipant: null,
+      },
+    }, true],
+    ["rejects a done status that still has a host policy", { status: "done", assigneeAgentId: null, executionPolicy: { stages: [] }, executionState: null }, false],
+    ["rejects a done status that still has host execution state", { status: "done", assigneeAgentId: null, executionPolicy: null, executionState: { status: "pending" } }, false],
+  ] as const)("%s", (_name, issue, expected) => {
+    expect(isMergedPrTerminalProjection(issue)).toBe(expected);
+  });
+
+  it.each([
+    ["cleans a blocked task with a host reviewer policy", {
+      status: "blocked", assigneeAgentId: "luna-1", executionPolicy: { stages: [{ type: "review" }] }, executionState: { status: "pending", currentParticipant: { type: "agent", agentId: "luna-1" } },
+    }, true],
+    ["cleans a done task that still names an assignee", {
+      status: "done", assigneeAgentId: "jules-1", executionPolicy: null, executionState: { status: "idle", monitor: { status: "cleared" } },
+    }, true],
+    ["does not rewrite a done task with only inert cleared monitor history", {
+      status: "done", assigneeAgentId: null, executionPolicy: null, executionState: { status: "idle", monitor: { status: "cleared" }, currentParticipant: null, reviewRequest: null },
+    }, false],
+    ["does not rewrite a fully absent execution projection", {
+      status: "done", assigneeAgentId: null, executionPolicy: null, executionState: null,
+    }, false],
+  ] as const)("%s", (_name, issue, expected) => {
+    expect(requiresMergedPrTerminalOwnershipCleanup(issue)).toBe(expected);
   });
 
   it.each([

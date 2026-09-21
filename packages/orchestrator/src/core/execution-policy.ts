@@ -103,6 +103,111 @@ export function nativePrReviewCleanupPatch(): Record<string, unknown> {
 }
 
 /**
+ * Verify the atomic transition that transfers an implementation provider's PR
+ * to the adapter-owned review-card protocol. Inert Paperclip normalization is
+ * acceptable; a provider owner, policy, active monitor, or review state is
+ * not, because it could produce a competing execution path.
+ */
+/**
+ * Paperclip can retain an `idle`/`triggered` Jules monitor after the atomic
+ * handoff PATCH. That monitor is historical telemetry only when the caller
+ * has independently correlated the ready PR to the newest completed Jules
+ * producer run. Keep the evidence explicit: a bare triggered monitor is not
+ * safe to review and must remain provider-owned.
+ */
+export function isNativePrReviewHandoffProjection(
+  issue: Readonly<Record<string, unknown>>,
+  evidence: { readonly terminalJulesProducer?: boolean | undefined } = {},
+): boolean {
+  return issue["status"] === "in_review" &&
+    issue["assigneeAgentId"] === null &&
+    issue["executionPolicy"] === null &&
+    isPaperclipNormalizedTerminalExecutionState(issue["executionState"], Boolean(evidence.terminalJulesProducer));
+}
+
+/**
+ * A verified GitHub merge must atomically end every Paperclip-owned execution
+ * projection. A status-only update leaves an execution-policy participant
+ * eligible for recovery and can reanimate an already merged task.
+ *
+ * This is an adapter compatibility boundary until Paperclip provides a
+ * conditional terminal transition that clears execution ownership server-side.
+ */
+export function mergedPrTerminalPatch(): Record<string, unknown> {
+  return {
+    status: "done",
+    assigneeAgentId: null,
+    executionPolicy: null,
+    executionState: null,
+  };
+}
+
+function isPaperclipNormalizedTerminalExecutionState(value: unknown, allowRetainedTriggeredJulesMonitor = false): boolean {
+  if (value === null || value === undefined) return true;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const state = value as Readonly<Record<string, unknown>>;
+  if (state["status"] !== "idle") return false;
+  for (const key of ["reviewRequest", "currentStageId", "currentStageType", "currentStageIndex", "currentParticipant"] as const) {
+    if (state[key] !== null && state[key] !== undefined) return false;
+  }
+  const monitor = state["monitor"];
+  if (monitor === null || monitor === undefined) return true;
+  if (!monitor || typeof monitor !== "object" || Array.isArray(monitor)) return false;
+  const monitorRecord = monitor as Readonly<Record<string, unknown>>;
+  if (monitorRecord["status"] === "cleared") return true;
+  return allowRetainedTriggeredJulesMonitor &&
+    monitorRecord["status"] === "triggered" &&
+    monitorRecord["serviceName"] === "jules";
+}
+
+/**
+ * Paperclip currently normalizes a null executionState into an inert `idle`
+ * record with a cleared external monitor. Treat only that documented inert
+ * shape as terminal; an active monitor, participant, review request, or host
+ * policy remains a failed terminal transition.
+ */
+export function isMergedPrTerminalProjection(issue: Readonly<Record<string, unknown>>): boolean {
+  return issue["status"] === "done" &&
+    issue["assigneeAgentId"] === null &&
+    issue["executionPolicy"] === null &&
+    isPaperclipNormalizedTerminalExecutionState(issue["executionState"]);
+}
+
+/**
+ * Merge reconciliation clears ownership, not historical provider telemetry.
+ * A completed issue with only an inert monitor must not be re-patched every
+ * heartbeat; an assignee, host policy, active state, or non-terminal status
+ * can still reanimate work and therefore must be cleared atomically.
+ */
+export function requiresMergedPrTerminalOwnershipCleanup(issue: Readonly<Record<string, unknown>>): boolean {
+  if (issue["status"] !== "done") return true;
+  if (issue["assigneeAgentId"] !== null && issue["assigneeAgentId"] !== undefined) return true;
+  if (issue["executionPolicy"] !== null && issue["executionPolicy"] !== undefined) return true;
+  const executionState = issue["executionState"];
+  if (executionState === null || executionState === undefined) return false;
+  if (!executionState || typeof executionState !== "object" || Array.isArray(executionState)) return true;
+  const state = executionState as Readonly<Record<string, unknown>>;
+  const status = state["status"];
+  if (status !== "idle" && status !== "completed" && status !== "cleared") return true;
+  return ["reviewRequest", "currentStageId", "currentStageType", "currentStageIndex", "currentParticipant"]
+    .some((key) => state[key] !== null && state[key] !== undefined);
+}
+
+/**
+ * Managed implementation is owned by its provider adapter. Native review
+ * cards own Luna/Terra decisions later; installing a host execution policy
+ * here creates a competing generic-review state machine.
+ */
+export function nativeManagedExecutionDispatchPatch(assigneeAgentId: string): Record<string, unknown> {
+  return {
+    status: "in_progress",
+    assigneeAgentId,
+    executionPolicy: null,
+    executionState: null,
+  };
+}
+
+/**
  * Paperclip v831 execution-policy review stages do not consume the adapter's
  * addressed `request_item_verdicts` cards.  A managed ready PR therefore has
  * exactly one review authority: transfer it to the native-card ladder before

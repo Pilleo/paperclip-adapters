@@ -583,7 +583,7 @@ function migrateLegacyEffectJournal(session: JulesAdapterSessionV1): LifecycleEf
     effects: [{
       effectId: checkpoint.key,
       kind: "legacy_unknown",
-      attempt: { kind: "started", startedAt: checkpoint.updatedAt },
+      attempt: { kind: "started", startedAt: checkpoint.updatedAt, attempts: 1 },
     }],
   };
 }

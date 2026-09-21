@@ -32,6 +32,39 @@ export interface PullRequestReconciliationInput {
   readonly auditAlreadyRecorded: boolean;
 }
 
+/**
+ * A bounded GitHub listing is a discovery optimization, never lifecycle
+ * authority. The scheduler may directly probe a board-registered PR only for
+ * a pending merge gate or an active managed review lane. Keeping this choice
+ * typed and pure prevents later recovery code from silently broadening it.
+ */
+export type RegisteredPullRequestObservation =
+  | { readonly kind: "probe"; readonly reason: "pending_merge_approval" | "managed_active_pr_outside_discovery" }
+  | { readonly kind: "skip"; readonly reason: "missing_registration" | "already_discovered" | "not_a_merge_cleanup_candidate" };
+
+function normalizedPullRequestUrl(url: string): string {
+  return url.replace(/\/$/, "").toLowerCase();
+}
+
+export function selectRegisteredPullRequestObservation(input: {
+  readonly registeredPrUrl?: string | undefined;
+  readonly discoveredPrUrls: ReadonlySet<string>;
+  readonly hasPendingMergeApproval: boolean;
+  readonly orchestratorManaged: boolean;
+  readonly issueStatus: ReconciliationIssueStatus;
+}): RegisteredPullRequestObservation {
+  if (!input.registeredPrUrl) return { kind: "skip", reason: "missing_registration" };
+  const registeredUrl = normalizedPullRequestUrl(input.registeredPrUrl);
+  if ([...input.discoveredPrUrls].some((url) => normalizedPullRequestUrl(url) === registeredUrl)) {
+    return { kind: "skip", reason: "already_discovered" };
+  }
+  if (input.hasPendingMergeApproval) return { kind: "probe", reason: "pending_merge_approval" };
+  if (input.orchestratorManaged && (input.issueStatus === "blocked" || input.issueStatus === "in_review")) {
+    return { kind: "probe", reason: "managed_active_pr_outside_discovery" };
+  }
+  return { kind: "skip", reason: "not_a_merge_cleanup_candidate" };
+}
+
 export type PullRequestReconciliationDecision =
   | {
       readonly action: "COMPLETE_MERGED_PR";

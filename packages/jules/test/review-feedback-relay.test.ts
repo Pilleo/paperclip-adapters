@@ -41,6 +41,8 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
     readJulesSessionHandleState: vi.fn().mockResolvedValue(null),
     withdrawPaperclipInteraction: vi.fn().mockResolvedValue(undefined),
     scheduleJulesSessionMonitor: vi.fn().mockResolvedValue(undefined),
+    upsertJulesSessionHandle: vi.fn().mockResolvedValue(undefined),
+    registerPullRequestWorkProduct: vi.fn().mockResolvedValue(undefined),
   };
 });
 

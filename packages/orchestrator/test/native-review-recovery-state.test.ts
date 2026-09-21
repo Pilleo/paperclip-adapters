@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  decideNativeReviewWake,
   decideJulesPlanNativeReviewRecovery,
   decideNativeReviewRecovery,
-  nativeReviewRecoveryIssuePatch,
 } from "../src/core/native-review-recovery-state.js";
 
 const prCard = {
@@ -12,6 +10,7 @@ const prCard = {
   status: "pending",
   addresseeAgentId: "luna-1",
   idempotencyKey: "pr-review:v13:issue-1:https://github.com/acme/repo/pull/1:head-1:luna",
+  createdAt: "2026-09-15T18:00:00.000Z",
 };
 
 const stalePlanCard = {
@@ -49,169 +48,113 @@ const planRecoveryInput = (cards: readonly typeof stalePlanCard[], reviewerRuns:
 });
 
 describe("native review recovery state", () => {
-  describe("final native-review wake decision", () => {
-    const wakeInput = (patch: Record<string, unknown> = {}) => ({
-      issueId: "issue-1",
-      reviewerAgentId: "terra-1",
-      nowMs: Date.parse("2026-09-15T18:02:00.000Z"),
-      graceMs: 60_000,
-      card: {
-        ...terraPlanCard,
-        createdAt: "2026-09-15T18:00:00.000Z",
-      },
-      reviewerRuns: [],
-      ...patch,
-    });
-
-    it.each([
-      [
-        "the card was answered after the stale recovery snapshot",
-        wakeInput({ card: { ...terraPlanCard, status: "answered" } }),
-        { action: "answered" },
-      ],
-      [
-        "Paperclip has already started the addressed reviewer",
-        wakeInput({ reviewerRuns: [{ id: "terra-live", agentId: "terra-1", status: "running", issueId: "issue-1", interactionId: "terra-plan-card" }] }),
-        { action: "await_run", runId: "terra-live" },
-      ],
-      [
-        "the host native-dispatch grace window is still open",
-        wakeInput({ nowMs: Date.parse("2026-09-15T18:00:30.000Z") }),
-        { action: "await_native_dispatch" },
-      ],
-      [
-        "the pending card has no native reviewer run after grace",
-        wakeInput(),
-        { action: "compatibility_wake", recoveryRunId: undefined },
-      ],
-    ])("%s", (_name, input, expected) => {
-      expect(decideNativeReviewWake(input)).toEqual(expected);
-    });
+  const prRecoveryInput = (cards: readonly typeof prCard[], reviewerRuns: readonly {
+    id: string;
+    agentId: string;
+    status: string;
+    issueId: string;
+    interactionId?: string;
+  }[] = []) => ({
+    issueId: "issue-1",
+    issueStatus: "in_review",
+    orchestratorManaged: true,
+    prIdentity: { url: "https://github.com/acme/repo/pull/1", headSha: "head-1" },
+    nowMs: Date.parse("2026-09-15T18:02:00.000Z"),
+    graceMs: 60_000,
+    maxReplacementAttempts: 1,
+    cards,
+    reviewerRuns,
   });
 
-  it("restores the canonical PR card after a restart projection and retires a superseded plan card", () => {
+  it("replaces the canonical PR card after a lost dispatch and retires a superseded plan card", () => {
     expect(decideNativeReviewRecovery({
-      issueId: "issue-1",
+      ...prRecoveryInput([prCard]),
       issueStatus: "backlog",
-      orchestratorManaged: true,
-      prIdentity: { url: "https://github.com/acme/repo/pull/1", headSha: "head-1" },
       cards: [stalePlanCard, prCard],
       reviewerRuns: [{ id: "lost-luna", agentId: "luna-1", status: "failed", issueId: "issue-1", interactionId: "pr-card" }],
     })).toEqual({
-      action: "restore_and_recover",
+      action: "replace_card",
       interactionId: "pr-card",
       reviewerAgentId: "luna-1",
       failedRunId: "lost-luna",
+      stage: "luna",
+      nextAttempt: 1,
+      cause: "terminal_run",
       withdrawInteractionIds: ["plan-card"],
     });
   });
 
-  it("recovers a contract-scoped PR card and withdraws the stale Jules plan card", () => {
+  it("keeps an overdue contract-scoped PR card and requests same-card dispatch recovery", () => {
     expect(decideNativeReviewRecovery({
-      issueId: "issue-1",
+      ...prRecoveryInput([prCard]),
       issueStatus: "backlog",
-      orchestratorManaged: true,
-      prIdentity: { url: "https://github.com/acme/repo/pull/1", headSha: "head-1" },
       cards: [stalePlanCard, { ...prCard, idempotencyKey: `${prCard.idempotencyKey}:contract:170855u` }],
-      reviewerRuns: [],
     })).toMatchObject({
-      action: "restore_and_recover",
+      action: "recover_dispatch",
       interactionId: "pr-card",
-      withdrawInteractionIds: ["plan-card"],
+      reviewerAgentId: "luna-1",
+      stage: "luna",
     });
   });
 
   it("waits rather than waking again while the canonical card has a live reviewer run", () => {
-    expect(decideNativeReviewRecovery({
-      issueId: "issue-1",
-      issueStatus: "in_review",
-      orchestratorManaged: true,
-      prIdentity: { url: "https://github.com/acme/repo/pull/1", headSha: "head-1" },
-      cards: [prCard],
-      reviewerRuns: [{ id: "live-luna", agentId: "luna-1", status: "running", issueId: "issue-1", interactionId: "pr-card" }],
-    })).toEqual({ action: "await_run", interactionId: "pr-card", runId: "live-luna" });
+    expect(decideNativeReviewRecovery(prRecoveryInput([prCard], [
+      { id: "live-luna", agentId: "luna-1", status: "running", issueId: "issue-1", interactionId: "pr-card" },
+    ]))).toEqual({ action: "await_run", interactionId: "pr-card", runId: "live-luna" });
   });
 
-  it("leaves a healthy unassigned in-review card to the normal review pipeline", () => {
+  it("waits for Paperclip while the original card is inside the dispatch grace period", () => {
     expect(decideNativeReviewRecovery({
-      issueId: "issue-1",
-      issueStatus: "in_review",
-      orchestratorManaged: true,
-      prIdentity: { url: "https://github.com/acme/repo/pull/1", headSha: "head-1" },
-      cards: [prCard],
-      reviewerRuns: [],
-    })).toEqual({ action: "no_action" });
+      ...prRecoveryInput([prCard]),
+      nowMs: Date.parse("2026-09-15T18:00:30.000Z"),
+    })).toEqual({ action: "await_native_dispatch", interactionId: "pr-card" });
   });
 
-  it("recognizes Paperclip's addressed-reviewer assignment as a healthy native review projection", () => {
+  it("recovers dispatch for an overdue original card without relying on issue assignment", () => {
     expect(decideNativeReviewRecovery({
-      issueId: "issue-1",
-      issueStatus: "in_review",
+      ...prRecoveryInput([prCard]),
       issueAssigneeAgentId: "luna-1",
-      orchestratorManaged: true,
-      prIdentity: { url: "https://github.com/acme/repo/pull/1", headSha: "head-1" },
-      cards: [prCard],
-      reviewerRuns: [],
-    })).toEqual({ action: "no_action" });
+    })).toMatchObject({ action: "recover_dispatch", interactionId: "pr-card", reviewerAgentId: "luna-1", stage: "luna" });
   });
 
-  it("assigns the addressed reviewer before recovering a lost native-review run", () => {
-    const decision = decideNativeReviewRecovery({
-      issueId: "issue-1",
-      issueStatus: "backlog",
-      issueAssigneeAgentId: "jules-1",
-      orchestratorManaged: true,
-      prIdentity: { url: "https://github.com/acme/repo/pull/1", headSha: "head-1" },
-      cards: [prCard],
-      reviewerRuns: [],
-    });
-    expect(decision.action).toBe("restore_and_recover");
-    if (decision.action !== "restore_and_recover") throw new Error("expected recovery decision");
-    expect(nativeReviewRecoveryIssuePatch(decision)).toEqual({
-      status: "in_review",
-      assigneeAgentId: null,
-      executionPolicy: null,
-      executionState: null,
+  it("recovers dispatch on the same replacement card when it remains orphaned", () => {
+    expect(decideNativeReviewRecovery(prRecoveryInput([{
+      ...prCard,
+      id: "pr-card-attempt-1",
+      idempotencyKey: `${prCard.idempotencyKey}:attempt:1`,
+    }]))).toEqual({
+      action: "recover_dispatch",
+      interactionId: "pr-card-attempt-1",
+      reviewerAgentId: "luna-1",
+      stage: "luna",
+      immutableKey: `${prCard.idempotencyKey}:attempt:1`,
     });
   });
 
   it("reuses the card after a graceful-shutdown interruption without reading reviewer prose", () => {
-    expect(decideNativeReviewRecovery({
-      issueId: "issue-1",
-      issueStatus: "in_review",
-      orchestratorManaged: true,
-      prIdentity: { url: "https://github.com/acme/repo/pull/1", headSha: "head-1" },
-      cards: [prCard],
-      reviewerRuns: [{ id: "shutdown-luna", agentId: "luna-1", status: "interrupted", issueId: "issue-1", interactionId: "pr-card" }],
-    })).toEqual({
-      action: "restore_and_recover",
+    expect(decideNativeReviewRecovery(prRecoveryInput([prCard], [
+      { id: "shutdown-luna", agentId: "luna-1", status: "interrupted", issueId: "issue-1", interactionId: "pr-card" },
+    ]))).toEqual({
+      action: "replace_card",
       interactionId: "pr-card",
       reviewerAgentId: "luna-1",
       failedRunId: "shutdown-luna",
+      stage: "luna",
+      nextAttempt: 1,
+      cause: "terminal_run",
       withdrawInteractionIds: [],
     });
   });
 
   it("does not repair a plan card without a PR card for the immutable head", () => {
-    expect(decideNativeReviewRecovery({
-      issueId: "issue-1",
-      issueStatus: "backlog",
-      orchestratorManaged: true,
-      prIdentity: { url: "https://github.com/acme/repo/pull/1", headSha: "head-1" },
-      cards: [stalePlanCard],
-      reviewerRuns: [],
-    })).toEqual({ action: "no_action" });
+    expect(decideNativeReviewRecovery(prRecoveryInput([stalePlanCard as typeof prCard]))).toEqual({ action: "no_action" });
   });
 
   it("refuses to repair an ambiguous set of current PR cards", () => {
-    expect(decideNativeReviewRecovery({
-      issueId: "issue-1",
-      issueStatus: "backlog",
-      orchestratorManaged: true,
-      prIdentity: { url: "https://github.com/acme/repo/pull/1", headSha: "head-1" },
-      cards: [prCard, { ...prCard, id: "other-pr-card" }],
-      reviewerRuns: [],
-    })).toEqual({ action: "protocol_failure", reason: "multiple_pending_canonical_pr_cards" });
+    expect(decideNativeReviewRecovery(prRecoveryInput([prCard, { ...prCard, id: "other-pr-card" }]))).toEqual({
+      action: "protocol_failure",
+      reason: "multiple_pending_canonical_pr_cards",
+    });
   });
 
   it("recovers one overdue Terra Jules plan card without changing its Jules ownership", () => {

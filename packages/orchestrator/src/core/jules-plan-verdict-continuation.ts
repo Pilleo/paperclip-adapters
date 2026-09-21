@@ -8,6 +8,8 @@
  * prose, comments, or a provider transcript.
  */
 
+import { parsePlanReviewIdempotencyKey } from "@pilleo/paperclip-adapter-common";
+
 export interface NativeInteractionSnapshot {
   readonly id?: unknown;
   readonly kind?: unknown;
@@ -21,8 +23,6 @@ export interface ResolvedJulesPlanVerdict {
   readonly sessionId: string;
   readonly revisionId: string;
 }
-
-const PLAN_VERDICT_KEY = /^jules:plan-review:v2:([^:]+):([^:]+):([^:]+):(luna|terra)(?::recovery:\d+)?$/;
 
 function targetMatches(
   payload: unknown,
@@ -53,14 +53,17 @@ export function resolvedJulesPlanVerdict(input: {
   for (const interaction of input.interactions) {
     if (typeof interaction.id !== "string" || interaction.kind !== "request_item_verdicts" || interaction.status !== "answered") continue;
     if (typeof interaction.idempotencyKey !== "string") continue;
-    const key = interaction.idempotencyKey.match(PLAN_VERDICT_KEY);
-    if (!key) continue;
-    const keyParentId = key[1];
-    const sessionId = key[2];
-    const revisionId = key[3];
-    if (!keyParentId || !sessionId || !revisionId) continue;
-    if (keyParentId !== input.parentId || sessionId !== input.parentSessionId || revisionId !== input.currentRevisionId || !targetMatches(interaction.payload, input.parentId, revisionId)) continue;
-    return { interactionId: interaction.id, sessionId, revisionId };
+    const identity = parsePlanReviewIdempotencyKey(interaction.idempotencyKey);
+    if (!identity) continue;
+    if (identity.issueId !== input.parentId ||
+        identity.sessionId !== input.parentSessionId ||
+        identity.revisionId !== input.currentRevisionId ||
+        !targetMatches(interaction.payload, input.parentId, identity.revisionId)) continue;
+    return {
+      interactionId: interaction.id,
+      sessionId: identity.sessionId,
+      revisionId: identity.revisionId,
+    };
   }
   return null;
 }
