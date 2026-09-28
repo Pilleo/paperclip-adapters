@@ -59,7 +59,8 @@ export function planBoardReconciliation(issues: readonly BoardIssueSnapshot[]): 
     if (issue.status === "in_progress" && !issue.executionRunLive && (!issue.resumableMonitor || issue.monitorExpired === true)) {
       commands.push({ action: "return_to_todo", issueId: issue.id, reason: "managed task is in progress without a live execution or resumable provider monitor" });
     }
-    if (issue.status === "in_review" && !issue.hasPullRequest && !issue.nativeReviewInteraction && !issue.resumableMonitor) {
+    if (issue.status === "in_review" && !issue.hasPullRequest && !issue.registeredOpenPullRequest &&
+        !issue.nativeReviewInteraction && !issue.resumableMonitor) {
       commands.push({ action: "return_to_todo", issueId: issue.id, reason: "review state has neither a pull request nor a native review interaction" });
     }
   }

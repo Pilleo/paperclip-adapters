@@ -76,6 +76,12 @@ describe("board reconciliation planner", () => {
     ]);
   });
 
+  it("keeps a registered Jules PR in review when the title matcher and execution-state review marker both miss it", () => {
+    expect(planBoardReconciliation([parent({ id: "b-pr-2", status: "in_review", resumableMonitor: false,
+      registeredOpenPullRequest: true, hasPullRequest: false, nativeReviewInteraction: false,
+    })])).toEqual([]);
+  });
+
   it("returns an in-progress task without a run or monitor to todo", () => {
     expect(planBoardReconciliation([parent({ resumableMonitor: false })])).toEqual([
       expect.objectContaining({ action: "return_to_todo", issueId: "parent-836" }),

@@ -104,13 +104,17 @@ describe("orchestrator native PR completion", () => {
     else process.env["PAPERCLIP_API_KEY"] = originalKey;
   });
 
-  it.each(["without a parent card", "with a pending parent card"] as const)(
+  it.each(["without a parent card", "with a pending parent card", "with unavailable GitHub PR discovery"] as const)(
     "routes a Jules PR %s without another parent Luna verdict or wake", async (parentCardState) => {
+    if (parentCardState === "with unavailable GitHub PR discovery") vi.mocked(fetchGitHubPullRequests).mockResolvedValue({
+      openPrs: [], mergedPrs: [], openPrFiles: new Set(), error: "provider unavailable",
+    });
     const ready = { ...issue(), companyId, workProducts: [{ ...issue().workProducts[0], metadata: {
       source: "jules", producer: "paperclip-jules-adapter", headSha,
     } }] };
     const childPosts: Array<Record<string, unknown>> = [];
     const parentCardPosts: unknown[] = [];
+    const issuePatches: Array<Record<string, unknown>> = [];
     globalThis.fetch = vi.fn(async (url: string | URL, init?: RequestInit) => {
       const href = String(url);
       const method = (init?.method || "GET").toUpperCase();
@@ -124,6 +128,10 @@ describe("orchestrator native PR completion", () => {
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
         if (body["kind"] === "request_item_verdicts") parentCardPosts.push(body);
         return new Response(JSON.stringify({ id: "wrong-parent-card" }), { status: 201 });
+      }
+      if (method === "PATCH" && href.endsWith(`/api/issues/${issueId}`)) {
+        issuePatches.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(JSON.stringify(ready));
       }
       if (method === "POST" && href.includes("/wakeup")) return new Response(JSON.stringify({ status: "started", runId: "bootstrap-run" }), { status: 202 });
       if (href.includes("/agents")) return new Response(JSON.stringify(managedAgents(true)));
@@ -148,9 +156,10 @@ describe("orchestrator native PR completion", () => {
     const result = await execute({ ...context(), context: { companyId, issueId: "maintenance-1519" } });
 
     expect(result.exitCode).toBe(0);
-    expect(childPosts).toHaveLength(parentCardState === "with a pending parent card" ? 0 : 1);
+    expect(childPosts).toHaveLength(parentCardState === "without a parent card" ? 1 : 0);
     if (childPosts[0]) expect(childPosts[0]).toMatchObject({ status: "backlog", assigneeAgentId: "orchestrator-1", blockParentUntilDone: false });
     expect(parentCardPosts).toEqual([]);
+    expect(issuePatches.some((patch) => patch["status"] === "todo")).toBe(false);
     if (parentCardState === "with a pending parent card") {
       const calls = vi.mocked(globalThis.fetch).mock.calls;
       expect(calls.filter(([url]) => String(url).includes("/api/agents/luna-1/wakeup"))).toHaveLength(0);

@@ -1830,7 +1830,12 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       registeredOpenPullRequest,
       ciRemediationInProgress: ciRemediationIssueIds.has(issue.id),
       executionReconciliationRequired: issue.rawIssue["executionBlocker"] != null,
-      hasPullRequest: issue.status === "in_review" && !ghStatus.error && Boolean(ghStatus.openPrs.find((pr) => matchPrToIssue(pr, issue))),
+      // A durable registered Jules work product is enough to preserve review
+      // ownership while GitHub discovery is unavailable or its PR title lacks
+      // the issue identifier. Remote verification still gates *advancement*;
+      // losing the external list must not demote a typed review to todo.
+      hasPullRequest: issue.status === "in_review" && (Boolean(registeredPr) ||
+        (!ghStatus.error && Boolean(ghStatus.openPrs.find((pr) => matchPrToIssue(pr, issue))))),
       parentId: issue.parentId || null,
       reviewGateKey,
     };
@@ -2720,6 +2725,10 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
     const usePrChildLane = Boolean(julesProduct && reviewTask.status === "in_review" &&
       reviewTask.rawIssue["assigneeAgentId"] == null && lunaReviewerAgentId && strongReviewerAgentId);
     if (usePrChildLane) {
+      if (ghStatus.error) {
+        await log(`[ORCHESTRATOR] Preserving Jules PR review for [${reviewTask.identifier || reviewTask.id}] while GitHub discovery is unavailable; no new reviewer child will be created.`);
+        continue;
+      }
       const historicalParentCards = reviewInteractions.filter((card) => card.kind === "request_item_verdicts" &&
         card.idempotencyKey?.startsWith("pr-review:v") &&
         card.idempotencyKey.includes(`:${reviewTask.id}:${matchingPr.url}:${reviewHeadSha}:`) &&
