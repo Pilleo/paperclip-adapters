@@ -40,7 +40,7 @@ if (!scenario) {
   if (results.some((result) => result.result !== "observed")) process.exitCode = 1;
   else if (process.argv.includes("--require-safe") && !integrationAllowed) process.exitCode = 2;
 } else {
-  assert.ok([...scenarios, "stable_child", "stable_child_ladder", "stable_child_reject", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_paused", "stable_child_gemini", "stable_child_gemini_retry"].includes(scenario), `Unknown scenario ${scenario}`);
+  assert.ok([...scenarios, "stable_child", "stable_child_ladder", "stable_child_reject", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_jules_v4_paused", "stable_child_gemini", "stable_child_gemini_retry"].includes(scenario), `Unknown scenario ${scenario}`);
   await runScenario();
 }
 
@@ -103,7 +103,7 @@ async function runScenario() {
       "maintenanceIssueId", "blockerIssueId", "documentId", "revisionId", "sessionId"].map((key) => [key, randomUUID()]));
     config.stageId = nativePlanReviewStageId(config.issueId, config.revisionId, "luna");
     config.checkpointPath = path.join(home, "child-review-checkpoint.json");
-    config.childReviewLadder = ["stable_child_ladder", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_paused"].includes(scenario);
+    config.childReviewLadder = ["stable_child_ladder", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_jules_v4_paused"].includes(scenario);
     config.realJulesExecutor = ["stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict"].includes(scenario);
     config.producerConflictProbe = scenario === "stable_child_executor_pr_producer_conflict";
     config.prMigrationProbe = ["stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board"].includes(scenario);
@@ -114,7 +114,8 @@ async function runScenario() {
     config.prStrongGemini = scenario === "stable_child_executor_pr_gemini";
     config.prStrongFirstTurnFailure = scenario === "stable_child_executor_pr_failed";
     config.prStrongRetryMarker = path.join(home, "strong-reviewer-first-turn-failed");
-    config.julesParentExecutor = scenario === "stable_child_jules_v4_executor" || scenario === "stable_child_jules_v4_paused";
+    config.createProviderSession = scenario === "stable_child_jules_v4_create";
+    config.julesParentExecutor = config.createProviderSession || scenario === "stable_child_jules_v4_executor" || scenario === "stable_child_jules_v4_paused";
     config.pauseLunaInitially = scenario === "stable_child_jules_v4_paused";
     config.julesOwnedBootstrap = scenario === "stable_child_jules_v4" || config.julesParentExecutor;
     if (config.julesOwnedBootstrap) config.providerBaseUrl = "pending-listener";
@@ -145,18 +146,39 @@ async function runScenario() {
     const issueRow = async () => (await db.select().from(issues).where(eq(issues.id, config.issueId)))[0];
     const live = (run) => ["queued", "running", "scheduled"].includes(run.status);
     let providerApproved = false;
+    let providerCreated = false;
+    let providerCreateRequest = null;
     const app = express();
     app.use(express.json());
     if (config.realJulesExecutor || config.julesOwnedBootstrap) {
       app.use("/__contract/jules/v1alpha", (req, res) => {
         record("PROVIDER_REQUEST", { method: req.method, path: req.path });
+        if (config.createProviderSession && req.method === "POST" && req.path === "/sessions") {
+          if (providerCreated) return res.status(409).json({ error: "duplicate session creation" });
+          assert.equal(req.body.sourceContext?.source, "sources/github/paperclip-contract/fixture");
+          assert.equal(req.body.sourceContext?.githubRepoContext?.startingBranch, "main");
+          assert.equal(req.body.requirePlanApproval, true);
+          providerCreated = true;
+          providerCreateRequest = req.body;
+          return res.json({ name: `sessions/${config.sessionId}`, prompt: req.body.prompt,
+            sourceContext: req.body.sourceContext, state: "AWAITING_PLAN_APPROVAL", outputs: [] });
+        }
         if (config.julesParentExecutor && req.method === "POST" && req.path === `/sessions/${config.sessionId}:approvePlan`) {
+          if (config.createProviderSession && !providerCreated) return res.status(409).json({ error: "session absent" });
           if (providerApproved) return res.status(409).json({ error: "duplicate plan approval" });
           providerApproved = true;
           return res.json({});
         }
         if (req.method !== "GET") return res.status(405).json({ error: "provider writes forbidden in resumed-session contract" });
         if (config.julesOwnedBootstrap && !config.julesParentExecutor) return res.status(404).json({ error: "child bootstrap must not access Jules provider" });
+        if (req.path === "/sessions") return res.json({ sessions: config.createProviderSession && !providerCreated ? [] : [{
+          name: `sessions/${config.sessionId}`, prompt: providerCreateRequest?.prompt,
+          sourceContext: providerCreateRequest?.sourceContext, state: providerApproved ? "COMPLETED" : "AWAITING_PLAN_APPROVAL",
+          outputs: providerApproved ? [{ pullRequest: { url: config.prUrl } }] : [],
+        }] });
+        if (config.createProviderSession && !providerCreated && req.path === `/sessions/${config.sessionId}`) {
+          return res.status(404).json({ error: "session absent" });
+        }
         if (req.path === `/sessions/${config.sessionId}`) return res.json({ name: `sessions/${config.sessionId}`,
           state: config.julesParentExecutor && !providerApproved ? "AWAITING_PLAN_APPROVAL" : "COMPLETED",
           outputs: config.julesParentExecutor && !providerApproved ? [] : [{ pullRequest: { url: config.prUrl } }] });
@@ -165,7 +187,9 @@ async function runScenario() {
           planGenerated: { plan: { id: "fixture-plan", steps: [{ index: 0, title: "Contract plan" }] } },
         }, ...(config.julesParentExecutor && !providerApproved ? [] : [{ id: "fixture-approved-activity", createTime: "2026-09-27T01:01:00.000Z",
           planApproved: { planId: "fixture-plan" } }]) ] });
-        if (req.path === "/sources") return res.json({ sources: [] });
+        if (req.path === "/sources") return res.json({ sources: config.createProviderSession ? [{
+          name: "sources/github/paperclip-contract/fixture", githubRepo: { owner: "paperclip-contract", repo: "fixture" },
+        }] : [] });
         return res.status(404).json({ error: "unknown provider fixture route" });
       });
     }
@@ -251,7 +275,7 @@ async function runScenario() {
     await db.insert(documentRevisions).values({ id: config.revisionId, companyId: config.companyId, documentId: config.documentId,
       revisionNumber: 1, title: "Plan", format: "markdown", body: "# Contract plan" });
     await db.insert(issueDocuments).values({ companyId: config.companyId, issueId: config.issueId, documentId: config.documentId, key: "plan" });
-    if (config.julesParentExecutor) {
+    if (config.julesParentExecutor && !config.createProviderSession) {
       process.env.PAPERCLIP_JULES_SESSION_STORE_DIR = config.sessionStoreDir;
       const { saveStoredSession } = await import("../../../jules/src/server/session-store.ts");
       await saveStoredSession({ version: 1, paperclipIssueId: config.issueId, promptHash: "fixture-prompt", promptHashVersion: 2,
@@ -337,8 +361,9 @@ async function runScenario() {
             event.path === `/sessions/${config.sessionId}:approvePlan`).length, 1,
           "one Jules provider approval must follow the actual parent executor's Luna/Terra typed ladder");
           assert.deepEqual(report.events.filter((event) => event.name === "PROVIDER_REQUEST" && event.method !== "GET")
-            .map((event) => event.path), [`/sessions/${config.sessionId}:approvePlan`],
-          "no Jules provider create or repeated approval is allowed");
+            .map((event) => event.path), config.createProviderSession
+            ? ["/sessions", `/sessions/${config.sessionId}:approvePlan`] : [`/sessions/${config.sessionId}:approvePlan`],
+          "the provider create and approval must each be accepted once, never replayed");
           const products = await db.select().from(schema.issueWorkProducts)
             .where(eq(schema.issueWorkProducts.issueId, config.issueId));
           assert.equal(products.length, 1, "the real parent Jules executor must deliver its PR after both v4 child verdicts");

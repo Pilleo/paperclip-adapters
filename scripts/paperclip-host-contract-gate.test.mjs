@@ -77,6 +77,12 @@ test("historical parent-card typed withdrawal and v2 child review is a required 
   assert.equal(result.summary.scenarios[0].scenario, "stable_child_executor_pr_withdraw");
 });
 
+test("actual provider session creation, plan approval and PR delivery is a required positive contract", async () => {
+  const result = await runGate(0, "pass", ["--scenario=stable_child_jules_v4_create"]);
+  assert.equal(result.exit, 0, result.stderr);
+  assert.equal(result.summary.scenarios[0].scenario, "stable_child_jules_v4_create");
+});
+
 test("missing fresh report cannot be replaced with a stale successful report", async () => {
   const result = await runGate(0, "pass", ["--scenario=stable_child_executor_pr_board"], { staleReport: true, writeReport: false });
   assert.notEqual(result.exit, 0);

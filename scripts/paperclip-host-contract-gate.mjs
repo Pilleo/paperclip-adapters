@@ -4,6 +4,7 @@ import path from "node:path";
 
 const supported = [
   "stable_child_jules_v4_executor",
+  "stable_child_jules_v4_create",
   "stable_child_executor_pr_board",
   "stable_child_executor_pr_probe",
   "stable_child_executor_pr_withdraw",

@@ -72,7 +72,8 @@ if (env.PAPERCLIP_AGENT_ID === config.julesId) {
     const { loadStoredSession } = await import("../../../jules/src/server/session-store.ts");
     const source = "sources/github/paperclip-contract/fixture";
     const prior = await loadStoredSession(issueId, source, "main");
-    assert.ok(prior, "parent Jules session must remain durable across plan-review child restarts");
+    assert.ok(prior || config.createProviderSession,
+      "parent Jules session must remain durable across plan-review child restarts");
     const julesConfig = { repository: "paperclip-contract/fixture", baseBranch: "main", planApprovalPolicy: "required",
       planReviewerAgentId: config.lunaId, planStrongReviewerAgentId: config.terraId,
       planReviewBootstrapMode: "jules_v4", e2eProviderBaseUrl: config.providerBaseUrl };
@@ -80,7 +81,8 @@ if (env.PAPERCLIP_AGENT_ID === config.julesId) {
       runId: env.PAPERCLIP_RUN_ID, authToken: env.PAPERCLIP_API_KEY,
       agent: { id: config.julesId, companyId: config.companyId, name: "Jules parent executor", adapterType: "jules", adapterConfig: julesConfig },
       config: { ...julesConfig, env: { JULES_API_KEY: "fixture-provider-token", PATH: config.githubPath } },
-      runtime: { sessionId: config.sessionId, sessionParams: sessionCodec.encode(prior), taskKey: issueId },
+      runtime: { sessionId: prior ? config.sessionId : null,
+        sessionParams: prior ? sessionCodec.encode(prior) : null, taskKey: issueId },
       context: { issueId, companyId: config.companyId, task: { id: issueId, title: parent.title, description: parent.description ?? "" } },
       onLog: async (stream, chunk) => (stream === "stderr" ? process.stderr : process.stdout).write(chunk),
     });
@@ -89,7 +91,7 @@ if (env.PAPERCLIP_AGENT_ID === config.julesId) {
       await writeFile(config.checkpointPath, JSON.stringify({ childId: saved.childPlanReview.childId,
         sessionId: config.sessionId, identity: saved.childPlanReview.identity }), { mode: 0o600 });
     }
-    const previousStage = prior.childPlanReview?.identity.stage;
+    const previousStage = prior?.childPlanReview?.identity.stage;
     if (previousStage && (saved?.childPlanReview?.identity.stage !== previousStage || !saved?.childPlanReview)) {
       await event("PARENT_CONSUMED_CHILD_VERDICT", { stage: previousStage, sessionId: config.sessionId });
     }

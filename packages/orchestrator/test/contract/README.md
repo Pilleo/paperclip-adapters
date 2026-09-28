@@ -34,6 +34,16 @@ pnpm test:contract:plan-handback --scenario=starts_after_read
 pnpm test:contract:plan-handback --require-safe
 ```
 
+The opt-in `stable_child_jules_v4_create` scenario runs the **actual Jules
+executor** on an initially unseeded provider session. A stateful loopback Jules
+fixture accepts exactly one `POST /sessions`, serves that original session's
+plan and activities across authenticated child-review runs, accepts exactly
+one `approvePlan`, and exposes one resulting PR. It uses the installed host's
+real PostgreSQL and run-scoped worker credentials; no provider API key or live
+GitHub repository is contacted. The normal v4 executor scenario separately
+covers adopting an already durable session. Neither is a complete A→B→C
+dependency-and-merge scenario.
+
 Exit codes:
 
 - `0`: characterization completed; **inspect `safetyGate` / `integrationAllowed`**.
