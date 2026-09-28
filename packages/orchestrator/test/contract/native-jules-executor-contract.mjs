@@ -62,7 +62,7 @@ export async function runJulesExecutorRecoveryContract({ config, report, db, sch
     assert.ok(providerRequests.every((event) => event.method === "GET"), "never repeat a provider mutation");
     assert.equal((await db.select().from(schema.issueThreadInteractions)
       .where(eq(schema.issueThreadInteractions.companyId, config.companyId))).length, 2, "no duplicate native cards");
-    if (!config.prMigrationProbe) {
+    if (!config.prMigrationProbe && !config.producerConflictProbe) {
       const { runPrChildReviewContract } = await import("./native-pr-child-review-contract.mjs");
       await runPrChildReviewContract({ config, report, db, schema, eq, wake, settle, runRows, issueRow });
     }

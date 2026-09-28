@@ -325,6 +325,15 @@ describe("session-lifecycle", () => {
     });
   });
 
+  it("refuses to graft the original PR onto an unrelated accidental Jules cloud session", () => {
+    const accidental = { ...sampleSession, sessionId: "accidental-2", julesSessionId: asJulesSessionId("accidental-2") };
+    expect(() => recoverPrIdentityFromWorkProduct(accidental, {
+      url: "https://github.com/Pilleo/paperclip-adapters/pull/11",
+      headSha: "ded4b31084904b1302fd74bd2ef70818164a3c8b",
+      headRefName: "jules-18036993849073318863-b259ffba", providerSessionId: "original-1",
+    })).toThrow(/provider session|producer session/i);
+  });
+
   it("rebuilds a branch-bound remediation fence from the Paperclip-owned session handle", () => {
     const handle: JulesSessionHandle = {
       sessionId: "recovery-42",

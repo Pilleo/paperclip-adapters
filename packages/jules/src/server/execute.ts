@@ -998,6 +998,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   // EARLY CHECK: Check if this issue already has an attached PR on GitHub that is merged.
   let earlyPrUrl = session?.currentPrUrl;
+  let earlyPrProduct: Awaited<ReturnType<typeof listWorkProducts>>[number] | undefined;
   let earlyPrDetails: Awaited<ReturnType<typeof getPullRequestDetails>> | undefined;
   if (!earlyPrUrl && !process.env["VITEST"]) {
     const existing = await listWorkProducts(taskId, ctx.authToken, ctx.runId);
@@ -1007,7 +1008,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (primary.length > 1 || (!primary.length && pullRequests.length > 1)) {
       throw new Error("Ambiguous PR work products for Jules issue");
     }
-    earlyPrUrl = (primary[0] ?? pullRequests[0])?.url as typeof earlyPrUrl;
+    earlyPrProduct = primary[0] ?? pullRequests[0];
+    earlyPrUrl = earlyPrProduct?.url as typeof earlyPrUrl;
   }
 
   if (earlyPrUrl) {
@@ -1187,6 +1189,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           url: earlyPrUrl,
           headSha: earlyPrDetails.headSha,
           headRefName: earlyPrDetails.headRefName,
+          ...(typeof earlyPrProduct?.metadata?.["providerSessionId"] === "string"
+            ? { providerSessionId: earlyPrProduct.metadata["providerSessionId"] } : {}),
         });
         await persistSessionBestEffort(session, ctx.onLog, { authToken: ctx.authToken, runId: ctx.runId });
         await ctx.onLog?.("stdout", `[jules] Rehydrated immutable PR handoff from the primary Paperclip work product.\n`);

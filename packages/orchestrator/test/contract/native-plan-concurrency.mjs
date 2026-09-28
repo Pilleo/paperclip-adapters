@@ -40,7 +40,7 @@ if (!scenario) {
   if (results.some((result) => result.result !== "observed")) process.exitCode = 1;
   else if (process.argv.includes("--require-safe") && !integrationAllowed) process.exitCode = 2;
 } else {
-  assert.ok([...scenarios, "stable_child", "stable_child_ladder", "stable_child_reject", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_paused", "stable_child_gemini", "stable_child_gemini_retry"].includes(scenario), `Unknown scenario ${scenario}`);
+  assert.ok([...scenarios, "stable_child", "stable_child_ladder", "stable_child_reject", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_paused", "stable_child_gemini", "stable_child_gemini_retry"].includes(scenario), `Unknown scenario ${scenario}`);
   await runScenario();
 }
 
@@ -103,8 +103,9 @@ async function runScenario() {
       "maintenanceIssueId", "blockerIssueId", "documentId", "revisionId", "sessionId"].map((key) => [key, randomUUID()]));
     config.stageId = nativePlanReviewStageId(config.issueId, config.revisionId, "luna");
     config.checkpointPath = path.join(home, "child-review-checkpoint.json");
-    config.childReviewLadder = ["stable_child_ladder", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_paused"].includes(scenario);
-    config.realJulesExecutor = ["stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board"].includes(scenario);
+    config.childReviewLadder = ["stable_child_ladder", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_paused"].includes(scenario);
+    config.realJulesExecutor = ["stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict"].includes(scenario);
+    config.producerConflictProbe = scenario === "stable_child_executor_pr_producer_conflict";
     config.prMigrationProbe = ["stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board"].includes(scenario);
     config.prBoardProbe = scenario === "stable_child_executor_pr_board";
     config.parentCardWithdrawalProbe = scenario === "stable_child_executor_pr_withdraw";
@@ -355,6 +356,36 @@ async function runScenario() {
       if (config.realJulesExecutor) {
         const { runJulesExecutorRecoveryContract } = await import("./native-jules-executor-contract.mjs");
         await runJulesExecutorRecoveryContract({ config, report, db, schema, eq, wake, settle, runRows, issueRow });
+        if (config.producerConflictProbe) {
+          const { saveStoredSession } = await import("../../../jules/src/server/session-store.ts");
+          const previousStore = process.env.PAPERCLIP_JULES_SESSION_STORE_DIR;
+          process.env.PAPERCLIP_JULES_SESSION_STORE_DIR = config.sessionStoreDir;
+          const wrong = { version: 1, paperclipIssueId: config.issueId, promptHash: "fixture-prompt",
+            source: "sources/github/paperclip-contract/fixture", repository: "paperclip-contract/fixture",
+            baseBranch: "main", phase: "RUNNING", sessionId: "accidental-second-session",
+            julesSessionId: "accidental-second-session", attempt: 2, failedSessions: [], createdAt: new Date().toISOString() };
+          try { await saveStoredSession(wrong); }
+          finally {
+            if (previousStore === undefined) delete process.env.PAPERCLIP_JULES_SESSION_STORE_DIR;
+            else process.env.PAPERCLIP_JULES_SESSION_STORE_DIR = previousStore;
+          }
+          await writeFile(config.staleSessionPath, JSON.stringify(wrong), { mode: 0o600 });
+          const [product] = await db.select().from(schema.issueWorkProducts)
+            .where(eq(schema.issueWorkProducts.issueId, config.issueId));
+          assert.ok(product);
+          await db.update(schema.issueWorkProducts).set({ metadata: { ...product.metadata,
+            providerSessionId: config.sessionId } }).where(eq(schema.issueWorkProducts.id, product.id));
+          const beforeWrites = report.events.filter((event) => event.name === "PROVIDER_REQUEST" && event.method !== "GET").length;
+          await wake(config.julesId, config.issueId, { contractJulesExecute: true });
+          await settle();
+          const rejected = (await runRows()).filter((run) => run.agentId === config.julesId &&
+            run.contextSnapshot?.issueId === config.issueId && run.status === "failed");
+          assert.equal(rejected.length, 1, "actual Jules executor must reject an accidental provider session with another PR producer");
+          assert.ok(String(rejected[0].resultJson?.stderr ?? "").includes("Registered PR producer session differs"));
+          assert.equal(report.events.filter((event) => event.name === "PROVIDER_REQUEST" && event.method !== "GET").length, beforeWrites,
+            "the producer conflict must not trigger a new create, approve or message");
+          report.outcome = "jules_executor_refused_to_graft_original_pr_onto_accidental_provider_session";
+        }
         if (config.prBoardProbe) {
           await db.update(issues).set({ status: "in_review", assigneeAgentId: null }).where(eq(issues.id, config.issueId));
           const { ensurePrReviewChild, activatePrReviewChild } = await import("../../src/core/pr-review-child.ts");

@@ -175,8 +175,12 @@ export function mergeDurableSessionCheckpoints(
  */
 export function recoverPrIdentityFromWorkProduct(
   session: JulesAdapterSessionV1,
-  workProduct: { readonly url: string; readonly headSha: string; readonly headRefName: string },
+  workProduct: { readonly url: string; readonly headSha: string; readonly headRefName: string;
+    readonly providerSessionId?: string },
 ): JulesAdapterSessionV1 {
+  if (workProduct.providerSessionId && workProduct.providerSessionId !== session.julesSessionId) {
+    throw new Error("Registered PR producer session differs from the Jules provider session; original work must be reconciled before remediation");
+  }
   return {
     ...session,
     currentPrUrl: workProduct.url as JulesAdapterSessionV1["currentPrUrl"],
