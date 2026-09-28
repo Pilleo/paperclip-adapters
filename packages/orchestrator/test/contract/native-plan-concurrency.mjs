@@ -40,7 +40,7 @@ if (!scenario) {
   if (results.some((result) => result.result !== "observed")) process.exitCode = 1;
   else if (process.argv.includes("--require-safe") && !integrationAllowed) process.exitCode = 2;
 } else {
-  assert.ok([...scenarios, "stable_child", "stable_child_ladder", "stable_child_reject", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_chain_abc_complete", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused", "stable_child_gemini", "stable_child_gemini_retry"].includes(scenario), `Unknown scenario ${scenario}`);
+  assert.ok([...scenarios, "stable_child", "stable_child_ladder", "stable_child_reject", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_chain_abc_complete", "stable_child_chain_abc_lost_b_create", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused", "stable_child_gemini", "stable_child_gemini_retry"].includes(scenario), `Unknown scenario ${scenario}`);
   await runScenario();
 }
 
@@ -106,7 +106,7 @@ async function runScenario() {
     let chainGitHub = null;
     config.stageId = nativePlanReviewStageId(config.issueId, config.revisionId, "luna");
     config.checkpointPath = path.join(home, "child-review-checkpoint.json");
-    config.childReviewLadder = ["stable_child_ladder", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_chain_abc_complete", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused"].includes(scenario);
+    config.childReviewLadder = ["stable_child_ladder", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_chain_abc_complete", "stable_child_chain_abc_lost_b_create", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused"].includes(scenario);
     config.realJulesExecutor = ["stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict"].includes(scenario);
     config.producerConflictProbe = scenario === "stable_child_executor_pr_producer_conflict";
     config.prMigrationProbe = ["stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board"].includes(scenario);
@@ -117,7 +117,8 @@ async function runScenario() {
     config.prStrongGemini = scenario === "stable_child_executor_pr_gemini";
     config.prStrongFirstTurnFailure = scenario === "stable_child_executor_pr_failed";
     config.prStrongRetryMarker = path.join(home, "strong-reviewer-first-turn-failed");
-    config.chainBlockedProbe = scenario === "stable_child_chain_abc_complete";
+    config.chainBlockedProbe = scenario === "stable_child_chain_abc_complete" || scenario === "stable_child_chain_abc_lost_b_create";
+    config.chainLostBCreateResponse = scenario === "stable_child_chain_abc_lost_b_create";
     if (config.chainBlockedProbe) {
       config.projectId = randomUUID();
       config.strongReviewerId = randomUUID();
@@ -193,6 +194,11 @@ async function runScenario() {
             chainProviderSessions.set(sessionId, { label, request: req.body, approved: false });
             if (label === "A") { providerCreated = true; providerCreateRequest = req.body; }
             record("CHAIN_PROVIDER_SESSION_CREATED", { label, sessionId });
+            if (label === "B" && config.chainLostBCreateResponse) {
+              record("CHAIN_B_PROVIDER_CREATE_RESPONSE_LOST", { sessionId });
+              req.socket.destroy();
+              return;
+            }
             return res.json({ name: `sessions/${sessionId}`, prompt: req.body.prompt,
               sourceContext: req.body.sourceContext, state: "AWAITING_PLAN_APPROVAL", outputs: [] });
           }
@@ -691,8 +697,32 @@ async function runScenario() {
             assert.equal((await runRows()).filter((run) => run.agentId === config.julesId &&
               run.contextSnapshot?.issueId === config.bIssueId && ["queued", "scheduled", "running"].includes(run.status)).length, 0,
             "do not duplicate an active addressed B Jules run after task_start approval");
-            await wake(config.julesId, config.bIssueId, { contractChainApprovedStart: approvedStart.id });
-            await settle();
+            if (config.chainLostBCreateResponse) {
+              const failedB = (await runRows()).filter((run) => run.agentId === config.julesId &&
+                run.contextSnapshot?.issueId === config.bIssueId && run.status === "failed");
+              assert.equal(failedB.length, 1, "one B run must fail closed after an accepted create loses its receipt");
+              assert.ok(report.events.some((event) => event.name === "CHAIN_B_PROVIDER_CREATE_RESPONSE_LOST" &&
+                event.sessionId === config.bSessionId));
+              assert.equal(chainProviderSessions.get(config.bSessionId)?.approved, false);
+              const actions = await db.select().from(schema.issueRecoveryActions)
+                .where(eq(schema.issueRecoveryActions.sourceIssueId, config.bIssueId));
+              assert.equal(actions.length, 1, "host must retain the exact B failed-run recovery action");
+              assert.equal(actions[0].status, "active");
+              const resolution = await fetch(`${process.env.PAPERCLIP_API_URL}/api/issues/${config.bIssueId}/recovery-actions/resolve`, {
+                method: "POST", headers: { "content-type": "application/json" },
+                body: JSON.stringify({ actionId: actions[0].id, outcome: "restored", sourceIssueStatus: "todo",
+                  executionReconciliation: { runId: failedB[0].id, providerStopped: true, actionOutcome: "completed",
+                    outcomeEvidence: `Original B provider create accepted sessions/${config.bSessionId}; its response was lost, the failed process stopped, and the same remote session is observable. No second create is authorized.` } }),
+                signal: AbortSignal.timeout(20_000),
+              });
+              assert.equal(resolution.status, 200, `B typed execution recovery failed (${resolution.status}): ${await resolution.text()}`);
+              await deliverReconciledExecutions(db, (agentId, options) => heartbeat.wakeup(agentId, options));
+              await settle();
+              record("CHAIN_B_CREATE_TYPED_RECOVERY", { failedRunId: failedB[0].id, actionId: actions[0].id });
+            } else {
+              await wake(config.julesId, config.bIssueId, { contractChainApprovedStart: approvedStart.id });
+              await settle();
+            }
             const bCreated = report.events.filter((event) => event.name === "CHAIN_PROVIDER_SESSION_CREATED" && event.label === "B");
             assert.equal(bCreated.length, 1, "released B must create exactly one own Jules provider session");
             assert.equal(bCreated[0].sessionId, config.bSessionId);
@@ -700,8 +730,10 @@ async function runScenario() {
               bCreated[0].sequence > report.events.find((event) => event.name === "CHAIN_B_TASK_START_APPROVED")?.sequence,
             "B provider creation requires both verified A merge and native task_start approval");
             assert.equal(report.events.filter((event) => event.name === "CHAIN_PROVIDER_SESSION_CREATED" && event.label === "C").length, 0);
-            assert.equal((await runRows()).filter((run) => run.contextSnapshot?.issueId === config.bIssueId && run.status === "failed").length, 0,
-              "released B must not fail a provider run after A's verified merge");
+            const bFailures = (await runRows()).filter((run) => run.contextSnapshot?.issueId === config.bIssueId && run.status === "failed");
+            assert.deepEqual(bFailures.map((run) => run.id), config.chainLostBCreateResponse
+              ? [report.events.find((event) => event.name === "CHAIN_B_CREATE_TYPED_RECOVERY")?.failedRunId] : [],
+            "the original uncertain create is the only permitted failed B run");
             for (let turn = 0; turn < 20; turn++) {
               const products = await db.select().from(schema.issueWorkProducts)
                 .where(eq(schema.issueWorkProducts.issueId, config.bIssueId));
@@ -843,6 +875,19 @@ async function runScenario() {
             for (const sessionId of [config.sessionId, config.bSessionId, config.cSessionId]) {
               assert.equal(report.events.filter((event) => event.name === "PROVIDER_REQUEST" && event.method === "POST" &&
                 event.path === `/sessions/${sessionId}:approvePlan`).length, 1);
+            }
+            if (config.chainLostBCreateResponse) {
+              const lost = report.events.find((event) => event.name === "CHAIN_B_PROVIDER_CREATE_RESPONSE_LOST");
+              const unverified = report.events.find((event) => event.name === "CHAIN_B_CREATE_OUTCOME_UNVERIFIED");
+              const lookup = report.events.find((event) => event.name === "PROVIDER_REQUEST" &&
+                event.method === "GET" && event.path === "/sessions" && event.sequence > lost?.sequence);
+              const recovered = report.events.find((event) => event.name === "CHAIN_B_CREATE_TYPED_RECOVERY");
+              const approval = report.events.find((event) => event.name === "PROVIDER_REQUEST" &&
+                event.method === "POST" && event.path === `/sessions/${config.bSessionId}:approvePlan`);
+              assert.ok(lost && unverified && lookup && recovered && approval &&
+                lost.sequence < unverified.sequence && unverified.sequence < lookup.sequence &&
+                lookup.sequence < approval.sequence && recovered.sequence < approval.sequence,
+              "B must reconcile the original accepted session by GET after its failed run and typed recovery, not replay create");
             }
             report.outcome = "shared_host_a_b_c_provider_native_reviews_external_merges_and_terminal_reconciliation";
             record("CHAIN_B_RELEASED_C_HELD", { aMergeSha: merged.mergeSha,

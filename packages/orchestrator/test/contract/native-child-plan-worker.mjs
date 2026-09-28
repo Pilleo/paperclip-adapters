@@ -127,6 +127,12 @@ if (env.PAPERCLIP_AGENT_ID === config.julesId) {
       await event("JULES_CREATE_OUTCOME_UNVERIFIED", { issueId, sessionId: config.sessionId });
       process.exit(1);
     }
+    if (config.chainLostBCreateResponse && issueId === config.bIssueId &&
+        result.errorCode === "jules_create_outcome_unverified") {
+      assert.equal(result.exitCode, 1, "B must fail closed instead of repeating an accepted create");
+      await event("CHAIN_B_CREATE_OUTCOME_UNVERIFIED", { issueId, sessionId: config.bSessionId });
+      process.exit(1);
+    }
     assert.equal(result.exitCode, 0, JSON.stringify({ errorCode: result.errorCode, errorMessage: result.errorMessage }));
     process.exit(0);
   }

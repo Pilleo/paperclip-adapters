@@ -138,3 +138,16 @@ status-only comment follow-up never acts as review evidence or a provider
 mutation. **This is the completion baseline**; it is not a server-process
 restart during the chain, a simultaneous-writer race, or a live-provider
 qualification. Those remain as Tasks 3–5, before Task 6 type refactoring.
+
+`stable_child_chain_abc_lost_b_create` also completes the entire chain when
+the provider accepts B's create request and loses its reply. The original B
+run fails closed; the board's **typed execution reconciliation** records
+completed remote creation on that exact run. A successor reads `/sessions`
+and adopts the original B session before approvals and PR delivery. All
+three issues/products still converge to merged/done, with exactly one
+create and approval per task. The fixture's local-trusted board actor must
+be an active company member or its delegated Jules JWT fails closed with
+`RESPONSIBLE_USER_UNAVAILABLE`. A `missing_issue_comment` status-only run
+may post a bounded status note, but never a structured verdict or provider
+mutation. This is a worker-failure test; the real control-plane restart
+mid-chain and stale historical terminal blocker remain unverified.

@@ -83,6 +83,18 @@ The fixture pre-populates each disposable Git PR branch after the previous
 merge, before that task's provider returns the URL; no fixture PATCH repairs
 issue status or supplies a verdict mid-test.
 
+`stable_child_chain_abc_lost_b_create` repeats the entire same-host chain but
+lets Jules's `POST /sessions` for **B** succeed remotely and destroys its
+response. The first B run fails closed and the host records its exact failed
+execution. A local-trusted board operator with a real active company
+membership resolves that run through the native typed execution-recovery
+route, recording the observed completed provider create. Jules's resumed
+run lists and reattaches that one B session; A, B and C still finish their
+distinct plan/PR reviews and external merges. The gate requires exactly
+three provider creates and three approvals overall. This injects a failed
+worker run, **not** a Paperclip server-process restart; the retained-storage
+restart during a running chain remains a separate test milestone.
+
 Exit codes:
 
 - `0`: characterization completed; **inspect `safetyGate` / `integrationAllowed`**.
