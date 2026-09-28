@@ -19,7 +19,7 @@ class ObservationTimeout extends Error {
 await mkdir(output, { recursive: true });
 if (!scenario) {
   const results = [];
-  const selectedScenarios = process.argv.includes("--stable-child") ? ["stable_child", "stable_child_reject", "stable_child_ladder", "stable_child_executor", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_paused", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed"] : scenarios;
+  const selectedScenarios = process.argv.includes("--stable-child") ? ["stable_child", "stable_child_reject", "stable_child_ladder", "stable_child_executor", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_paused", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_board"] : scenarios;
   for (const name of selectedScenarios) {
     const code = await new Promise((resolve, reject) => {
       const child = spawn(process.execPath, ["--import", require.resolve("tsx"), fileURLToPath(import.meta.url), `--scenario=${name}`], {
@@ -40,7 +40,7 @@ if (!scenario) {
   if (results.some((result) => result.result !== "observed")) process.exitCode = 1;
   else if (process.argv.includes("--require-safe") && !integrationAllowed) process.exitCode = 2;
 } else {
-  assert.ok([...scenarios, "stable_child", "stable_child_ladder", "stable_child_reject", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_paused", "stable_child_gemini", "stable_child_gemini_retry"].includes(scenario), `Unknown scenario ${scenario}`);
+  assert.ok([...scenarios, "stable_child", "stable_child_ladder", "stable_child_reject", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_paused", "stable_child_gemini", "stable_child_gemini_retry"].includes(scenario), `Unknown scenario ${scenario}`);
   await runScenario();
 }
 
@@ -103,9 +103,10 @@ async function runScenario() {
       "maintenanceIssueId", "blockerIssueId", "documentId", "revisionId", "sessionId"].map((key) => [key, randomUUID()]));
     config.stageId = nativePlanReviewStageId(config.issueId, config.revisionId, "luna");
     config.checkpointPath = path.join(home, "child-review-checkpoint.json");
-    config.childReviewLadder = ["stable_child_ladder", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_paused"].includes(scenario);
-    config.realJulesExecutor = ["stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini"].includes(scenario);
-    config.prMigrationProbe = ["stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini"].includes(scenario);
+    config.childReviewLadder = ["stable_child_ladder", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_paused"].includes(scenario);
+    config.realJulesExecutor = ["stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board"].includes(scenario);
+    config.prMigrationProbe = ["stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board"].includes(scenario);
+    config.prBoardProbe = scenario === "stable_child_executor_pr_board";
     config.parentCardWithdrawalProbe = scenario === "stable_child_executor_pr_withdraw";
     config.prStrongReject = scenario === "stable_child_executor_pr_reject";
     config.prStrongPausedAfterCard = scenario === "stable_child_executor_pr_paused";
@@ -169,8 +170,8 @@ async function runScenario() {
     }
     // Use the host's real local-trusted board actor only for the typed recovery
     // route. Reviewer, bootstrap, and parent requests remain authenticated.
-    if (config.geminiFirstInitFailure || config.parentCardWithdrawalProbe || config.prStrongFirstTurnFailure) {
-      app.use("/__contract/board-api", actorMiddleware(db, { deploymentMode: "local_trusted" }), issueRoutes(db, {}));
+    if (config.geminiFirstInitFailure || config.parentCardWithdrawalProbe || config.prStrongFirstTurnFailure || config.prBoardProbe) {
+      app.use("/__contract/board-api", actorMiddleware(db, { deploymentMode: "local_trusted" }), issueRoutes(db, {}), agentRoutes(db, {}), activityRoutes(db));
     }
     app.use(actorMiddleware(db, { deploymentMode: "authenticated" }));
     app.get("/__contract/actor", (req, res) => res.json({ type: req.actor.type }));
@@ -354,7 +355,102 @@ async function runScenario() {
       if (config.realJulesExecutor) {
         const { runJulesExecutorRecoveryContract } = await import("./native-jules-executor-contract.mjs");
         await runJulesExecutorRecoveryContract({ config, report, db, schema, eq, wake, settle, runRows, issueRow });
-        if (config.prMigrationProbe) {
+        if (config.prBoardProbe) {
+          await db.update(issues).set({ status: "in_review", assigneeAgentId: null }).where(eq(issues.id, config.issueId));
+          const { ensurePrReviewChild, activatePrReviewChild } = await import("../../src/core/pr-review-child.ts");
+          const boardApi = {
+            get: async (path) => {
+              const response = await fetch(`${process.env.PAPERCLIP_API_URL}/__contract/board-api${path}`, { signal: AbortSignal.timeout(20_000) });
+              assert.equal(response.status, 200, `board PR child GET ${path} must be authorized`);
+              return response.json();
+            },
+            post: async (path, body) => {
+              const response = await fetch(`${process.env.PAPERCLIP_API_URL}/__contract/board-api${path}`, {
+                method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(20_000),
+              });
+              assert.ok(path.endsWith("/wakeup") ? [200, 201, 202].includes(response.status) : response.status === 201,
+                `board PR child POST ${path} must be authorized (${response.status})`);
+              return response.json();
+            },
+            patch: async (path, body) => {
+              const response = await fetch(`${process.env.PAPERCLIP_API_URL}/__contract/board-api${path}`, {
+                method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(20_000),
+              });
+              assert.equal(response.status, 200, `board PR child PATCH ${path} must be authorized`);
+              return response.json();
+            },
+          };
+          const identity = { version: 2, creatorPrincipal: "board", companyId: config.companyId, parentIssueId: config.issueId,
+            prUrl: config.prUrl, headSha: config.prHeadSha, stage: "luna",
+            reviewerAgentId: config.lunaId, bootstrapAgentId: config.orchestratorId };
+          const childId = await ensurePrReviewChild({ identity, api: boardApi });
+          const child = await boardApi.get(`/issues/${childId}`);
+          assert.equal(child.createdByAgentId, null);
+          assert.equal(child.parentId, config.issueId);
+          assert.equal(child.assigneeAgentId, config.orchestratorId);
+          const activatedForBootstrap = await boardApi.patch(`/issues/${child.id}`, {
+            status: "todo", assigneeAgentId: config.orchestratorId,
+          });
+          assert.equal(activatedForBootstrap.assigneeAgentId, config.orchestratorId);
+          await settle();
+          const [card] = await db.select().from(schema.issueThreadInteractions)
+            .where(eq(schema.issueThreadInteractions.issueId, child.id));
+          assert.equal(card?.status, "pending", "actual orchestrator must bootstrap one addressed card on the board-owned child");
+          const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, card.sourceRunId));
+          assert.equal(source.status, "succeeded");
+          assert.equal(source.contextSnapshot.issueId, child.id);
+          assert.equal(await activatePrReviewChild({ identity, childId, api: boardApi }), "activated");
+          await settle();
+          const [answered] = await db.select().from(schema.issueThreadInteractions)
+            .where(eq(schema.issueThreadInteractions.id, card.id));
+          assert.equal(answered.status, "answered", "addressed Luna must give a typed child PR verdict");
+          assert.equal(answered.result.items[0].verdict, "approve");
+          const [reviewer] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, answered.resolvedByRunId));
+          assert.equal(reviewer.agentId, config.lunaId);
+          assert.equal(reviewer.status, "succeeded");
+          assert.equal(reviewer.contextSnapshot.issueId, child.id);
+          assert.equal((await issueRow()).status, "in_review");
+          assert.equal((await issueRow()).assigneeAgentId, null);
+          assert.equal((await runRows()).filter((run) => run.agentId === config.orchestratorId &&
+            run.contextSnapshot?.issueId === config.maintenanceIssueId).length, 0);
+          const { inspectPrReviewChildren } = await import("../../src/core/pr-review-child.ts");
+          const afterLuna = await inspectPrReviewChildren({ companyId: config.companyId,
+            parentIssueId: config.issueId, prUrl: config.prUrl, headSha: config.prHeadSha,
+            bootstrapAgentId: config.orchestratorId, lunaAgentId: config.lunaId,
+            strongAgentId: config.terraId, protocolVersion: 2, api: boardApi });
+          assert.equal(afterLuna.kind, "dispatch");
+          assert.equal(afterLuna.stage, "strong");
+          assert.equal(afterLuna.projections.length, 1);
+          const strongIdentity = { ...identity, stage: "strong", reviewerAgentId: config.terraId };
+          const strongId = await ensurePrReviewChild({ identity: strongIdentity, api: boardApi });
+          const strongChild = await boardApi.get(`/issues/${strongId}`);
+          assert.equal(strongChild.createdByAgentId, null);
+          assert.equal((await boardApi.patch(`/issues/${strongId}`, {
+            status: "todo", assigneeAgentId: config.orchestratorId,
+          })).assigneeAgentId, config.orchestratorId);
+          await settle();
+          const [strongCard] = await db.select().from(schema.issueThreadInteractions)
+            .where(eq(schema.issueThreadInteractions.issueId, strongId));
+          assert.equal(strongCard?.status, "pending");
+          assert.equal(strongCard.addresseeAgentId, config.terraId);
+          assert.equal(await activatePrReviewChild({ identity: strongIdentity, childId: strongId, api: boardApi }), "activated");
+          await settle();
+          const [strongVerdict] = await db.select().from(schema.issueThreadInteractions)
+            .where(eq(schema.issueThreadInteractions.id, strongCard.id));
+          assert.equal(strongVerdict.status, "answered");
+          assert.equal(strongVerdict.result.items[0].verdict, "approve");
+          const inspected = await inspectPrReviewChildren({ companyId: config.companyId,
+            parentIssueId: config.issueId, prUrl: config.prUrl, headSha: config.prHeadSha,
+            bootstrapAgentId: config.orchestratorId, lunaAgentId: config.lunaId,
+            strongAgentId: config.terraId, protocolVersion: 2, api: boardApi });
+          assert.equal(inspected.kind, "approved");
+          assert.equal(inspected.projections.length, 2);
+          assert.equal((await issueRow()).assigneeAgentId, null);
+          assert.equal((await runRows()).filter((run) => run.agentId === config.orchestratorId &&
+            run.contextSnapshot?.issueId === config.maintenanceIssueId).length, 0);
+          report.outcome = "board_initiated_pr_children_luna_and_strong_approved_without_maintenance_issue";
+        }
+        if (config.prMigrationProbe && !config.prBoardProbe) {
           await db.update(issues).set({ status: "in_review", assigneeAgentId: null }).where(eq(issues.id, config.issueId));
           if (config.parentCardWithdrawalProbe) {
             const { buildReviewInteractionRequest } = await import("../../src/core/review-interaction-state.ts");

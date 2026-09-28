@@ -6,39 +6,54 @@ import { buildReviewInteractionRequest, reviewInteractionIdempotencyKey } from "
 import type { NativeReviewInteraction } from "./review-interaction-state.js";
 
 export const PR_REVIEW_CHILD_PREFIX = "<!-- paperclip-pr-review-child:v1\n";
-export const PrReviewChildIdentitySchema = z.object({
-  version: z.literal(1), companyId: z.string().min(1), parentIssueId: z.string().min(1),
+export const BOARD_PR_REVIEW_CHILD_PREFIX = "<!-- paperclip-pr-review-child:v2\n";
+const identityFields = {
+  companyId: z.string().min(1), parentIssueId: z.string().min(1),
   prUrl: z.string().regex(/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[1-9]\d*$/),
   headSha: z.string().regex(/^[0-9a-f]{40}$/i), stage: z.enum(["luna", "terra", "strong"]),
   reviewerAgentId: z.string().min(1), bootstrapAgentId: z.string().min(1),
-}).strict().refine((identity) => identity.reviewerAgentId !== identity.bootstrapAgentId,
-  "Native PR review must be performed by a distinct reviewer");
+};
+const agentChildIdentity = z.object({ version: z.literal(1), ...identityFields }).strict()
+  .refine((identity) => identity.reviewerAgentId !== identity.bootstrapAgentId,
+    "Native PR review must be performed by a distinct reviewer");
+const boardChildIdentity = z.object({ version: z.literal(2), creatorPrincipal: z.literal("board"), ...identityFields }).strict()
+  .refine((identity) => identity.reviewerAgentId !== identity.bootstrapAgentId,
+    "Native PR review must be performed by a distinct reviewer");
+export const PrReviewChildIdentitySchema = z.union([agentChildIdentity, boardChildIdentity]);
 export type PrReviewChildIdentity = z.infer<typeof PrReviewChildIdentitySchema>;
 
 export function prReviewChildDescription(identity: PrReviewChildIdentity): string {
-  return `${PR_REVIEW_CHILD_PREFIX}${JSON.stringify(PrReviewChildIdentitySchema.parse(identity))}\n-->\n\n` +
+  const valid = PrReviewChildIdentitySchema.parse(identity);
+  const marker = valid.version === 2 ? BOARD_PR_REVIEW_CHILD_PREFIX : PR_REVIEW_CHILD_PREFIX;
+  return `${marker}${JSON.stringify(valid)}\n-->\n\n` +
     "Review only the referenced PR commit through the addressed native Paperclip verdict card. " +
     "Do not submit a GitHub-thread review or infer a decision from a comment.";
 }
 
 export function parsePrReviewChildDescription(description: unknown): PrReviewChildIdentity | null {
-  if (typeof description !== "string" || !description.startsWith(PR_REVIEW_CHILD_PREFIX)) return null;
-  const end = description.indexOf("\n-->", PR_REVIEW_CHILD_PREFIX.length);
+  if (typeof description !== "string") return null;
+  const marker = description.startsWith(BOARD_PR_REVIEW_CHILD_PREFIX) ? BOARD_PR_REVIEW_CHILD_PREFIX
+    : description.startsWith(PR_REVIEW_CHILD_PREFIX) ? PR_REVIEW_CHILD_PREFIX : null;
+  if (!marker) return null;
+  const end = description.indexOf("\n-->", marker.length);
   if (end < 0) return null;
   let raw: unknown;
-  try { raw = JSON.parse(description.slice(PR_REVIEW_CHILD_PREFIX.length, end)); }
+  try { raw = JSON.parse(description.slice(marker.length, end)); }
   catch { return null; }
   const parsed = PrReviewChildIdentitySchema.safeParse(raw);
-  return parsed.success ? parsed.data : null;
+  return parsed.success && (parsed.data.version === 2 ? marker === BOARD_PR_REVIEW_CHILD_PREFIX
+    : marker === PR_REVIEW_CHILD_PREFIX) ? parsed.data : null;
 }
 
 export function isPrReviewChild(value: unknown): boolean {
-  const issue = z.object({ companyId: z.string(), parentId: z.string(), createdByAgentId: z.string(),
+  const issue = z.object({ companyId: z.string(), parentId: z.string(), createdByAgentId: z.string().nullable(),
     description: z.string() }).safeParse(value);
   if (!issue.success) return false;
   const identity = parsePrReviewChildDescription(issue.data.description);
   return !!identity && identity.companyId === issue.data.companyId &&
-    identity.parentIssueId === issue.data.parentId && identity.bootstrapAgentId === issue.data.createdByAgentId;
+    identity.parentIssueId === issue.data.parentId &&
+    (identity.version === 2 ? issue.data.createdByAgentId === null
+      : identity.bootstrapAgentId === issue.data.createdByAgentId);
 }
 
 /** A board-created historical parent card is an authority lock, not a reviewer-wake hint. */
@@ -57,7 +72,12 @@ export function shouldHoldLegacyParentPrCard(input: {
 }
 
 export function prReviewChildKey(identity: PrReviewChildIdentity): string {
-  return `pr-review:child:v1:${createHash("sha256").update(JSON.stringify(PrReviewChildIdentitySchema.parse(identity))).digest("hex")}`;
+  const valid = PrReviewChildIdentitySchema.parse(identity);
+  return `pr-review:child:v${valid.version}:${createHash("sha256").update(JSON.stringify(valid)).digest("hex")}`;
+}
+
+function expectedCreator(identity: PrReviewChildIdentity): string | null {
+  return identity.version === 2 ? null : identity.bootstrapAgentId;
 }
 
 const Issue = z.object({ id: z.string(), companyId: z.string(), parentId: z.string().nullish(),
@@ -103,7 +123,7 @@ export async function ensurePrReviewChild(input: {
   if (matches.length > 1) throw new Error("Duplicate PR review children for one immutable review stage");
   const prior = matches[0];
   if (prior) {
-    if (prior.createdByAgentId !== identity.bootstrapAgentId) throw new Error("PR review child provenance changed");
+    if (prior.createdByAgentId !== expectedCreator(identity)) throw new Error("PR review child provenance changed");
     return prior.id;
   }
   const created = Issue.parse(await input.api.post(`${root}/children`, {
@@ -113,7 +133,7 @@ export async function ensurePrReviewChild(input: {
   }));
   const createdIdentity = parsePrReviewChildDescription(created.description);
   if (created.companyId !== identity.companyId || created.parentId !== identity.parentIssueId ||
-      created.assigneeAgentId !== identity.bootstrapAgentId || created.createdByAgentId !== identity.bootstrapAgentId ||
+      created.assigneeAgentId !== identity.bootstrapAgentId || created.createdByAgentId !== expectedCreator(identity) ||
       !createdIdentity || prReviewChildKey(createdIdentity) !== key) {
     throw new Error("PR review child creation receipt does not match its immutable parent, stage or author");
   }
@@ -130,7 +150,7 @@ function assertChildIdentity(identity: PrReviewChildIdentity, child: z.infer<typ
   const descriptor = parsePrReviewChildDescription(child.description);
   if (!descriptor || prReviewChildKey(descriptor) !== prReviewChildKey(identity) ||
       child.id !== childId || child.companyId !== identity.companyId || child.parentId !== identity.parentIssueId ||
-      child.createdByAgentId !== identity.bootstrapAgentId) throw new Error("PR review child identity or author changed");
+      child.createdByAgentId !== expectedCreator(identity)) throw new Error("PR review child identity or author changed");
 }
 
 async function assertRegisteredParent(identity: PrReviewChildIdentity, api: ChildReviewApi): Promise<void> {
@@ -332,14 +352,24 @@ export type PrChildReviewInspection =
 export async function inspectPrReviewChildren(input: {
   readonly companyId: string; readonly parentIssueId: string; readonly prUrl: string; readonly headSha: string;
   readonly bootstrapAgentId: string; readonly lunaAgentId: string; readonly strongAgentId: string;
+  readonly protocolVersion?: 1 | 2;
   readonly api: ChildReviewApi;
 }): Promise<PrChildReviewInspection> {
-  const base = { version: 1 as const, companyId: input.companyId, parentIssueId: input.parentIssueId,
+  const fields = { companyId: input.companyId, parentIssueId: input.parentIssueId,
     prUrl: input.prUrl, headSha: input.headSha, bootstrapAgentId: input.bootstrapAgentId };
+  const base = input.protocolVersion === 2
+    ? { ...fields, version: 2 as const, creatorPrincipal: "board" as const }
+    : { ...fields, version: 1 as const };
   const children = z.array(Issue).parse(await input.api.get(
     `/companies/${encodeURIComponent(input.companyId)}/issues?limit=1000&parentId=${encodeURIComponent(input.parentIssueId)}`,
   ));
   if (children.length >= 1000) throw new Error("PR child review history is incomplete");
+  if (input.protocolVersion === 2 && children.some((child) => {
+    const descriptor = parsePrReviewChildDescription(child.description);
+    return descriptor?.version === 1 && descriptor.parentIssueId === input.parentIssueId &&
+      descriptor.prUrl === input.prUrl && descriptor.headSha === input.headSha &&
+      !["done", "cancelled"].includes(child.status);
+  })) throw new Error("Existing agent-owned v1 PR child requires its original review protocol");
   const stages = [{ stage: "luna" as const, reviewerAgentId: input.lunaAgentId },
     { stage: "strong" as const, reviewerAgentId: input.strongAgentId }];
   const projections: NativeReviewInteraction[] = [];

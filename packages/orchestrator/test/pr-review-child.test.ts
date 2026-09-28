@@ -19,6 +19,19 @@ describe("versioned issue-scoped PR review child identity", () => {
     expect(prReviewChildKey({ ...luna, headSha: "b".repeat(40) })).not.toBe(prReviewChildKey(luna));
   });
 
+  it("binds v2 board-origin children to their distinct issue-scoped orchestrator bootstrap", () => {
+    const board = { ...luna, version: 2 as const, creatorPrincipal: "board" as const };
+    const description = prReviewChildDescription(board as never);
+    expect(parsePrReviewChildDescription(description)).toEqual(board);
+    expect(prReviewChildKey(board as never)).toMatch(/^pr-review:child:v2:[0-9a-f]{64}$/);
+    expect(isPrReviewChild({ companyId: "company", parentId: "parent", createdByAgentId: null,
+      description })).toBe(true);
+    expect(isPrReviewChild({ companyId: "company", parentId: "parent", createdByAgentId: "orchestrator",
+      description })).toBe(false);
+    expect(isPrReviewChild({ companyId: "company", parentId: "parent", createdByAgentId: null,
+      description: prReviewChildDescription(luna) })).toBe(false);
+  });
+
   it("rejects a mismatched descriptor, same-principal review, and noncanonical PR URL", () => {
     expect(parsePrReviewChildDescription("Review this PR")).toBeNull();
     expect(parsePrReviewChildDescription(prReviewChildDescription(luna).replace('"stage":"luna"', '"stage":"unknown"'))).toBeNull();

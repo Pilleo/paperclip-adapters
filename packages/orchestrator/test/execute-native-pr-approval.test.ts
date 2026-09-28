@@ -104,7 +104,7 @@ describe("orchestrator native PR completion", () => {
     else process.env["PAPERCLIP_API_KEY"] = originalKey;
   });
 
-  it.each(["without a parent card", "with a pending parent card", "with unavailable GitHub PR discovery", "from todo with a cleared Jules monitor", "from compact unassigned todo projection"] as const)(
+  it.each(["without a parent card", "from company timer without a maintenance issue", "with a pending parent card", "with unavailable GitHub PR discovery", "from todo with a cleared Jules monitor", "from compact unassigned todo projection"] as const)(
     "routes a Jules PR %s without another parent Luna verdict or wake", async (parentCardState) => {
     if (parentCardState === "with unavailable GitHub PR discovery") vi.mocked(fetchGitHubPullRequests).mockResolvedValue({
       openPrs: [], mergedPrs: [], openPrFiles: new Set(), error: "provider unavailable",
@@ -124,6 +124,7 @@ describe("orchestrator native PR completion", () => {
     } }] };
     let persistedIssue = ready;
     const childPosts: Array<Record<string, unknown>> = [];
+    const childBootstrapPatches: Array<Record<string, unknown>> = [];
     const parentCardPosts: unknown[] = [];
     const issuePatches: Array<Record<string, unknown>> = [];
     const logs: string[] = [];
@@ -134,7 +135,13 @@ describe("orchestrator native PR completion", () => {
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
         childPosts.push(body);
         return new Response(JSON.stringify({ ...body, id: "review-child", companyId, parentId: effectiveIssueId,
-          createdByAgentId: "orchestrator-1" }), { status: 201 });
+          createdByAgentId: parentCardState === "from company timer without a maintenance issue" ? null : "orchestrator-1" }), { status: 201 });
+      }
+      if (method === "PATCH" && href.endsWith("/api/issues/review-child")) {
+        const patch = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        childBootstrapPatches.push(patch);
+        return new Response(JSON.stringify({ id: "review-child", companyId, parentId: effectiveIssueId,
+          status: patch["status"], assigneeAgentId: patch["assigneeAgentId"] }));
       }
       if (method === "POST" && href.endsWith(`/api/issues/${effectiveIssueId}/interactions`)) {
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -170,12 +177,24 @@ describe("orchestrator native PR completion", () => {
       return new Response(JSON.stringify([]));
     }) as typeof fetch;
 
-    const result = await execute({ ...context(), context: { companyId, issueId: "maintenance-1519" },
+    const runContext = context();
+    const result = await execute({ ...runContext,
+      ...(parentCardState === "from company timer without a maintenance issue"
+        ? { config: { ...runContext.config, apiUrl: "http://127.0.0.1:3100" } } : {}),
+      context: parentCardState === "from company timer without a maintenance issue"
+        ? { companyId } : { companyId, issueId: "maintenance-1519" },
       onLog: async (_stream, line) => { logs.push(line); } });
 
     expect(result.exitCode).toBe(0);
-    expect(childPosts).toHaveLength(parentCardState === "without a parent card" ? 1 : 0);
-    if (childPosts[0]) expect(childPosts[0]).toMatchObject({ status: "backlog", assigneeAgentId: "orchestrator-1", blockParentUntilDone: false });
+    expect(childPosts).toHaveLength(["without a parent card", "from company timer without a maintenance issue"].includes(parentCardState) ? 1 : 0);
+    if (childPosts[0]) {
+      expect(childPosts[0]).toMatchObject({ status: "backlog", assigneeAgentId: "orchestrator-1", blockParentUntilDone: false });
+      if (parentCardState === "from company timer without a maintenance issue") {
+        expect(String(childPosts[0]["description"])).toContain("paperclip-pr-review-child:v2");
+        expect(childBootstrapPatches).toEqual([{ status: "todo", assigneeAgentId: "orchestrator-1" }]);
+        expect(vi.mocked(globalThis.fetch).mock.calls.filter(([url]) => String(url).includes("/api/agents/orchestrator-1/wakeup"))).toHaveLength(0);
+      }
+    }
     expect(parentCardPosts).toEqual([]);
     expect(issuePatches.some((patch) => patch["status"] === "todo")).toBe(false);
     if (parentCardState === "from todo with a cleared Jules monitor" || parentCardState === "from compact unassigned todo projection") {

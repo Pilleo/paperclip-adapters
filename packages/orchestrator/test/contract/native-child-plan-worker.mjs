@@ -255,7 +255,8 @@ if (env.PAPERCLIP_AGENT_ID === config.julesId) {
     await event("PR_MIGRATION_CHILD_ACTIVATED", { childId: issueId, cardId: card.id });
     process.exit(0);
   }
-  if (config.prMigrationProbe && run.contextSnapshot.contractPrMigrationBootstrap) {
+  if (config.prMigrationProbe && (run.contextSnapshot.contractPrMigrationBootstrap ||
+      (config.prBoardProbe && parsePrReviewChildDescription(child.description)?.version === 2))) {
     const descriptor = parsePrReviewChildDescription(child.description);
     assert.ok(descriptor);
     const { executeAllProjects } = await import("../../src/server/execute.ts");

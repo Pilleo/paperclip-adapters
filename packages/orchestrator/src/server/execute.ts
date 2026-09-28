@@ -102,7 +102,7 @@ import { executeChildPlanBootstrap } from "../core/child-plan-bootstrap.js";
 import { activatePrReviewChild, bootstrapPrReviewChild, ensurePrReviewChild, inspectPrReviewChildren,
   isPrReviewChild, parsePrReviewChildDescription, prReviewChildApi, prReviewChildKey,
   shouldHoldLegacyParentPrCard,
-  PR_REVIEW_CHILD_PREFIX, type PrReviewChildIdentity } from "../core/pr-review-child.js";
+  PR_REVIEW_CHILD_PREFIX, BOARD_PR_REVIEW_CHILD_PREFIX, type PrReviewChildIdentity } from "../core/pr-review-child.js";
 import { isStablePlanReviewChild } from "@pilleo/paperclip-adapter-common";
 import { needsFullIssueRecord } from "../core/issue-enrichment-policy.js";
 import { planBoardReconciliation, type BoardIssueSnapshot } from "../core/board-reconciliation.js";
@@ -263,7 +263,8 @@ export async function executeAllProjects(
           : "Native child plan card created; parent Jules monitor owns reviewer activation.",
         resultJson: { childPlanReviewBootstrap: bootstrapped } };
       const description = issue?.["description"];
-      if (typeof description === "string" && description.startsWith(PR_REVIEW_CHILD_PREFIX)) {
+      if (typeof description === "string" && (description.startsWith(PR_REVIEW_CHILD_PREFIX) ||
+          description.startsWith(BOARD_PR_REVIEW_CHILD_PREFIX))) {
         const identity = parsePrReviewChildDescription(description);
         if (!identity || identity.companyId !== companyId || identity.bootstrapAgentId !== agentId ||
             !authToken || !runId) {
@@ -2764,21 +2765,29 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
       // An answered parent card belongs to the previous review protocol.
       // Continue its existing ladder rather than asking another reviewer.
       if (!historicalParentCards.length) {
-        if (!authToken || !runId || typeof rawContext["issueId"] !== "string") {
-          await log(`[ORCHESTRATOR] Waiting for issue-scoped orchestrator credentials before routing Jules PR child for [${reviewTask.identifier || reviewTask.id}].`);
+        const issueScoped = Boolean(authToken && runId && typeof rawContext["issueId"] === "string");
+        // A company timer has no source issue. In local-trusted Paperclip the
+        // board actor may create/activate a v2 reviewer child; the actual card
+        // still requires the orchestrator's authenticated child-scoped run.
+        if (!issueScoped && !/^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/api)?$/i.test(apiUrl)) {
+          await log(`[ORCHESTRATOR] Waiting for a board-authorized local adapter or issue-scoped credentials before routing Jules PR child for [${reviewTask.identifier || reviewTask.id}].`);
           continue;
         }
-        const scopedReviewClient = createPaperclipHttp({ apiUrl, authToken, runId, localTrustedBoardWrites: false });
-        const childApi = prReviewChildApi(scopedReviewClient);
+        const reviewClient = issueScoped
+          ? createPaperclipHttp({ apiUrl, authToken, runId, localTrustedBoardWrites: false }) : pc;
+        const childApi = prReviewChildApi(reviewClient);
         try {
           const inspection = await inspectPrReviewChildren({ companyId, parentIssueId: reviewTask.id,
             prUrl: matchingPr.url, headSha: reviewHeadSha, bootstrapAgentId: orchestratorId,
-            lunaAgentId: lunaReviewerAgentId!, strongAgentId: strongReviewerAgentId!, api: childApi });
+            lunaAgentId: lunaReviewerAgentId!, strongAgentId: strongReviewerAgentId!,
+            protocolVersion: issueScoped ? 1 : 2, api: childApi });
           switch (inspection.kind) {
             case "dispatch": {
-              const identity: PrReviewChildIdentity = { version: 1, companyId, parentIssueId: reviewTask.id,
-                prUrl: matchingPr.url, headSha: reviewHeadSha, stage: inspection.stage,
-                reviewerAgentId: inspection.reviewerAgentId, bootstrapAgentId: orchestratorId };
+              const fields = { companyId, parentIssueId: reviewTask.id, prUrl: matchingPr.url,
+                headSha: reviewHeadSha, stage: inspection.stage, reviewerAgentId: inspection.reviewerAgentId,
+                bootstrapAgentId: orchestratorId };
+              const identity: PrReviewChildIdentity = issueScoped ? { ...fields, version: 1 }
+                : { ...fields, version: 2, creatorPrincipal: "board" };
               const eligible = evaluateStructuredReviewerEligibility(
                 managedAgentStatuses.get(inspection.reviewerAgentId),
                 agentStructuredDecisionCapabilities.get(inspection.reviewerAgentId), "pull_request_review",
@@ -2788,11 +2797,21 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
                 continue;
               }
               const childId = await ensurePrReviewChild({ identity, api: childApi });
-              const wake = await scopedReviewClient.wakeup(orchestratorId,
-                `Bootstrap the one addressed native ${inspection.stage} PR card on child ${childId}.`, childId,
-                { source: "automation", triggerDetail: "system", idempotencyKey: `${prReviewChildKey(identity)}:bootstrap` });
-              if (!wake.ok || (wake.data as { status?: string } | undefined)?.status === "skipped") {
-                await log(`[ORCHESTRATOR] Native PR child ${childId} awaits scoped bootstrap admission (${wake.status}): ${wake.text}`);
+              if (identity.version === 2) {
+                const activated = await childApi.patch(`/issues/${encodeURIComponent(childId)}`, {
+                  status: "todo", assigneeAgentId: orchestratorId,
+                }) as Record<string, unknown>;
+                if (activated["id"] !== childId || activated["status"] !== "todo" ||
+                    activated["assigneeAgentId"] !== orchestratorId) {
+                  throw new Error("Board-owned PR child was not activated for its scoped bootstrap run");
+                }
+              } else {
+                const wake = await reviewClient.wakeup(orchestratorId,
+                  `Bootstrap the one addressed native ${inspection.stage} PR card on child ${childId}.`, childId,
+                  { source: "automation", triggerDetail: "system", idempotencyKey: `${prReviewChildKey(identity)}:bootstrap` });
+                if (!wake.ok || (wake.data as { status?: string } | undefined)?.status === "skipped") {
+                  await log(`[ORCHESTRATOR] Native PR child ${childId} awaits scoped bootstrap admission (${wake.status}): ${wake.text}`);
+                }
               }
               continue;
             }
@@ -2805,11 +2824,29 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
               }
               if (!runs.some((run) => run["agentId"] === orchestratorId &&
                   ["queued", "running", "scheduled"].includes(String(run["status"])))) {
-                const wake = await scopedReviewClient.wakeup(orchestratorId,
-                  `Resume the exact child-scoped PR card bootstrap ${inspection.childId}.`, inspection.childId,
-                  { source: "automation", triggerDetail: "system",
-                    idempotencyKey: `${prReviewChildKey(inspection.identity)}:bootstrap` });
-                if (!wake.ok) await log(`[ORCHESTRATOR] PR child bootstrap admission held (${wake.status}): ${wake.text}`);
+                if (inspection.identity.version === 2) {
+                  const reviewer = await childApi.get(`/agents/${encodeURIComponent(inspection.identity.reviewerAgentId)}`) as Record<string, unknown>;
+                  if (reviewer["id"] !== inspection.identity.reviewerAgentId || reviewer["companyId"] !== companyId) {
+                    throw new Error("Board-owned PR child reviewer changed before bootstrap recovery");
+                  }
+                  if (reviewer["status"] === "paused" || reviewer["status"] === "error") {
+                    await log(`[ORCHESTRATOR] Waiting for reviewer ${inspection.identity.reviewerAgentId} before reactivating PR child ${inspection.childId}.`);
+                    continue;
+                  }
+                  const activated = await childApi.patch(`/issues/${encodeURIComponent(inspection.childId)}`, {
+                    status: "todo", assigneeAgentId: orchestratorId,
+                  }) as Record<string, unknown>;
+                  if (activated["id"] !== inspection.childId || activated["status"] !== "todo" ||
+                      activated["assigneeAgentId"] !== orchestratorId) {
+                    throw new Error("Board-owned PR child could not resume its scoped bootstrap run");
+                  }
+                } else {
+                  const wake = await reviewClient.wakeup(orchestratorId,
+                    `Resume the exact child-scoped PR card bootstrap ${inspection.childId}.`, inspection.childId,
+                    { source: "automation", triggerDetail: "system",
+                      idempotencyKey: `${prReviewChildKey(inspection.identity)}:bootstrap` });
+                  if (!wake.ok) await log(`[ORCHESTRATOR] PR child bootstrap admission held (${wake.status}): ${wake.text}`);
+                }
               }
               continue;
             }
