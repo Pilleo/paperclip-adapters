@@ -110,7 +110,32 @@ describe("native review dispatch state", () => {
       },
     },
     {
-      name: "replaces an original card after a terminal run",
+      name: "recovers same-card dispatch after pre-start assignee-change cancellation",
+      value: input({
+        runs: [
+          {
+            id: "run-cancelled",
+            status: "cancelled",
+            issueId: "issue-1",
+            reviewerAgentId: "luna-1",
+            interactionId: "card-1",
+            startedAt: null,
+            finishedAt: "2026-09-21T17:27:47.341Z",
+            stopReason: "issue_assignee_changed",
+            errorCode: "issue_assignee_changed",
+          },
+        ],
+      }),
+      expected: {
+        action: "recover_dispatch",
+        interactionId: "card-1",
+        reviewerAgentId: "luna-1",
+        immutableKey: IDENTITY.immutableKey,
+        attempt: 0,
+      },
+    },
+    {
+      name: "replaces the card after a terminal run",
       value: input({ runs: [run("failed")] }),
       expected: { action: "replace_card", interactionId: "card-1", nextAttempt: 1, cause: "terminal_run", failedRunId: "run-failed" },
     },

@@ -40,6 +40,15 @@ describe("real provider E2E canary fixture", () => {
     });
   });
 
+  it("states exact behavior, test-file scope and runnable verification for a reviewer-approved increment plan", () => {
+    const description = String(buildCanaryA("project-1", "run-1").description);
+    expect(parseTaskContract(description)).toMatchObject({ kind: "structured", targetFiles: [
+      "canary-run-1-increment.js", "canary-run-1-increment.test.js",
+    ] });
+    expect(description).toContain("increment(2) returns 3");
+    expect(description).toContain("node --test canary-run-1-increment.test.js");
+  });
+
   it.each([
     ["A", () => buildCanaryA("project-1", "run-1")],
     ["B", () => buildCanaryB("project-1", "run-1", "a")],
@@ -57,7 +66,9 @@ describe("real provider E2E canary fixture", () => {
 
     expect(description).toMatch(/^---\n[\s\S]*?---\n<!-- paperclip-adapters:e2e-run:run-1 -->/);
     expect(metadata.orchestratorManaged).toBe(true);
-    expect(parsed).toMatchObject({ kind: "structured", targetFiles: [expect.stringMatching(/^canary-run-1-.+\.js$/)] });
+    expect(parsed).toMatchObject({ kind: "structured", targetFiles: [
+      expect.stringMatching(/^canary-run-1-.+\.js$/), expect.stringMatching(/^canary-run-1-.+\.test\.js$/),
+    ] });
   });
 
   it("gives each canary run fresh implementation filenames so a merged run cannot make the next run a no-op", () => {

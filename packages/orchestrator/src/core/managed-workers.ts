@@ -57,6 +57,8 @@ export interface ManagedFleetIds {
   readonly vibeAgentId?: string | undefined;
   readonly vibeReviewerAgentId?: string | undefined;
   readonly antigravityAgentId?: string | undefined;
+  /** Managed agent with the typed verdict capability, independent of its provider. */
+  readonly strongReviewerAgentId?: string | undefined;
   readonly reviewerAgentId?: string | undefined;
   readonly lunaReviewerAgentId?: string | undefined;
   readonly terraReviewerAgentId?: string | undefined;
@@ -118,6 +120,9 @@ export function resolveManagedFleet(
   const antigravityAgentId = managed.find(
     (a) => a.adapterType === "antigravity" || a.name.toLowerCase().includes("antigravity")
   )?.id;
+  const strongReviewerAgentId = managed.find((a) =>
+    a.adapterType === "antigravity" && a.metadata?.["workerKey"] === "antigravity" &&
+    supportsStructuredDecision(a, "plan_review") && supportsStructuredDecision(a, "pull_request_review"))?.id;
   const reviewerAgentId = pick(
     configured?.reviewerAgentId,
     (a) =>
@@ -145,6 +150,7 @@ export function resolveManagedFleet(
     vibeAgentId,
     vibeReviewerAgentId,
     antigravityAgentId,
+    strongReviewerAgentId,
     reviewerAgentId,
     lunaReviewerAgentId,
     terraReviewerAgentId,

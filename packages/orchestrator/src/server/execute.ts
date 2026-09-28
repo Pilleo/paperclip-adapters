@@ -30,6 +30,7 @@ import {
 } from "../core/heartbeat-project-scope.js";
 import { ensureManagedProjectCheckout, managedProjectCheckoutPath } from "../core/project-managed-checkout.js";
 import { fetchGitHubPullRequest, fetchGitHubPullRequests, hasUnreviewedReadyPullRequest, matchPrToIssue, registeredPullRequestFromIssue, checkPrCiIsGreen, fetchPullRequestHeadSha, resolvePrCiGate } from "../core/github-sync.js";
+import { needsJulesPlanPolicyPatch } from "../core/jules-plan-policy.js";
 import { evaluateIssueTransition } from "../core/state-machine.js";
 import { readWorkspaceGitRemote, syncBacklogMarkdownToPaperclip } from "../core/backlog-sync.js";
 import { archiveResolvedBacklogFiles } from "../core/backlog-archiver.js";
@@ -97,6 +98,8 @@ import {
   parseJulesExecutionBlockerPointer,
 } from "../core/jules-execution-blocker-reconciliation.js";
 import { resolvedJulesPlanVerdict } from "../core/jules-plan-verdict-continuation.js";
+import { executeChildPlanBootstrap } from "../core/child-plan-bootstrap.js";
+import { isStablePlanReviewChild } from "@pilleo/paperclip-adapter-common";
 import { needsFullIssueRecord } from "../core/issue-enrichment-policy.js";
 import { planBoardReconciliation, type BoardIssueSnapshot } from "../core/board-reconciliation.js";
 import { decideBlockedManagedWork, decideRecoveryArtifact } from "../core/recovery-artifact.js";
@@ -236,6 +239,21 @@ export async function executeAllProjects(
       return { exitCode: 1, signal: null, timedOut: false, errorMessage: message, summary: message };
     }
     scopeReference = authority.reference;
+    const boundIssueId = typeof snapshot["issueId"] === "string" ? snapshot["issueId"]
+      : typeof snapshot["taskId"] === "string" ? snapshot["taskId"] : null;
+    if (boundIssueId) {
+      const issue = await pc.getIssue<Record<string, unknown>>(boundIssueId);
+      if (scopeReference.kind === "project" && issue?.["projectId"] !== scopeReference.projectId) {
+        throw new Error("Bootstrap issue project does not match authoritative run scope");
+      }
+      const bootstrapped = await executeChildPlanBootstrap({ apiBase: apiUrl, issueId: boundIssueId,
+        agentId, runId, token: authToken, description: issue?.["description"] });
+      if (bootstrapped) return { exitCode: 0, signal: null, timedOut: false,
+        summary: "kind" in bootstrapped
+          ? "Addressed reviewer unavailable; existing child parked for a later Jules monitor."
+          : "Native child plan card created; parent Jules monitor owns reviewer activation.",
+        resultJson: { childPlanReviewBootstrap: bootstrapped } };
+    }
   } catch (err: unknown) {
     const message = `Could not load authoritative heartbeat scope: ${err instanceof Error ? err.message : String(err)}`;
     await context.onLog?.("stderr", `[ORCHESTRATOR] 🚨 ${message}\n`);
@@ -629,6 +647,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
   let reviewerAgentId = config.reviewerAgentId;
   let lunaReviewerAgentId = config.lunaReviewerAgentId;
   let terraReviewerAgentId = config.terraReviewerAgentId ?? config.reviewerAgentId;
+  let strongReviewerAgentId: string | undefined;
   let terraAdjudicatorAgentId = config.terraAdjudicatorAgentId;
   let fleetAuthorizationFailures: Awaited<ReturnType<typeof reconcileManagedFleet>>["authorizationFailures"] = [];
   let agentHealthReport: AgentHealthReport | undefined;
@@ -716,11 +735,13 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     reviewerAgentId = fleet.reviewerAgentId;
     lunaReviewerAgentId = fleet.lunaReviewerAgentId;
     terraReviewerAgentId = fleet.terraReviewerAgentId;
+    strongReviewerAgentId = fleet.strongReviewerAgentId;
     terraAdjudicatorAgentId = fleet.terraAdjudicatorAgentId;
     if (julesAgentId) await log(`[ORCHESTRATOR] Managed Jules agent: ${julesAgentId}`);
     if (vibeAgentId) await log(`[ORCHESTRATOR] Managed Vibe agent: ${vibeAgentId}`);
     if (lunaReviewerAgentId) await log(`[ORCHESTRATOR] Managed Luna reviewer: ${lunaReviewerAgentId}`);
     if (terraReviewerAgentId) await log(`[ORCHESTRATOR] Managed Terra reviewer: ${terraReviewerAgentId}`);
+    if (strongReviewerAgentId) await log(`[ORCHESTRATOR] Managed Gemini strong reviewer: ${strongReviewerAgentId}`);
 
     // The orchestrator owns the policy for its managed Jules worker. Apply an
     // explicit setting to existing workers too; otherwise newly provisioned
@@ -728,21 +749,21 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     const julesConfigurationDenied = fleetAuthorizationFailures.some(
       (failure) => failure.workerKey === "jules" && failure.capability === "agents:configure"
     );
-    if (julesAgentId && !julesConfigurationDenied && (config.julesPlanApprovalPolicy || lunaReviewerAgentId || terraReviewerAgentId || terraAdjudicatorAgentId)) {
+    if (julesAgentId && !julesConfigurationDenied && (config.julesPlanApprovalPolicy || lunaReviewerAgentId || strongReviewerAgentId || terraReviewerAgentId || terraAdjudicatorAgentId)) {
       const managedJules = agents.find((agent) => agent.id === julesAgentId);
-      if (managedJules && (
-        managedJules.adapterConfig?.["planApprovalPolicy"] !== config.julesPlanApprovalPolicy ||
-        managedJules.adapterConfig?.["planReviewerAgentId"] !== lunaReviewerAgentId ||
-        managedJules.adapterConfig?.["planStrongReviewerAgentId"] !== terraReviewerAgentId ||
-        managedJules.adapterConfig?.["questionReviewerAgentId"] !== terraReviewerAgentId
-        || managedJules.adapterConfig?.["questionAdjudicatorAgentId"] !== terraAdjudicatorAgentId
-      )) {
+      if (managedJules && needsJulesPlanPolicyPatch(managedJules.adapterConfig, {
+        planApprovalPolicy: config.julesPlanApprovalPolicy,
+        planReviewerAgentId: lunaReviewerAgentId,
+        planStrongReviewerAgentId: strongReviewerAgentId,
+        questionReviewerAgentId: terraAdjudicatorAgentId ?? terraReviewerAgentId,
+        questionAdjudicatorAgentId: terraAdjudicatorAgentId,
+      })) {
         const patch = await pc.patchAgent(julesAgentId, {
           adapterConfig: {
             ...(managedJules?.adapterConfig ?? {}),
             ...(config.julesPlanApprovalPolicy ? { planApprovalPolicy: config.julesPlanApprovalPolicy } : {}),
             ...(lunaReviewerAgentId ? { planReviewerAgentId: lunaReviewerAgentId } : {}),
-            ...(terraReviewerAgentId ? { planStrongReviewerAgentId: terraReviewerAgentId } : {}),
+            ...(strongReviewerAgentId ? { planStrongReviewerAgentId: strongReviewerAgentId } : {}),
             ...(terraReviewerAgentId ? { questionReviewerAgentId: terraReviewerAgentId } : {}),
             ...(terraAdjudicatorAgentId ? { questionAdjudicatorAgentId: terraAdjudicatorAgentId, questionReviewerAgentId: terraAdjudicatorAgentId } : {}),
           },
@@ -954,19 +975,35 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
   // terminal and active-review issues; otherwise a ready Jules PR becomes
   // invisible immediately after the recovery tick changes `done` to
   // `in_review`.
-  const enrichedIssues = await Promise.all(scopedIssues.map(async (issue) => {
+  const enrichedIssues = [...scopedIssues];
+  const issueDetailIndexes = scopedIssues.flatMap((issue, index) => {
     const status = String(issue["status"] ?? "").toLowerCase();
     const orchestratorOwnedRecoveryRecord =
       (status === "backlog" || status === "todo" || status === "in_progress" || status === "blocked") &&
       (issue["assigneeAgentId"] === orchestratorId || managedIds.has(String(issue["assigneeAgentId"] || "")));
-    if (!needsFullIssueRecord(status) && !orchestratorOwnedRecoveryRecord) return issue;
-    try {
-      return await pc.getIssue<Record<string, unknown>>(String(issue["id"] ?? ""));
-    } catch {
-      return issue;
+    return needsFullIssueRecord(status) || orchestratorOwnedRecoveryRecord ? [index] : [];
+  });
+  let nextIssueDetail = 0;
+  const failedIssueDetailIds: string[] = [];
+  await Promise.all(Array.from({ length: Math.min(4, issueDetailIndexes.length) }, async () => {
+    while (nextIssueDetail < issueDetailIndexes.length) {
+      const index = issueDetailIndexes[nextIssueDetail++]!;
+      const issueId = String(scopedIssues[index]?.["id"] ?? "");
+      try {
+        enrichedIssues[index] = await pc.getIssue<Record<string, unknown>>(issueId);
+      } catch {
+        failedIssueDetailIds.push(issueId);
+      }
     }
   }));
-  const parsedIssues: ParsedIssueMetadata[] = enrichedIssues.map((issue) =>
+  if (failedIssueDetailIds.length > 0) {
+    const errorMessage = `Failed to fetch issue detail for ${failedIssueDetailIds.length} issue(s); PR and recovery reconciliation held`;
+    await log(`[ORCHESTRATOR] Error: ${errorMessage}: ${failedIssueDetailIds.slice(0, 3).join(", ")}`);
+    return { exitCode: 1, signal: null, timedOut: false, errorMessage, summary: errorMessage };
+  }
+  // v3 children are owned by their issue-scoped bootstrap and Jules parent
+  // monitor. Generic PR/recovery/delegation reconciliation must not reassign them.
+  const parsedIssues: ParsedIssueMetadata[] = enrichedIssues.filter((issue) => !isStablePlanReviewChild(issue)).map((issue) =>
     extractIssueMetadata({
       ...issue,
       id: String(issue["id"] ?? ""),
@@ -988,7 +1025,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     if (!issue.assigneeAgentId || !["in_progress", "in_review"].includes(issue.status)) continue;
     activeAssignments.set(issue.assigneeAgentId, (activeAssignments.get(issue.assigneeAgentId) || 0) + 1);
   }
-  const laneAssignments = { julesAgentId, vibeAgentId, lunaReviewerAgentId, terraReviewerAgentId };
+   const laneAssignments = { julesAgentId, vibeAgentId, lunaReviewerAgentId, terraReviewerAgentId: strongReviewerAgentId ?? terraReviewerAgentId };
   agentHealthReport = evaluateAgentHealth(managedAgents.map((agent) => ({
     ...agent,
     lane: managedWorkerLane(agent.id, laneAssignments),
@@ -2433,7 +2470,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
     // Reviewer identity is the durable discriminator here: implementation
     // work is never assigned to either managed review agent, so this keeps
     // the review lane alive without admitting ordinary in-progress tasks.
-    const assignedReviewer = i.assigneeAgentId === lunaReviewerAgentId || i.assigneeAgentId === terraReviewerAgentId;
+    const assignedReviewer = i.assigneeAgentId === lunaReviewerAgentId || i.assigneeAgentId === strongReviewerAgentId || i.assigneeAgentId === terraReviewerAgentId;
     return i.status === "in_progress" && i.orchestratorManaged && assignedReviewer &&
       (stages.length === 0 || (stages.length === 2 &&
         stages.every((stage) => stage && typeof stage === "object" && (stage as Record<string, unknown>)["type"] === "review")));
@@ -2558,7 +2595,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
     if (shouldTakeOverNativePrReview({
       orchestratorManaged: reviewTask.orchestratorManaged,
       hasReadyPullRequest: true,
-      nativeReviewConfigured: Boolean(lunaReviewerAgentId && terraReviewerAgentId),
+      nativeReviewConfigured: Boolean(lunaReviewerAgentId && (strongReviewerAgentId || terraReviewerAgentId)),
       rawIssue: reviewTask.rawIssue,
     })) {
       const ownership = await pc.patchIssue(reviewTask.id, nativePrReviewCleanupPatch());
@@ -2641,7 +2678,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
       isCanonicalReviewCardKey(interaction.idempotencyKey),
     );
     let hasLiveNativeReviewRun = false;
-    for (const reviewerId of [lunaReviewerAgentId, terraReviewerAgentId].filter((id): id is string => Boolean(id))) {
+    for (const reviewerId of [lunaReviewerAgentId, strongReviewerAgentId, terraReviewerAgentId].filter((id): id is string => Boolean(id))) {
       const binding = findReviewCardBinding({
         issueId: reviewTask.id,
         reviewerAgentId: reviewerId,
@@ -2662,6 +2699,8 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
       reviewTask.id,
       reviewHeadSha,
       reviewTask.description || undefined,
+      strongReviewerAgentId ? "strong" : "terra",
+      strongReviewerAgentId,
     );
     if (hasLiveNativeReviewRun && !currentHeadReviewComplete) continue;
 
@@ -2718,7 +2757,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
         && typeof (executionState as Record<string, unknown>)["reviewInteractionId"] === "string"
         ? (executionState as Record<string, unknown>)["reviewInteractionId"] as string
         : null;
-      const reviewerIds = [lunaReviewerAgentId, terraReviewerAgentId, vibeReviewerAgentId, reviewerAgentId]
+      const reviewerIds = [lunaReviewerAgentId, strongReviewerAgentId, terraReviewerAgentId, vibeReviewerAgentId, reviewerAgentId]
         .filter((id): id is string => Boolean(id));
       const orphanPlan = planOrphanReviewRecovery({
         issueId: reviewTask.id,
@@ -2769,6 +2808,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
       reviewerAgentId,
       lunaReviewerAgentId,
       terraReviewerAgentId,
+      strongReviewerAgentId,
       workerAgentId: julesAgentId || vibeAgentId,
       executionState: (reviewTask.rawIssue["executionState"] as {
         status?: string;

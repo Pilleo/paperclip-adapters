@@ -14,7 +14,7 @@ import {
 import { evaluateSessionStartup, isInteractionWake, preferBranchBoundRecoveryHandle, recoverPrIdentityFromWorkProduct, restoreBranchBoundRemediationFromHandle, sessionMatchesConfig, shouldReadIssueSessionHandle, shouldReclaimBranchBoundRecovery } from "./session-lifecycle.js";
 import { isLiveJulesRemoteState } from "./jules-live-state.js";
 import { evaluateSessionWatchdog } from "./watchdog.js";
-import { MAX_ACTIVITY_PAGES, activityScanPageLimit, listAllActivities, mirrorActivities, mirrorNewActivities, reduceTerminalActivityScan, terminalEvidenceActivity } from "./activity-mirror.js";
+import { MAX_ACTIVITY_PAGES, activityScanPageLimit, listAllActivities, scanCompleteActivities, mirrorActivities, mirrorNewActivities, reduceTerminalActivityScan, terminalEvidenceActivity } from "./activity-mirror.js";
 import { reconcileProviderContinuation } from "./provider-continuation.js";
 import { persistSessionBestEffort } from "./session-initializer.js";
 import { evaluatePlanClarity, composePlanForReview, createCheapReviewer, createTerraCodexReviewer, defaultCheapReviewer } from "./plan-reviewer.js";
@@ -39,6 +39,7 @@ import {
   type GitHubCommandOptions,
 } from "./ci-status.js";
 import { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { createHash, randomUUID } from "node:crypto";
 import { AdapterConfig, validateConfig, requireJulesApiKey, resolveJulesBaseUrl, discoverLocalGitRepository, discoverLocalGitDefaultBranch } from "./config.js";
 import { isGhCliAuthenticated, createRemoteGitHubRepo } from "./git-remote-creator.js";
 import { JulesAdapterSessionV1, normalizeJulesState, sessionCodec, serializeSession } from "./session.js";
@@ -63,6 +64,8 @@ import { CtxContextSchema, HostContextSchema } from "./context-schemas.js";
 import { sanitizeError } from "./error-sanitizer.js";
 import { beginMutation, markMutationFailed, markMutationSucceeded } from "./mutation-checkpoint.js";
 import { deleteStoredSession, findStoredSessionByJulesSessionId, loadStoredSession, saveStoredSession } from "./session-store.js";
+import { observeProviderCreateIntent } from "./provider-create-reconciliation.js";
+import { decidePlanProviderAction } from "./plan-provider-decision.js";
 import {
   isAfterCheckpoint,
   laterCheckpoint,
@@ -81,6 +84,8 @@ import {
   resolveJulesAgentAdjudicationInteraction,
   createJulesPlanApprovalInteraction,
   createJulesPlanReviewInteraction,
+  enterNativePlanReviewStage,
+  observeJulesChildPlanReview,
   wakeJulesPlanReviewer,
   saveJulesPlanDocument,
   getPaperclipInteraction,
@@ -119,6 +124,7 @@ import { decideNativePlanReviewLifecycle } from "./native-plan-review-lifecycle.
 import { decideNativePlanReviewMigration } from "./native-review-provenance.js";
 import { runJulesLifecycle } from "./lifecycle-runner.js";
 import { reconcileNativePlanEffect } from "./native-plan-effect-reconciler.js";
+import { findApprovedPlanActivity } from "./provider-plan-approval-evidence.js";
 import { beginEffect, confirmEffect, type LifecycleEffectJournal } from "./lifecycle-effect-journal.js";
 
 function assertNever(value: never): never {
@@ -214,6 +220,8 @@ type NativePlanReviewRunEvidence = {
   readonly startedAt: string | null;
   readonly finishedAt: string | null;
   readonly error?: string;
+  readonly stopReason?: string | null;
+  readonly errorCode?: string | null;
 };
 
 function normalizeNativePlanReviewRuns(rawRuns: readonly unknown[]): NativePlanReviewRunEvidence[] {
@@ -247,6 +255,13 @@ function normalizeNativePlanReviewRuns(rawRuns: readonly unknown[]): NativePlanR
     const issueId = nonEmpty(context["issueId"]);
     if (!normalizedStatus || !id || !agentId || !issueId) return [];
     const error = nonEmpty(record["error"]);
+    const errorCode = nonEmpty(record["errorCode"]);
+    const resultJson = record["resultJson"] && typeof record["resultJson"] === "object" && !Array.isArray(record["resultJson"])
+      ? record["resultJson"] as Record<string, unknown>
+      : null;
+    const stopReason = resultJson && typeof resultJson["stopReason"] === "string" && resultJson["stopReason"].trim().length > 0
+      ? resultJson["stopReason"].trim()
+      : null;
     return [{
       id,
       status: normalizedStatus,
@@ -257,22 +272,66 @@ function normalizeNativePlanReviewRuns(rawRuns: readonly unknown[]): NativePlanR
       startedAt: nonEmpty(record["startedAt"]),
       finishedAt: nonEmpty(record["finishedAt"]),
       ...(error ? { error } : {}),
+      ...(stopReason ? { stopReason } : {}),
+      ...(errorCode ? { errorCode } : {}),
     }];
   });
 }
 
 async function readNativePlanReviewRuns(input: {
   readonly companyId: string;
+  readonly issueId: string;
   readonly reviewerAgentId: string;
   readonly authToken: string | undefined;
   readonly runId: string | undefined;
 }): Promise<NativePlanReviewRunEvidence[]> {
-  const runs = await getPaperclipJson<unknown[]>(
-    `/api/companies/${encodeURIComponent(input.companyId)}/heartbeat-runs?agentId=${encodeURIComponent(input.reviewerAgentId)}&limit=50`,
+  const summaries = await getPaperclipJson<unknown[]>(
+    `/api/companies/${encodeURIComponent(input.companyId)}/heartbeat-runs?agentId=${encodeURIComponent(input.reviewerAgentId)}&limit=1000`,
     input.authToken,
     input.runId,
   );
-  return normalizeNativePlanReviewRuns(runs);
+  if (!Array.isArray(summaries) || summaries.length >= 1000) {
+    // The host endpoint caps lists at 1000. At the limit, an older addressed
+    // run may be omitted, so absence is not authoritative dispatch evidence.
+    throw new Error(`Paperclip reviewer-run index is incomplete for ${input.reviewerAgentId}`);
+  }
+  // v2026.916.0 list projections omit contextSnapshot.interactionId; the
+  // card binding and terminal provenance live only on the run detail. Hydrate
+  // unbound candidates before reduction so an active addressed run is never
+  // mistaken for a missing dispatch.
+  const candidates = summaries.filter((raw) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return true;
+    const context = (raw as Record<string, unknown>)["contextSnapshot"];
+    if (!context || typeof context !== "object" || Array.isArray(context)) return true;
+    const issueId = (context as Record<string, unknown>)["issueId"];
+    return typeof issueId !== "string" || issueId === input.issueId;
+  });
+  const hydrated = await Promise.all(candidates.map(async (raw): Promise<unknown> => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+    const record = raw as Record<string, unknown>;
+    const context = record["contextSnapshot"] && typeof record["contextSnapshot"] === "object" &&
+      !Array.isArray(record["contextSnapshot"])
+      ? record["contextSnapshot"] as Record<string, unknown>
+      : {};
+    const bound = typeof context["interactionId"] === "string" && context["interactionId"].trim().length > 0;
+    const id = typeof record["id"] === "string" && record["id"].trim().length > 0 ? record["id"].trim() : null;
+    const agentId = typeof record["agentId"] === "string" ? record["agentId"].trim() : null;
+    if (bound || !id || agentId !== input.reviewerAgentId) return raw;
+    const detail = await getPaperclipJson<unknown>(
+      `/api/heartbeat-runs/${encodeURIComponent(id)}`,
+      input.authToken,
+      input.runId,
+    );
+    if (!detail || typeof detail !== "object" || Array.isArray(detail)) {
+      throw new Error(`Paperclip run detail for ${id} is not an object`);
+    }
+    const detailRecord = detail as Record<string, unknown>;
+    if (detailRecord["id"] !== id || detailRecord["agentId"] !== input.reviewerAgentId) {
+      throw new Error(`Paperclip run detail for ${id} does not match the listed run`);
+    }
+    return detail;
+  }));
+  return normalizeNativePlanReviewRuns(hydrated);
 }
 
 async function readNativePlanReviewSourceIssueId(input: {
@@ -304,9 +363,11 @@ function liveSessionPollDelayMs(
   session: JulesAdapterSessionV1,
   initialActivityCheck: boolean,
   normalDelayMs: number,
+  requirePlanApproval = false,
 ): number {
   if (initialActivityCheck) return JULES_INITIAL_ACTIVITY_CHECK_DELAY_MS;
-  return session.planReviewOutcome === "revision_requested"
+  return session.childPlanReview !== undefined || session.planReviewOutcome === "revision_requested" ||
+    (requirePlanApproval && session.phase === "RUNNING" && !session.planApprovedAt)
     ? JULES_CONTINUATION_DELAY_MS
     : normalDelayMs;
 }
@@ -478,12 +539,13 @@ function paperclipInteractionFailure(
 ): AdapterExecutionResult {
   console.error("[jules] paperclipInteractionFailure:", error);
   const status = error instanceof PaperclipClientError ? error.status : null;
-  const transient = status === null || status === 408 || status === 429 || status >= 500;
+  const childProtocol = session.childPlanReview !== undefined;
+  const transient = (status === null && (!childProtocol || error instanceof PaperclipClientError)) || status === 408 || status === 429 || (status !== null && status >= 500);
   return {
     exitCode: 1,
     signal: null,
     timedOut: false,
-    errorCode: "paperclip_completion_interaction_failed",
+    errorCode: childProtocol ? "native_child_plan_review_failed" : "paperclip_completion_interaction_failed",
     errorFamily: transient ? "transient_upstream" : null,
     errorMessage: sanitizeError(error),
     retryNotBefore: transient
@@ -499,11 +561,13 @@ function createPendingResult(
   session: JulesAdapterSessionV1,
   initialActivityCheck = false,
   reattachDelayMs?: number,
+  requirePlanApproval = false,
 ): AdapterExecutionResult {
     const delayMs = liveSessionPollDelayMs(
       session,
       initialActivityCheck,
       reattachDelayMs ?? JULES_CONTINUATION_DELAY_MS,
+      requirePlanApproval,
     );
     return {
       exitCode: 0,
@@ -803,20 +867,30 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
   const apiKey = requireJulesApiKey(ctx.config);
   const runGitHub = githubCommandOptions(ctx.config);
-  const client = new JulesClient(apiKey, telemetry, resolveJulesBaseUrl(ctx.agent.adapterConfig as Record<string, unknown>));
+  const client = new JulesClient(apiKey, telemetry, resolveJulesBaseUrl(ctx.agent.adapterConfig as Record<string, unknown>), {
+    issueId: taskId,
+    runId: ctx.runId,
+    onEvidence: async (evidence) => {
+      // Only the client-generated allowlist is persisted. Never log a provider
+      // request body, API key, or response payload to Paperclip activity.
+      if (ctx.onLog) await ctx.onLog("stdout", `${JSON.stringify({ event: "provider_request_evidence", ...evidence })}\n`);
+    },
+  });
   const scheduleLiveSessionMonitor = async (
     current: JulesAdapterSessionV1,
     initialActivityCheck = false,
   ): Promise<{ readonly ok: true } | { readonly ok: false; readonly error: unknown }> => {
     // A resolved visible strong-review card also wakes the Jules assignee.
-    // Human cards have their own wake continuation. Native reviewer forms are
-    // also monitored while healthy; a denied monitor mutation is handled as a
-    // narrow authorization fallback at the yield boundary below.
+    // Human cards have their own wake continuation. During an owned native
+    // plan-review stage the reviewer owns the issue; a Jules monitor mutation
+    // would replace that stage and is not authorized for the previous owner.
     const humanWait = current.pendingInteraction?.type === "user_feedback" ||
       current.pendingInteraction?.type === "plan_approval" ||
       current.pendingInteraction?.type === "completion_confirmation";
-    if (humanWait || !current.julesSessionId) return { ok: true };
-    const delayMs = liveSessionPollDelayMs(current, initialActivityCheck, reattachDelayMs);
+    const nativePlanWait = current.pendingInteraction?.type === "plan_native_review" &&
+      current.pendingInteraction.protocolVersion === 2;
+    if (humanWait || nativePlanWait || !current.julesSessionId) return { ok: true };
+    const delayMs = liveSessionPollDelayMs(current, initialActivityCheck, reattachDelayMs, config.requirePlanApproval);
     const timeoutAt = new Date(
       new Date(current.createdAt).getTime() + config.sessionDeadlineMinutes * 60_000,
     ).toISOString();
@@ -895,43 +969,93 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let earlyPrUrl = session?.currentPrUrl;
   let earlyPrDetails: Awaited<ReturnType<typeof getPullRequestDetails>> | undefined;
   if (!earlyPrUrl && !process.env["VITEST"]) {
-    try {
-      const existing = await listWorkProducts(taskId, ctx.authToken, ctx.runId).catch(() => []);
-      const match = existing.find((w: any) => Boolean(w.url && (w.url.includes("/pull/") || w.type === "pull_request")));
-      if (match?.url) earlyPrUrl = match.url as any;
-    } catch {}
+    const existing = await listWorkProducts(taskId, ctx.authToken, ctx.runId);
+    const pullRequests = existing.filter((product) => product.type === "pull_request" ||
+      /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+\/?$/i.test(product.url ?? ""));
+    const primary = pullRequests.filter((product) => product.isPrimary);
+    if (primary.length > 1 || (!primary.length && pullRequests.length > 1)) {
+      throw new Error("Ambiguous PR work products for Jules issue");
+    }
+    earlyPrUrl = (primary[0] ?? pullRequests[0])?.url as typeof earlyPrUrl;
   }
 
   if (earlyPrUrl) {
     try {
-      const prDetails = await getPullRequestDetails(earlyPrUrl, runGitHub);
-      earlyPrDetails = prDetails;
-      if (prDetails.merged) {
-        if (ctx.onLog) {
-          await ctx.onLog("stdout", `[jules] Pull request ${earlyPrUrl} is already merged on GitHub. Completing task as done.\n`);
-        }
-        await moveIssueToDone(taskId, session?.julesSessionId || "completed", ctx.authToken, ctx.runId);
-        await deleteStoredSession(taskId, config.source, config.baseBranch).catch(() => {});
-        return {
-          exitCode: 0,
-          signal: null,
-          timedOut: false,
-          sessionParams: null,
-          sessionDisplayId: session?.julesSessionId || null,
-          summary: `Pull request ${earlyPrUrl} is merged on GitHub. Issue marked done.`,
-          resultJson: { provider: "jules", prUrl: earlyPrUrl, issueStatus: "done", merged: true },
-          clearSession: true
-        };
-      }
+      earlyPrDetails = await getPullRequestDetails(earlyPrUrl, runGitHub);
     } catch (e) {
       if (ctx.onLog) await ctx.onLog("stderr", `[jules] Early merged PR check error: ${e}\n`);
+    }
+    if (earlyPrDetails?.merged) {
+      const prDetails = earlyPrDetails;
+      if (!prDetails.headSha || !/^[0-9a-f]{40}$/i.test(prDetails.headSha)) {
+        throw new Error("Merged Jules PR lacks an immutable verified head");
+      }
+      const existing = await listWorkProducts(taskId, ctx.authToken, ctx.runId);
+      const primary = existing.filter((product) => product.isPrimary && product.url?.includes("/pull/"));
+      if (primary.length > 1 || (primary.length === 1 &&
+          primary[0]?.url?.replace(/\/$/, "").toLowerCase() !== earlyPrUrl.replace(/\/$/, "").toLowerCase())) {
+        throw new Error("Merged Jules PR conflicts with the primary Paperclip work product");
+      }
+      const matching = existing.find((product) => product.url?.replace(/\/$/, "").toLowerCase() === earlyPrUrl.replace(/\/$/, "").toLowerCase());
+      if (matching?.metadata?.["headSha"] && matching.metadata["headSha"] !== prDetails.headSha) {
+        throw new Error("Merged Jules PR head differs from Paperclip's registered head");
+      }
+      await registerPullRequestWorkProduct(taskId, earlyPrUrl, ctx.authToken, ctx.runId, {
+        merged: true, headSha: prDetails.headSha, changedFiles: await listPullRequestChangedFiles(earlyPrUrl, runGitHub),
+        ...(prDetails.headRefName ? { headRefName: prDetails.headRefName } : {}),
+        ...(prDetails.mergeableStatus ? { mergeableStatus: prDetails.mergeableStatus } : {}),
+        ciStatus: prDetails.ciStatus,
+      });
+      if (ctx.onLog) await ctx.onLog("stdout", `[jules] Pull request ${earlyPrUrl} is already merged on GitHub. Completing task as done.\n`);
+      await moveIssueToDone(taskId, session?.julesSessionId || "completed", ctx.authToken, ctx.runId);
+      await deleteStoredSession(taskId, config.source, config.baseBranch);
+      return {
+        exitCode: 0, signal: null, timedOut: false, sessionParams: null,
+        sessionDisplayId: session?.julesSessionId || null,
+        summary: `Pull request ${earlyPrUrl} is merged on GitHub. Issue marked done.`,
+        resultJson: { provider: "jules", prUrl: earlyPrUrl, issueStatus: "done", merged: true }, clearSession: true,
+      };
     }
   }
 
   let storedRecoverySession: JulesAdapterSessionV1 | null = null;
   try {
     storedRecoverySession = await loadStoredSession(taskId, config.source, config.baseBranch);
-  } catch {}
+  } catch {
+    return { exitCode: 1, signal: null, timedOut: false, clearSession: false,
+      errorCode: "jules_session_store_unavailable", errorFamily: null,
+      errorMessage: "Durable Jules session recovery record could not be read; refusing provider create.",
+      sessionParams: session ? serializeSession(session) : null };
+  }
+
+  // A create POST without a durable response is not proof that Jules did not
+  // create a session. Observe the complete bounded provider index before
+  // accepting a new create; ambiguous/absent results require reconciliation.
+  const preparedCreate = [session, storedRecoverySession].find((candidate) =>
+    candidate?.phase === "STARTING" && candidate.providerCreateIntent && !candidate.julesSessionId);
+  let recoveredPreparedCreate = false;
+  if (preparedCreate?.providerCreateIntent) {
+    let observed: Awaited<ReturnType<typeof observeProviderCreateIntent>>;
+    try { observed = await observeProviderCreateIntent(client, preparedCreate.providerCreateIntent); }
+    catch { observed = { kind: "hold", reason: "incomplete_history" }; }
+    if (observed.kind !== "reattach" || !observed.session?.state) {
+      return { exitCode: 1, signal: null, timedOut: false, clearSession: false,
+        errorCode: "jules_create_outcome_unverified", errorFamily: null,
+        errorMessage: `Provider create outcome requires reconciliation (${observed.kind === "hold" ? observed.reason : "missing_session_state"}).`,
+        sessionParams: serializeSession(preparedCreate) };
+    }
+    const recovered: JulesAdapterSessionV1 = {
+      ...preparedCreate, phase: "RUNNING", sessionId: observed.sessionId,
+      julesSessionId: asJulesSessionId(observed.sessionId),
+      julesState: normalizeJulesState(observed.session.state),
+      ...(observed.session.url ? { julesSessionUrl: observed.session.url } : {}),
+      providerCreateIntent: undefined,
+    };
+    await saveStoredSession(recovered);
+    session = recovered;
+    storedRecoverySession = recovered;
+    recoveredPreparedCreate = true;
+  }
 
   let durableIssueHandle = null;
   try {
@@ -965,6 +1089,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
 
   if (startupDecision.forceFreshSession) {
+    if (recoveredPreparedCreate && session) {
+      return { exitCode: 1, signal: null, timedOut: false, clearSession: false,
+        errorCode: "jules_create_outcome_unverified", errorFamily: null,
+        errorMessage: "Fresh-session wake conflicts with a newly reconciled provider create; preserve the exact session.",
+        sessionParams: serializeSession(session) };
+    }
     session = null;
     await deleteStoredSession(taskId, config.source, config.baseBranch).catch(() => {});
   } else {
@@ -1805,8 +1935,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     }
 
-    const createOnSource = async (source: string) =>
-      client.createSession({
+    const createOnSource = async (source: string) => {
+      const requestId = randomUUID();
+      const startedAt = new Date().toISOString();
+      session = {
+        version: 1, paperclipIssueId: taskId, promptHash: pHash,
+        promptHashVersion: PROMPT_IDENTITY_HASH_VERSION,
+        repository: config.repository, source, baseBranch: config.baseBranch,
+        phase: "STARTING", attempt, failedSessions, createdAt: startedAt,
+        providerCreateIntent: { requestId, runId: ctx.runId,
+          promptSha256: createHash("sha256").update(prompt).digest("hex"), source,
+          baseBranch: remediation?.headRefName ?? config.baseBranch, startedAt },
+      };
+      await saveStoredSession(session);
+      return client.createSession({
           prompt,
           title: taskTitle,
           sourceContext: {
@@ -1820,7 +1962,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           },
           requirePlanApproval: config.requirePlanApproval,
           automationMode: config.automationMode
-      });
+      }, requestId);
+    };
 
     try {
       let julesSession;
@@ -1870,6 +2013,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       await persistSessionBestEffort(session, ctx.onLog);
 
     } catch (error) {
+      if (session?.phase === "STARTING" && session.providerCreateIntent) {
+        return { exitCode: 1, signal: null, timedOut: false, clearSession: false,
+          errorCode: "jules_create_outcome_unverified", errorFamily: null,
+          errorMessage: "Provider create may have succeeded; inspect the exact provider request before another attempt.",
+          sessionParams: serializeSession(session) };
+      }
       const classification = classifyFailure(error);
       const willRetry = shouldRetry(classification, attempt, config);
 
@@ -1925,10 +2074,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     outcome?: { summary?: string; resultJson?: Record<string, unknown> },
   ): Promise<AdapterExecutionResult> => {
     await persistSessionBestEffort(current, ctx.onLog, { authToken: ctx.authToken, runId: ctx.runId });
-    // The Jules parent and reviewer child own independent continuations. The
-    // addressed child card wakes only its reviewer; this parent monitor must
-    // remain durable so Jules can observe the verdict or newer provider
-    // activity without Paperclip classifying the parent as stranded.
+    // The native verdict card resumes Jules after the reviewer returns issue
+    // ownership. Keep the provider session checkpointed before yielding.
     const monitor = await scheduleLiveSessionMonitor(current, initialActivityCheck);
     if (!monitor.ok) {
       const nativeQuestionWait = current.pendingInteraction?.type === "agent_adjudication" &&
@@ -1940,7 +2087,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // successful instead of converting a valid native continuation into a
       // failed adapter run.
       if (nativeQuestionWait && monitor.error instanceof PaperclipClientError && monitor.error.status === 403) {
-        const pending = createPendingResult(current, initialActivityCheck, reattachDelayMs);
+        const pending = createPendingResult(current, initialActivityCheck, reattachDelayMs, config.requirePlanApproval);
         return {
           ...pending,
           summary: `Jules session ${current.julesSessionId} is awaiting its typed strong-review decision.`,
@@ -1970,15 +2117,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         },
       };
     }
-    const pending = createPendingResult(current, initialActivityCheck, reattachDelayMs);
+    const pending = createPendingResult(current, initialActivityCheck, reattachDelayMs, config.requirePlanApproval);
     return {
       ...pending,
       ...(outcome?.summary ? { summary: outcome.summary } : {}),
       resultJson: {
         ...(pending.resultJson as Record<string, unknown>),
-        ...(current.pendingInteraction?.type === "plan_native_review"
-          ? { continuation: "jules_session_monitor" }
-          : {}),
+         ...(current.pendingInteraction?.type === "plan_native_review" &&
+           current.pendingInteraction.protocolVersion === 2
+           ? { continuation: "native_plan_review_verdict" }
+           : {}),
         ...(outcome?.resultJson ?? {}),
       },
     };
@@ -2435,7 +2583,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         session.prRemediation?.recoverySessionId === session.julesSessionId &&
         session.planReviewOutcome !== "approved" &&
         activities.some((activity) => Boolean(activity.planGenerated));
-      if (prUrl && terminalProviderState && !preflightQuestion && !scannedPostCompletionQuestion &&
+      if (prUrl && terminalProviderState && !session.childPlanReview && !preflightQuestion && !scannedPostCompletionQuestion &&
           !branchBoundRecoveryNeedsPlanGate && !terminalPlanReviewNeedsPrecedence) {
           // A pending no-PR card is a provisional conclusion about this exact
           // provider session. A later typed PR handoff disproves it. Clear the
@@ -2457,6 +2605,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           terminalPrDetails = prDetails;
           const changedFiles = await listPullRequestChangedFiles(prUrl, runGitHub).catch(() => [] as string[]);
           const prEvidence = {
+            merged: prDetails.merged,
             ...(prDetails.headSha ? { headSha: prDetails.headSha } : {}),
             ...(prDetails.headRefName ? { headRefName: prDetails.headRefName } : {}),
             ...(prDetails.mergeableStatus ? { mergeableStatus: prDetails.mergeableStatus } : {}),
@@ -2465,6 +2614,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           } as const;
           const registrationRequired = session.currentPrUrl !== prUrl ||
             !session.prRegisteredOnBoard ||
+            prDetails.merged ||
             (prDetails.headSha !== undefined && session.currentPrHeadSha !== prDetails.headSha);
           session.currentPrUrl = prUrl;
           if (registrationRequired) {
@@ -3168,7 +3318,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         await saveStoredSession(nativePlanSession);
         await client.sendMessage(nativePlanSession.julesSessionId!, {
           prompt: planRevisionRequestPrompt(request),
-        });
+        }, { kind: "request_revision", effectId: `revise:${nativePlanSession.julesSessionId}:${planActivityId}:${interactionId}`,
+          planActivityId });
         nativePlanSession.pendingPlanRevisionRequest = { ...request, state: "delivered" };
         nativePlanSession.pendingInteraction = undefined;
         nativePlanSession.supersededPlanActivityId = planActivityId;
@@ -3217,6 +3368,154 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             default:
               return assertNever(delivery);
           }
+        }
+      }
+
+      if (session.childPlanReview) {
+        const checkpoint = session.childPlanReview;
+        const identity = checkpoint.identity;
+        if (identity.parentIssueId !== taskId || identity.sessionId !== session.julesSessionId || identity.julesAgentId !== ctx.agent.id) {
+          throw new Error("Child plan-review checkpoint belongs to another parent or provider session");
+        }
+        const fullHistory = await scanCompleteActivities(client, session.julesSessionId!);
+        const currentPlan = latestPlan(fullHistory.activities);
+        if (!fullHistory.complete) {
+          return { exitCode: 1, signal: null, timedOut: false, clearSession: false,
+            errorCode: "native_child_plan_provider_state_conflict", errorFamily: null,
+            errorMessage: "Jules plan activity history was incomplete; refusing a native review decision.",
+            sessionParams: serializeSession(session) };
+        }
+        if (currentPlan && currentPlan.id !== identity.activityId) {
+          session.childPlanReview = undefined;
+          await saveStoredSession(session);
+          return await yieldHeartbeat(session);
+        }
+        const approvalEffect = session.lifecycleEffectJournal?.effects.find((effect) =>
+          effect.effectId === `approve:${identity.sessionId}:${identity.revisionId}`);
+        const approvedPlanActivityId = approvalEffect?.attempt.kind === "started"
+          ? findApprovedPlanActivity({ activities: fullHistory.activities, planActivityId: identity.activityId,
+            startedAt: approvalEffect.attempt.startedAt, historyComplete: fullHistory.complete })
+          : null;
+        const providerDecision = decidePlanProviderAction({
+          sessionId: session.julesSessionId!, checkpointSessionId: identity.sessionId,
+          planActivityId: identity.activityId, planRevisionId: identity.revisionId,
+          latestActivityId: currentPlan?.id ?? null,
+          providerState: state, historyComplete: fullHistory.complete,
+          approvalActivityId: approvedPlanActivityId,
+          outputCount: julesSession.rawOutputs?.length ?? 0, verdict: null,
+          effect: approvalEffect ? { kind: approvalEffect.attempt.kind, effectId: approvalEffect.effectId } : null,
+        });
+        switch (providerDecision.kind) {
+          case "hold":
+            return { exitCode: 1, signal: null, timedOut: false, clearSession: false,
+              errorCode: "native_child_plan_provider_state_conflict", errorFamily: null,
+              errorMessage: `Cannot continue the typed plan review (${providerDecision.reason}); same-session reconciliation is required.`,
+              sessionParams: serializeSession(session) };
+          case "wait_for_verdict":
+          case "approve_once":
+          case "reconcile_started_effect":
+          case "request_revision_once": break; // Card observation establishes the actual verdict.
+          case "reconcile_recorded_work":
+            throw new Error("Cannot reconcile provider work before reading the addressed typed verdict");
+          default: return assertNever(providerDecision);
+        }
+        const observed = await observeJulesChildPlanReview(identity, checkpoint.childId, ctx.authToken, ctx.runId);
+        checkpoint.childId = observed.childId;
+        await saveStoredSession(session);
+        switch (observed.kind) {
+          case "waiting": return await yieldHeartbeat(session);
+          case "answered": {
+            const verdictDecision = decidePlanProviderAction({
+              sessionId: session.julesSessionId!, checkpointSessionId: identity.sessionId,
+              planActivityId: identity.activityId, planRevisionId: identity.revisionId,
+              latestActivityId: currentPlan?.id ?? null,
+              providerState: state, historyComplete: fullHistory.complete,
+              approvalActivityId: approvedPlanActivityId,
+              outputCount: julesSession.rawOutputs?.length ?? 0, verdict: observed.verdict,
+              effect: approvalEffect ? { kind: approvalEffect.attempt.kind, effectId: approvalEffect.effectId } : null,
+            });
+            if (verdictDecision.kind === "reconcile_recorded_work") {
+              if (identity.stage !== "terra" || observed.verdict !== "approve" ||
+                  approvalEffect?.attempt.kind !== "confirmed" || !prUrl) {
+                throw new Error("Cannot reconcile provider PR without an exact confirmed strong-review approval");
+              }
+              session.childPlanReview = undefined;
+              session.planApprovedAt ??= new Date().toISOString();
+              session.planApprovedActivityId = identity.activityId;
+              session.planReviewOutcome = "approved";
+              await saveStoredSession(session);
+              return await yieldHeartbeat(session);
+            }
+            if (verdictDecision.kind === "hold") {
+              return { exitCode: 1, signal: null, timedOut: false, clearSession: false,
+                errorCode: "native_child_plan_provider_state_conflict", errorFamily: null,
+                errorMessage: `Cannot apply the typed ${identity.stage} verdict to Jules state ${state} (${verdictDecision.reason}).`,
+                sessionParams: serializeSession(session) };
+            }
+            if (observed.verdict === "reject") {
+              if (verdictDecision.kind !== "request_revision_once") return await yieldHeartbeat(session);
+              session.childPlanReview = undefined;
+              return await requestFreshPlanRevision(observed.cardId, identity.activityId, observed.reason);
+            }
+            if (verdictDecision.kind !== "approve_once" && verdictDecision.kind !== "reconcile_started_effect") {
+              return await yieldHeartbeat(session);
+            }
+            switch (identity.stage) {
+              case "luna": {
+                if (!config.planStrongReviewerAgentId) throw new Error("Terra reviewer is required after the Luna child verdict");
+                session.childPlanReview = { identity: { ...identity, stage: "terra", reviewerAgentId: config.planStrongReviewerAgentId } };
+                await saveStoredSession(session);
+                const next = await observeJulesChildPlanReview(session.childPlanReview.identity, undefined, ctx.authToken, ctx.runId);
+                session.childPlanReview.childId = next.childId;
+                await saveStoredSession(session);
+                return await yieldHeartbeat(session);
+              }
+              case "terra": {
+                const effectId = `approve:${identity.sessionId}:${identity.revisionId}`;
+                const entry = session.lifecycleEffectJournal?.effects.find((effect) => effect.effectId === effectId);
+                 if (state !== "AWAITING_PLAN_APPROVAL" &&
+                     !(state === "COMPLETED" && (julesSession.rawOutputs?.length ?? 0) === 0 &&
+                       (!entry || entry.attempt.kind === "started" || entry.attempt.kind === "confirmed")) &&
+                     !(state === "COMPLETED" && approvedPlanActivityId && entry?.attempt.kind === "started" && prUrl) &&
+                     !(state === "IN_PROGRESS" && entry)) {
+                  return { exitCode: 1, signal: null, timedOut: false, clearSession: false,
+                    errorCode: "native_child_plan_provider_state_conflict", errorFamily: null,
+                    errorMessage: `Cannot approve reviewed plan while Jules reports ${state}.`, sessionParams: serializeSession(session) };
+                }
+                const lifecycle = await runJulesLifecycle({
+                  state: {
+                     provider: state === "COMPLETED" && prUrl ? { kind: "completed", sessionId: identity.sessionId, pullRequestUrl: prUrl }
+                       : state === "IN_PROGRESS" ? { kind: "in_progress", sessionId: identity.sessionId }
+                       : { kind: "awaiting_plan", sessionId: identity.sessionId, revisionId: identity.revisionId },
+                    review: { kind: "resolved", cardId: observed.cardId, revisionId: identity.revisionId, reviewer: "terra", verdict: "approve", runId: observed.reviewerRunId },
+                    effect: projectEffectAttempt(effectId, entry), monitor: { kind: "scheduled", monitorId: identity.sessionId },
+                  },
+                  event: { kind: entry?.attempt.kind === "started" ? "run_interrupted" : "heartbeat" },
+                  journal: session.lifecycleEffectJournal ?? { version: 1, effects: [] }, now: new Date().toISOString(),
+                  dependencies: {
+                    persistJournal: async (journal) => { nativePlanSession.lifecycleEffectJournal = journal; await saveStoredSession(nativePlanSession); },
+                    approvePlan: async () => { await client.approvePlan(asJulesSessionId(identity.sessionId),
+                      { effectId, planActivityId: identity.activityId }); return { receipt: `approved:${identity.revisionId}` }; },
+                    reconcileNativePlanEffect: async ({ effect }) => reconcileNativePlanEffect(effect, {
+                       approval: (state === "IN_PROGRESS" || (state === "COMPLETED" && approvedPlanActivityId))
+                         ? { kind: "same_session_progressed", state } : { kind: "same_plan_pending" },
+                    }),
+                  },
+                });
+                const confirmed = lifecycle.journal.effects.find((effect) => effect.effectId === effectId)?.attempt.kind === "confirmed";
+                if (confirmed) {
+                  session.childPlanReview = undefined;
+                  session.planApprovedAt = new Date().toISOString();
+                  session.planApprovedActivityId = identity.activityId;
+                  session.planReviewOutcome = "approved";
+                  await saveStoredSession(session);
+                }
+                return await yieldHeartbeat(session);
+              }
+              default: return assertNever(identity.stage);
+            }
+          }
+          default: return assertNever(observed);
         }
       }
 
@@ -3323,6 +3622,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               ctx.agent.companyId
                 ? readNativePlanReviewRuns({
                   companyId: ctx.agent.companyId,
+                  issueId: reviewIssueId,
                   reviewerAgentId: nativePlanReview.reviewerAgentId,
                   authToken: ctx.authToken,
                   runId: ctx.runId,
@@ -3534,20 +3834,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           parsedPlanInteraction.kind === "legacy" && parsedPlanInteraction.state !== "pending";
         if (hasUnresolvedProviderQuestion && !hasAnsweredPlanVerdict) return await yieldHeartbeat(session);
         if (interaction.status === "pending") {
-          if (nativePlanReview.protocolVersion === 2 && nativePlanReview.reviewerChildIssueId) {
+          if (nativePlanReview.protocolVersion === 2) {
+            // Parent-owned v2 cards (reviewerChildIssueId undefined) are the
+            // current protocol. Child-owned cards retain their child issue as
+            // the canonical scope. Either way the same-card recovery applies.
+            const canonicalReviewIssueId = nativePlanReview.reviewerChildIssueId ?? reviewIssueId;
             let lifecycle;
+            let reviewerRuns: NativePlanReviewRunEvidence[] = [];
             try {
-              const [reviewerChild, reviewerRuns] = await Promise.all([
-                getPaperclipIssue(nativePlanReview.reviewerChildIssueId, ctx.authToken, ctx.runId),
+              const [reviewerChild, listedReviewerRuns] = await Promise.all([
+                getPaperclipIssue(canonicalReviewIssueId, ctx.authToken, ctx.runId),
                 ctx.agent.companyId
                   ? readNativePlanReviewRuns({
                     companyId: ctx.agent.companyId,
+                    issueId: canonicalReviewIssueId,
                     reviewerAgentId: nativePlanReview.reviewerAgentId,
                     authToken: ctx.authToken,
                     runId: ctx.runId,
                   })
                   : Promise.resolve([]),
               ]);
+              reviewerRuns = listedReviewerRuns;
               const canonicalCards = interactions.filter((candidate) =>
                 candidate.kind === "request_item_verdicts" &&
                 candidate.status === "pending" &&
@@ -3558,7 +3865,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               }
               lifecycle = decideNativePlanReviewLifecycle({
                 identity: {
-                  childIssueId: nativePlanReview.reviewerChildIssueId,
+                  childIssueId: canonicalReviewIssueId,
                   interactionId: interaction.id,
                   reviewerAgentId: nativePlanReview.reviewerAgentId,
                   immutableKey: interaction.idempotencyKey,
@@ -3600,17 +3907,138 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               case "await_verdict":
                 return await yieldHeartbeat(session);
               case "recover_dispatch": {
+                // Write fence: the decision above used evidence read earlier
+                // in this heartbeat. Re-read the exact card, canonical set,
+                // issue, and runs immediately before any journal or wake
+                // write so an answered card, an intervening addressed run, or
+                // a duplicate card can never receive a stale or duplicate
+                // wake.
+                let freshLifecycle;
+                try {
+                  const [freshInteractions, freshRuns, freshChild] = await Promise.all([
+                    listPaperclipInteractions(reviewIssueId, ctx.authToken, ctx.runId),
+                    ctx.agent.companyId
+                      ? readNativePlanReviewRuns({
+                        companyId: ctx.agent.companyId,
+                        issueId: canonicalReviewIssueId,
+                        reviewerAgentId: nativePlanReview.reviewerAgentId,
+                        authToken: ctx.authToken,
+                        runId: ctx.runId,
+                      })
+                      : Promise.resolve([]),
+                    getPaperclipIssue(canonicalReviewIssueId, ctx.authToken, ctx.runId),
+                  ]);
+                  const freshCanonicalCards = freshInteractions.filter((candidate) =>
+                    candidate.kind === "request_item_verdicts" &&
+                    candidate.status === "pending" &&
+                    candidate.addresseeAgentId === nativePlanReview.reviewerAgentId,
+                  );
+                  const freshInteraction = freshInteractions.find((candidate) => candidate.id === interaction.id) ?? null;
+                  if (!interaction.idempotencyKey) {
+                    throw new Error(`Native plan-review card ${interaction.id} has no immutable idempotency key`);
+                  }
+                  freshLifecycle = decideNativePlanReviewLifecycle({
+                    identity: {
+                      childIssueId: canonicalReviewIssueId,
+                      interactionId: interaction.id,
+                      reviewerAgentId: nativePlanReview.reviewerAgentId,
+                      immutableKey: interaction.idempotencyKey,
+                    },
+                    childStatus: freshChild.status,
+                    card: freshCanonicalCards.length > 1
+                      ? { duplicate: freshCanonicalCards }
+                      : freshInteraction,
+                    runs: freshRuns,
+                    nowMs: Date.now(),
+                    graceMs: 60_000,
+                    maxRecoveryAttempts: 1,
+                  });
+                } catch (error) {
+                  await ctx.onLog?.(
+                    "stderr",
+                    `[jules] Native plan-review fence evidence unavailable for card ${interaction.id}: ${sanitizeError(error)}\n`,
+                  );
+                  const authorizationFailure = error instanceof PaperclipClientError &&
+                    (error.status === 401 || error.status === 403);
+                  return {
+                    exitCode: 1, signal: null, timedOut: false, clearSession: false,
+                    errorCode: authorizationFailure
+                      ? "paperclip_plan_review_evidence_unauthorized"
+                      : "paperclip_plan_review_evidence_unavailable",
+                    errorFamily: authorizationFailure ? null : "transient_upstream",
+                    errorMessage: sanitizeError(error),
+                    sessionParams: serializeSession(session),
+                    ...(!authorizationFailure
+                      ? { retryNotBefore: new Date(Date.now() + reattachDelayMs).toISOString() }
+                      : {}),
+                  };
+                }
+                if (freshLifecycle.action !== "recover_dispatch" ||
+                    freshLifecycle.interactionId !== lifecycle.interactionId ||
+                    freshLifecycle.immutableKey !== lifecycle.immutableKey) {
+                  if (freshLifecycle.action === "escalate_protocol_failure") {
+                    await moveIssueToBlocked(taskId, ctx.authToken, ctx.runId).catch(() => undefined);
+                    return {
+                      exitCode: 1, signal: null, timedOut: false, clearSession: false,
+                      errorCode: "native_plan_review_protocol_failure",
+                      errorFamily: null,
+                      errorMessage: `Native plan-review protocol failure for card ${interaction.id}: ${freshLifecycle.reason}.`,
+                      sessionParams: serializeSession(session),
+                    };
+                  }
+                  // Fresh state owns the next heartbeat: observe or consume
+                  // it without any adapter write from this stale decision.
+                  return await yieldHeartbeat(session);
+                }
                 // Card creation can persist while Paperclip loses its
                 // fire-and-forget interaction wake. Journal the same-card
                 // public wake before issuing it so a restart reuses the exact
                 // idempotency key instead of creating another review card.
-                const effectId = `recover-plan-dispatch:${reviewIssueId}:${lifecycle.interactionId}:${lifecycle.reviewerAgentId}`;
-                const existingEffect = session.lifecycleEffectJournal?.effects.find((entry) => entry.effectId === effectId);
-                if (existingEffect?.attempt.kind === "confirmed") return await yieldHeartbeat(session);
+                const baseEffectId = `recover-plan-dispatch:${reviewIssueId}:${lifecycle.interactionId}:${lifecycle.reviewerAgentId}`;
+                const retryEffectId = `${baseEffectId}:attempt:2`;
+                const journalEffects = session.lifecycleEffectJournal?.effects ?? [];
+                const baseEntry = journalEffects.find((entry) => entry.effectId === baseEffectId);
+                const retryEntry = journalEffects.find((entry) => entry.effectId === retryEffectId);
+                if (retryEntry?.attempt.kind === "confirmed") {
+                  // The fresh recover_dispatch decision above already proves
+                  // the bounded re-wake produced no lasting bound run. A run
+                  // ID is a queueing receipt, never a verdict; fail closed
+                  // with a typed error instead of yielding forever.
+                  await moveIssueToBlocked(taskId, ctx.authToken, ctx.runId).catch(() => undefined);
+                  return {
+                    exitCode: 1, signal: null, timedOut: false, clearSession: false,
+                    errorCode: "native_plan_review_protocol_failure",
+                    errorFamily: null,
+                    errorMessage: `Native plan-review recovery for card ${interaction.id} exhausted its bounded re-wake budget.`,
+                    sessionParams: serializeSession(session),
+                  };
+                }
+                let targetEffectId = baseEffectId;
+                if (baseEntry?.attempt.kind === "confirmed") {
+                  const receipt = baseEntry.attempt.receipt;
+                  const receiptRun = reviewerRuns.find((run) => run.id === receipt);
+                  if (receiptRun && (receiptRun.status === "queued" || receiptRun.status === "running")) {
+                    // A live receipt run that the fresh decision cannot bind
+                    // to this card is contradictory evidence, not a missing
+                    // dispatch: never issue another wake on top of it.
+                    await moveIssueToBlocked(taskId, ctx.authToken, ctx.runId).catch(() => undefined);
+                    return {
+                      exitCode: 1, signal: null, timedOut: false, clearSession: false,
+                      errorCode: "native_plan_review_protocol_failure",
+                      errorFamily: null,
+                      errorMessage: `Native plan-review recovery for card ${interaction.id} has a live unbound receipt run ${receiptRun.id}.`,
+                      sessionParams: serializeSession(session),
+                    };
+                  }
+                  // The previous receipt died pre-start or vanished from the
+                  // host. Allow exactly one bounded idempotent re-wake.
+                  targetEffectId = retryEffectId;
+                }
+                const existingEffect = journalEffects.find((entry) => entry.effectId === targetEffectId);
                 const startedJournal: LifecycleEffectJournal = existingEffect
                   ? session.lifecycleEffectJournal!
                   : beginEffect(session.lifecycleEffectJournal ?? { version: 1, effects: [] }, {
-                    effectId,
+                    effectId: targetEffectId,
                     kind: "recover_plan_dispatch",
                     startedAt: new Date().toISOString(),
                   });
@@ -3618,15 +4046,36 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                   session.lifecycleEffectJournal = startedJournal;
                   await persistSessionBestEffort(session, ctx.onLog);
                 }
-                const wake = await wakeJulesPlanReviewer({
-                  reviewerAgentId: lifecycle.reviewerAgentId,
-                  childIssueId: nativePlanReview.reviewerChildIssueId,
-                  interactionId: lifecycle.interactionId,
-                  idempotencyKey: `native-plan-review-dispatch-recovery:v1:${reviewIssueId}:${lifecycle.interactionId}:${lifecycle.reviewerAgentId}`,
-                  authToken: ctx.authToken,
-                  runId: ctx.runId,
-                });
-                session.lifecycleEffectJournal = confirmEffect(startedJournal, effectId, wake.runId);
+                let wake: { readonly runId: string };
+                try {
+                  wake = await wakeJulesPlanReviewer({
+                    reviewerAgentId: lifecycle.reviewerAgentId,
+                    childIssueId: canonicalReviewIssueId,
+                    interactionId: lifecycle.interactionId,
+                    idempotencyKey: `native-plan-review-dispatch-recovery:v1:${reviewIssueId}:${lifecycle.interactionId}:${lifecycle.reviewerAgentId}${targetEffectId === retryEffectId ? ":attempt:2" : ""}`,
+                    authToken: ctx.authToken,
+                    runId: ctx.runId,
+                  });
+                } catch (error) {
+                  if (!(error instanceof PaperclipClientError) || error.status !== 403) throw error;
+                  // Paperclip forbids one agent from invoking another, so a
+                  // Jules-issued reviewer wake can never succeed. Report the
+                  // routing denial with the session intact instead of letting
+                  // it degrade into generic polling churn.
+                  await ctx.onLog?.(
+                    "stderr",
+                    `[jules] Native plan-review reviewer wake denied for card ${interaction.id}: ${sanitizeError(error)}\n`,
+                  );
+                  await moveIssueToBlocked(taskId, ctx.authToken, ctx.runId).catch(() => undefined);
+                  return {
+                    exitCode: 1, signal: null, timedOut: false, clearSession: false,
+                    errorCode: "native_plan_review_routing_denied",
+                    errorFamily: null,
+                    errorMessage: `Native plan-review reviewer wake denied for card ${interaction.id}: Jules cannot invoke reviewer ${lifecycle.reviewerAgentId} directly; route the review through the native review-participant handoff.`,
+                    sessionParams: serializeSession(session),
+                  };
+                }
+                session.lifecycleEffectJournal = confirmEffect(startedJournal, targetEffectId, wake.runId);
                 await persistSessionBestEffort(session, ctx.onLog);
                 return await yieldHeartbeat(session);
               }
@@ -3940,7 +4389,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             reviewIssueId: taskId,
             reviewerChildIssueId: undefined,
           };
-          await persistSessionBestEffort(session, ctx.onLog);
+          await saveStoredSession(session);
+          await enterNativePlanReviewStage({
+            issueId: taskId,
+            revisionId: lunaPlanReview.planRevisionId,
+            stage: "terra",
+            reviewerAgentId: terraReviewerAgentId,
+            ownerAgentId: ctx.agent.id,
+            reviewRequest: lunaPlanReview.question,
+            authToken: ctx.authToken,
+            runId: ctx.runId,
+          });
           return await yieldHeartbeat(session);
         }
         const terraPlanReview = pendingNativePlanReview;
@@ -4917,6 +5376,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                   persist: () => persistSessionBestEffort(session!, ctx.onLog),
                   run: () => saveJulesPlanDocument(taskId, activityId, fullPlan, ctx.authToken, ctx.runId),
                 });
+                if (config.planReviewBootstrapAgentId) {
+                  session.childPlanReview = { identity: {
+                    version: 3, companyId: ctx.agent.companyId, parentIssueId: taskId, sessionId: session.julesSessionId!,
+                    activityId, documentId: revision.documentId, revisionId: revision.revisionId,
+                    revisionNumber: revision.revisionNumber, stage: "luna", reviewerAgentId: config.planReviewerAgentId,
+                    bootstrapAgentId: config.planReviewBootstrapAgentId, julesAgentId: ctx.agent.id,
+                  } };
+                  await saveStoredSession(session);
+                  const observation = await observeJulesChildPlanReview(session.childPlanReview.identity, undefined, ctx.authToken, ctx.runId);
+                  session.childPlanReview.childId = observation.childId;
+                  await saveStoredSession(session);
+                  return await yieldHeartbeat(session);
+                }
                 const review = await runCheckpointedMutation({
                   session: session!,
                   key: `jules:plan-review:${taskId}:${revision.revisionId}:luna`,
@@ -4925,7 +5397,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                   sessionId: session!.julesSessionId,
                   activityId,
                   persist: () => persistSessionBestEffort(session!, ctx.onLog),
-                  run: () => createJulesPlanReviewInteraction(taskId, session!.julesSessionId!, revision, fullPlan, "luna", config.planReviewerAgentId!, ctx.authToken, ctx.runId, activityId),
+                  run: async () => {
+                     const card = await createJulesPlanReviewInteraction(taskId, session!.julesSessionId!, revision, fullPlan, "luna", config.planReviewerAgentId!, ctx.authToken, ctx.runId, activityId);
+                     session!.planReviewRevisionId = revision.revisionId;
+                     session!.pendingInteraction = {
+                       type: "plan_native_review", protocolVersion: 2,
+                       julesActivityId: asJulesActivityId(activityId), question: fullPlan,
+                       planDocumentId: revision.documentId, planRevisionId: revision.revisionId,
+                       planRevisionNumber: revision.revisionNumber, paperclipInteractionId: card.id,
+                       reviewerAgentId: config.planReviewerAgentId!, stage: "luna",
+                       reviewIssueId: taskId, createdAt: new Date().toISOString(),
+                     };
+                     // The host cancels the source run on ownership change.
+                     // Persist the exact card pointer before that transition;
+                     // a cancelled run cannot return updated sessionParams.
+                     await saveStoredSession(session!);
+                     await enterNativePlanReviewStage({
+                       issueId: taskId,
+                      revisionId: revision.revisionId,
+                      stage: "luna",
+                      reviewerAgentId: config.planReviewerAgentId!,
+                      ownerAgentId: ctx.agent.id,
+                      reviewRequest: fullPlan,
+                      authToken: ctx.authToken,
+                       runId: ctx.runId,
+                     });
+                     return card;
+                  },
                 });
                 session.planReviewRevisionId = revision.revisionId;
                 session.planReviewOutcome = undefined;
@@ -5136,6 +5634,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       }
       const classification = classifyFailure(error);
+
+      if (session.childPlanReview && classification !== "transient") {
+        return paperclipInteractionFailure(session, error);
+      }
 
       if (classification === 'transient') {
          return await yieldHeartbeat(session);

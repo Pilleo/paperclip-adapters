@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  nativePlanReviewStageId,
   parsePlanReviewIdempotencyKey,
   planReviewIdempotencyKey,
   projectEffectAttempt,
@@ -17,6 +18,14 @@ describe("Jules native plan-review identity", () => {
     expect(parsePlanReviewIdempotencyKey(
       "jules:plan-review:v2:issue-985:session-985:revision-29:luna:recovery:1",
     )).toEqual({ ...primary, generation: 1 });
+  });
+
+  it("derives one stable UUID review stage per immutable plan turn", () => {
+    const luna = nativePlanReviewStageId("issue-985", "revision-29", "luna");
+    expect(luna).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(nativePlanReviewStageId("issue-985", "revision-29", "luna")).toBe(luna);
+    expect(nativePlanReviewStageId("issue-985", "revision-29", "terra")).not.toBe(luna);
+    expect(nativePlanReviewStageId("issue-985", "revision-30", "luna")).not.toBe(luna);
   });
 
   it.each([

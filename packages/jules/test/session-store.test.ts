@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deleteStoredSession, loadStoredSession, saveStoredSession } from "../src/server/session-store";
@@ -51,6 +52,12 @@ describe("Jules local session recovery store", () => {
     await saveStoredSession(session);
     await deleteStoredSession("issue-1", "sources/github/owner/repo", "main");
     await expect(loadStoredSession("issue-1", "sources/github/owner/repo", "main")).resolves.toBeNull();
+  });
+  it("fails closed on a present but malformed prepared-create record", async () => {
+    const key = createHash("sha256").update("issue-1\0sources/github/owner/repo\0main").digest("hex");
+    await writeFile(join(directory, `${key}.json`), JSON.stringify({ phase: "STARTING", providerCreateIntent: { requestId: "request-1" } }));
+    await expect(loadStoredSession("issue-1", "sources/github/owner/repo", "main"))
+      .rejects.toThrow(/invalid durable Jules session/i);
   });
 
   it("round-trips a started lifecycle effect so restart recovery reconciles it", async () => {

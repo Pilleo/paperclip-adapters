@@ -64,4 +64,19 @@ describe("managed worker ownership fence", () => {
 
     expect(fleet.lunaReviewerAgentId).toBe(replacement.id);
   });
+
+  it("selects a capable managed Gemini strong reviewer without requiring Codex", () => {
+    const capable = {
+      id: "gemini-reviewer", name: "[Orchestrated] Antigravity Local Worker", adapterType: "antigravity",
+      reportsTo: orchestratorId, status: "paused",
+      metadata: { managedBy: "paperclip-orchestrator", workerKey: "antigravity", structuredDecisionCapability: {
+        version: 1, transports: ["mcp_tool"], decisionKinds: ["plan_review", "pull_request_review"],
+      } },
+    };
+    const personal = { ...capable, id: "personal-gemini", reportsTo: "ceo-1", name: "Antigravity ACP Developer", metadata: {} };
+    const fleet = resolveManagedFleet([managedJules, personal, capable], orchestratorId);
+    expect(fleet.strongReviewerAgentId).toBe("gemini-reviewer");
+    expect(fleet.terraReviewerAgentId).toBeUndefined();
+    expect(resolveManagedFleet([managedJules, personal], orchestratorId).strongReviewerAgentId).toBeUndefined();
+  });
 });

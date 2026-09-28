@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import { buildGitHubPullRequestCheckArgs, buildGitHubPullRequestListArgs, buildGitHubPullRequestViewArgs, checkPrCiIsGreen, classifyGhNoChecksResult, describeGitHubAccessProblem, hasUnreviewedReadyPullRequest, matchPrToIssue, prCiResultFromGhFailure, processRawPullRequests, registeredPullRequestFromIssue, resolveGitHubCliExecutable, resolvePrCiGate } from "../src/core/github-sync.js";
+import { fetchGitHubPullRequest, fetchGitHubPullRequests } from "../src/core/github-sync.js";
+import { access, chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { extractIssueMetadata } from "../src/core/parser.js";
 import { GitHubPullRequest } from "../src/core/types.js";
 
@@ -31,6 +35,47 @@ describe("GitHub PR Sync Module", () => {
       "pr", "list", "--repo", "Pilleo/paperclip-adapters", "--state", "all", "--limit", "50",
       "--json", "number,title,state,headRefName,headRefOid,baseRefName,mergedAt,url,files",
     ]);
+  });
+
+  it("observes an explicit repository without a local checkout and refuses unscoped discovery", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "paperclip-gh-cwd-"));
+    const executable = path.join(directory, "gh-fixture");
+    const marker = path.join(directory, "invoked");
+    const missingWorkspace = path.join(directory, "removed-checkout");
+    const previous = process.env["PAPERCLIP_GH_PATH"];
+    await writeFile(executable, `#!/bin/sh\nprintf 'called' > '${marker}'\nprintf '[]'\n`);
+    await chmod(executable, 0o700);
+    process.env["PAPERCLIP_GH_PATH"] = executable;
+    try {
+      const scoped = await fetchGitHubPullRequests(missingWorkspace, 50, "Pilleo/example");
+      expect(scoped.error).toBeUndefined();
+      expect(scoped.openPrs).toEqual([]);
+      await rm(marker);
+      const unscoped = await fetchGitHubPullRequests(missingWorkspace);
+      expect(unscoped.error).toMatch(/workspace|checkout/i);
+      await expect(access(marker)).rejects.toThrow();
+    } finally {
+      if (previous === undefined) delete process.env["PAPERCLIP_GH_PATH"];
+      else process.env["PAPERCLIP_GH_PATH"] = previous;
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("checks a registered PR by URL even after its local checkout was removed", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "paperclip-gh-pr-cwd-"));
+    const executable = path.join(directory, "gh-fixture");
+    const previous = process.env["PAPERCLIP_GH_PATH"];
+    const prUrl = "https://github.com/Pilleo/example/pull/17";
+    await writeFile(executable, `#!/bin/sh\nprintf '%s' '${JSON.stringify({ number: 17, title: "Task", state: "OPEN", headRefName: "task", baseRefName: "main", mergedAt: null, url: prUrl })}'\n`);
+    await chmod(executable, 0o700);
+    process.env["PAPERCLIP_GH_PATH"] = executable;
+    try {
+      expect((await fetchGitHubPullRequest(path.join(directory, "removed-checkout"), prUrl))?.number).toBe(17);
+    } finally {
+      if (previous === undefined) delete process.env["PAPERCLIP_GH_PATH"];
+      else process.env["PAPERCLIP_GH_PATH"] = previous;
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("uses the canonical registered URL for a targeted historical PR lookup", () => {

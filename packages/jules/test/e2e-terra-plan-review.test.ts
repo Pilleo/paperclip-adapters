@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll, afterEach } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { execute } from "../src/server/execute.js";
 import { JulesClient } from "../src/server/jules-client.js";
@@ -41,6 +41,9 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
     }),
     createJulesPlanReviewInteraction: vi.fn().mockResolvedValue({
       id: "native-plan-luna-1", status: "pending", kind: "request_item_verdicts",
+    }),
+    enterNativePlanReviewStage: vi.fn().mockResolvedValue({
+      stageId: "stage-1", reviewerAgentId: "luna-1", ownerAgentId: "agent-jules",
     }),
     createIssueComment: vi.fn().mockResolvedValue(undefined),
     upsertJulesSessionHandle: vi.fn().mockResolvedValue(undefined),
@@ -164,11 +167,13 @@ describe("E2E plan review ladder (static → Mistral → Luna → Terra/Codex �
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("Unexpected live fetch in offline plan-review test"); }));
     terraSpy.mockClear();
     vi.mocked(createCheapReviewer).mockReturnValue(undefined);
     vi.mocked(createTerraCodexReviewer).mockReturnValue(terraSpy as never);
     vi.mocked(JulesClient.prototype.approvePlan).mockResolvedValue({ id: "act-approved" });
   });
+  afterEach(() => vi.unstubAllGlobals());
 
   it("passes cheap-review gaps to Terra/Codex before human escalation", async () => {
     await presentPlan([{ title: "Look into the issue and figure out cache design later (TBD)" }]);

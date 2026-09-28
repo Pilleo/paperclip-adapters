@@ -90,6 +90,15 @@ const FATAL_NATIVE_REVIEW_CODES = new Set([
   "malformed_review_card",
   "submit_http_error",
   "submit_invalid_response",
+  "invalid_identity",
+  "evidence_unavailable",
+  "invalid_card_evidence",
+  "untrusted_plan_verdict",
+  "stale_plan_revision",
+  "unowned_review_policy",
+  "unexpected_issue_state",
+  "handback_failed",
+  "child_plan_cleanup_failed",
 ]);
 
 /**
@@ -120,64 +129,69 @@ export function createNativeReviewMcpHandler(input: {
     if (request.method !== "tools/call") {
       return toolError("unsupported_tool", "Only the native review verdict tool is available.");
     }
-    if (request.params?.name === JULES_QUESTION_MCP_TOOL) {
-      const parsed = parseJulesQuestionToolArguments(request.params.arguments);
-      if (!parsed.ok) return toolError("invalid_arguments", parsed.message);
-      if (!input.submitJulesQuestion) return toolError("unsupported_tool", "Jules question submission is unavailable.");
-      try {
-        const submitted = await input.submitJulesQuestion(parsed.value);
-        if (!submitted.ok) return toolError(submitted.code, "The typed Jules decision was not submitted.");
-        return {
-          content: [{ type: "text", text: `Typed Jules ${submitted.decision} submitted for card ${submitted.interactionId}.` }],
-          structuredContent: { interactionId: submitted.interactionId, decision: submitted.decision },
-          isError: false,
-        };
-      } catch {
-        return toolError("runtime_transport_error", "The Paperclip review service is temporarily unavailable.");
+    switch (request.params?.name) {
+      case JULES_QUESTION_MCP_TOOL: {
+        const parsed = parseJulesQuestionToolArguments(request.params.arguments);
+        if (!parsed.ok) return toolError("invalid_arguments", parsed.message);
+        if (!input.submitJulesQuestion) return toolError("unsupported_tool", "Jules question submission is unavailable.");
+        try {
+          const submitted = await input.submitJulesQuestion(parsed.value);
+          if (!submitted.ok) return toolError(submitted.code, "The typed Jules decision was not submitted.");
+          return {
+            content: [{ type: "text", text: `Typed Jules ${submitted.decision} submitted for card ${submitted.interactionId}.` }],
+            structuredContent: { interactionId: submitted.interactionId, decision: submitted.decision },
+            isError: false,
+          };
+        } catch {
+          return toolError("runtime_transport_error", "The Paperclip review service is temporarily unavailable.");
+        }
       }
-    }
-    if (request.params?.name === NATIVE_REVIEW_ASSIGNMENT_MCP_TOOL) {
-      if (request.params.arguments !== undefined &&
-          (typeof request.params.arguments !== "object" || request.params.arguments === null ||
-            Array.isArray(request.params.arguments) || Object.keys(request.params.arguments as object).length > 0)) {
-        return toolError("invalid_arguments", "The native review assignment tool accepts no arguments.");
+      case NATIVE_REVIEW_ASSIGNMENT_MCP_TOOL: {
+        if (request.params.arguments !== undefined &&
+            (typeof request.params.arguments !== "object" || request.params.arguments === null ||
+              Array.isArray(request.params.arguments) || Object.keys(request.params.arguments as object).length > 0)) {
+          return toolError("invalid_arguments", "The native review assignment tool accepts no arguments.");
+        }
+        if (!input.readAssignment) return toolError("unsupported_tool", "Native review assignment lookup is unavailable.");
+        try {
+          const result = await input.readAssignment();
+          if (!result.ok) return toolError(result.code, "The typed native review assignment is unavailable.");
+          return {
+            content: [{ type: "text", text: result.assignment.kind === "plan_review_recorded"
+              ? "The typed child plan verdict is already recorded. Do not submit another verdict or change parent ownership; Jules consumes the recorded result."
+              : `Typed ${result.assignment.kind} review assignment loaded.` }],
+            structuredContent: result.assignment,
+            isError: false,
+          };
+        } catch {
+          return toolError("runtime_transport_error", "The Paperclip review service is temporarily unavailable.");
+        }
       }
-      if (!input.readAssignment) return toolError("unsupported_tool", "Native review assignment lookup is unavailable.");
-      try {
-        const result = await input.readAssignment();
-        if (!result.ok) return toolError(result.code, "The typed native review assignment is unavailable.");
-        return {
-          content: [{ type: "text", text: `Typed ${result.assignment.kind} review assignment loaded.` }],
-          structuredContent: result.assignment,
-          isError: false,
-        };
-      } catch {
-        return toolError("runtime_transport_error", "The Paperclip review service is temporarily unavailable.");
-      }
-    }
-    if (request.params?.name !== NATIVE_REVIEW_MCP_TOOL) {
-      return toolError("unsupported_tool", "Only the native review verdict tool is available.");
-    }
-    const parsed = parseNativeReviewToolArguments(request.params.arguments);
-    if (!parsed.ok) return toolError("invalid_arguments", parsed.message);
+      case NATIVE_REVIEW_MCP_TOOL: {
+        const parsed = parseNativeReviewToolArguments(request.params.arguments);
+        if (!parsed.ok) return toolError("invalid_arguments", parsed.message);
 
-    let submitted: NativeReviewSubmissionResult;
-    try {
-      submitted = await input.submit(parsed.value);
-    } catch {
-      return toolError("runtime_transport_error", "The Paperclip review service is temporarily unavailable.");
+        let submitted: NativeReviewSubmissionResult;
+        try {
+          submitted = await input.submit(parsed.value);
+        } catch {
+          return toolError("runtime_transport_error", "The Paperclip review service is temporarily unavailable.");
+        }
+        if (!submitted.ok) return toolError(submitted.code, "The structured verdict was not submitted.");
+        const label = submitted.verdict === "approve" ? "approval" : "rejection";
+        return {
+          content: [{ type: "text", text: `Structured ${label} submitted for card ${submitted.interactionId}.` }],
+          structuredContent: {
+            interactionId: submitted.interactionId,
+            itemId: submitted.itemId,
+            verdict: submitted.verdict,
+          },
+          isError: false,
+        };
+      }
+      default:
+        return toolError("unsupported_tool", "Only the native review verdict tool is available.");
     }
-    if (!submitted.ok) return toolError(submitted.code, "The structured verdict was not submitted.");
-    const label = submitted.verdict === "approve" ? "approval" : "rejection";
-    return {
-      content: [{ type: "text", text: `Structured ${label} submitted for card ${submitted.interactionId}.` }],
-      structuredContent: {
-        interactionId: submitted.interactionId,
-        itemId: submitted.itemId,
-        verdict: submitted.verdict,
-      },
-      isError: false,
-    };
   };
 }
 

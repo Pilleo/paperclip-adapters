@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { nativePlanReviewStageId } from "@pilleo/paperclip-adapter-common";
 import {
   addJulesActivityComment,
   activateInternalReviewIssue,
@@ -14,6 +15,7 @@ import {
   createJulesPlanApprovalInteraction,
   createJulesPlanReviewChildInteraction,
   createNoPrCompletionInteraction,
+  enterNativePlanReviewStage,
   getPaperclipInteraction,
   getPaperclipIssue,
   hasFutureJulesSessionMonitor,
@@ -39,6 +41,22 @@ import {
 } from "../src/server/paperclip-client";
 
 describe("native Jules plan review interaction", () => {
+  it("preserves creation time when reading a pending plan-review card", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify([{
+      id: "card-1", status: "pending", kind: "request_item_verdicts",
+      addresseeAgentId: "luna-1",
+      idempotencyKey: "jules:plan-review:v2:issue-1:session-1:rev-1:luna",
+      createdAt: "2026-09-21T17:27:45.466Z",
+    }]), { status: 200, headers: { "content-type": "application/json" } }));
+
+    await expect(listPaperclipInteractions("issue-1", "token", "run-1")).resolves.toMatchObject([{
+      id: "card-1",
+      createdAt: "2026-09-21T17:27:45.466Z",
+    }]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    fetchMock.mockRestore();
+  });
+
   it("preserves the typed payload when reading an answered interaction", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify([{
       id: "plan-review-answered", status: "answered", kind: "request_item_verdicts",
@@ -126,6 +144,7 @@ describe("native Jules plan review interaction", () => {
       triggerDetail: "system",
       reason: "native_plan_review",
       forceFreshSession: true,
+      idempotencyKey: "jules:plan-review-wake:card-1:0",
       payload: {
         issueId: "child-1",
         mutation: "interaction",
@@ -133,6 +152,137 @@ describe("native Jules plan review interaction", () => {
         interactionKind: "request_item_verdicts",
       },
     });
+    fetchMock.mockRestore();
+  });
+
+  it("enters a one-stage native review turn without waking the reviewer", async () => {
+    const stageId = nativePlanReviewStageId("issue-1", "rev-1", "luna");
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: "issue-1", status: "in_progress", assigneeAgentId: "jules-1", executionPolicy: null, executionState: null,
+      }), { status: 200, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: "issue-1", status: "in_review", assigneeAgentId: "luna-1",
+        executionPolicy: { stages: [{ id: stageId, type: "review", participants: [{ type: "agent", agentId: "luna-1" }] }] },
+        executionState: {
+          status: "pending", currentStageId: stageId, currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: "luna-1" },
+          returnAssignee: { type: "agent", agentId: "jules-1" },
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } }));
+
+    await expect(enterNativePlanReviewStage({
+      issueId: "issue-1", revisionId: "rev-1", stage: "luna", reviewerAgentId: "luna-1", ownerAgentId: "jules-1",
+      reviewRequest: "Review plan rev 1.", authToken: "token", runId: "jules-run-1",
+    })).resolves.toEqual({ stageId, reviewerAgentId: "luna-1", ownerAgentId: "jules-1" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [patchUrl, patchInit] = fetchMock.mock.calls[1] ?? [];
+    expect(patchUrl).toBe("http://127.0.0.1:3100/api/issues/issue-1");
+    expect(patchInit?.method).toBe("PATCH");
+    expect(JSON.parse(String(patchInit?.body))).toEqual({
+      status: "in_review",
+      executionPolicy: {
+        mode: "normal",
+        stages: [{ id: stageId, type: "review", participants: [{ type: "agent", agentId: "luna-1" }] }],
+      },
+      reviewRequest: { instructions: "Review plan rev 1." },
+    });
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/wakeup"))).toBe(false);
+    fetchMock.mockRestore();
+  });
+
+  it("transfers a triggered Jules monitor into the Luna stage without retaining a provider wake", async () => {
+    const stageId = nativePlanReviewStageId("issue-1", "rev-1", "luna");
+    const monitor = { status: "triggered", serviceName: "jules", externalRef: "[redacted]", scheduledBy: "board" };
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: "issue-1", status: "in_progress", assigneeAgentId: "jules-1",
+        executionPolicy: { mode: "normal", stages: [], commentRequired: true },
+        executionState: { status: "idle", monitor, currentStageId: null, currentParticipant: null },
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: "issue-1", status: "in_review", assigneeAgentId: "luna-1",
+        executionPolicy: { mode: "normal", stages: [{ id: stageId, type: "review", participants: [{ type: "agent", agentId: "luna-1" }] }] },
+        executionState: {
+          status: "pending", currentStageId: stageId, currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: "luna-1" },
+          returnAssignee: { type: "agent", agentId: "jules-1" }, monitor,
+        },
+      }), { status: 200 }));
+
+    await expect(enterNativePlanReviewStage({
+      issueId: "issue-1", revisionId: "rev-1", stage: "luna", reviewerAgentId: "luna-1", ownerAgentId: "jules-1",
+      authToken: "token", runId: "jules-run-1", reviewRequest: "Review plan rev 1.",
+    })).resolves.toMatchObject({ stageId });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const request = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body));
+    expect(request.executionPolicy.monitor).toBeUndefined();
+    expect(request.executionPolicy.stages).toHaveLength(1);
+    fetchMock.mockRestore();
+  });
+
+  it("refuses a scheduled board monitor when entering a native review stage", async () => {
+    vi.restoreAllMocks();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      id: "issue-1", status: "in_progress", assigneeAgentId: "jules-1",
+      executionPolicy: { stages: [], monitor: { serviceName: "jules", externalRef: "[redacted]", scheduledBy: "board", nextCheckAt: "2026-09-27T00:00:00Z" } },
+      executionState: { status: "idle", monitor: { status: "scheduled", serviceName: "jules", externalRef: "[redacted]" } },
+    }), { status: 200 }));
+
+    await expect(enterNativePlanReviewStage({
+      issueId: "issue-1", revisionId: "rev-1", stage: "luna", reviewerAgentId: "luna-1", ownerAgentId: "jules-1",
+      authToken: "token", runId: "jules-run-1",
+    })).rejects.toThrow(/cannot overwrite/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    fetchMock.mockRestore();
+  });
+
+  it("refuses an idle foreign execution state even when it has no monitor", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      id: "issue-1", status: "in_progress", assigneeAgentId: "jules-1", executionPolicy: null,
+      executionState: { status: "idle", currentStageId: "foreign-stage", monitor: null },
+    }), { status: 200 }));
+    await expect(enterNativePlanReviewStage({
+      issueId: "issue-1", revisionId: "rev-1", stage: "luna", reviewerAgentId: "luna-1", ownerAgentId: "jules-1",
+      authToken: "token", runId: "jules-run-1",
+    })).rejects.toThrow(/cannot overwrite/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    fetchMock.mockRestore();
+  });
+
+  it("reuses an already-entered native review turn without repeating the transition", async () => {
+    const stageId = nativePlanReviewStageId("issue-1", "rev-1", "luna");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      id: "issue-1", status: "in_review", assigneeAgentId: "luna-1",
+      executionPolicy: { stages: [{ id: stageId, type: "review", participants: [{ type: "agent", agentId: "luna-1" }] }] },
+      executionState: {
+        status: "pending", currentStageId: stageId, currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "luna-1" },
+        returnAssignee: { type: "agent", agentId: "jules-1" },
+      },
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+
+    await expect(enterNativePlanReviewStage({
+      issueId: "issue-1", revisionId: "rev-1", stage: "luna", reviewerAgentId: "luna-1", ownerAgentId: "jules-1",
+      authToken: "token", runId: "jules-run-1",
+    })).resolves.toEqual({ stageId, reviewerAgentId: "luna-1", ownerAgentId: "jules-1" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    fetchMock.mockRestore();
+  });
+
+  it("refuses to overwrite an unrelated review workflow when entering native review", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      id: "issue-1", status: "in_progress", assigneeAgentId: "jules-1",
+      executionPolicy: { stages: [{ id: "other-stage", type: "review", participants: [{ type: "agent", agentId: "terra-1" }] }] },
+      executionState: null,
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+
+    await expect(enterNativePlanReviewStage({
+      issueId: "issue-1", revisionId: "rev-1", stage: "luna", reviewerAgentId: "luna-1", ownerAgentId: "jules-1",
+      authToken: "token", runId: "jules-run-1",
+    })).rejects.toBeInstanceOf(PaperclipClientError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     fetchMock.mockRestore();
   });
 
@@ -737,6 +887,14 @@ describe("Paperclip issue completion", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("does not create a duplicate PR when work-product lookup fails", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 503, text: async () => "temporarily unavailable" });
+    global.fetch = fetchMock as unknown as typeof global.fetch;
+    await expect(registerPullRequestWorkProduct("issue-1", "https://github.com/o/r/pull/1", "jwt-token", "run-1"))
+      .rejects.toThrow();
+    expect(fetchMock.mock.calls.every((call) => (call[1]?.method ?? "GET") === "GET")).toBe(true);
+  });
+
   it("marks an existing matching PR as the canonical Jules work product", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => [{ id: "wp-5", url: "https://github.com/o/r/pull/5", isPrimary: false, metadata: { source: "jules" } }] })
@@ -780,6 +938,52 @@ describe("Paperclip issue completion", () => {
         ciStatus: "success",
       }),
     });
+  });
+
+  it("preserves a registered PR head when the review transition re-observes it without new evidence", async () => {
+    const headSha = "a".repeat(40);
+    const existing = { id: "wp-1549", url: "https://github.com/o/r/pull/1549", isPrimary: true,
+      status: "ready_for_review", summary: "2 changed files at aaaaaaaa; CI success",
+      metadata: { source: "jules", producer: "paperclip-jules-adapter", schemaVersion: 1,
+        headSha, headRefName: "jules-1549", changedFiles: ["increment.js", "increment.test.js"] } };
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => [existing] });
+    global.fetch = fetchMock as unknown as typeof global.fetch;
+
+    await moveIssueToReview("issue-1", existing.url, "jwt-token", "run-1");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[1]?.method ?? "GET").toBe("GET");
+  });
+
+  it("registers a GitHub-verified merged PR as merged rather than awaiting review", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => [] })
+      .mockResolvedValueOnce({ ok: true, status: 201, json: async () => ({ id: "wp-merged" }) });
+    global.fetch = fetchMock as unknown as typeof global.fetch;
+
+    await registerPullRequestWorkProduct("issue-1", "https://github.com/o/r/pull/5", "jwt-token", "run-1", {
+      merged: true, headSha: "b".repeat(40), changedFiles: ["decrement.js"],
+    });
+
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toMatchObject({
+      type: "pull_request", status: "merged", url: "https://github.com/o/r/pull/5",
+    });
+  });
+
+  it("upgrades a previously registered open PR after GitHub confirms its merge", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => [{ id: "wp-5",
+        url: "https://github.com/o/r/pull/5", status: "ready_for_review", isPrimary: true,
+        summary: "1 changed files at bbbbbbbb", metadata: { source: "jules", producer: "paperclip-jules-adapter", schemaVersion: 1 } }] })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ id: "wp-5" }) });
+    global.fetch = fetchMock as unknown as typeof global.fetch;
+
+    await registerPullRequestWorkProduct("issue-1", "https://github.com/o/r/pull/5", "jwt-token", "run-1", {
+      merged: true, headSha: "b".repeat(40), changedFiles: ["decrement.js"],
+    });
+
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("/api/work-products/wp-5");
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toMatchObject({ status: "merged" });
   });
 
   it("stores and reads a Jules session handle, falling back to comments", async () => {
@@ -940,6 +1144,33 @@ describe("Paperclip issue completion", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: "GET" });
+  });
+
+  it("shortens a stale 15-minute monitor when the first unapproved plan needs a 60-second review poll", async () => {
+    const shortDeadline = new Date(Date.now() + 60_000).toISOString();
+    const oldDeadline = new Date(Date.now() + 15 * 60_000).toISOString();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ id: "issue-1", status: "in_progress",
+        executionPolicy: { mode: "normal", stages: [], monitor: { serviceName: "jules", externalRef: "[redacted]", nextCheckAt: oldDeadline } } }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ id: "issue-1", status: "in_progress",
+        executionPolicy: { mode: "normal", stages: [], monitor: { serviceName: "jules", externalRef: "[redacted]", nextCheckAt: shortDeadline } } }) });
+    global.fetch = fetchMock as unknown as typeof global.fetch;
+    await scheduleJulesSessionMonitor("issue-1", "s-1", shortDeadline, new Date(Date.now() + 86_400_000).toISOString(), "jwt-token", "run-1");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)).executionPolicy.monitor.nextCheckAt).toBe(shortDeadline);
+  });
+  it("rejects a monitor PATCH receipt that kept the old later deadline", async () => {
+    const wanted = new Date(Date.now() + 60_000).toISOString();
+    const old = new Date(Date.now() + 15 * 60_000).toISOString();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ id: "issue-1", executionPolicy: { mode: "normal",
+        monitor: { serviceName: "jules", externalRef: "[redacted]", nextCheckAt: old } } }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ id: "issue-1", executionPolicy: { mode: "normal",
+        monitor: { serviceName: "jules", externalRef: "[redacted]", nextCheckAt: old } } }) });
+    global.fetch = fetchMock as unknown as typeof global.fetch;
+    await expect(scheduleJulesSessionMonitor("issue-1", "s-1", wanted,
+      new Date(Date.now() + 86_400_000).toISOString(), "jwt-token", "run-1"))
+      .rejects.toThrow(/monitor.*deadline/i);
   });
 
   it("recognizes a redacted future monitor for the active Jules session", async () => {

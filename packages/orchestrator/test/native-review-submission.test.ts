@@ -17,6 +17,14 @@ const card = (patch: Partial<NativeReviewCard> = {}): NativeReviewCard => ({
 });
 
 describe("native review submission protocol", () => {
+  it("reports a previously recorded v3 child verdict without asking for another decision", () => {
+    const answered = { ...card(), status: "answered", idempotencyKey: `jules:plan-child:v3:${"a".repeat(64)}`,
+      resolvedByAgentId: "luna-1", resolvedByRunId: "luna-run", result: {
+        outcome: "resolved", complete: true, items: [{ id: "plan", verdict: "approve" }],
+      } };
+    expect(resolveNativeReviewAssignment([answered], "luna-1")).toEqual({ ok: true,
+      assignment: { kind: "plan_review_recorded", interactionId: "card-1", verdict: "approve" } });
+  });
   it("exposes the exact addressed plan revision as a typed reviewer assignment", () => {
     const result = resolveNativeReviewAssignment([card({
       payload: {

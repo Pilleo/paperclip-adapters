@@ -40,6 +40,19 @@ describe("native multi-tier review pipeline", () => {
     existingApprovals: [], vibeReviewerAgentId: "agent-vibe", reviewerAgentId: "agent-strong", workerAgentId: "agent-jules",
   });
 
+  it("does not count a Terra verdict as Gemini strong-review approval", () => {
+    const luna = { id: "luna-approved", kind: "request_item_verdicts", status: "answered", addresseeAgentId: "agent-luna",
+      idempotencyKey: reviewInteractionIdempotencyKey({ issueId: issue.id, prUrl: "pr-526", headSha: "unknown", stage: "luna" }),
+      result: { items: [{ id: "pull_request", verdict: "approve" }] } };
+    const terra = { id: "terra-approved", kind: "request_item_verdicts", status: "answered", addresseeAgentId: "agent-terra",
+      idempotencyKey: reviewInteractionIdempotencyKey({ issueId: issue.id, prUrl: "pr-526", headSha: "unknown", stage: "terra" }),
+      result: { items: [{ id: "pull_request", verdict: "approve" }] } };
+    expect(evaluateReviewPipelineProgress({ ...base(), lunaReviewerAgentId: "agent-luna", terraReviewerAgentId: "agent-terra",
+      strongReviewerAgentId: "agent-gemini", interactions: [luna, terra] })).toMatchObject({
+      action: "DISPATCH_STRONG_REVIEW", targetAgentId: "agent-gemini",
+    });
+  });
+
   it("recognizes an answered card when only the PR URL spelling changed", () => {
     const p = base([]);
     const headSha = "abc123";

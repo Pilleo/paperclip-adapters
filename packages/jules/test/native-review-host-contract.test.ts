@@ -12,7 +12,7 @@ interface CapturedRequest {
   readonly body: Record<string, unknown>;
 }
 
-describe.sequential("Paperclip native-review continuation provenance contract", () => {
+describe.sequential("Legacy native-review provenance transport fixture", () => {
   let server: Server | undefined;
   const originalApiUrl = process.env["PAPERCLIP_API_URL"];
 
@@ -25,7 +25,10 @@ describe.sequential("Paperclip native-review continuation provenance contract", 
     else process.env["PAPERCLIP_API_URL"] = originalApiUrl;
   });
 
-  it("rejects a child card sourced by a parent run and accepts both parent-scoped ladder stages", async () => {
+  // This models propagation of the legacy provenance error, not host creation
+  // authorization. The real v916 contract accepts the POST and then rejects
+  // reviewer startup. See orchestrator/test/contract for authenticated proofs.
+  it("propagates a simulated cross-issue provenance error and accepts parent-scoped ladder requests", async () => {
     const requests: CapturedRequest[] = [];
     const sourceRunIssueIds = new Map([["parent-jules-run", "parent-issue"]]);
     server = createServer((request, response) => {

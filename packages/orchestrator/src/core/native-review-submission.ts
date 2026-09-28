@@ -1,4 +1,5 @@
 import { nativeReviewFetch } from "./native-review-http.js";
+import { z } from "zod";
 
 /**
  * Adapter-side transport for native Paperclip review cards.
@@ -35,6 +36,12 @@ export interface NativePlanReviewTarget {
 }
 
 export type NativeReviewAssignment =
+  | { readonly kind: "plan_review_recorded"; readonly interactionId: string; readonly verdict: NativeReviewVerdict }
+  | {
+      readonly kind: "plan_handback_recovered";
+      readonly interactionId: string;
+      readonly verdict: NativeReviewVerdict;
+    }
   | {
       readonly kind: "plan";
       readonly interactionId: string;
@@ -59,6 +66,8 @@ type NativeReviewSuccess = {
   readonly interactionId: string;
   readonly itemId: string;
   readonly verdict: NativeReviewVerdict;
+  readonly planReviewProtocol?: "child_v3";
+  readonly childReviewKey?: string;
 };
 
 export type NativeReviewFailureCode =
@@ -73,7 +82,16 @@ export type NativeReviewFailureCode =
   | "malformed_review_card"
   | "rejection_reason_required"
   | "submit_http_error"
-  | "submit_invalid_response";
+  | "submit_invalid_response"
+  | "invalid_identity"
+  | "evidence_unavailable"
+  | "invalid_card_evidence"
+  | "untrusted_plan_verdict"
+  | "stale_plan_revision"
+  | "unowned_review_policy"
+  | "unexpected_issue_state"
+  | "handback_failed"
+  | "child_plan_cleanup_failed";
 
 export type NativeReviewFailure = {
   readonly ok: false;
@@ -126,6 +144,20 @@ export function resolveNativeReviewAssignment(
   agentId: string,
 ): NativeReviewAssignmentResult {
   const resolved = resolveNativeReviewCard(cards, agentId);
+  if (!resolved.ok && resolved.code === "no_owned_pending_card") {
+    const answeredSchema = z.object({ id: z.string(), kind: z.literal("request_item_verdicts"), status: z.literal("answered"),
+      idempotencyKey: z.string().regex(/^jules:plan-child:v3:[0-9a-f]{64}$/), addresseeAgentId: z.literal(agentId),
+      resolvedByAgentId: z.literal(agentId), resolvedByRunId: z.string().min(1),
+      result: z.object({ outcome: z.literal("resolved"), complete: z.literal(true), items: z.array(z.object({
+        id: z.literal("plan"), verdict: z.enum(["approve", "reject"]), reason: z.string().optional(),
+      })).length(1) }),
+    });
+    const answered = cards.flatMap((card) => { const parsed = answeredSchema.safeParse(card); return parsed.success ? [parsed.data] : []; });
+    const only = answered.length === 1 ? answered[0] : undefined;
+    const verdict = only?.result.items[0];
+    if (only && verdict && (verdict.verdict === "approve" || verdict.reason?.trim())) return { ok: true,
+      assignment: { kind: "plan_review_recorded", interactionId: only.id, verdict: verdict.verdict } };
+  }
   if (!resolved.ok) return resolved;
   const detailsMarkdown = resolved.card.payload?.detailsMarkdown?.trim() ?? "";
   const target = parsePlanTarget(resolved.card.payload?.target);
@@ -233,7 +265,12 @@ export async function submitNativeReviewVerdict(input: NativeReviewSubmissionInp
   if (body?.id !== resolved.card.id || body.status !== "answered" || returnedItem?.verdict !== input.verdict) {
     return fail("submit_invalid_response");
   }
-  return { ok: true, interactionId: resolved.card.id, itemId: resolved.item.id, verdict: input.verdict };
+  const target = parsePlanTarget(resolved.card.payload?.target);
+  const childReviewKey = resolved.card.idempotencyKey;
+  const childPlan = resolved.item.id === "plan" && /^jules:plan-child:v3:[0-9a-f]{64}$/.test(childReviewKey ?? "") &&
+    target !== null && target.issueId !== input.issueId;
+  return { ok: true, interactionId: resolved.card.id, itemId: resolved.item.id, verdict: input.verdict,
+    ...(childPlan && childReviewKey ? { planReviewProtocol: "child_v3" as const, childReviewKey } : {}) };
 }
 
 /**

@@ -26,3 +26,6 @@ export * from "./jules-lifecycle.js";
 export * from "./jules-plan-review-identity.js";
 export * from "./native-review-dispatch.js";
 export * from "./task-contract.js";
+export * from "./child-plan-review.js";
+export * from "./child-plan-review-bootstrap.js";
+export * from "./child-plan-review-parent.js";

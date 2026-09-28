@@ -124,6 +124,30 @@ export async function listAllActivities(
   return normalizeActivities(activities);
 }
 
+/** The native plan gate requires proof that no later plan is hidden by pagination. */
+export async function scanCompleteActivities(
+  client: JulesClient,
+  sessionId: NonNullable<JulesAdapterSessionV1["julesSessionId"]>,
+  maxPages = MAX_ACTIVITY_PAGES,
+): Promise<{ readonly activities: JulesActivity[]; readonly complete: boolean }> {
+  const activities: JulesActivity[] = [];
+  const tokens = new Set<string>();
+  const signatures = new Set<string>();
+  let token: string | undefined;
+  for (let page = 0; page < maxPages; page += 1) {
+    if (token && tokens.has(token)) return { activities: normalizeActivities(activities), complete: false };
+    if (token) tokens.add(token);
+    const result = await client.getActivities(sessionId, token, ACTIVITY_PAGE_SIZE);
+    const signature = result.activities.map((activity) => activity.id).join("\u0000");
+    if (token && signatures.has(signature)) return { activities: normalizeActivities(activities), complete: false };
+    signatures.add(signature);
+    activities.push(...result.activities);
+    token = result.nextPageToken;
+    if (!token) return { activities: normalizeActivities(activities), complete: true };
+  }
+  return { activities: normalizeActivities(activities), complete: false };
+}
+
 /**
  * Mirrors new activities from Jules cloud session to Paperclip log and issue comments.
  */

@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 /** The sole durable identity for a parent-owned native Jules plan card. */
 export type JulesPlanReviewGeneration = 0 | 1;
 
@@ -50,6 +52,17 @@ export function parsePlanReviewIdempotencyKey(value: string): JulesPlanReviewIde
     stage,
     generation: value.endsWith(":recovery:1") ? 1 : 0,
   };
+}
+
+/** One stable, UUID-shaped review stage per immutable Jules plan turn. */
+export function nativePlanReviewStageId(issueId: string, revisionId: string, reviewer: "luna" | "terra"): string {
+  const digest = createHash("sha256").update(`jules:plan-review-stage:v1:${issueId}:${revisionId}:${reviewer}`).digest();
+  const stageBytes = digest.subarray(0, 16);
+  const view = new DataView(stageBytes.buffer, stageBytes.byteOffset, stageBytes.length);
+  view.setUint8(6, (view.getUint8(6) & 0x0f) | 0x40);
+  view.setUint8(8, (view.getUint8(8) & 0x3f) | 0x80);
+  const hex = stageBytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
 /** Projects persisted evidence without allowing callers to erase a started effect. */

@@ -1,4 +1,5 @@
 import { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import { createHash, randomUUID } from "node:crypto";
 import { AdapterConfig, discoverLocalGitRepository, discoverLocalGitDefaultBranch } from "./config.js";
 import { isGhCliAuthenticated, createRemoteGitHubRepo } from "./git-remote-creator.js";
 import { JulesAdapterSessionV1, normalizeJulesState, serializeSession } from "./session.js";
@@ -91,6 +92,20 @@ export async function initializeOrResumeSession(
   const pHash = hashPromptIdentity(promptContext, config);
 
   if (!session || isRetry) {
+    if (session?.providerCreateIntent && !session.julesSessionId) {
+      throw new Error("Prepared Jules create outcome requires reconciliation before another POST");
+    }
+    const requestId = randomUUID();
+    const startedAt = new Date().toISOString();
+    const prepared: JulesAdapterSessionV1 = {
+      version: 1, paperclipIssueId: asPaperclipId(taskId), promptHash: pHash,
+      repository: config.repository, source: config.source, baseBranch: config.baseBranch,
+      phase: "STARTING", attempt, failedSessions, createdAt: startedAt,
+      providerCreateIntent: { requestId, runId: ctx.runId,
+        promptSha256: createHash("sha256").update(prompt).digest("hex"),
+        source: config.source, baseBranch: config.baseBranch, startedAt },
+    };
+    await saveStoredSession(prepared);
     const julesSession = await client.createSession({
       prompt,
       title: taskTitle,
@@ -102,7 +117,7 @@ export async function initializeOrResumeSession(
       },
       requirePlanApproval: config.requirePlanApproval,
       automationMode: config.automationMode,
-    });
+    }, requestId);
 
     createdSessionThisRun = true;
     session = {

@@ -3,7 +3,7 @@ import { PrCiCheckResult } from "./github-sync.js";
 import { PaperclipApprovalSummary } from "./approvals.js";
 import type { HeartbeatRunSummary } from "./session-continuation.js";
 import { reviewInteractionIdempotencyKey, reviewInteractionIdempotencyKeys, reviewInteractionKeyPrefix, reviewVerdictFromInteraction, type PrReviewStage } from "./review-interaction-state.js";
-import { reduceReviewEpoch, type ReviewEpochStage } from "./review-epoch.js";
+import { reduceReviewEpoch } from "./review-epoch.js";
 
 export type ReviewStage =
   | "ci_gate"
@@ -25,6 +25,7 @@ export interface ReviewPipelineParams {
     readonly kind?: string | undefined;
     readonly status?: string | undefined;
     readonly idempotencyKey?: string | undefined;
+    readonly addresseeAgentId?: string | null | undefined;
     readonly result?: unknown;
   }[] | undefined;
   /** All recent runs, including terminal runs, used as the durable recovery lease. */
@@ -37,6 +38,7 @@ export interface ReviewPipelineParams {
   readonly reviewerAgentId?: string | undefined;
   readonly lunaReviewerAgentId?: string | undefined;
   readonly terraReviewerAgentId?: string | undefined;
+  readonly strongReviewerAgentId?: string | undefined;
   readonly workerAgentId?: string | undefined;
   /** Persisted Paperclip execution state used to make dispatch idempotent. */
   readonly executionState?: {
@@ -73,23 +75,23 @@ export type ReviewPipelineDecision =
       readonly reason: string;
     }
   | {
-      readonly stage: "luna_review" | "terra_review";
+      readonly stage: "luna_review" | "terra_review" | "strong_review";
       readonly action: "RECOVER_REVIEW";
       readonly targetAgentId: string;
       readonly reason: string;
     }
   | {
-      readonly stage: "luna_review" | "terra_review";
+      readonly stage: "luna_review" | "terra_review" | "strong_review";
       readonly action: "AWAIT_REVIEW_CONFIGURATION";
       readonly reason: string;
     }
   | {
-      readonly stage: "luna_review" | "terra_review";
+      readonly stage: "luna_review" | "terra_review" | "strong_review";
       readonly action: "AWAIT_REVIEW";
       readonly reason: string;
     }
   | {
-      readonly stage: "luna_review" | "terra_review";
+      readonly stage: "luna_review" | "terra_review" | "strong_review";
       readonly action: "AWAIT_OPERATOR_RECOVERY";
       readonly reason: string;
     }
@@ -232,6 +234,7 @@ export function evaluateReviewPipelineProgress(
     reviewerAgentId,
     lunaReviewerAgentId,
     terraReviewerAgentId,
+    strongReviewerAgentId,
     workerAgentId,
     executionState,
     reviewerAgentStatus,
@@ -286,7 +289,8 @@ export function evaluateReviewPipelineProgress(
       // appear before the answered replacement. Only an answered card can
       // be evidence of a verdict; pending cards are handled by the durable
       // execution-state wait path below.
-      return matchesIdentity && candidate.status === "answered";
+      return matchesIdentity && candidate.status === "answered" &&
+        (stage !== "strong" || candidate.addresseeAgentId === strongReviewerAgentId);
     });
     return reviewVerdictFromInteraction(interaction, interaction?.id);
   };
@@ -317,6 +321,7 @@ export function evaluateReviewPipelineProgress(
     const exactKeys = reviewInteractionIdempotencyKeys(identity);
     return [...interactions].reverse().find((interaction) =>
       interaction.kind === "request_item_verdicts" &&
+      (stage !== "strong" || interaction.addresseeAgentId === strongReviewerAgentId) &&
       (() => {
         const key = interaction.idempotencyKey || "";
         return exactKeys.includes(key) || key.startsWith(`${prefix}:attempt:`) || (
@@ -344,7 +349,7 @@ export function evaluateReviewPipelineProgress(
     const verdict = verdictFor(stage);
     return reduceReviewEpoch({
       ...identityFor(stage),
-      nextStage: stage === "luna" ? "terra" : null,
+      nextStage: stage === "luna" ? strongReviewerAgentId ? "strong" : "terra" : null,
       reviewerAgentId,
       card: card
         ? card.status === "answered"
@@ -377,11 +382,11 @@ export function evaluateReviewPipelineProgress(
   // New reviewer lane is selected whenever configured. It is intentionally
   // separate from the legacy Vibe lane so stale Vibe verdicts cannot approve.
   const mapEpochDecision = (
-    stage: ReviewEpochStage,
+    stage: "luna" | "terra" | "strong",
     reviewerAgentId: string,
     decision: ReturnType<typeof reduceReviewEpoch>,
   ): ReviewPipelineDecision | null => {
-    const pipelineStage: "luna_review" | "terra_review" = stage === "luna" ? "luna_review" : "terra_review";
+    const pipelineStage = stage === "luna" ? "luna_review" : stage === "strong" ? "strong_review" : "terra_review";
     switch (decision.action) {
       case "reassign_worker":
         return {
@@ -395,15 +400,19 @@ export function evaluateReviewPipelineProgress(
       case "escalate":
         return { stage: pipelineStage, action: "AWAIT_OPERATOR_RECOVERY", reason: decision.reason };
       case "await_verdict":
-        return { stage: pipelineStage, action: "AWAIT_REVIEW", reason: `Native ${stage === "luna" ? "Luna" : "Terra"} review is awaiting its structured verdict.` };
+        return { stage: pipelineStage, action: "AWAIT_REVIEW", reason: `Native ${stage === "luna" ? "Luna" : stage === "strong" ? "Gemini" : "Terra"} review is awaiting its structured verdict.` };
       case "create_card":
+        if (stage === "strong") return {
+          stage: "strong_review", action: "DISPATCH_STRONG_REVIEW", targetAgentId: reviewerAgentId,
+          reason: `Luna approved; routing [${issue.identifier || issue.id}] to Gemini for the strong review.`,
+        };
         return {
-          stage: pipelineStage,
+          stage: stage === "luna" ? "luna_review" : "terra_review",
           action: stage === "luna" ? "DISPATCH_LUNA_REVIEW" : "DISPATCH_TERRA_REVIEW",
           targetAgentId: reviewerAgentId,
           reason: stage === "luna"
-            ? `CI is green; routing [${issue.identifier || issue.id}] to OpenAI Luna for the first review.`
-            : `Luna approved; routing [${issue.identifier || issue.id}] to OpenAI Terra for the strong review.`,
+              ? `CI is green; routing [${issue.identifier || issue.id}] to OpenAI Luna for the first review.`
+              : `Luna approved; routing [${issue.identifier || issue.id}] to OpenAI Terra for the strong review.`,
         };
       case "wake_once":
         return { stage: pipelineStage, action: "RECOVER_REVIEW", targetAgentId: reviewerAgentId, reason: `A pending native ${stage === "luna" ? "Luna" : "Terra"} review card has no bound run; issuing its one recovery wake.` };
@@ -415,18 +424,24 @@ export function evaluateReviewPipelineProgress(
     }
   };
 
-  if (lunaReviewerAgentId !== undefined || terraReviewerAgentId !== undefined) {
+  if (lunaReviewerAgentId !== undefined || terraReviewerAgentId !== undefined || strongReviewerAgentId !== undefined) {
     if (!lunaReviewerAgentId) return { stage: "luna_review", action: "AWAIT_REVIEW_CONFIGURATION", reason: "OpenAI Luna reviewer is not configured; refusing to skip the weak review stage." };
     const luna = epochDecision("luna", lunaReviewerAgentId);
     const lunaPipelineDecision = mapEpochDecision("luna", lunaReviewerAgentId, luna);
     if (lunaPipelineDecision) return lunaPipelineDecision;
-    if (!terraReviewerAgentId) return { stage: "terra_review", action: "AWAIT_REVIEW_CONFIGURATION", reason: "OpenAI Terra reviewer is not configured; refusing to skip the strong review stage." };
+    if (strongReviewerAgentId) {
+      const strong = epochDecision("strong", strongReviewerAgentId);
+      const strongDecision = mapEpochDecision("strong", strongReviewerAgentId, strong);
+      if (strongDecision) return strongDecision;
+    } else {
+    if (!terraReviewerAgentId) return { stage: "terra_review", action: "AWAIT_REVIEW_CONFIGURATION", reason: "Strong reviewer is not configured; refusing to skip the strong review stage." };
     const terra = epochDecision("terra", terraReviewerAgentId);
     const terraPipelineDecision = mapEpochDecision("terra", terraReviewerAgentId, terra);
     if (terraPipelineDecision) return terraPipelineDecision;
+    }
     const mergeApproval = findMergeApproval(existingApprovals, issue.id);
     if (!mergeApproval) {
-      return { stage: "operator_approval", action: "CREATE_MERGE_APPROVAL", prNumber, prUrl, reason: `Luna and Terra approved [${issue.identifier || issue.id}]. Creating final operator merge approval card.` };
+      return { stage: "operator_approval", action: "CREATE_MERGE_APPROVAL", prNumber, prUrl, reason: `Luna and ${strongReviewerAgentId ? "Gemini" : "Terra"} approved [${issue.identifier || issue.id}]. Creating final operator merge approval card.` };
     }
     if (mergeApproval.status === "approved") {
       return { stage: "completed", action: "EXECUTE_MERGE", prNumber, prUrl, reason: `Operator approved final merge for [${issue.identifier || issue.id}] (approval ${mergeApproval.id}). Ready for automated merge.` };

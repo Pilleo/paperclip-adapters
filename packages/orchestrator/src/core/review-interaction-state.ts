@@ -277,7 +277,7 @@ export function hasNativeRejectionForHead(
   const contractFingerprint = reviewContractFingerprint(reviewContractMarkdown);
   return interactions.some((interaction) => {
     const key = interaction.idempotencyKey || "";
-    if (!new RegExp(`^pr-review:v\\d+:${issueId}:.*:${headSha}:(?:luna|terra)(?::contract:[a-z0-9]+)?(?::attempt:[1-9]\\d*)?$`, "i").test(key)) return false;
+    if (!new RegExp(`^pr-review:v\\d+:${issueId}:.*:${headSha}:(?:luna|terra|strong)(?::contract:[a-z0-9]+)?(?::attempt:[1-9]\\d*)?$`, "i").test(key)) return false;
     // A changed task contract is a new review turn even at the same immutable
     // PR head. Legacy cards have no contract discriminator and must not veto it.
     if (contractFingerprint && !key.includes(`:contract:${contractFingerprint}`)) return false;
@@ -291,18 +291,21 @@ export function hasCompletedNativeApprovalLadderForHead(
   issueId: string,
   headSha: string,
   reviewContractMarkdown?: string,
+  strongStage: "terra" | "strong" = "terra",
+  strongReviewerAgentId?: string,
 ): boolean {
   const contractFingerprint = reviewContractFingerprint(reviewContractMarkdown);
-  const approvedStages = new Set<"luna" | "terra">();
+  const approvedStages = new Set<"luna" | "terra" | "strong">();
   for (const interaction of interactions) {
-    const match = new RegExp(`^pr-review:v\\d+:${issueId}:.*:${headSha}:(luna|terra)(?::contract:([a-z0-9]+))?(?::attempt:[1-9]\\d*)?$`, "i")
+    const match = new RegExp(`^pr-review:v\\d+:${issueId}:.*:${headSha}:(luna|terra|strong)(?::contract:([a-z0-9]+))?(?::attempt:[1-9]\\d*)?$`, "i")
       .exec(interaction.idempotencyKey || "");
     if (!match || reviewVerdictFromInteraction(interaction, interaction.id)?.decision !== "all_good") continue;
     if (contractFingerprint && match[2]?.toLowerCase() !== contractFingerprint) continue;
     const stage = match[1]?.toLowerCase();
-    if (stage === "luna" || stage === "terra") approvedStages.add(stage);
+    if (stage === strongStage && strongReviewerAgentId && interaction.addresseeAgentId !== strongReviewerAgentId) continue;
+    if (stage === "luna" || stage === strongStage) approvedStages.add(stage);
   }
-  return approvedStages.has("luna") && approvedStages.has("terra");
+  return approvedStages.has("luna") && approvedStages.has(strongStage);
 }
 
 /** Plans a single idempotent dialog effect. The adapter explicitly wakes the

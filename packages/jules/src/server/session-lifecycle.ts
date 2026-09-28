@@ -1,6 +1,7 @@
 import { JulesAdapterSessionV1 } from "./session.js";
 import { PaperclipId, asJulesSessionId, asPrUrl } from "./brands.js";
 import type { JulesSessionHandle } from "./jules-session-handle.js";
+import { mergeEffectJournals } from "./lifecycle-effect-journal.js";
 
 export type StartupActionType =
   | "RESUME_EXISTING"
@@ -95,8 +96,39 @@ export function mergeDurableSessionCheckpoints(
   replayed: JulesAdapterSessionV1,
   recovered: JulesAdapterSessionV1,
 ): JulesAdapterSessionV1 {
+  const replayedChild = replayed.childPlanReview;
+  const recoveredChild = recovered.childPlanReview;
+  const sameChildSession = recovered.paperclipIssueId === replayed.paperclipIssueId && recovered.julesSessionId === replayed.julesSessionId;
+  const childDecisionConsumed = sameChildSession && replayedChild && (
+    recovered.planApprovedActivityId === replayedChild.identity.activityId ||
+    recovered.pendingPlanRevisionRequest?.planActivityId === replayedChild.identity.activityId);
+  const newerChildIntent = sameChildSession && recoveredChild && (!replayedChild || (
+    recoveredChild.identity.revisionId === replayedChild.identity.revisionId &&
+    recoveredChild.identity.activityId === replayedChild.identity.activityId &&
+    recoveredChild.identity.stage === "terra" && replayedChild.identity.stage === "luna"));
+  const staleLuna = replayed.pendingInteraction?.type === "plan_native_review" &&
+    replayed.pendingInteraction.stage === "luna" ? replayed.pendingInteraction : null;
+  const durableTerra = recovered.pendingInteraction?.type === "plan_native_review" &&
+    recovered.pendingInteraction.stage === "terra" ? recovered.pendingInteraction : null;
+  const confirmedTerraReceipt = staleLuna && durableTerra &&
+    staleLuna.planRevisionId === durableTerra.planRevisionId &&
+    staleLuna.julesActivityId === durableTerra.julesActivityId &&
+    recovered.lifecycleEffectJournal?.effects.some((entry) =>
+      entry.effectId === `card:terra:${durableTerra.planRevisionId}` &&
+      entry.attempt.kind === "confirmed" && entry.attempt.receipt === durableTerra.paperclipInteractionId);
+  const hasConfirmedApproval = (value: JulesAdapterSessionV1) =>
+    value.planReviewOutcome === "approved" && Boolean(value.planApprovedActivityId) &&
+    value.lifecycleEffectJournal?.effects.some((entry) => entry.kind === "approve_plan" &&
+      entry.effectId.startsWith(`approve:${value.julesSessionId}:`) && entry.attempt.kind === "confirmed") === true;
+  const replayedApproval = hasConfirmedApproval(replayed);
+  const recoveredApproval = hasConfirmedApproval(recovered);
+  if (replayedApproval && recoveredApproval && replayed.planApprovedActivityId !== recovered.planApprovedActivityId) {
+    throw new Error("Jules approval checkpoint conflict across generated plans");
+  }
+  const approvedSource = recoveredApproval && !replayedApproval ? recovered : replayedApproval ? replayed : null;
   return {
     ...replayed,
+    childPlanReview: childDecisionConsumed ? undefined : newerChildIntent ? recoveredChild : replayedChild ?? recoveredChild,
     scopeDriftFingerprint: replayed.scopeDriftFingerprint ?? recovered.scopeDriftFingerprint,
     deliveredFeedbackActivityId: replayed.deliveredFeedbackActivityId ?? recovered.deliveredFeedbackActivityId,
     deliveredFeedbackInteractionId: replayed.deliveredFeedbackInteractionId ?? recovered.deliveredFeedbackInteractionId,
@@ -104,7 +136,8 @@ export function mergeDurableSessionCheckpoints(
     terminalFeedbackInteractionId: replayed.terminalFeedbackInteractionId ?? recovered.terminalFeedbackInteractionId,
     deliveredActivityIds: replayed.deliveredActivityIds ?? recovered.deliveredActivityIds,
     relayedReviewCommentIds: replayed.relayedReviewCommentIds ?? recovered.relayedReviewCommentIds,
-    pendingInteraction: replayed.pendingInteraction ?? recovered.pendingInteraction,
+    pendingInteraction: confirmedTerraReceipt ? durableTerra : replayed.pendingInteraction ?? recovered.pendingInteraction,
+    lifecycleEffectJournal: mergeEffectJournals(replayed.lifecycleEffectJournal, recovered.lifecycleEffectJournal),
     deferredPlanReview: replayed.deferredPlanReview ?? recovered.deferredPlanReview,
     workerFeedbackDeliveryId: replayed.workerFeedbackDeliveryId ?? recovered.workerFeedbackDeliveryId,
     providerContinuation: replayed.providerContinuation ?? recovered.providerContinuation,
@@ -121,12 +154,12 @@ export function mergeDurableSessionCheckpoints(
     currentPrHeadSha: replayed.currentPrHeadSha ?? recovered.currentPrHeadSha,
     currentPrHeadRef: replayed.currentPrHeadRef ?? recovered.currentPrHeadRef,
     prRemediation: replayed.prRemediation ?? recovered.prRemediation,
-    ...(replayed.planApprovedAt ?? recovered.planApprovedAt
-      ? { planApprovedAt: replayed.planApprovedAt ?? recovered.planApprovedAt }
+    ...(approvedSource?.planApprovedAt ?? replayed.planApprovedAt ?? recovered.planApprovedAt
+      ? { planApprovedAt: approvedSource?.planApprovedAt ?? replayed.planApprovedAt ?? recovered.planApprovedAt }
       : {}),
-    planApprovedActivityId: replayed.planApprovedActivityId ?? recovered.planApprovedActivityId,
+    planApprovedActivityId: approvedSource?.planApprovedActivityId ?? replayed.planApprovedActivityId ?? recovered.planApprovedActivityId,
     planReviewRevisionId: replayed.planReviewRevisionId ?? recovered.planReviewRevisionId,
-    planReviewOutcome: replayed.planReviewOutcome ?? recovered.planReviewOutcome,
+    planReviewOutcome: approvedSource?.planReviewOutcome ?? replayed.planReviewOutcome ?? recovered.planReviewOutcome,
     pendingPlanRevisionRequest: replayed.pendingPlanRevisionRequest ?? recovered.pendingPlanRevisionRequest,
     supersededPlanActivityId: replayed.supersededPlanActivityId ?? recovered.supersededPlanActivityId,
     unresolvedProviderQuestionActivityId: replayed.unresolvedProviderQuestionActivityId ?? recovered.unresolvedProviderQuestionActivityId,
@@ -303,6 +336,38 @@ export function evaluateSessionStartup(
     (paperclipWake as { forceFreshSession?: boolean })?.forceFreshSession ||
     isStatusChangeTransition
   );
+
+  // Paperclip marks a reconciled native *process* run fresh. That flag is not
+  // authorization to replace its durable cloud Jules session or replay POST.
+  const recoverySource = readContextString(rawContext, "source");
+  const recoveryActionId = readContextString(rawContext, "recoveryActionId");
+  const previousRunId = readContextString(rawContext, "previousRunId");
+  const recoveryIntended = forceFreshSession && Boolean(
+    recoverySource === "execution.reconciled" || wakeReason === "issue_recovery_action_restored" ||
+    recoveryActionId || previousRunId,
+  );
+  const reconciledExecution = forceFreshSession &&
+    recoverySource === "execution.reconciled" &&
+    wakeReason === "issue_recovery_action_restored" &&
+    Boolean(recoveryActionId) &&
+    Boolean(previousRunId) &&
+    readContextString(rawContext, "issueId") === config.taskId;
+  if (recoveryIntended && !reconciledExecution) {
+    throw new Error("Native recovery envelope incomplete; refusing a fresh Jules provider session");
+  }
+  if (reconciledExecution) {
+    if (!storedSession) throw new Error("Native recovery Jules checkpoint conflict (missing_stored_session); refusing a second provider session");
+    const conflict = storedSession.paperclipIssueId !== config.taskId ? "different_issue"
+      : !storedSession.julesSessionId ? "missing_provider_session"
+      : !sessionMatchesConfig(storedSession, config) ? "different_repository"
+      : decodedSession && decodedSession.julesSessionId !== storedSession.julesSessionId ? "runtime_session_mismatch"
+      : canonicalSessionId && canonicalSessionId !== storedSession.julesSessionId ? "canonical_session_mismatch"
+      : null;
+    if (conflict) throw new Error(`Native recovery Jules checkpoint conflict (${conflict}); refusing a second provider session`);
+    return { action: "RESUME_EXISTING", forceFreshSession: false, isInteractionResume: false,
+      session: decodedSession ? mergeDurableSessionCheckpoints(decodedSession, storedSession) : storedSession,
+      reason: "Native process recovery retains the verified durable provider session" };
+  }
 
   if (forceFreshSession) {
     return {

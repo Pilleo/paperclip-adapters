@@ -95,6 +95,9 @@ describe("Jules completion without a PR", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubGlobal("fetch", vi.fn(async (url: RequestInfo | URL) => {
+      throw new Error(`Unexpected live fetch in no-PR unit test: ${String(url)}`);
+    }));
     vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({
       id: "session-1",
       name: "sessions/session-1",

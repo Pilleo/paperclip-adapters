@@ -32,7 +32,7 @@ describe("wake_orchestrator.sh", () => {
 
     expect(result.status).toBe(0);
     expect(result.curlArgs).toContain(
-      '{"reason": "paperclip-orchestrator-scope/v1/project/project-123"}',
+      '{"source":"on_demand","reason":"paperclip-orchestrator-scope/v1/project/project-123","payload":{"projectId":"project-123"}}',
     );
   });
 

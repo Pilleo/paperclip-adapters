@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll, afterEach } from 'vitest';
 import { execute } from '../src/server/execute';
 import { AdapterExecutionContext } from '@paperclipai/adapter-utils';
 import { sessionCodec } from '../src/server/session';
@@ -70,7 +70,9 @@ beforeAll(() => {
   beforeEach(() => {
     vi.clearAllMocks();
     (JulesClient.prototype.listSessions as any).mockResolvedValue({ sessions: [] });
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('Unexpected live fetch in execute-extra unit test'); }));
   });
+  afterEach(() => vi.unstubAllGlobals());
 
   it('migrates a legacy prompt-identity hash before resuming the same session', async () => {
        (JulesClient.prototype.getSession as any).mockResolvedValueOnce({ name: 'sess-1', state: 'IN_PROGRESS' });
@@ -105,14 +107,14 @@ beforeAll(() => {
        expect(decoded.promptHashVersion).toBeGreaterThan(2);
   });
 
-  it('handles early crash creation returning jules_create_failure', async () => {
+  it('holds an untyped create failure until provider outcome is verified', async () => {
         (JulesClient.prototype.createSession as any).mockRejectedValueOnce({ status: 401, message: 'Bad Auth' });
         vi.mocked(classifyFailure).mockReturnValueOnce('configuration');
         vi.mocked(shouldRetry).mockReturnValueOnce(false);
 
         const res = await execute({ ...baseCtx } as any);
         expect(res.exitCode).toBe(1);
-        expect(res.errorCode).toBe('jules_create_failure');
+         expect(res.errorCode).toBe('jules_create_outcome_unverified');
         expect(res.errorFamily).toBeNull();
   });
 

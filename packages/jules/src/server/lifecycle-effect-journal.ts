@@ -46,6 +46,33 @@ export const LifecycleEffectJournalSchema = z.object({
   })).max(50),
 });
 
+/** A runtime envelope may lag the disk checkpoint; confirmed effects never regress to started. */
+export function mergeEffectJournals(
+  replayed: LifecycleEffectJournal | undefined,
+  recovered: LifecycleEffectJournal | undefined,
+): LifecycleEffectJournal | undefined {
+  if (!replayed) return recovered;
+  if (!recovered) return replayed;
+  const effects = [...replayed.effects];
+  for (const durable of recovered.effects) {
+    const index = effects.findIndex((entry) => entry.effectId === durable.effectId);
+    if (index < 0) { effects.push(durable); continue; }
+    const current = effects[index]!;
+    if (current.kind !== durable.kind ||
+        (current.attempt.kind === "confirmed" && durable.attempt.kind === "confirmed" &&
+          current.attempt.receipt !== durable.attempt.receipt)) {
+      throw new Error(`Lifecycle effect journal conflict for ${durable.effectId}`);
+    }
+    if (durable.attempt.kind === "confirmed" || current.attempt.kind === "confirmed") {
+      effects[index] = durable.attempt.kind === "confirmed" ? durable : current;
+      continue;
+    }
+    effects[index] = (durable.attempt.attempts ?? 1) >= (current.attempt.attempts ?? 1) ? durable : current;
+  }
+  if (effects.length > 50) throw new Error("Lifecycle effect journal exceeds its durable limit");
+  return { version: 1, effects };
+}
+
 export type InterruptedEffectDisposition =
   | { readonly action: "execute" }
   | { readonly action: "reconcile" }

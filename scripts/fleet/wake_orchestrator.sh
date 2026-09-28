@@ -34,7 +34,7 @@ REASON="paperclip-orchestrator-scope/v1/project/${PROJECT_ID}"
 echo "🚀 Waking up Task Orchestrator (${ORCHESTRATOR_AGENT_ID})..."
 RESPONSE=$(curl -s -X POST "${PAPERCLIP_API_URL}/api/agents/${ORCHESTRATOR_AGENT_ID}/wakeup" \
   -H "Content-Type: application/json" \
-  -d "{\"reason\": \"${REASON}\"}")
+  -d "{\"source\":\"on_demand\",\"reason\":\"${REASON}\",\"payload\":{\"projectId\":\"${PROJECT_ID}\"}}")
 
 if command -v jq &>/dev/null; then
   echo "${RESPONSE}" | jq '.'

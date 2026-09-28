@@ -269,7 +269,10 @@ describe("Review Feedback Relay to Jules", () => {
       kind: "request_item_verdicts",
       status: "pending",
       addresseeAgentId: "luna-1",
+      idempotencyKey: "jules:plan-review:v2:issue-141:session-141:revision-2:luna",
+      createdAt: "2026-09-06T01:25:00.000Z",
     }] as never);
+    vi.mocked(getPaperclipIssue).mockResolvedValue({ status: "in_progress" } as never);
     vi.mocked(getPaperclipJson).mockResolvedValue([{
       id: "replacement-luna-run", agentId: "luna-1", status: "running",
       startedAt: "2026-09-19T18:00:00.000Z", finishedAt: null,

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { execute } from "../src/server/execute";
 import { JulesClient } from "../src/server/jules-client";
 import { sessionCodec } from "../src/server/session";
@@ -28,7 +28,11 @@ describe("process-lost reattach", () => {
   afterAll(() => {
     delete process.env.JULES_API_KEY;
   });
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("Unexpected live fetch in reattach unit test"); }));
+  });
+  afterEach(() => vi.unstubAllGlobals());
 
   it("does not createSession when sessionParams already has a live Jules id", async () => {
     vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({

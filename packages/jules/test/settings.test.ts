@@ -19,6 +19,11 @@ describe("typed Jules settings", () => {
     expect(settings).toMatchObject({ baseBranch: "release", retryBudget: 7, progressVerbosity: "quiet", pollCadenceSeconds: 900 });
   });
 
+  it("refuses a legacy approval opt-out that contradicts the required managed plan policy", () => {
+    expect(() => validateConfig({ repository: "acme/widgets", baseBranch: "main",
+      planApprovalPolicy: "required", requirePlanApproval: false })).toThrow(/conflict.*plan approval/i);
+  });
+
   it("derives repository and base branch from Paperclip workspace metadata", () => {
     expect(validateConfig({}, { workspace: { repositoryUrl: "git@github.com:acme/widgets.git", defaultBranch: "trunk" } }))
       .toMatchObject({ repository: "acme/widgets", baseBranch: "trunk" });

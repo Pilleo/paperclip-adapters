@@ -3,6 +3,10 @@ import { createHash } from "node:crypto";
 import {
   buildNativeInteractionWakeRequest,
   executePaperclipCommand,
+  nativePlanReviewStageId,
+  reconcileChildPlanReview,
+  type ChildPlanReviewIdentity,
+  type ChildPlanReviewObservation,
   type PaperclipCommandResponse,
 } from "@pilleo/paperclip-adapter-common";
 import {
@@ -46,6 +50,8 @@ export interface PaperclipInteraction {
   target?: unknown;
   idempotencyKey?: string;
   sourceRunId?: string | null;
+  /** Host creation timestamp required for dispatch-grace validation. */
+  createdAt?: string;
   /** Native MCP verdict executor when Paperclip records local-board as resolver. */
   resolvedByRunId?: string | null;
   /** Direct native reviewer identity when Paperclip exposes it. */
@@ -113,7 +119,7 @@ export async function wakeJulesPlanReviewer(input: JulesPlanReviewerWakeInput): 
     {
       method: "POST",
       headers: { "Idempotency-Key": input.idempotencyKey },
-      body: JSON.stringify(request.body),
+      body: JSON.stringify({ ...request.body, idempotencyKey: input.idempotencyKey }),
     },
     input.runId,
   );
@@ -269,7 +275,7 @@ export async function listWorkProducts(
   issueId: string,
   authToken: string | undefined,
   runId?: string,
-): Promise<Array<{ id?: string; url?: string; isPrimary?: boolean; summary?: string; metadata?: Record<string, unknown> }>> {
+): Promise<Array<{ id?: string; type?: string; url?: string; status?: string; isPrimary?: boolean; summary?: string; metadata?: Record<string, unknown> }>> {
   const response = await paperclipRequest(
     `/api/issues/${encodeURIComponent(issueId)}/work-products`,
     authToken,
@@ -285,7 +291,9 @@ export async function listWorkProducts(
         )
         .map((w) => ({
           ...(typeof w["id"] === "string" ? { id: w["id"] } : {}),
+          ...(typeof w["type"] === "string" ? { type: w["type"] } : {}),
           url: w["url"] as string,
+          ...(typeof w["status"] === "string" ? { status: w["status"] } : {}),
           ...(typeof w["isPrimary"] === "boolean" ? { isPrimary: w["isPrimary"] } : {}),
           ...(typeof w["summary"] === "string" ? { summary: w["summary"] } : {}),
           ...(w["metadata"] && typeof w["metadata"] === "object" && !Array.isArray(w["metadata"])
@@ -296,6 +304,7 @@ export async function listWorkProducts(
 }
 
 export interface PullRequestWorkProductEvidence {
+  readonly merged?: boolean;
   readonly headSha?: string;
   readonly headRefName?: string;
   readonly mergeableStatus?: "mergeable" | "conflicting" | "unknown";
@@ -479,16 +488,19 @@ export async function registerPullRequestWorkProduct(
   runId?: string,
   evidence?: PullRequestWorkProductEvidence,
 ): Promise<void> {
-  const existing = await listWorkProducts(issueId, authToken, runId).catch(
-    () => [] as Awaited<ReturnType<typeof listWorkProducts>>,
-  );
+  const existing = await listWorkProducts(issueId, authToken, runId);
   const normalizedPrUrl = prUrl.replace(/\/$/, "").toLowerCase();
   const matching = existing.find((workProduct) => workProduct.url?.replace(/\/$/, "").toLowerCase() === normalizedPrUrl);
   const payload = pullRequestEvidencePayload(evidence);
-  if (matching?.id && (matching.isPrimary !== true || matching.metadata?.["producer"] !== payload.metadata["producer"] || matching.summary !== payload.summary)) {
+  if (matching?.id && (matching.isPrimary !== true || matching.metadata?.["producer"] !== payload.metadata["producer"] ||
+      (evidence !== undefined && (matching.summary !== payload.summary ||
+        (evidence.headSha !== undefined && matching.metadata?.["headSha"] !== evidence.headSha) ||
+        (evidence.merged === true && matching.status !== "merged"))))) {
     await paperclipRequest(`/api/work-products/${encodeURIComponent(matching.id)}`, authToken, {
       method: "PATCH",
-      body: JSON.stringify({ isPrimary: true, ...payload }),
+      body: JSON.stringify({ isPrimary: true, metadata: { ...matching.metadata, ...payload.metadata },
+        ...(evidence !== undefined ? { summary: payload.summary } : {}),
+        ...(evidence?.merged === true ? { status: "merged" } : {}) }),
     }, runId);
   } else if (!matching) {
     await paperclipRequest(`/api/issues/${encodeURIComponent(issueId)}/work-products`, authToken, {
@@ -499,7 +511,7 @@ export async function registerPullRequestWorkProduct(
         title: "Jules pull request",
         url: prUrl,
         externalId: prUrl,
-        status: "ready_for_review",
+        status: evidence?.merged === true ? "merged" : "ready_for_review",
         isPrimary: true,
         ...payload,
       }),
@@ -589,6 +601,7 @@ export function interactionFromResponse(raw: unknown, status: number): Paperclip
     target: (record["payload"] as Record<string, unknown> | undefined)?.["target"] ?? record["target"],
     ...(typeof record["kind"] === "string" ? { kind: record["kind"] } : {}),
     ...(typeof record["idempotencyKey"] === "string" ? { idempotencyKey: record["idempotencyKey"] } : {}),
+    ...(typeof record["createdAt"] === "string" ? { createdAt: record["createdAt"] } : {}),
     ...(typeof record["resolvedByRunId"] === "string" ? { resolvedByRunId: record["resolvedByRunId"] } : {}),
     ...(typeof record["resolvedByAgentId"] === "string" ? { resolvedByAgentId: record["resolvedByAgentId"] } : {}),
     ...(typeof record["resolvedByUserId"] === "string" ? { resolvedByUserId: record["resolvedByUserId"] } : {}),
@@ -1023,6 +1036,123 @@ export async function createJulesPlanApprovalInteraction(
   };
 }
 
+export interface NativePlanReviewStageInput {
+  readonly issueId: string;
+  readonly revisionId: string;
+  readonly stage: "luna" | "terra";
+  readonly reviewerAgentId: string;
+  readonly ownerAgentId: string;
+  readonly reviewRequest?: string;
+  readonly authToken: string | undefined;
+  readonly runId?: string;
+}
+
+export async function observeJulesChildPlanReview(
+  identity: ChildPlanReviewIdentity, childId: string | undefined, authToken: string | undefined, runId: string,
+): Promise<ChildPlanReviewObservation> {
+  if (!authToken || !runId) throw new PaperclipClientError(null, "Child review requires authenticated Jules run credentials");
+  const send = async (path: string, method: string, body?: unknown): Promise<unknown> => {
+    const response = await paperclipRequest(`/api${path}`, authToken, { method,
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    }, runId);
+    return response.json();
+  };
+  return reconcileChildPlanReview({ identity, ...(childId ? { childId } : {}),
+    api: { get: (path) => send(path, "GET"), post: (path, body) => send(path, "POST", body), patch: (path, body) => send(path, "PATCH", body) } });
+}
+
+export interface NativePlanReviewStage {
+  readonly stageId: string;
+  readonly reviewerAgentId: string;
+  readonly ownerAgentId: string;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function asText(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function isExactNativePlanReviewStage(
+  issue: PaperclipIssue,
+  expected: { readonly issueId: string; readonly stageId: string; readonly reviewerAgentId: string; readonly ownerAgentId: string },
+): boolean {
+  if (issue.id !== expected.issueId || issue.status !== "in_review" || issue.assigneeAgentId !== expected.reviewerAgentId) return false;
+  const policy = asRecord(issue.executionPolicy);
+  const stages = policy && Array.isArray(policy["stages"]) ? policy["stages"] : [];
+  if (policy?.["monitor"] || stages.length !== 1) return false;
+  const stage = asRecord(stages[0]);
+  const participants = stage && Array.isArray(stage["participants"]) ? stage["participants"] : [];
+  const state = asRecord(issue.executionState);
+  return !!stage && stage["id"] === expected.stageId && stage["type"] === "review" &&
+    participants.length === 1 && asRecord(participants[0])?.["agentId"] === expected.reviewerAgentId &&
+    state?.["status"] === "pending" && state["currentStageId"] === expected.stageId &&
+    state["currentStageType"] === "review" &&
+    asRecord(state["currentParticipant"])?.["agentId"] === expected.reviewerAgentId &&
+    asRecord(state["returnAssignee"])?.["agentId"] === expected.ownerAgentId;
+}
+
+function isIdleJulesMonitorAuditState(value: Record<string, unknown> | null): boolean {
+  if (!value || value["status"] !== "idle" || value["currentStageId"] != null ||
+      value["currentParticipant"] != null || value["returnAssignee"] != null || value["reviewRequest"] != null) {
+    return false;
+  }
+  const monitor = asRecord(value["monitor"]);
+  return monitor?.["status"] === "triggered" && monitor["serviceName"] === "jules" &&
+    monitor["externalRef"] === "[redacted]";
+}
+
+/**
+ * Moves a Jules-owned issue into one native review stage before its verdict
+ * card exists. Paperclip assigns and wakes the reviewer through its own
+ * execution-policy transition; Jules must not wake another agent directly.
+ * A repeated call after a lost response reuses the exact persisted stage.
+ */
+export async function enterNativePlanReviewStage(input: NativePlanReviewStageInput): Promise<NativePlanReviewStage> {
+  const issueId = asText(input.issueId);
+  const revisionId = asText(input.revisionId);
+  const reviewerAgentId = asText(input.reviewerAgentId);
+  const ownerAgentId = asText(input.ownerAgentId);
+  if (!issueId || !revisionId || (input.stage !== "luna" && input.stage !== "terra") ||
+      !reviewerAgentId || !ownerAgentId || reviewerAgentId === ownerAgentId) {
+    throw new PaperclipClientError(null, "Native plan-review stage identity is invalid");
+  }
+  const stageId = nativePlanReviewStageId(issueId, revisionId, input.stage);
+  const expected = { issueId, stageId, reviewerAgentId, ownerAgentId };
+  const issue = await getPaperclipIssue(issueId, input.authToken, input.runId);
+  if (isExactNativePlanReviewStage(issue, expected)) return { stageId, reviewerAgentId, ownerAgentId };
+  const policy = asRecord(issue.executionPolicy);
+  const stages = policy && Array.isArray(policy["stages"]) ? policy["stages"] : [];
+  if (issue.status !== "todo" && issue.status !== "in_progress") {
+    throw new PaperclipClientError(null, `Native plan review cannot start from issue status ${issue.status}`);
+  }
+  if (issue.assigneeAgentId !== ownerAgentId || policy?.["monitor"] || stages.length > 0 ||
+      (issue.executionState && !isIdleJulesMonitorAuditState(asRecord(issue.executionState)))) {
+    throw new PaperclipClientError(null, "Native plan review cannot overwrite an existing issue workflow");
+  }
+  const reviewRequest = asText(input.reviewRequest);
+  const response = await paperclipRequest(`/api/issues/${encodeURIComponent(issueId)}`, input.authToken, {
+    method: "PATCH",
+    body: JSON.stringify({
+      status: "in_review",
+      executionPolicy: {
+        mode: "normal",
+        stages: [{ id: stageId, type: "review", participants: [{ type: "agent", agentId: reviewerAgentId }] }],
+      },
+      ...(reviewRequest ? { reviewRequest: { instructions: reviewRequest } } : {}),
+    }),
+  }, input.runId);
+  const updated = await response.json() as PaperclipIssue;
+  if (!isExactNativePlanReviewStage(updated, expected)) {
+    throw new PaperclipClientError(response.status, "Paperclip did not enter the exact native review stage");
+  }
+  return { stageId, reviewerAgentId, ownerAgentId };
+}
+
 /**
  * Creates the only supported automated plan-review primitive. The reviewer
  * responds through Paperclip's typed verdict endpoint; comments and child
@@ -1371,6 +1501,7 @@ function hasReusableJulesMonitor(
   issue: PaperclipIssue,
   sessionId: string,
   nowMs = Date.now(),
+  requestedNextCheckAt?: string,
 ): boolean {
   const monitor = issue.executionPolicy?.["monitor"];
   if (!monitor || typeof monitor !== "object" || Array.isArray(monitor)) return false;
@@ -1380,7 +1511,12 @@ function hasReusableJulesMonitor(
   if (typeof externalRef === "string" && externalRef !== "[redacted]" && externalRef !== sessionId) return false;
   if (typeof record["nextCheckAt"] !== "string") return false;
   const nextCheckAtMs = Date.parse(record["nextCheckAt"]);
-  return Number.isFinite(nextCheckAtMs) && nextCheckAtMs > nowMs;
+  if (!Number.isFinite(nextCheckAtMs) || nextCheckAtMs <= nowMs) return false;
+  if (requestedNextCheckAt) {
+    const requestedMs = Date.parse(requestedNextCheckAt);
+    if (!Number.isFinite(requestedMs) || nextCheckAtMs > requestedMs + 5_000) return false;
+  }
+  return true;
 }
 
 /**
@@ -1434,6 +1570,11 @@ export function assertJulesMonitorScheduled(
       record["nextCheckAt"].trim().length === 0) {
     throw new PaperclipClientError(200, "Paperclip returned an invalid verified Jules monitor");
   }
+  const observedDeadline = Date.parse(record["nextCheckAt"] as string);
+  const requestedDeadline = Date.parse(expectation.nextCheckAt);
+  if (!Number.isFinite(observedDeadline) || !Number.isFinite(requestedDeadline) || observedDeadline > requestedDeadline + 5_000) {
+    throw new PaperclipClientError(200, "Paperclip monitor deadline remained later than requested");
+  }
 }
 
 /**
@@ -1450,7 +1591,7 @@ export async function scheduleJulesSessionMonitor(
   runId?: string,
 ): Promise<void> {
   const issue = await getPaperclipIssue(issueId, authToken, runId);
-  if (hasReusableJulesMonitor(issue, sessionId)) return;
+  if (hasReusableJulesMonitor(issue, sessionId, Date.now(), nextCheckAt)) return;
   const response = await paperclipRequest(`/api/issues/${encodeURIComponent(issueId)}`, authToken, {
     method: "PATCH",
     body: JSON.stringify({

@@ -79,6 +79,9 @@ export interface NativeReviewDispatchRun {
   readonly interactionId: string | null;
   readonly startedAt: string | null;
   readonly finishedAt: string | null;
+  /** Provenance for pre-execution host cancellation (e.g. issue_assignee_changed). */
+  readonly stopReason?: string | null | undefined;
+  readonly errorCode?: string | null | undefined;
 }
 
 export interface NativeReviewDispatchInput {
@@ -145,6 +148,18 @@ function latestRun(runs: readonly NativeReviewDispatchRun[]): NativeReviewDispat
 }
 
 /**
+ * A host cancellation before execution never ran the reviewer. Paperclip
+ * cancels the queued run as `issue_assignee_changed` when the issue owner
+ * changes; the addressed card was never dispatched and must be recovered on
+ * the same card, not replaced.
+ */
+function isPreStartAssigneeCancellation(run: NativeReviewDispatchRun): boolean {
+  return run.status === "cancelled" &&
+    run.startedAt === null &&
+    (run.stopReason === "issue_assignee_changed" || run.errorCode === "issue_assignee_changed");
+}
+
+/**
  * Pure decision point for one addressed native-review card. Paperclip owns
  * dispatch; adapters may request one idempotent public recovery wake for an
  * overdue card with no bound run. Replacing a card is reserved for a terminal
@@ -192,7 +207,12 @@ export function decideNativeReviewDispatch(input: NativeReviewDispatchInput): Na
   if (liveRuns.length > 1) return { action: "protocol_failure", reason: "multiple_live_runs" };
   if (liveRuns[0]) return { action: "await_run", runId: liveRuns[0].id };
 
-  const current = latestRun(input.runs);
+  // Pre-start assignee-change cancellations never executed the reviewer, so
+  // they are not terminal-run evidence. Exclude them before selecting the
+  // authoritative run; an overdue card with only such cancellations recovers
+  // on the same card.
+  const effectiveRuns = input.runs.filter((run) => !isPreStartAssigneeCancellation(run));
+  const current = latestRun(effectiveRuns);
   if (current?.status === "succeeded") return { action: "await_verdict", runId: current.id };
   if (current && !TERMINAL_FAILURE_STATUSES.has(current.status)) {
     return { action: "protocol_failure", reason: "invalid_run_evidence" };

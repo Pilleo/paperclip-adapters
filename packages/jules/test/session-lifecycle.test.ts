@@ -36,6 +36,97 @@ describe("session-lifecycle", () => {
     createdAt: new Date().toISOString()
   };
 
+  it("recovers a newer v3 Terra intent instead of replaying a Luna child", () => {
+    const identity = { version: 3 as const, companyId: "co", parentIssueId: "task-123", sessionId: "sess-1", activityId: "activity",
+      documentId: "doc", revisionId: "revision", revisionNumber: 1, stage: "luna" as const,
+      reviewerAgentId: "luna", bootstrapAgentId: "orch", julesAgentId: "jules" };
+    const replayed = { ...sampleSession, childPlanReview: { identity, childId: "luna-child" } };
+    const recovered = { ...sampleSession, childPlanReview: { identity: { ...identity, stage: "terra" as const, reviewerAgentId: "terra" } } };
+    expect(mergeDurableSessionCheckpoints(replayed, recovered).childPlanReview).toEqual(recovered.childPlanReview);
+  });
+
+  it("does not resurrect a v3 child after its provider approval was checkpointed", () => {
+    const identity = { version: 3 as const, companyId: "co", parentIssueId: "task-123", sessionId: "sess-1", activityId: "activity",
+      documentId: "doc", revisionId: "revision", revisionNumber: 1, stage: "terra" as const,
+      reviewerAgentId: "terra", bootstrapAgentId: "orch", julesAgentId: "jules" };
+    const replayed = { ...sampleSession, childPlanReview: { identity, childId: "terra-child" } };
+    const recovered = { ...sampleSession, planApprovedActivityId: "activity" };
+    expect(mergeDurableSessionCheckpoints(replayed, recovered).childPlanReview).toBeUndefined();
+  });
+
+  it("restores the newer Terra card and confirmed journal after a cancelled Luna-to-Terra transfer", () => {
+    const luna = {
+      type: "plan_native_review" as const, protocolVersion: 2 as const,
+      julesActivityId: asJulesActivityId("plan-activity"), question: "Plan",
+      paperclipInteractionId: "luna-card", planDocumentId: "plan-document",
+      planRevisionId: "revision-1", planRevisionNumber: 1,
+      reviewerAgentId: "luna-agent", stage: "luna" as const,
+      createdAt: "2026-09-26T00:00:00.000Z",
+    };
+    const terra = { ...luna, paperclipInteractionId: "terra-card", reviewerAgentId: "terra-agent", stage: "terra" as const };
+    const recovered: JulesAdapterSessionV1 = {
+      ...sampleSession, pendingInteraction: terra,
+      lifecycleEffectJournal: { version: 1, effects: [{
+        effectId: "card:terra:revision-1", kind: "create_card",
+        attempt: { kind: "confirmed", receipt: "terra-card" },
+      }] },
+    };
+    const replayed: JulesAdapterSessionV1 = { ...sampleSession, pendingInteraction: luna };
+    const merged = mergeDurableSessionCheckpoints(replayed, recovered);
+    expect(merged.julesSessionId).toBe(sampleSession.julesSessionId);
+    expect(merged.pendingInteraction).toMatchObject({ stage: "terra", paperclipInteractionId: "terra-card" });
+    expect(merged.lifecycleEffectJournal).toEqual(recovered.lifecycleEffectJournal);
+  });
+
+  it("never downgrades a durable confirmed approval to a replayed started effect", () => {
+    const replayed: JulesAdapterSessionV1 = { ...sampleSession, lifecycleEffectJournal: { version: 1, effects: [
+      { effectId: "approve:sess-1:rev-1", kind: "approve_plan",
+        attempt: { kind: "started", startedAt: "2026-09-27T00:00:00.000Z", attempts: 1 } },
+    ] } };
+    const recovered: JulesAdapterSessionV1 = { ...sampleSession, lifecycleEffectJournal: { version: 1, effects: [
+      { effectId: "approve:sess-1:rev-1", kind: "approve_plan", attempt: { kind: "confirmed", receipt: "provider:approval-1" } },
+    ] } };
+    expect(mergeDurableSessionCheckpoints(replayed, recovered).lifecycleEffectJournal?.effects)
+      .toEqual(recovered.lifecycleEffectJournal?.effects);
+    expect(mergeDurableSessionCheckpoints(recovered, replayed).lifecycleEffectJournal?.effects)
+      .toEqual(recovered.lifecycleEffectJournal?.effects);
+  });
+
+  it("fails closed when two confirmed approval receipts disagree", () => {
+    const left: JulesAdapterSessionV1 = { ...sampleSession, lifecycleEffectJournal: { version: 1, effects: [
+      { effectId: "approve:sess-1:rev-1", kind: "approve_plan", attempt: { kind: "confirmed", receipt: "provider:approval-1" } },
+    ] } };
+    const right: JulesAdapterSessionV1 = { ...sampleSession, lifecycleEffectJournal: { version: 1, effects: [
+      { effectId: "approve:sess-1:rev-1", kind: "approve_plan", attempt: { kind: "confirmed", receipt: "provider:approval-2" } },
+    ] } };
+    expect(() => mergeDurableSessionCheckpoints(left, right)).toThrow(/conflict/i);
+  });
+
+  it("restores the approved plan identity and outcome together with its confirmed durable effect", () => {
+    const replayed: JulesAdapterSessionV1 = { ...sampleSession,
+      planApprovedAt: "2026-09-20T00:00:00.000Z", planApprovedActivityId: "old-plan",
+      planReviewOutcome: "revision_requested" };
+    const recovered: JulesAdapterSessionV1 = { ...sampleSession,
+      planApprovedAt: "2026-09-27T00:00:00.000Z", planApprovedActivityId: "new-plan",
+      planReviewOutcome: "approved", lifecycleEffectJournal: { version: 1, effects: [{
+        effectId: "approve:sess-1:revision-new", kind: "approve_plan",
+        attempt: { kind: "confirmed", receipt: "provider:approval-new" },
+      }] } };
+    const merged = mergeDurableSessionCheckpoints(replayed, recovered);
+    expect({ at: merged.planApprovedAt, activity: merged.planApprovedActivityId, outcome: merged.planReviewOutcome })
+      .toEqual({ at: recovered.planApprovedAt, activity: "new-plan", outcome: "approved" });
+  });
+
+  it("holds conflicting confirmed approvals for different generated plans", () => {
+    const old: JulesAdapterSessionV1 = { ...sampleSession, planApprovedActivityId: "old-plan", planReviewOutcome: "approved",
+      lifecycleEffectJournal: { version: 1, effects: [{ effectId: "approve:sess-1:revision-old", kind: "approve_plan",
+        attempt: { kind: "confirmed", receipt: "provider:approval-old" } }] } };
+    const next: JulesAdapterSessionV1 = { ...sampleSession, planApprovedActivityId: "new-plan", planReviewOutcome: "approved",
+      lifecycleEffectJournal: { version: 1, effects: [{ effectId: "approve:sess-1:revision-new", kind: "approve_plan",
+        attempt: { kind: "confirmed", receipt: "provider:approval-new" } }] } };
+    expect(() => mergeDurableSessionCheckpoints(old, next)).toThrow(/approval.*conflict/i);
+  });
+
   it.each([
     { description: "tokenless local trusted recovery", hasSession: false, hasCanonicalSessionId: false, hasStoredRecoverySession: false, expected: true },
     { description: "decoded session wins", hasSession: true, hasCanonicalSessionId: false, hasStoredRecoverySession: false, expected: false },
@@ -393,6 +484,42 @@ describe("session-lifecycle", () => {
     expect(decision.action).toBe("START_FRESH");
     expect(decision.forceFreshSession).toBe(true);
     expect(decision.session).toBeNull();
+  });
+
+  it("resumes the exact durable provider session after Paperclip restores a failed native run", () => {
+    const identity = { version: 3 as const, companyId: "co", parentIssueId: "task-123", sessionId: "sess-1",
+      activityId: "plan-1", documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1,
+      stage: "terra" as const, reviewerAgentId: "gemini", bootstrapAgentId: "orch", julesAgentId: "jules" };
+    const replayed = { ...sampleSession, phase: "WAITING_FOR_PLAN_APPROVAL" as const,
+      childPlanReview: { identity, childId: "gemini-child" } };
+    const stored = { ...sampleSession, phase: "WAITING_FOR_PLAN_APPROVAL" as const,
+      planApprovedAt: "2026-09-27T20:15:00Z", planApprovedActivityId: "plan-1", planReviewOutcome: "approved" as const,
+      lifecycleEffectJournal: { version: 1 as const, effects: [{ effectId: "approve:sess-1:rev-1", kind: "approve_plan" as const,
+        attempt: { kind: "confirmed" as const, receipt: "provider:approval-1" } }] } };
+    const recovery = { forceFreshSession: true, source: "execution.reconciled", wakeReason: "issue_recovery_action_restored",
+      recoveryActionId: "recovery-1", previousRunId: "failed-run", issueId: "task-123" };
+    const decision = evaluateSessionStartup(recovery, replayed, stored, "sess-1", config);
+    expect(decision.action).toBe("RESUME_EXISTING");
+    expect(decision.forceFreshSession).toBe(false);
+    expect(decision.session?.julesSessionId).toBe(sampleSession.julesSessionId);
+    expect(decision.session?.childPlanReview).toBeUndefined();
+    expect(decision.session?.lifecycleEffectJournal?.effects[0]?.attempt).toMatchObject({ kind: "confirmed" });
+  });
+
+  it("fails closed if native recovery's runtime and disk checkpoints identify different Jules sessions", () => {
+    const recovery = { forceFreshSession: true, source: "execution.reconciled", wakeReason: "issue_recovery_action_restored",
+      recoveryActionId: "recovery-1", previousRunId: "failed-run", issueId: "task-123" };
+    expect(() => evaluateSessionStartup(recovery, { ...sampleSession, julesSessionId: asJulesSessionId("other") },
+      sampleSession, null, config)).toThrow(/session.*conflict|checkpoint.*conflict/i);
+  });
+
+  it("never turns an incomplete native recovery envelope into a fresh cloud Jules session", () => {
+    const partial = { forceFreshSession: true, wakeReason: "issue_recovery_action_restored",
+      recoveryActionId: "recovery-1", previousRunId: "failed-run", issueId: "task-123" };
+    expect(() => evaluateSessionStartup(partial, null, sampleSession, null, config))
+      .toThrow(/recovery.*incomplete|checkpoint.*conflict/i);
+    expect(() => evaluateSessionStartup({ ...partial, source: "execution.reconciled", previousRunId: undefined },
+      null, sampleSession, null, config)).toThrow(/recovery.*incomplete|checkpoint.*conflict/i);
   });
 
   it("restores session from stored recovery when decoded is missing", () => {

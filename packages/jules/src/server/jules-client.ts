@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { JulesSessionName, JulesSessionId, JulesActivityId, PrUrl, parseJulesSessionName, toJulesSessionId, asPrUrl } from './brands.js';
 import { parseRetryAfter } from './retry-policy.js';
+import { createProviderCreateEvidence, createProviderMutationEvidence, type ProviderRequestEvidence } from './provider-request-evidence.js';
+import { createHash } from "node:crypto";
 
 export const JulesCreateSessionRequestSchema = z.object({
   title: z.string().optional(),
@@ -231,6 +233,8 @@ export class JulesClient {
     private apiKey: string,
     private telemetry?: (event: "api_request", sessionId: string | null, fields: Record<string, unknown>) => void | Promise<void>,
     baseUrl = 'https://jules.googleapis.com/v1alpha',
+    private readonly requestEvidence?: { readonly issueId: string; readonly runId: string;
+      readonly onEvidence: (evidence: ProviderRequestEvidence) => void | Promise<void> },
   ) {
     if (!apiKey) {
       throw new Error("Jules API key is required");
@@ -345,8 +349,11 @@ export class JulesClient {
     return undefined;
   }
 
-  async createSession(request: CreateSessionRequest): Promise<JulesSession> {
+  async createSession(request: CreateSessionRequest, requestId?: string): Promise<JulesSession> {
     const payload = JulesCreateSessionRequestSchema.parse(request);
+    if (this.requestEvidence) {
+      await this.requestEvidence.onEvidence(createProviderCreateEvidence(payload, this.requestEvidence, requestId));
+    }
     const data = await this.fetchApi('/sessions', {
       method: 'POST',
       body: JSON.stringify(payload)
@@ -399,14 +406,27 @@ export class JulesClient {
     };
   }
 
-  async sendMessage(sessionId: JulesSessionId, request: SendMessageRequest) {
+  async sendMessage(sessionId: JulesSessionId, request: SendMessageRequest,
+    effect?: { readonly effectId: string; readonly planActivityId?: string | null; readonly kind?: "request_revision" }) {
+    if (this.requestEvidence) {
+      await this.requestEvidence.onEvidence(createProviderMutationEvidence({ sessionId,
+        method: effect?.kind ?? "send_message",
+        effectId: effect?.effectId ?? `unattributed:${createHash("sha256").update(`${sessionId}:${request.prompt}`).digest("hex")}`,
+        planActivityId: effect?.planActivityId,
+      }));
+    }
     return this.fetchApi(`/sessions/${encodeURIComponent(sessionId)}:sendMessage`, {
       method: 'POST',
       body: JSON.stringify(request)
     });
   }
 
-  async approvePlan(sessionId: JulesSessionId) {
+  async approvePlan(sessionId: JulesSessionId,
+    effect?: { readonly effectId: string; readonly planActivityId?: string | null }) {
+    if (this.requestEvidence) {
+      await this.requestEvidence.onEvidence(createProviderMutationEvidence({ sessionId, method: "approve_plan",
+        effectId: effect?.effectId ?? `unattributed:approve:${sessionId}`, planActivityId: effect?.planActivityId }));
+    }
     return this.fetchApi(`/sessions/${encodeURIComponent(sessionId)}:approvePlan`, {
       method: 'POST',
     });

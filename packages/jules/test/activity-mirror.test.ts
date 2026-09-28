@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { activityScanPageLimit, listAllActivities, mirrorNewActivities, reduceTerminalActivityScan } from "../src/server/activity-mirror.js";
+import { activityScanPageLimit, listAllActivities, scanCompleteActivities, mirrorNewActivities, reduceTerminalActivityScan } from "../src/server/activity-mirror.js";
 import { JulesClient } from "../src/server/jules-client.js";
 import { JulesAdapterSessionV1 } from "../src/server/session.js";
 
@@ -109,6 +109,11 @@ describe("activity-mirror", () => {
     const res = await listAllActivities(client, "session-1");
 
     expect(res).toHaveLength(2);
+    expect(client.getActivities).toHaveBeenCalledTimes(2);
+  });
+  it("marks a bounded or cyclic activity history incomplete before native plan decisions", async () => {
+    const client = { getActivities: vi.fn().mockResolvedValue({ activities: [{ id: "plan-1" }], nextPageToken: "again" }) } as unknown as JulesClient;
+    expect((await scanCompleteActivities(client, "session-1", 2)).complete).toBe(false);
     expect(client.getActivities).toHaveBeenCalledTimes(2);
   });
 

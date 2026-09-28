@@ -1,6 +1,11 @@
 import path from "node:path";
-import type { ServerAdapterModule, AdapterExecutionContext, AdapterExecutionResult, AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
+import { fileURLToPath } from "node:url";
+import type { ServerAdapterModule, AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { createAcpxEngineExecutor } from "@paperclipai/adapter-utils/acpx-engine/execute";
+import { createAcpRuntime } from "acpx/runtime";
+import { diagnoseAcpSessionError } from "./acp-session-diagnostic.js";
+import { normalizeAcpMcpNames } from "./acp-mcp-names.js";
+import { reviewMcpEnv, withNativeReviewMcp } from "./review-mcp.js";
 import { AntigravityConfigSchema, antigravityAdapterConfigSchema, DEFAULT_AGY_SERVER_PATH } from "./config.js";
 import { testEnvironment } from "./test-environment.js";
 import { ANTIGRAVITY_MODELS } from "../ui/models.js";
@@ -10,18 +15,6 @@ import { LOCAL_AGENT_TOOL_GUIDANCE, withLocalAgentToolBudget } from "@pilleo/pap
 export const type = "antigravity";
 export const label = "Google Antigravity (AGY)";
 export const models = ANTIGRAVITY_MODELS;
-
-export const modelProfiles: AdapterModelProfileDefinition[] = [
-  {
-    key: "cheap",
-    label: "Cheap",
-    description: "Use Gemini 3.5 Flash as the budget Antigravity reasoning lane.",
-    adapterConfig: {
-      model: "gemini-3.5-flash-extra-low",
-    },
-    source: "adapter_default",
-  },
-];
 
 export const antigravityAgentConfigurationDoc = `# Google Antigravity (AGY) Adapter
 
@@ -48,7 +41,23 @@ Runs **Google Antigravity** pair-programming agent sessions via the Agent Client
 | **ACP launch flags** | The installed AGY ACP CLI is launched without legacy UID/debug flags | none |
 `;
 
-const rawAcpExecutor = createAcpxEngineExecutor({ adapterType: "antigravity" });
+const rawAcpExecutor = createAcpxEngineExecutor({
+  adapterType: "antigravity",
+  createRuntime: (options) => {
+    const runtime = createAcpRuntime(options);
+    const ensureSession = runtime.ensureSession.bind(runtime);
+    runtime.ensureSession = async (input) => {
+      try {
+        return await ensureSession(input);
+      } catch (error) {
+        const diagnostic = diagnoseAcpSessionError(error);
+        if (diagnostic) console.warn(`[ANTIGRAVITY] ACP session/new rejected: ${JSON.stringify(diagnostic)}`);
+        throw error;
+      }
+    };
+    return runtime;
+  },
+});
 
 function normalizeAntigravityModel(rawModel?: string): string {
   if (!rawModel) return "gemini-pro-agent";
@@ -69,23 +78,44 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     rawServer.includes("/") || rawServer.startsWith(".")
       ? path.resolve(rawServer)
       : rawServer;
-  // Current AGY releases reject the historic `--uid` and `--debug` flags
-  // before ACP initialization. Keep accepting those legacy config fields for
-  // persisted agent compatibility, but never forward them to the executable.
-  const agentCommand = serverPath;
+  // The interactive `agy` CLI does not speak ACP. The dedicated Zed-distributed
+  // server does, but requires --uid= to start its JSON-RPC transport. Never
+  // apply the flag to the interactive CLI (it rejects it before initialization).
+  if (ctx.config?.["nativeReview"] === true && path.basename(serverPath) !== "agy_acp_server.par") {
+    throw new Error("Native Gemini review requires an AGY ACP server, not the interactive agy CLI");
+  }
+  const quotedServer = /^[a-zA-Z0-9_/.\-]+$/.test(serverPath)
+    ? serverPath : `'${serverPath.replaceAll("'", `'"'"'`)}'`;
+  const agentCommand = path.basename(serverPath) === "agy_acp_server.par"
+    ? `${quotedServer} --uid=` : serverPath;
   const normalizedModel = normalizeAntigravityModel(config.model);
+  const rawConfig = (ctx.config ?? {}) as Record<string, unknown>;
+  const configuredEnv = rawConfig["env"] && typeof rawConfig["env"] === "object" && !Array.isArray(rawConfig["env"])
+    ? rawConfig["env"] as Record<string, unknown> : {};
+  const basePath = typeof configuredEnv["PATH"] === "string" ? configuredEnv["PATH"] : process.env["PATH"] ?? "";
+  const nodeBin = path.dirname(process.execPath);
+  const runtimePath = [nodeBin, ...basePath.split(path.delimiter).filter((entry) => entry && entry !== nodeBin)]
+    .join(path.delimiter);
 
   const acpConfig: Record<string, unknown> = {
     ...ctx.config,
     agent: "antigravity",
     agentCommand,
+    env: { ...configuredEnv, PATH: runtimePath },
     permissionMode: config.permissionMode || "approve-all",
     model: normalizedModel,
     timeoutSec: config.timeoutSec,
   };
 
+  const review = rawConfig["nativeReview"] === true
+    ? await withNativeReviewMcp(ctx, String(rawConfig["reviewMcpCommand"] ?? process.execPath), Array.isArray(rawConfig["reviewMcpArgs"]) ? rawConfig["reviewMcpArgs"].map(String) : [fileURLToPath(new URL("../../../orchestrator/dist/server/native-review-mcp-stdio.js", import.meta.url))], reviewMcpEnv(ctx))
+    : null;
+  const executionCtx = review?.ctx ?? ctx;
+  const runtimeMcp = executionCtx.runtimeMcp;
+  try {
   return await rawAcpExecutor({
-    ...ctx,
+    ...executionCtx,
+    ...(runtimeMcp ? { runtimeMcp: { getServers: () => normalizeAcpMcpNames(runtimeMcp.getServers()) } } : {}),
     context: withLocalAgentToolBudget((ctx.context || {}) as Record<string, unknown>),
     config: {
       ...acpConfig,
@@ -95,6 +125,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           : acpConfig["promptTemplate"],
     },
   });
+  } finally {
+    await review?.close();
+  }
 }
 
 export { testEnvironment };
@@ -109,9 +142,7 @@ export function createServerAdapter(): ServerAdapterModule {
     instructionsPathKey: "instructionsFilePath",
     requiresMaterializedRuntimeSkills: true,
     models: ANTIGRAVITY_MODELS,
-    modelProfiles,
     listModels: async () => await fetchDynamicAntigravityModels(),
-    listModelProfiles: async () => modelProfiles,
     agentConfigurationDoc: antigravityAgentConfigurationDoc,
     getConfigSchema: () => antigravityAdapterConfigSchema,
   };

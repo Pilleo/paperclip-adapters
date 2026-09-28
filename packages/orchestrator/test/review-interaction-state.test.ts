@@ -96,6 +96,9 @@ describe("native PR review interaction state", () => {
       { id: "comment", kind: "comment", status: "answered", idempotencyKey: "pr-review:v13:issue-1:pr:head-a:terra", result: { items: [{ id: "pull_request", verdict: "reject", reason: "No" }] } },
     ], "issue-1", "head-a")).toBe(true);
     expect(hasNativeRejectionForHead([], "issue-1", "head-a")).toBe(false);
+    expect(hasNativeRejectionForHead([
+      { id: "gemini-reject", kind: "request_item_verdicts", status: "answered", idempotencyKey: "pr-review:v13:issue-1:pr:head-a:strong", result: { items: [{ id: "pull_request", verdict: "reject", reason: "Fix the unsafe change" }] } },
+    ], "issue-1", "head-a")).toBe(true);
   });
 
   it("recognizes a completed Luna and Terra approval ladder only for the current head", () => {
@@ -107,6 +110,20 @@ describe("native PR review interaction state", () => {
     expect(hasCompletedNativeApprovalLadderForHead([
       { id: "luna", kind: "request_item_verdicts", status: "answered", idempotencyKey: "pr-review:v13:issue-1:pr:head-a:luna", result: { items: [{ id: "pull_request", verdict: "approve" }] } },
     ], "issue-1", "head-a")).toBe(false);
+  });
+
+  it("requires a Gemini-addressed strong verdict when Gemini is the configured strong reviewer", () => {
+    const approved = (id: string, stage: "luna" | "terra" | "strong", reviewerId: string) => ({
+      id, kind: "request_item_verdicts", status: "answered", addresseeAgentId: reviewerId,
+      idempotencyKey: `pr-review:v13:issue-1:pr:head-a:${stage}`,
+      result: { items: [{ id: "pull_request", verdict: "approve" }] },
+    });
+    const luna = approved("luna", "luna", "luna-1");
+    const terra = approved("terra", "terra", "terra-1");
+    const gemini = approved("gemini", "strong", "gemini-1");
+    expect(hasCompletedNativeApprovalLadderForHead([luna, terra], "issue-1", "head-a", undefined, "strong", "gemini-1")).toBe(false);
+    expect(hasCompletedNativeApprovalLadderForHead([luna, gemini], "issue-1", "head-a", undefined, "strong", "gemini-1")).toBe(true);
+    expect(hasCompletedNativeApprovalLadderForHead([luna, { ...gemini, addresseeAgentId: "terra-1" }], "issue-1", "head-a", undefined, "strong", "gemini-1")).toBe(false);
   });
 
   it("recognizes only same-contract Luna and Terra approvals for the current head", () => {

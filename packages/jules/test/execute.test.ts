@@ -3,7 +3,12 @@ import { execute } from '../src/server/execute';
 import { AdapterExecutionContext } from '@paperclipai/adapter-utils';
 import { JulesClient } from '../src/server/jules-client';
 import { sessionCodec } from '../src/server/session';
-import { getPaperclipInteraction, getPaperclipIssue, listPaperclipInteractions, moveIssueToReview, registerPullRequestWorkProduct, withdrawPaperclipInteraction } from '../src/server/paperclip-client';
+import { saveStoredSession } from '../src/server/session-store.js';
+import { createHash } from 'node:crypto';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { getPaperclipInteraction, getPaperclipIssue, listPaperclipInteractions, moveIssueToDone, moveIssueToReview, registerPullRequestWorkProduct, withdrawPaperclipInteraction } from '../src/server/paperclip-client';
 import { getPullRequestCiStatus, getPullRequestDetails } from '../src/server/ci-status';
 
 vi.mock('../src/server/jules-client', async (importOriginal) => {
@@ -49,6 +54,7 @@ vi.mock('../src/server/paperclip-client', async (importOriginal) => {
     registerPullRequestWorkProduct: vi.fn().mockResolvedValue(undefined),
     getPaperclipIssue: vi.fn().mockResolvedValue({ id: "plan-review-1", status: "blocked" }),
     moveIssueToReview: vi.fn().mockResolvedValue(undefined),
+    moveIssueToDone: vi.fn().mockResolvedValue(undefined),
     completeInternalReviewIssue: vi.fn().mockResolvedValue(undefined),
     withdrawPaperclipInteraction: vi.fn().mockResolvedValue(undefined),
   };
@@ -121,6 +127,86 @@ beforeAll(() => {
     // durable Jules monitor owns this cadence, so a normal pending result
     // must not publish a competing host-level next action.
     expect(res.resultJson).not.toHaveProperty('nextAction');
+  });
+
+  it('wires safe, run-attributed provider create evidence before a managed session', async () => {
+    const onLog = vi.fn().mockResolvedValue(undefined);
+    await execute({ ...baseCtx, onLog } as AdapterExecutionContext);
+    expect(vi.mocked(JulesClient.prototype.createSession)).toHaveBeenCalledWith(expect.objectContaining({ requirePlanApproval: true }), expect.any(String));
+    const evidenceScope = (vi.mocked(JulesClient).mock.calls[0] as unknown[])[3] as {
+      issueId: string; runId: string; onEvidence: (evidence: unknown) => Promise<void>;
+    };
+    expect(evidenceScope).toMatchObject({ issueId: 'task-1', runId: 'run-1', onEvidence: expect.any(Function) });
+    await evidenceScope.onEvidence({ kind: 'create', requestId: 'request-1', requirePlanApproval: true, promptSha256: 'hash' });
+    const recorded = onLog.mock.calls.map((call) => String(call[1] ?? '')).find((line) => line.includes('provider_request_evidence'));
+    expect(recorded).toContain('"requirePlanApproval":true');
+    expect(recorded).not.toContain('test-key');
+    expect(recorded).not.toContain('Test desc');
+  });
+
+  it('recovers one exact Jules session from a prepared create intent without a second POST', async () => {
+    const prompt = 'Prepared disposable prompt';
+    vi.mocked(JulesClient.prototype.listSessions).mockResolvedValue({ sessions: [{ id: 'session-recovered', name: 'sessions/session-recovered',
+      prompt, source: 'sources/github/pilleo/test', baseBranch: 'master', createTime: new Date().toISOString(), state: 'IN_PROGRESS',
+    }], nextPageToken: undefined } as never);
+    const prepared = sessionCodec.encode({ version: 1, paperclipIssueId: 'task-1', promptHash: 'hash',
+      repository: 'pilleo/test', source: 'sources/github/pilleo/test', baseBranch: 'master', phase: 'STARTING',
+      attempt: 1, failedSessions: [], createdAt: new Date().toISOString(),
+      providerCreateIntent: { requestId: 'request-1', runId: 'run-1', promptSha256: createHash('sha256').update(prompt).digest('hex'),
+        source: 'sources/github/pilleo/test', baseBranch: 'master', startedAt: new Date().toISOString() },
+    } as never);
+    const result = await execute({ ...baseCtx, runtime: { ...baseCtx.runtime, sessionParams: prepared } } as AdapterExecutionContext);
+    expect(JulesClient.prototype.createSession).not.toHaveBeenCalled();
+    expect(result.exitCode).toBe(0);
+    expect(sessionCodec.decode(result.sessionParams!)?.julesSessionId).toBe('session-recovered');
+  });
+
+  it('does not discard a recovered create receipt for a force-fresh wake', async () => {
+    const prompt = 'Prepared disposable prompt';
+    vi.mocked(JulesClient.prototype.listSessions).mockResolvedValue({ sessions: [{ id: 'session-recovered', name: 'sessions/session-recovered',
+      prompt, source: 'sources/github/pilleo/test', baseBranch: 'master', createTime: new Date().toISOString(), state: 'IN_PROGRESS',
+    }], nextPageToken: undefined } as never);
+    const prepared = sessionCodec.encode({ version: 1, paperclipIssueId: 'task-1', promptHash: 'hash',
+      repository: 'pilleo/test', source: 'sources/github/pilleo/test', baseBranch: 'master', phase: 'STARTING',
+      attempt: 1, failedSessions: [], createdAt: new Date().toISOString(),
+      providerCreateIntent: { requestId: 'request-1', runId: 'run-1', promptSha256: createHash('sha256').update(prompt).digest('hex'),
+        source: 'sources/github/pilleo/test', baseBranch: 'master', startedAt: new Date().toISOString() },
+    } as never);
+    const result = await execute({ ...baseCtx,
+      context: { ...baseCtx.context, forceFreshSession: true },
+      runtime: { ...baseCtx.runtime, sessionParams: prepared },
+    } as AdapterExecutionContext);
+    expect(result.errorCode).toBe('jules_create_outcome_unverified');
+    expect(JulesClient.prototype.createSession).not.toHaveBeenCalled();
+  });
+
+  it('never resubmits a provider create after losing its POST response', async () => {
+    vi.mocked(JulesClient.prototype.createSession).mockRejectedValueOnce(new Error('response lost'));
+    const first = await execute({ ...baseCtx } as AdapterExecutionContext);
+    expect(first.errorCode).toBe('jules_create_outcome_unverified');
+    expect(sessionCodec.decode(first.sessionParams!)?.providerCreateIntent).toBeDefined();
+    const second = await execute({ ...baseCtx, runId: 'run-2', runtime: {
+      ...baseCtx.runtime, sessionParams: first.sessionParams,
+    } } as AdapterExecutionContext);
+    expect(second.errorCode).toBe('jules_create_outcome_unverified');
+    expect(JulesClient.prototype.createSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not create a session when its durable recovery record is unreadable', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'jules-create-intent-'));
+    const original = process.env.PAPERCLIP_JULES_SESSION_STORE_DIR;
+    process.env.PAPERCLIP_JULES_SESSION_STORE_DIR = directory;
+    const filename = createHash('sha256').update('task-1\0sources/github/pilleo/test\0master').digest('hex');
+    try {
+      await writeFile(join(directory, `${filename}.json`), '{broken', { mode: 0o600 });
+      const result = await execute({ ...baseCtx } as AdapterExecutionContext);
+      expect(result.errorCode).toBe('jules_session_store_unavailable');
+      expect(JulesClient.prototype.createSession).not.toHaveBeenCalled();
+    } finally {
+      if (original === undefined) delete process.env.PAPERCLIP_JULES_SESSION_STORE_DIR;
+      else process.env.PAPERCLIP_JULES_SESSION_STORE_DIR = original;
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it('moves the issue to review on COMPLETED state with PR', async () => {
@@ -211,6 +297,96 @@ beforeAll(() => {
     );
     expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toBeUndefined();
     expect(result.resultJson).toMatchObject({ prUrl: 'https://github.com/pilleo/test/pull/1549', issueStatus: 'in_review' });
+  });
+
+  it('delivers the completed provider PR after an approved plan checkpoint restart without another approval', async () => {
+    (JulesClient.prototype.getSession as any).mockResolvedValue({
+      state: 'COMPLETED', id: '123', rawOutputs: [{ pullRequest: { url: 'https://github.com/pilleo/test/pull/1549' } }],
+    });
+    vi.mocked(getPullRequestDetails).mockResolvedValue({
+      state: 'OPEN', merged: false, ciStatus: 'success', inspectionStatus: 'observed',
+      mergeableStatus: 'mergeable', headSha: 'a'.repeat(40), headRefName: 'jules-1549',
+    });
+    const checkpoint = sessionCodec.encode({
+      version: 1, paperclipIssueId: 'task-1', promptHash: 'stable-hash', promptHashVersion: 2,
+      repository: 'pilleo/test', source: 'github', baseBranch: 'master', phase: 'WAITING_FOR_PLAN_APPROVAL',
+      sessionId: '123', julesSessionId: '123', attempt: 1, failedSessions: [], createdAt: '2026-09-27T00:00:00.000Z',
+      planApprovedAt: '2026-09-27T00:05:00.000Z', planApprovedActivityId: 'plan-1', planReviewOutcome: 'approved',
+      lifecycleEffectJournal: { version: 1, effects: [{ effectId: 'approve:123:rev-1', kind: 'approve_plan',
+        attempt: { kind: 'confirmed', receipt: 'provider:COMPLETED' } }] },
+    } as never);
+    const result = await execute({ ...baseCtx, authToken: 'jwt-token',
+      agent: { ...baseCtx.agent, adapterConfig: { ...baseCtx.agent.adapterConfig, ciPolicy: 'skip' } },
+      runtime: { ...baseCtx.runtime, sessionParams: checkpoint },
+    } as AdapterExecutionContext);
+
+    expect(result.exitCode).toBe(0);
+    expect(JulesClient.prototype.approvePlan).not.toHaveBeenCalled();
+    expect(registerPullRequestWorkProduct).toHaveBeenCalledWith('task-1',
+      'https://github.com/pilleo/test/pull/1549', 'jwt-token', 'run-1', expect.objectContaining({ headSha: 'a'.repeat(40) }));
+    expect(result.resultJson).toMatchObject({ prUrl: 'https://github.com/pilleo/test/pull/1549', issueStatus: 'in_review' });
+  });
+
+  it('registers a verified merged PR before completing and clearing the Jules task', async () => {
+    (JulesClient.prototype.getSession as any).mockResolvedValue({ state: 'COMPLETED', id: '123',
+      rawOutputs: [{ pullRequest: { url: 'https://github.com/pilleo/test/pull/1549' } }] });
+    vi.mocked(getPullRequestDetails).mockResolvedValue({ state: 'MERGED', merged: true, ciStatus: 'success',
+      inspectionStatus: 'observed', mergeableStatus: 'mergeable', headSha: 'a'.repeat(40), headRefName: 'jules-1549' });
+    const result = await execute({ ...baseCtx, authToken: 'jwt-token',
+      runtime: { ...baseCtx.runtime, sessionParams: sessionCodec.encode({
+        version: 1, paperclipIssueId: 'task-1', promptHash: 'stable-hash', promptHashVersion: 2,
+        repository: 'pilleo/test', source: 'github', baseBranch: 'master', phase: 'COMPLETED',
+        sessionId: '123', julesSessionId: '123', attempt: 1, failedSessions: [],
+        createdAt: '2026-09-27T00:00:00.000Z', currentPrUrl: 'https://github.com/pilleo/test/pull/1549',
+      } as never) },
+    } as AdapterExecutionContext);
+    expect(result.resultJson).toMatchObject({ prUrl: 'https://github.com/pilleo/test/pull/1549', merged: true });
+    expect(registerPullRequestWorkProduct).toHaveBeenCalledWith('task-1',
+      'https://github.com/pilleo/test/pull/1549', 'jwt-token', 'run-1', expect.objectContaining({ merged: true, headSha: 'a'.repeat(40) }));
+    expect(moveIssueToDone).toHaveBeenCalled();
+    expect(vi.mocked(registerPullRequestWorkProduct).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(moveIssueToDone).mock.invocationCallOrder[0]!);
+  });
+
+  it('retains the approved provider session on a native forceFreshSession recovery wake', async () => {
+    const prior = process.env['PAPERCLIP_JULES_SESSION_STORE_DIR'];
+    const directory = await mkdtemp(join(tmpdir(), 'jules-native-recovery-'));
+    process.env['PAPERCLIP_JULES_SESSION_STORE_DIR'] = directory;
+    try {
+      const identity = { version: 3 as const, companyId: '1', parentIssueId: 'task-1', sessionId: '123',
+        activityId: 'plan-1', documentId: 'doc-1', revisionId: 'rev-1', revisionNumber: 1,
+        stage: 'terra' as const, reviewerAgentId: '00000000-0000-4000-8000-000000000002',
+        bootstrapAgentId: '00000000-0000-4000-8000-000000000099', julesAgentId: '1' };
+      const stale = { version: 1 as const, paperclipIssueId: 'task-1', promptHash: 'stable-hash',
+        promptHashVersion: 2, repository: 'pilleo/test', source: 'sources/github/pilleo/test', baseBranch: 'master',
+        phase: 'WAITING_FOR_PLAN_APPROVAL' as const, sessionId: '123', julesSessionId: '123',
+        attempt: 1, failedSessions: [], createdAt: '2026-09-27T00:00:00.000Z',
+        childPlanReview: { identity, childId: 'gemini-child' } };
+      await saveStoredSession({ ...stale, childPlanReview: undefined,
+        planApprovedAt: '2026-09-27T00:05:00.000Z', planApprovedActivityId: 'plan-1', planReviewOutcome: 'approved',
+        lifecycleEffectJournal: { version: 1, effects: [{ effectId: 'approve:123:rev-1', kind: 'approve_plan',
+          attempt: { kind: 'confirmed', receipt: 'provider:approved-1' } }] },
+      } as never);
+      (JulesClient.prototype.getSession as any).mockResolvedValue({ state: 'COMPLETED', id: '123',
+        rawOutputs: [{ pullRequest: { url: 'https://github.com/pilleo/test/pull/1549' } }] });
+      vi.mocked(getPullRequestDetails).mockResolvedValue({ state: 'OPEN', merged: false, ciStatus: 'success',
+        inspectionStatus: 'observed', mergeableStatus: 'mergeable', headSha: 'a'.repeat(40), headRefName: 'jules-1549' });
+      const result = await execute({ ...baseCtx, authToken: 'jwt-token',
+        agent: { ...baseCtx.agent, adapterConfig: { ...baseCtx.agent.adapterConfig, ciPolicy: 'skip' } },
+        runtime: { ...baseCtx.runtime, sessionParams: sessionCodec.encode(stale as never) },
+        context: { ...baseCtx.context, forceFreshSession: true, source: 'execution.reconciled',
+          wakeReason: 'issue_recovery_action_restored', recoveryActionId: 'recovery-1',
+          previousRunId: 'failed-run', issueId: 'task-1' },
+      } as AdapterExecutionContext);
+      expect(JulesClient.prototype.createSession).not.toHaveBeenCalled();
+      expect(result.exitCode).toBe(0);
+      expect(registerPullRequestWorkProduct).toHaveBeenCalledWith('task-1',
+        'https://github.com/pilleo/test/pull/1549', 'jwt-token', 'run-1', expect.any(Object));
+    } finally {
+      if (prior === undefined) delete process.env['PAPERCLIP_JULES_SESSION_STORE_DIR'];
+      else process.env['PAPERCLIP_JULES_SESSION_STORE_DIR'] = prior;
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("schedules branch-bound remediation instead of messaging a terminal Jules session with red CI", async () => {

@@ -1,4 +1,4 @@
-import type { ServerAdapterModule, AdapterExecutionContext, AdapterExecutionResult, AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
+import type { ServerAdapterModule, AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import path from "node:path";
 import { createAcpxEngineExecutor } from "@paperclipai/adapter-utils/acpx-engine/execute";
 import { VibeConfigSchema, vibeAdapterConfigSchema, DEFAULT_VIBE_COMMAND } from "./config.js";
@@ -9,19 +9,6 @@ import { LOCAL_AGENT_TOOL_GUIDANCE, withLocalAgentToolBudget } from "@pilleo/pap
 export const type = "vibe";
 export const label = "Mistral Vibe Code";
 export const models = VIBE_MODELS;
-
-export const modelProfiles: AdapterModelProfileDefinition[] = [
-  {
-    key: "cheap",
-    label: "Cheap",
-    description: "Use Devstral Small without reasoning as the budget Mistral Vibe lane.",
-    adapterConfig: {
-      model: "devstral-small",
-      thinking: "off",
-    },
-    source: "adapter_default",
-  },
-];
 
 export const vibeAgentConfigurationDoc = `# Mistral Vibe Code Adapter
 
@@ -181,7 +168,6 @@ export function createServerAdapter(): ServerAdapterModule {
   return {
     type,
     models,
-    modelProfiles,
     execute,
     testEnvironment,
     supportsLocalAgentJwt: true,

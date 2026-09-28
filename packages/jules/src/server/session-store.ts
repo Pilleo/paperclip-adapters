@@ -52,7 +52,7 @@ export async function loadStoredSession(
       session.paperclipIssueId !== taskId ||
       session.source !== source ||
       session.baseBranch !== baseBranch) {
-    return null;
+    throw new Error("Invalid durable Jules session recovery record; refusing an unverified provider create");
   }
   return session;
 }

@@ -1,10 +1,12 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
 import { JULES_PROVIDER_POLL_CADENCE_SECONDS } from "@pilleo/paperclip-adapter-common";
 import { decideManagedAgentPatch, managedConfigFingerprint } from "./managed-agent-patch.js";
 import { resolveNativeReviewMcpHome, type NativeReviewWorkerKey } from "./native-review-mcp-home.js";
+import { resolveGeminiAcpServerPath } from "./gemini-acp-server.js";
 
 export interface ManagedWorkerDefinition {
   readonly key: "jules" | "vibe" | "luna_reviewer" | "antigravity" | "terra_reviewer" | "terra_adjudicator";
@@ -126,7 +128,14 @@ export const NATIVE_REVIEW_PROTOCOL_VERSION = "v13" as const;
 // when adapterConfig.env is present. Native-review workers need the host's
 // authenticated, read-only `gh` executable to inspect private PRs; omitting
 // PATH silently strands them on an unauthenticated connector.
-const NATIVE_REVIEWER_PATH = process.env["PATH"]?.trim() || "/usr/local/bin:/usr/bin:/bin";
+const CODEX_155_BIN_DIR = "/home/leanid/.local/share/mise/installs/node/24.19.0/bin";
+
+export function nativeReviewerPath(basePath: string | undefined, preferredDirs: readonly string[] = []): string {
+  const base = basePath?.trim() || "/usr/local/bin:/usr/bin:/bin";
+  return [...new Set([...preferredDirs, ...base.split(":")].map((dir) => dir.trim()).filter(Boolean))].join(":");
+}
+
+const NATIVE_REVIEWER_PATH = nativeReviewerPath(process.env["PATH"], [CODEX_155_BIN_DIR]);
 
 function isSafeManagedPathSegment(value: string): boolean {
   return /^[A-Za-z0-9-]+$/.test(value);
@@ -285,7 +294,7 @@ contract lacks a concrete product, authorization, or destructive decision.`;
 
 function reviewerInstructionsFor(key: ManagedWorkerDefinition["key"]): string | null {
   if (key === "terra_adjudicator") return JULES_ADJUDICATOR_INSTRUCTIONS;
-  if (key === "luna_reviewer" || key === "terra_reviewer") return NATIVE_REVIEWER_INSTRUCTIONS;
+  if (key === "luna_reviewer" || key === "terra_reviewer" || key === "antigravity") return NATIVE_REVIEWER_INSTRUCTIONS;
   return null;
 }
 
@@ -349,15 +358,17 @@ export const MANAGED_FLEET_DEFINITIONS: readonly ManagedWorkerDefinition[] = Obj
   {
     key: "antigravity",
     name: "[Orchestrated] Antigravity Local Worker",
-    title: "Deep Agentic Systems Engineer",
+    title: "Read-Only Gemini Strong Reviewer",
     adapterType: "antigravity",
-    role: "engineer",
+    role: "qa",
     capabilities:
-      "Advanced local pair-programming and systems engineering via Google Antigravity ACP. Executes multi-step workflows, tool calls, and complex architectural investigations.",
-    description: "Local pair-programming ACP worker executing tasks via Google Antigravity",
+      "Read-only Gemini 3.8 Flash strong plan and pull-request reviewer. Resolves only addressed Paperclip typed review cards; never edits files or posts GitHub reviews.",
+    description: "Read-only Gemini ACP worker resolving typed strong review cards",
     adapterConfig: {
       pollCadenceSeconds: 0, // Strictly 0
-      permissionMode: "approve-all",
+      permissionMode: "read-only",
+      model: "gemini-3.8-flash-low",
+      nativeReview: true,
     },
   },
   {
@@ -465,7 +476,7 @@ export async function reconcileManagedFleet(
   // their provisioning when its own protected configuration is unauthorized.
   const reconciliationOrder = [...MANAGED_FLEET_DEFINITIONS].sort((left, right) => {
     const priority = (key: ManagedWorkerDefinition["key"]) =>
-      key === "luna_reviewer" ? 0 : key === "terra_reviewer" ? 1 : key === "terra_adjudicator" ? 2 : 3;
+      key === "luna_reviewer" ? 0 : key === "antigravity" ? 1 : key === "terra_reviewer" ? 2 : key === "terra_adjudicator" ? 3 : 4;
     return priority(left.key) - priority(right.key);
   });
 
@@ -483,7 +494,7 @@ export async function reconcileManagedFleet(
     const matching =
       matchingCandidates.find(
         (agent) =>
-          (def.key === "luna_reviewer" || def.key === "terra_reviewer") &&
+              (def.key === "luna_reviewer" || def.key === "terra_reviewer" || def.key === "antigravity") &&
           JSON.stringify(agent.metadata?.["structuredDecisionCapability"] ?? null) ===
             JSON.stringify(NATIVE_REVIEW_DECISION_CAPABILITY),
       ) ?? matchingCandidates[0];
@@ -508,8 +519,13 @@ export async function reconcileManagedFleet(
       continue;
     }
 
+    const geminiAcpServer = def.key === "antigravity" ? resolveGeminiAcpServerPath() : null;
+    if (def.key === "antigravity" && !geminiAcpServer) {
+      console.warn("[FLEET] Gemini native review unavailable: configure ANTIGRAVITY_ACP_SERVER with an executable agy_acp_server.par");
+    }
     const mergedConfig: Record<string, unknown> = {
       ...def.adapterConfig,
+      ...(geminiAcpServer ? { serverPath: geminiAcpServer } : {}),
       ...(isNativeReviewWorker(def.key)
         ? {
             env: {
@@ -524,7 +540,8 @@ export async function reconcileManagedFleet(
         ? { planApprovalPolicy: config.julesPlanApprovalPolicy }
         : {}),
       ...(def.key === "jules" && (resolvedIds["luna_reviewer"] ?? config.lunaReviewerAgentId ?? config.vibeReviewerAgentId) ? { planReviewerAgentId: resolvedIds["luna_reviewer"] ?? config.lunaReviewerAgentId ?? config.vibeReviewerAgentId } : {}),
-      ...(def.key === "jules" && (resolvedIds["terra_reviewer"] ?? config.terraReviewerAgentId ?? config.reviewerAgentId) ? { planStrongReviewerAgentId: resolvedIds["terra_reviewer"] ?? config.terraReviewerAgentId ?? config.reviewerAgentId } : {}),
+      ...(def.key === "jules" && resolvedIds["antigravity"] ? { planStrongReviewerAgentId: resolvedIds["antigravity"] } : {}),
+      ...(def.key === "jules" && managerId ? { planReviewBootstrapAgentId: managerId } : {}),
       ...(def.key === "jules" && (resolvedIds["terra_reviewer"] ?? config.terraReviewerAgentId ?? config.reviewerAgentId) ? { questionReviewerAgentId: resolvedIds["terra_reviewer"] ?? config.terraReviewerAgentId ?? config.reviewerAgentId } : {}),
       ...(def.key === "jules" && resolvedIds["terra_adjudicator"] ? { questionAdjudicatorAgentId: resolvedIds["terra_adjudicator"], questionReviewerAgentId: resolvedIds["terra_adjudicator"] } : {}),
       ...(def.key === "jules" && config.julesApiKeySecretId
@@ -544,6 +561,10 @@ export async function reconcileManagedFleet(
     const runtimeConfig = desiredRuntimeConfig(def.key);
     const reconciledAdapterConfig: Record<string, unknown> = {
       ...mergedConfig,
+      ...(def.key === "antigravity" ? {
+        reviewMcpCommand: process.execPath,
+        reviewMcpArgs: [fileURLToPath(new URL("../../dist/server/native-review-mcp-stdio.js", import.meta.url))],
+      } : {}),
       ...(def.key === "jules"
         ? { pollCadenceSeconds: JULES_PROVIDER_POLL_CADENCE_SECONDS }
         : { pollCadenceSeconds: 0 }),
@@ -557,7 +578,7 @@ export async function reconcileManagedFleet(
       ...(reviewerInstructionsFor(def.key)
         ? { nativeReviewProtocolVersion: NATIVE_REVIEW_PROTOCOL_VERSION }
         : {}),
-      ...(def.key === "luna_reviewer" || def.key === "terra_reviewer"
+      ...(def.key === "luna_reviewer" || def.key === "terra_reviewer" || def.key === "antigravity"
         ? { structuredDecisionCapability: NATIVE_REVIEW_DECISION_CAPABILITY }
         : {}),
     };
@@ -565,6 +586,7 @@ export async function reconcileManagedFleet(
     // hidden values such as env, but only its digest is persisted in metadata.
     const desiredManagedConfiguration = {
       title: def.title,
+      role: def.role,
       capabilities: def.capabilities,
       adapterType: def.adapterType,
       reportsTo: desiredReportsTo,
@@ -595,7 +617,7 @@ export async function reconcileManagedFleet(
           // New Paperclip agents materialize prompts from instructionsBundle;
           // sending the retired promptTemplate field is rejected with 422.
           adapterConfig: createAdapterConfig,
-          ...(def.key === "luna_reviewer" || def.key === "terra_reviewer" || def.key === "terra_adjudicator"
+          ...(def.key === "luna_reviewer" || def.key === "terra_reviewer" || def.key === "terra_adjudicator" || def.key === "antigravity"
             ? {
                 instructionsBundle: {
                   entryFile: "AGENTS.md",
@@ -671,7 +693,7 @@ export async function reconcileManagedFleet(
         matching.metadata?.["immutableConfig"] !== true ||
         matching.metadata?.["description"] !== def.description ||
         (reviewerInstructionsFor(def.key) !== null && matching.metadata?.["nativeReviewProtocolVersion"] !== NATIVE_REVIEW_PROTOCOL_VERSION) ||
-        ((def.key === "luna_reviewer" || def.key === "terra_reviewer") &&
+        ((def.key === "luna_reviewer" || def.key === "terra_reviewer" || def.key === "antigravity") &&
           JSON.stringify(matching.metadata?.["structuredDecisionCapability"] ?? null) !== JSON.stringify(NATIVE_REVIEW_DECISION_CAPABILITY));
 
       const patchDecision = decideManagedAgentPatch({
@@ -687,11 +709,12 @@ export async function reconcileManagedFleet(
           configuration: desiredManagedConfiguration,
           patch: {
             title: def.title,
+            role: def.role,
             capabilities: def.capabilities,
             adapterType: def.adapterType,
             errorReason: null,
             reportsTo: desiredReportsTo,
-            ...(isNativeReviewWorker(def.key) ? { replaceAdapterConfig: true } : {}),
+            ...(isNativeReviewWorker(def.key) || def.key === "antigravity" ? { replaceAdapterConfig: true } : {}),
             adapterConfig: reconciledAdapterConfig,
             ...(runtimeConfig ? { runtimeConfig } : {}),
             metadata: {
@@ -718,7 +741,7 @@ export async function reconcileManagedFleet(
             authorizationFailures.push(failure);
             console.warn(`[FLEET] Authorization blocked ${def.key} reconciliation (${failure.capability}): ${failure.detail}`);
             const missingStructuredCapability =
-              (def.key === "luna_reviewer" || def.key === "terra_reviewer") &&
+          (def.key === "luna_reviewer" || def.key === "terra_reviewer" || def.key === "antigravity") &&
               JSON.stringify(matching.metadata?.["structuredDecisionCapability"] ?? null) !==
                 JSON.stringify(NATIVE_REVIEW_DECISION_CAPABILITY);
             if (missingStructuredCapability && !blockedCapabilities.has("agents:create")) {

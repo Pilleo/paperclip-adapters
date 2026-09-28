@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   decideNativeReviewDispatch,
+  nativePlanReviewStageId,
   parsePlanReviewIdempotencyKey,
   type NativeReviewRunStatus,
 } from "@pilleo/paperclip-adapter-common";
@@ -31,6 +32,13 @@ const ReviewRunSchema = z.object({
   startedAt: z.string().datetime().nullable(),
   finishedAt: z.string().datetime().nullable(),
   error: z.string().optional(),
+  stopReason: z.string().nullable().optional(),
+  errorCode: z.string().nullable().optional(),
+  stageId: z.string().nullable().optional(),
+  stageType: z.string().nullable().optional(),
+  wakeRole: z.string().nullable().optional(),
+  currentParticipantAgentId: z.string().nullable().optional(),
+  returnAssigneeAgentId: z.string().nullable().optional(),
 }).passthrough();
 
 const ChildStatusSchema = z.enum(["backlog", "todo", "in_progress", "blocked", "in_review", "done", "cancelled"]);
@@ -116,14 +124,23 @@ export function decideNativePlanReviewLifecycle(
 
   const runsResult = z.array(ReviewRunSchema).safeParse(raw.runs);
   if (!runsResult.success) return { action: "escalate_protocol_failure", reason: "invalid_run_evidence" };
+  const parsedKey = parsePlanReviewIdempotencyKey(card.idempotencyKey);
+  if (!parsedKey) return { action: "escalate_protocol_failure", reason: "card_identity_mismatch" };
+  const expectedStageId = nativePlanReviewStageId(parsedKey.issueId, parsedKey.revisionId, parsedKey.stage);
+  const stageRuns = runsResult.data.filter((run) =>
+    run.issueId === identity.childIssueId && run.agentId === identity.reviewerAgentId &&
+    run.interactionId === null && run.stageId != null);
+  if (stageRuns.some((run) => run.stageId !== expectedStageId || run.stageType !== "review" ||
+      run.wakeRole !== "reviewer" || run.currentParticipantAgentId !== identity.reviewerAgentId ||
+      !run.returnAssigneeAgentId)) {
+    return { action: "escalate_protocol_failure", reason: "invalid_run_evidence" };
+  }
   const boundRuns = runsResult.data.filter((run) =>
     run.issueId === identity.childIssueId &&
     run.agentId === identity.reviewerAgentId &&
     run.interactionId === identity.interactionId &&
     run.interactionKind === "request_item_verdicts",
   );
-  const parsedKey = parsePlanReviewIdempotencyKey(card.idempotencyKey);
-  if (!parsedKey) return { action: "escalate_protocol_failure", reason: "card_identity_mismatch" };
   const decision = decideNativeReviewDispatch({
     identity: {
       issueId: identity.childIssueId,
@@ -138,14 +155,16 @@ export function decideNativePlanReviewLifecycle(
       immutableKey: card.idempotencyKey,
       attempt: parsedKey.generation,
     },
-    runs: boundRuns.map((run) => ({
+    runs: [...boundRuns, ...stageRuns].map((run) => ({
       id: run.id,
       status: run.status as NativeReviewRunStatus,
       issueId: run.issueId,
       reviewerAgentId: run.agentId,
-      interactionId: run.interactionId,
+      interactionId: run.interactionId ?? card.id,
       startedAt: run.startedAt,
       finishedAt: run.finishedAt,
+      stopReason: run.stopReason ?? null,
+      errorCode: run.errorCode ?? null,
     })),
     nowMs: raw.nowMs,
     graceMs: raw.graceMs,

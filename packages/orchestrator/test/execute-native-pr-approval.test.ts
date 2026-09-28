@@ -42,11 +42,12 @@ function context(): AdapterExecutionContext {
   } as AdapterExecutionContext;
 }
 
-function managedAgents() {
+function managedAgents(includeGemini = false) {
   return [
     { id: "jules-1", name: "Jules", adapterType: "jules", status: "idle", reportsTo: "orchestrator-1", metadata: { managedBy: "paperclip-orchestrator", workerKey: "jules" } },
     { id: "luna-1", name: "Luna", adapterType: "codex_local", status: "idle", reportsTo: "orchestrator-1", metadata: { managedBy: "paperclip-orchestrator", workerKey: "luna_reviewer", structuredDecisionCapability: { version: 1, transports: ["mcp_tool"], decisionKinds: ["pull_request_review"] } } },
     { id: "terra-1", name: "Terra", adapterType: "codex_local", status: "idle", reportsTo: "orchestrator-1", metadata: { managedBy: "paperclip-orchestrator", workerKey: "terra_reviewer", structuredDecisionCapability: { version: 1, transports: ["mcp_tool"], decisionKinds: ["pull_request_review"] } } },
+    ...(includeGemini ? [{ id: "gemini-1", name: "Gemini", adapterType: "antigravity", status: "idle", reportsTo: "orchestrator-1", metadata: { managedBy: "paperclip-orchestrator", workerKey: "antigravity", structuredDecisionCapability: { version: 1, transports: ["mcp_tool"], decisionKinds: ["plan_review", "pull_request_review"] } } }] : []),
   ];
 }
 
@@ -68,7 +69,7 @@ function issue() {
   };
 }
 
-function approvedCard(stage: "luna" | "terra", agentId: string, id: string) {
+function approvedCard(stage: "luna" | "terra" | "strong", agentId: string, id: string) {
   return {
     id,
     kind: "request_item_verdicts",
@@ -103,21 +104,85 @@ describe("orchestrator native PR completion", () => {
     else process.env["PAPERCLIP_API_KEY"] = originalKey;
   });
 
+  it("bounds issue detail requests when a project has many terminal issues", async () => {
+    const issues = Array.from({ length: 18 }, (_, index) => ({
+      id: `terminal-${index}`, identifier: `MAZ-${index}`, title: `Finished ${index}`,
+      status: "done", projectId: "project-1519", assigneeAgentId: null,
+    }));
+    let inFlight = 0;
+    let peakInFlight = 0;
+    let completed = 0;
+    globalThis.fetch = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      if (href.includes("/agents")) return new Response(JSON.stringify(managedAgents()));
+      if (href.includes("/projects")) return new Response(JSON.stringify([
+        { id: "project-1519", name: "fixture", primaryWorkspace: { cwd: process.cwd() } },
+      ]));
+      if ((init?.method ?? "GET") === "GET" && /\/api\/issues\/terminal-\d+$/.test(href)) {
+        const id = href.split("/").at(-1);
+        inFlight++;
+        peakInFlight = Math.max(peakInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        inFlight--;
+        completed++;
+        return new Response(JSON.stringify(issues.find((item) => item.id === id)));
+      }
+      if (href.includes("/issues") && (init?.method ?? "GET") === "GET") {
+        return new Response(JSON.stringify(issues));
+      }
+      return new Response(JSON.stringify([]));
+    }) as typeof fetch;
+
+    await execute(context());
+
+    expect(completed).toBe(18);
+    expect(peakInFlight).toBeLessThanOrEqual(6);
+  });
+
+  it("fails closed when a required issue detail cannot be read", async () => {
+    const logs: string[] = [];
+    globalThis.fetch = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      if (href.includes("/agents")) return new Response(JSON.stringify(managedAgents()));
+      if (href.includes("/projects")) return new Response(JSON.stringify([
+        { id: "project-1519", name: "fixture", primaryWorkspace: { cwd: process.cwd() } },
+      ]));
+      if ((init?.method ?? "GET") === "GET" && href.endsWith("/api/issues/unavailable")) {
+        return new Response("temporarily unavailable", { status: 503 });
+      }
+      if (href.includes("/issues") && (init?.method ?? "GET") === "GET") {
+        return new Response(JSON.stringify([{
+          id: "unavailable", identifier: "MAZ-503", title: "Needs PR observation",
+          status: "in_review", projectId: "project-1519",
+        }]));
+      }
+      return new Response(JSON.stringify([]));
+    }) as typeof fetch;
+
+    const result = await execute({
+      ...context(),
+      onLog: async (_stream, line) => { logs.push(line); },
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(logs.some((line) => line.includes("unavailable") && line.includes("issue detail"))).toBe(true);
+  });
+
   it("creates one merge approval after answered current-head cards despite a lingering reviewer run", async () => {
     const approvals: unknown[] = [];
     const logs: string[] = [];
-    const cards = [approvedCard("luna", "luna-1", "luna-card"), approvedCard("terra", "terra-1", "terra-card")];
+    const cards = [approvedCard("luna", "luna-1", "luna-card"), approvedCard("strong", "gemini-1", "gemini-card")];
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
       const href = String(url);
       const method = (init?.method || "GET").toUpperCase();
-      if (href.includes("/agents")) return new Response(JSON.stringify(managedAgents()));
+      if (href.includes("/agents")) return new Response(JSON.stringify(managedAgents(true)));
       if (href.includes("/projects")) return new Response(JSON.stringify([{ id: "project-1519", name: "fixture", primaryWorkspace: { cwd: process.cwd() } }]));
       if (method === "GET" && href.endsWith(`/api/issues/${issueId}`)) return new Response(JSON.stringify(issue()));
       if (href.includes(`/api/issues/${issueId}/interactions`)) return new Response(JSON.stringify(cards));
       if (href.includes(`/api/issues/${issueId}/children`)) return new Response(JSON.stringify([]));
       if (href.includes(`/api/issues/${issueId}/recovery-actions`)) return new Response(JSON.stringify({ active: null }));
       if (href.includes("/heartbeat-runs")) return new Response(JSON.stringify([
-        { id: "stale-terra-run", agentId: "terra-1", issueId, interactionId: "terra-card", status: "running" },
+        { id: "stale-gemini-run", agentId: "gemini-1", issueId, interactionId: "gemini-card", status: "running" },
       ]));
       if (href.includes("/issues") && method === "GET") return new Response(JSON.stringify([issue()]));
       if (href.includes("/approvals") && method === "POST") {

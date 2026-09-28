@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { execute } from "../src/server/execute";
 import { JulesClient } from "../src/server/jules-client";
@@ -60,6 +60,10 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
     listPaperclipInteractions: vi.fn(),
     moveIssueToBlocked: vi.fn(),
     scheduleJulesSessionMonitor: vi.fn(),
+    upsertJulesSessionHandle: vi.fn().mockResolvedValue(undefined),
+    readJulesSessionHandleState: vi.fn().mockResolvedValue(null),
+    readJulesSessionHandle: vi.fn().mockResolvedValue(null),
+    getPaperclipInteraction: vi.fn().mockResolvedValue(null),
     withdrawPaperclipInteraction: vi.fn(),
   };
 });
@@ -116,6 +120,13 @@ const baseContext = {
 } as unknown as AdapterExecutionContext;
 
 describe("E2E Jules orchestration regression", { timeout: 30_000 }, () => {
+  const unexpectedFetch = vi.fn(async (input: RequestInfo | URL) => {
+    throw new Error(`Unexpected network request in offline orchestration fixture: ${String(input)}`);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    expect(unexpectedFetch.mock.calls.map(([input]) => String(input))).toEqual([]);
+  });
   beforeAll(() => {
     process.env.JULES_API_KEY = "test-key";
   });
@@ -126,6 +137,7 @@ describe("E2E Jules orchestration regression", { timeout: 30_000 }, () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubGlobal("fetch", unexpectedFetch);
     vi.mocked(addJulesActivityComment).mockResolvedValue();
     vi.mocked(listPaperclipInteractions).mockResolvedValue([]);
     vi.mocked(scheduleJulesSessionMonitor).mockResolvedValue();

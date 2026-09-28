@@ -1,7 +1,8 @@
 import readline from "node:readline";
 import fs from "node:fs";
 import path from "node:path";
-import { readNativeReviewAssignmentFromRuntime, submitJulesQuestionDecisionFromRuntime, submitNativeReviewVerdictFromRuntime, type NativeReviewAssignmentResult, type NativeReviewSubmissionResult } from "../core/native-review-submission.js";
+import { submitJulesQuestionDecisionFromRuntime, type NativeReviewAssignmentResult, type NativeReviewSubmissionResult } from "../core/native-review-submission.js";
+import { readPlanReviewAssignmentAndReconcileHandback, submitPlanVerdictAndReturnToJules } from "../core/native-plan-review-handback.js";
 import { NATIVE_REVIEW_RUNTIME_CONTEXT_FILE } from "../core/native-review-mcp-home.js";
 import {
   NATIVE_REVIEW_MCP_TOOL,
@@ -289,13 +290,13 @@ export async function runNativeReviewMcpStdio(env: NodeJS.ProcessEnv = process.e
       const runtime = await resolveNativeReviewMcpRuntime(env);
       return runtime === null
         ? { ok: false, code: "missing_runtime_context" as const }
-        : submitNativeReviewVerdictFromRuntime({ ...runtime, ...arguments_ });
+        : submitPlanVerdictAndReturnToJules({ ...runtime, ...arguments_ });
     },
     readAssignment: async () => {
       const runtime = await resolveNativeReviewMcpRuntime(env);
       return runtime === null
         ? { ok: false, code: "missing_runtime_context" as const }
-        : readNativeReviewAssignmentFromRuntime(runtime);
+        : readPlanReviewAssignmentAndReconcileHandback(runtime);
     },
     submitJulesQuestion: async (arguments_: JulesQuestionToolArguments) => {
       const runtime = await resolveNativeReviewMcpRuntime(env);

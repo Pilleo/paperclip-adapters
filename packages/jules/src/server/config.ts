@@ -117,6 +117,8 @@ export const SettingsSchema = z.object({
   /** Paperclip ACP agents used for Jules plan review; no provider API keys are used. */
   planReviewerAgentId: z.string().uuid().optional(),
   planStrongReviewerAgentId: z.string().uuid().optional(),
+  /** Enables stable parent ownership with child-scoped orchestrator bootstrap. */
+  planReviewBootstrapAgentId: z.string().uuid().optional(),
   /** Accept the UI's comma-separated text field as well as API arrays. */
   codeReviewerAgentIds: z.preprocess(
     value => typeof value === "string"
@@ -153,6 +155,7 @@ export interface AdapterConfig {
   questionAdjudicatorAgentId?: string | undefined;
   planReviewerAgentId?: string | undefined;
   planStrongReviewerAgentId?: string | undefined;
+  planReviewBootstrapAgentId?: string | undefined;
   e2eProviderBaseUrl?: string | undefined;
   codeReviewerAgentIds?: string[] | undefined;
 }
@@ -259,6 +262,10 @@ export function validateConfig(config: unknown, context: ConfigResolutionContext
     }
 
     const planApprovalPolicy = merged.planApprovalPolicy ?? (merged.requirePlanApproval === false ? "trusted_opt_out" : SAFE_DEFAULTS.planApprovalPolicy);
+    if (merged.requirePlanApproval !== undefined &&
+        merged.requirePlanApproval !== (planApprovalPolicy === "required")) {
+      throw new Error("Conflicting plan approval settings: legacy requirePlanApproval disagrees with planApprovalPolicy");
+    }
     const prPolicy = merged.prPolicy ?? SAFE_DEFAULTS.prPolicy;
     const hasRemote = context.workspace?.hasRemote ?? Boolean(merged.repository ?? merged.repositoryUrl ?? context.workspace?.repositoryUrl ?? fromSource ?? discoveredRepo);
     

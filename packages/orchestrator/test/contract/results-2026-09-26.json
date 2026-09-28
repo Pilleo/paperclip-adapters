@@ -1,0 +1,38 @@
+{
+  "version": "2026.916.0",
+  "measuredRun": "run-b0aafd63f172",
+  "integrationAllowed": false,
+  "harnessFailures": 0,
+  "gateExitCode": 2,
+  "scenarios": [
+    { "scenario": "baseline", "result": "observed", "outcome": "handback_and_jules_continuation", "safetyGate": "pass" },
+    { "scenario": "active_before_read", "result": "observed", "outcome": "guard_waits_for_active_reviewer", "safetyGate": "pass" },
+    { "scenario": "queued_before_read", "result": "observed", "outcome": "guard_waits_for_queued_reviewer", "safetyGate": "pass" },
+    { "scenario": "starts_after_read", "result": "observed", "outcome": "unsafe_stale_patch_cancelled_running_reviewer", "safetyGate": "fail" },
+    { "scenario": "queued_after_read", "result": "observed", "outcome": "host_cancelled_stale_queued_reviewer_without_observed_jules_continuation", "safetyGate": "fail" },
+    { "scenario": "overlapping", "result": "observed", "outcome": "host_serialized_reconciler_wakes", "safetyGate": "pass" },
+    { "scenario": "lost_response", "result": "observed", "outcome": "lost_response_reconciled_without_second_patch", "safetyGate": "pass" }
+  ],
+  "decisiveRace": {
+    "issueId": "da3bae80-4f4c-4bae-b245-8721646048cb",
+    "cardId": "af96b52f-2141-44bc-8a79-9c4da853dc8a",
+    "reconcilerRunId": "6a01223e-2a48-48c5-a053-3d8fa7c325b5",
+    "finalEvidenceReadAt": "2026-09-26T11:55:16.484Z",
+    "competitorRunId": "d9d1fadb-6ded-429b-82cf-fe99d34c2fb9",
+    "competitorStartedAt": "2026-09-26T11:55:16.687Z",
+    "competitorFinishedAt": "2026-09-26T11:55:17.788Z",
+    "competitorStatus": "cancelled",
+    "competitorErrorCode": "issue_reassigned",
+    "patchStatus": 200,
+    "julesContinuationRunId": "5ad491eb-da5c-43e7-a3af-bad47d0c7c08"
+  },
+  "queuedRace": {
+    "issueId": "6619609f-e3a5-4202-af4c-dd25dbbd42c5",
+    "competitorRunId": "adfea6fa-d2a3-4beb-a5a1-101b769451a2",
+    "competitorStartedAt": null,
+    "competitorErrorCode": "issue_assignee_changed",
+    "julesWakeStatus": "deferred_issue_execution",
+    "julesWakeRunId": null,
+    "julesObservationWindowMs": 30000
+  }
+}

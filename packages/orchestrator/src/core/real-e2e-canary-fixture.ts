@@ -25,7 +25,7 @@ export function buildCanaryA(projectId: string, runKey: string): Record<string, 
     title: "Canary A: implement increment",
     priority: "high",
     targetFile: canaryTargetFile(runKey, "increment"),
-    body: "Implement the increment helper and its focused behavioral test.",
+    body: "Export increment(n) from the declared CommonJS implementation file. For a finite integer input return n + 1 without mutating anything: increment(2) returns 3, increment(0) returns 1, and increment(-1) returns 0. Throw TypeError on non-number or non-finite input. Add Node's built-in node:test coverage in the declared test file, including the examples and invalid input. Run `node --test " + canaryTestFile(runKey, "increment") + "` and expect all cases to pass before opening the PR.",
   });
 }
 
@@ -34,8 +34,8 @@ export function buildCanaryB(projectId: string, runKey: string, aId: string): Re
     ...buildCanaryIssue(projectId, runKey, {
       title: "Canary B: implement decrement",
       priority: "medium",
-      targetFile: canaryTargetFile(runKey, "decrement"),
-      body: "Implement the decrement helper and its focused behavioral test after Canary A merges.",
+    targetFile: canaryTargetFile(runKey, "decrement"),
+    body: "After A merges, export decrement(n) from the declared CommonJS implementation file. For a finite integer input return n - 1: decrement(2) returns 1, decrement(0) returns -1. Throw TypeError on non-number or non-finite input. Test these cases with node:test in the declared test file. Run `node --test " + canaryTestFile(runKey, "decrement") + "` and expect all tests to pass.",
     }),
     blockedByIssueIds: [aId],
   };
@@ -46,8 +46,8 @@ export function buildCanaryC(projectId: string, runKey: string, bId: string): Re
     ...buildCanaryIssue(projectId, runKey, {
       title: "Canary C: implement is-zero",
       priority: "low",
-      targetFile: canaryTargetFile(runKey, "is-zero"),
-      body: "Implement the zero predicate and its focused behavioral test after Canary B merges.",
+    targetFile: canaryTargetFile(runKey, "is-zero"),
+    body: "After B merges, export isZero(n) from the declared CommonJS implementation file. Return true only for numeric 0 and -0; return false for 1 and -1; throw TypeError on non-number input. Cover all these cases in the declared node:test file. Run `node --test " + canaryTestFile(runKey, "is-zero") + "` and expect all tests to pass.",
     }),
     blockedByIssueIds: [bId],
   };
@@ -81,7 +81,7 @@ function buildCanaryIssue(
     // The metadata contract must be the first Markdown block.  Jules shares
     // this description with the orchestrator but parses strict front matter,
     // whereas the E2E run marker is only an audit annotation.
-    description: `---\norchestrator_managed: true\ncomponent: "core"\ntarget_files: ["${input.targetFile}"]\n---\n<!-- paperclip-adapters:e2e-run:${runKey} -->\n\n${input.body}`,
+    description: `---\norchestrator_managed: true\ncomponent: "core"\ntarget_files: ["${input.targetFile}", "${input.targetFile.replace(/\.js$/, ".test.js")}"]\n---\n<!-- paperclip-adapters:e2e-run:${runKey} -->\n\n${input.body}`,
     projectId,
     status: "todo",
     priority: input.priority,
@@ -102,6 +102,10 @@ function buildCanaryIssue(
 function canaryTargetFile(runKey: string, capability: string): string {
   const safeRunKey = runKey.replace(/[^a-zA-Z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "run";
   return `canary-${safeRunKey}-${capability}.js`;
+}
+
+function canaryTestFile(runKey: string, capability: string): string {
+  return canaryTargetFile(runKey, capability).replace(/\.js$/, ".test.js");
 }
 
 export function assertAuthoritativeCanaryChain(

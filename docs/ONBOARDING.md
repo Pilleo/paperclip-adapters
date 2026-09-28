@@ -53,7 +53,7 @@ This repository contains the deterministic multi-lane orchestrator, execution ad
 ## ⚡ Quick Start (Zero to Running in 60s)
 
 ### 1. Prerequisites
-- **Node.js $\ge 22.0.0$** and **pnpm $\ge 9.0.0$**
+- **Node.js $\ge 24.11.0$** and **pnpm $\ge 9.0.0$**
 - **GitHub CLI (`gh`)** authenticated with write access to `Pilleo/mazewall`
 - **jq** and **curl** installed on Linux / macOS
 

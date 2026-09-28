@@ -143,6 +143,14 @@ describe("native reviewer MCP bridge", () => {
     "submit_http_error",
     "submit_invalid_response",
     "ambiguous_owned_pending_cards",
+    "invalid_identity",
+    "evidence_unavailable",
+    "invalid_card_evidence",
+    "untrusted_plan_verdict",
+    "stale_plan_revision",
+    "unowned_review_policy",
+    "unexpected_issue_state",
+    "handback_failed",
   ])("classifies %s as fatal reviewer infrastructure state", (code) => {
     expect(isFatalNativeReviewMcpError({ isError: true, structuredContent: { code } })).toBe(true);
   });

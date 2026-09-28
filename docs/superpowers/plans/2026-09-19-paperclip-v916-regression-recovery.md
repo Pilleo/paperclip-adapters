@@ -43,7 +43,7 @@
 - Consumes: upstream tag `v2026.916.0`, merge commit `56a9f7133`, backup branch `backup/pre-v2026.916.0-20260919`.
 - Produces: local `master` whose source differs from the tag only by an explicit merge/history record, not runtime patches.
 
-- [ ] **[0%] Step 1: Record the exact remaining Paperclip delta**
+- [x] **[100%] Step 1: Record the exact remaining Paperclip delta**
 
   Run:
 
@@ -54,7 +54,7 @@
 
   Expected: only the local `@paperclipai/shared` export-map patch is behaviorally relevant.
 
-- [ ] **[0%] Step 2: Establish the release baseline before removing the patch**
+- [x] **[100%] Step 2: Establish the release baseline before removing the patch**
 
   Run:
 
@@ -65,15 +65,15 @@
 
   Expected: both pass on the merged tree, proving the baseline is healthy.
 
-- [ ] **[0%] Step 3: Remove the unnecessary local export override**
+- [x] **[100%] Step 3: Remove the unnecessary local export override**
 
   Restore `packages/shared/package.json` to the exact `v2026.916.0` content. Do not alter the database, migration journal, or the backup branch.
 
-- [ ] **[0%] Step 4: Verify stock-release package loading**
+- [x] **[100%] Step 4: Verify stock-release package loading**
 
   Re-run the commands from Step 2. Expected: PASS. If package loading fails, stop and retain only the smallest package-export compatibility commit supported by that failure; do not restore the historical server patch.
 
-- [ ] **[0%] Step 5: Commit the upstream-clean runtime**
+- [x] **[100%] Step 5: Commit the upstream-clean runtime**
 
   ```bash
   git -C /home/leanid/Documents/code/java/paperclip add packages/shared/package.json
@@ -282,7 +282,7 @@
   git diff --check
   ```
 
-- [ ] **[70%] Step 4: Commit documentation**
+- [x] **[100%] Step 4: Commit documentation**
 
   ```bash
   git add AGENTS.md packages/orchestrator/README.md packages/orchestrator/src/core/managed-agent-patch.ts
@@ -301,27 +301,27 @@
 - Consumes: Tasks 1–5.
 - Produces: revision-bound build/test evidence.
 
-- [ ] **[0%] Step 1: Run orchestrator tests**
+- [x] **[100%] Step 1: Run orchestrator tests**
 
   ```bash
   pnpm --filter @pilleo/paperclip-orchestrator-adapter test > /tmp/paperclip-v916-regression-orchestrator.log 2>&1
   ```
 
-- [ ] **[0%] Step 2: Run all adapter tests and build**
+- [x] **[100%] Step 2: Run all adapter tests and build**
 
   ```bash
   pnpm test > /tmp/paperclip-v916-regression-all-tests.log 2>&1
   pnpm build > /tmp/paperclip-v916-regression-adapters-build.log 2>&1
   ```
 
-- [ ] **[0%] Step 3: Run Paperclip release build and focused server contracts**
+- [x] **[100%] Step 3: Run Paperclip release build and focused server contracts**
 
   ```bash
   pnpm --dir /home/leanid/Documents/code/java/paperclip build > /tmp/paperclip-v916-regression-paperclip-build.log 2>&1
   pnpm --dir /home/leanid/Documents/code/java/paperclip --filter @paperclipai/server test -- heartbeat-retry-scheduling.test.ts heartbeat-stale-queue-invalidation.test.ts > /tmp/paperclip-v916-regression-paperclip-tests.log 2>&1
   ```
 
-- [ ] **[0%] Step 4: Validate exact repository states**
+- [x] **[100%] Step 4: Validate exact repository states**
 
   Run `git diff --check`, secret scan, and `git status --short --branch` in both repositories. `.taskplane/` remains untracked runtime state and must not be committed.
 
@@ -338,23 +338,23 @@
 - Consumes: built upstream Paperclip and built adapters.
 - Produces: live evidence that reconciliation is idempotent and structured review still works after the release upgrade.
 
-- [ ] **[0%] Step 1: Restart Paperclip and verify release startup**
+- [x] **[100%] Step 1: Restart Paperclip and verify release startup**
 
   Confirm port 3100 has one listener, startup reports all migrations applied, and logs show orchestrator, Jules, Vibe, and Antigravity loading from their current `dist/index.js` paths.
 
-- [ ] **[0%] Step 2: Trigger one authoritative orchestrator heartbeat**
+- [x] **[100%] Step 2: Trigger one authoritative orchestrator heartbeat**
 
   Use `scripts/fleet/wake_orchestrator.sh`. Capture the heartbeat run ID and wait on its terminal status rather than sleeping blindly.
 
-- [ ] **[0%] Step 3: Verify first-heartbeat migration behavior**
+- [x] **[100%] Step 3: Verify first-heartbeat migration behavior**
 
   Assert Luna and Terra configuration PATCHes return 200, same-name bodies do not contain `name`, metadata contains `managedConfigFingerprint`, no plaintext environment values appear in the API response, and logs contain no fleet 401/403/409.
 
-- [ ] **[0%] Step 4: Trigger and verify a second heartbeat**
+- [x] **[100%] Step 4: Trigger and verify a second heartbeat**
 
   Assert no Luna/Terra configuration PATCH occurs on the second heartbeat. Jules may reconcile independently only when its own visible desired state differs.
 
-- [ ] **[0%] Step 5: Run a disposable native-review canary**
+- [ ] **[55%] Step 5: Run a disposable native-review canary**
 
   Use the existing disposable Paperclip project and repository. Create one minimal approved task through the repository's issue-generation script. Verify this exact chain:
 
@@ -364,6 +364,14 @@
   ```
 
   Neither reviewer may emit a free-text verdict, normal issue comment, or GitHub PR comment. The strong reviewer must not start before Luna approves the same immutable PR head.
+
+  Live recovery evidence before the clean canary:
+
+  - `e54432b` reattaches a v2026.916.0 detached Jules monitor while preserving review stages.
+  - `68f51c6` reconciles a terminal `jules_polling_error` through Paperclip's typed recovery route.
+  - `f0aab42` treats every non-null Paperclip `executionBlocker` as a fail-closed dispatch hold, preventing generic same-tick wakeups from racing the server-owned reconciliation outbox.
+  - Legacy MAZ-1535 contained multiple historical no-replay actions created before these guards and was cancelled as a poisoned disposable fixture.
+  - Fresh dependency chain MAZ-1543 -> MAZ-1544 -> MAZ-1545 was created in the existing disposable project. All three task-start approvals are pending; no task started before approval.
 
 - [ ] **[0%] Step 6: Verify terminal reconciliation**
 

@@ -217,6 +217,15 @@ export async function fetchGitHubPullRequests(
   limit = 50,
   repository?: string,
 ): Promise<GitHubSyncStatus> {
+  const hasWorkspace = existsSync(workspacePath);
+  if (!hasWorkspace && !repository?.trim()) {
+    return {
+      openPrs: Object.freeze([]),
+      mergedPrs: Object.freeze([]),
+      openPrFiles: Object.freeze(new Set<string>()),
+      error: `Workspace unavailable for unscoped GitHub PR discovery: ${workspacePath}`,
+    };
+  }
   try {
     const { stdout } = await execFileAsync(
       resolveGitHubCliExecutable(),
@@ -224,7 +233,9 @@ export async function fetchGitHubPullRequests(
       // Remote verification must not consume an entire heartbeat when gh is
       // unauthenticated or waiting on a broken network connection. Registered
       // Paperclip work products provide the review fallback below.
-      { cwd: workspacePath, timeout: 8_000 }
+      // --repo makes observation independent of the checkout. A removed local
+      // workspace must not turn an otherwise valid remote query into ENOENT.
+      { cwd: hasWorkspace ? workspacePath : process.cwd(), timeout: 8_000 }
     );
 
     const rawList = JSON.parse(stdout);
@@ -263,7 +274,7 @@ export async function fetchGitHubPullRequest(
     const { stdout } = await execFileAsync(
       resolveGitHubCliExecutable(),
       buildGitHubPullRequestViewArgs(prUrl),
-      { cwd: workspacePath, timeout: 8_000 },
+      { cwd: existsSync(workspacePath) ? workspacePath : process.cwd(), timeout: 8_000 },
     );
     const raw = JSON.parse(stdout);
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;

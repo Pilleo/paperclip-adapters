@@ -68,7 +68,10 @@ describe("terminal Jules sessions", () => {
       state: "COMPLETED",
       rawOutputs: [{ pullRequest: { url: "https://github.com/example/repository/pull/1" } }],
     } as never);
-    global.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/work-products")) return new Response("[]", { status: 200 });
+      return new Response("{}", { status: 200 });
+    });
 
     const checkpoint = await execute(baseContext);
     const completed = await execute({
@@ -113,6 +116,7 @@ describe("terminal Jules sessions", () => {
         title: "Reopened task",
         prompt: expect.stringContaining("Address the review feedback"),
       }),
+      expect.any(String),
     );
     expect(reopened.sessionParams).toMatchObject({ sessionId: "session-b", julesSessionId: "session-b" });
   });

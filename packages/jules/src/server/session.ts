@@ -1,10 +1,17 @@
 import { z } from "zod";
+import { ChildPlanReviewIdentitySchema, type ChildPlanReviewIdentity } from "@pilleo/paperclip-adapter-common";
 import { JulesSessionId, PaperclipId, JulesActivityId, PrUrl, asJulesSessionId, asPaperclipId, asJulesActivityId, asPrUrl } from "./brands.js";
 import { AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { MutationCheckpointSchema, MutationCheckpoint } from "./mutation-checkpoint.js";
 import { LifecycleEffectJournalSchema, LifecycleEffectJournal } from "./lifecycle-effect-journal.js";
 import type { ProviderContinuation } from "./provider-continuation.js";
 import { PlanRevisionRequestSchema, type PlanRevisionRequest } from "./plan-revision-request.js";
+import type { ProviderCreateIntent } from "./provider-create-reconciliation.js";
+
+const ProviderCreateIntentSchema = z.object({
+  requestId: z.string().min(1), runId: z.string().min(1), promptSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  source: z.string().min(1), baseBranch: z.string().min(1), startedAt: z.string().datetime(),
+});
 
 export const JULES_SESSION_STATES = [
   "QUEUED",
@@ -194,6 +201,7 @@ export const JulesAdapterSessionV1Schema = z.object({
   source: z.string(),
   baseBranch: z.string(),
   phase: SessionPhaseSchema,
+  providerCreateIntent: ProviderCreateIntentSchema.optional(),
   // Paperclip's canonical provider session identity. For an active Jules
   // session it is deliberately duplicated by the provider-specific field.
   sessionId: z.string().min(1).optional(),
@@ -298,11 +306,20 @@ export const JulesAdapterSessionV1Schema = z.object({
   mutationCheckpoint: MutationCheckpointSchema.optional(),
   /** Durable remote-effect evidence used to classify process interruption. */
   lifecycleEffectJournal: LifecycleEffectJournalSchema.optional(),
+  childPlanReview: z.object({ identity: ChildPlanReviewIdentitySchema, childId: z.string().min(1).optional() }).optional(),
   createdAt: z.string(),
   lastPolledAt: z.string().optional()
 }).superRefine((session, ctx) => {
   const hasSessionId = session.sessionId !== undefined;
   const hasJulesSessionId = session.julesSessionId !== undefined;
+
+  if (session.phase === "STARTING") {
+    if (!session.providerCreateIntent || hasSessionId || hasJulesSessionId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["providerCreateIntent"],
+        message: "A prepared create intent must precede the provider session identity" });
+    }
+    return;
+  }
 
   if (session.phase === "RETRY_SCHEDULED") {
     if (hasSessionId !== hasJulesSessionId ||
@@ -342,6 +359,7 @@ export interface JulesAdapterSessionV1 {
   source: string;
   baseBranch: string;
   phase: z.infer<typeof SessionPhaseSchema>;
+  providerCreateIntent?: ProviderCreateIntent | undefined;
   /** Paperclip canonical session identity; equal to julesSessionId when present. */
   sessionId?: string | undefined;
   julesSessionId?: JulesSessionId | undefined;
@@ -501,6 +519,7 @@ export interface JulesAdapterSessionV1 {
   inPlaceRetryCount?: number | undefined;
   mutationCheckpoint?: MutationCheckpoint | undefined;
   lifecycleEffectJournal?: LifecycleEffectJournal | undefined;
+  childPlanReview?: { identity: ChildPlanReviewIdentity; childId?: string } | undefined;
   createdAt: string;
   lastPolledAt?: string | undefined;
 }

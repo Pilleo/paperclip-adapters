@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { nativePlanReviewStageId } from "@pilleo/paperclip-adapter-common";
 import {
   decideNativePlanReviewLifecycle,
   type NativePlanReviewLifecycleInput,
@@ -68,6 +69,29 @@ describe("native plan review lifecycle", () => {
       expected: { action: "await_run", runId: "run-1" },
     },
     {
+      name: "awaits an exact native-stage reviewer run without card-bound context",
+      input: input({
+        identity: { ...identity, childIssueId: "issue-1" }, childStatus: "in_review",
+        runs: [{ id: "stage-run-1", status: "running", issueId: "issue-1", agentId: "luna-1",
+          interactionId: null, interactionKind: null,
+          stageId: nativePlanReviewStageId("issue-1", "revision-1", "luna"), stageType: "review", wakeRole: "reviewer",
+          currentParticipantAgentId: "luna-1", returnAssigneeAgentId: "jules-1",
+          startedAt: "2026-09-19T17:59:00.000Z", finishedAt: null }],
+      }),
+      expected: { action: "await_run", runId: "stage-run-1" },
+    },
+    {
+      name: "refuses to associate a different native stage with this card",
+      input: input({
+        identity: { ...identity, childIssueId: "issue-1" }, childStatus: "in_review",
+        runs: [{ id: "wrong-stage-run", status: "running", issueId: "issue-1", agentId: "luna-1",
+          interactionId: null, interactionKind: null, stageId: "foreign-stage", stageType: "review", wakeRole: "reviewer",
+          currentParticipantAgentId: "luna-1", returnAssigneeAgentId: "jules-1",
+          startedAt: "2026-09-19T17:59:00.000Z", finishedAt: null }],
+      }),
+      expected: { action: "escalate_protocol_failure", reason: "invalid_run_evidence" },
+    },
+    {
       name: "awaits a verdict after a successful bound run",
       input: input({ runs: [{ id: "run-1", status: "succeeded", issueId: "child-1", agentId: "luna-1", interactionId: "card-1", interactionKind: "request_item_verdicts", startedAt: "2026-09-19T17:58:00.000Z", finishedAt: "2026-09-19T17:59:00.000Z" }] }),
       expected: { action: "await_verdict", runId: "run-1" },
@@ -87,6 +111,17 @@ describe("native plan review lifecycle", () => {
       name: "replaces the card after one failed bound run",
       input: input({ runs: [{ id: "run-1", status: "failed", issueId: "child-1", agentId: "luna-1", interactionId: "card-1", interactionKind: "request_item_verdicts", startedAt: "2026-09-19T17:58:00.000Z", finishedAt: "2026-09-19T17:58:01.000Z", error: "transport_error" }] }),
       expected: { action: "replace_card", interactionId: "card-1", nextAttempt: 1, cause: "terminal_run", failedRunId: "run-1" },
+    },
+    {
+      name: "recovers same-card dispatch after pre-start assignee-change cancellation",
+      input: input({ runs: [{ id: "run-1", status: "cancelled", issueId: "child-1", agentId: "luna-1", interactionId: "card-1", interactionKind: "request_item_verdicts", startedAt: null, finishedAt: "2026-09-21T17:27:47.341Z", errorCode: "issue_assignee_changed" }] }),
+      expected: {
+        action: "recover_dispatch",
+        interactionId: "card-1",
+        reviewerAgentId: "luna-1",
+        immutableKey: identity.immutableKey,
+        attempt: 0,
+      },
     },
     {
       name: "consumes an answered canonical card",

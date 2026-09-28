@@ -57,11 +57,17 @@ beforeAll(() => {
 
     beforeEach(() => {
         vi.clearAllMocks();
-        fetchMock = vi.fn().mockResolvedValue({
-          ok: true,
-          status: 200,
-          text: async () => '',
-          json: async () => ({ executionPolicy: { monitor: { serviceName: 'jules', nextCheckAt: new Date(Date.now() + 30_000).toISOString() } } }),
+        fetchMock = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+          const payload = init?.method === 'PATCH' ? JSON.parse(String(init.body)) : null;
+          return {
+            ok: true,
+            status: 200,
+            text: async () => '',
+            json: async () => ({ executionPolicy: { monitor: {
+              serviceName: 'jules',
+              nextCheckAt: payload?.executionPolicy?.monitor?.nextCheckAt ?? new Date(Date.now() + 30_000).toISOString(),
+            } } }),
+          };
         });
         global.fetch = fetchMock;
     });

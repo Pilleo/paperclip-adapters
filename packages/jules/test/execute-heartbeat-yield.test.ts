@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { execute } from "../src/server/execute";
 import { JulesClient } from "../src/server/jules-client";
@@ -54,6 +54,9 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
     }),
     createJulesPlanReviewInteraction: vi.fn().mockResolvedValue({
       id: "native-plan-luna-1", status: "pending", kind: "request_item_verdicts",
+    }),
+    enterNativePlanReviewStage: vi.fn().mockResolvedValue({
+      stageId: "stage-1", reviewerAgentId: "luna-1", ownerAgentId: "agent-jules",
     }),
     clearJulesSessionMonitor: vi.fn().mockResolvedValue(undefined),
     moveIssueToReview: vi.fn().mockResolvedValue(undefined),
@@ -117,7 +120,9 @@ describe("heartbeat yield vs session deadline", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(listPaperclipInteractions).mockResolvedValue([]);
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("Unexpected live fetch in heartbeat-yield unit test"); }));
   });
+  afterEach(() => vi.unstubAllGlobals());
 
   it("yields after one IN_PROGRESS poll and keeps the Jules session id", async () => {
     vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({
@@ -164,6 +169,19 @@ describe("heartbeat yield vs session deadline", () => {
 
     const retryAt = new Date(result.retryNotBefore!).getTime();
     expect(retryAt).toBeLessThan(before + 90_000);
+  });
+
+  it("polls an unapproved first plan before the cloud session can finish during a 900-second coding cadence", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ id: "session-live", state: "IN_PROGRESS" } as never);
+    const before = Date.now();
+    const result = await execute({ ...ctx(), agent: { ...ctx().agent,
+      adapterConfig: { ...ctx().agent.adapterConfig, pollCadenceSeconds: 900, planApprovalPolicy: "required" } },
+    } as AdapterExecutionContext);
+    expect(result.exitCode).toBe(0);
+    expect(new Date(result.retryNotBefore!).getTime()).toBeLessThan(before + 90_000);
+    const monitorCall = vi.mocked(scheduleJulesSessionMonitor).mock.calls[0];
+    expect(monitorCall).toBeDefined();
+    expect(JSON.stringify(monitorCall)).toContain("session-live");
   });
 
   it("scans bounded terminal activity history in one heartbeat before yielding", async () => {
@@ -256,7 +274,7 @@ describe("heartbeat yield vs session deadline", () => {
       sourceContext: expect.objectContaining({
         githubRepoContext: { startingBranch: "jules-existing-pr-branch" },
       }),
-    }));
+    }), expect.any(String));
   });
 
   it("polls an explicit provider-plan synchronization wake despite a future monitor", async () => {
@@ -318,7 +336,7 @@ describe("heartbeat yield vs session deadline", () => {
   it.each([
     ["luna", "luna-1"],
     ["terra", "terra-1"],
-  ] as const)("keeps the parent Jules monitor live during %s plan review", async (stage, reviewerAgentId) => {
+  ] as const)("waits for the %s typed verdict without replacing the reviewer-owned stage", async (stage, reviewerAgentId) => {
     vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({
       id: "session-live",
       state: "AWAITING_PLAN_APPROVAL",
@@ -328,7 +346,10 @@ describe("heartbeat yield vs session deadline", () => {
       kind: "request_item_verdicts",
       status: "pending",
       addresseeAgentId: reviewerAgentId,
+      idempotencyKey: `jules:plan-review:v2:issue-yield:session-live:plan-revision-1:${stage}`,
+      createdAt: "2026-09-19T17:55:00.000Z",
     }] as never);
+    vi.mocked(getPaperclipIssue).mockResolvedValue({ status: "in_progress" } as never);
     vi.mocked(getPaperclipJson).mockResolvedValue([{
       id: `${stage}-run`, agentId: reviewerAgentId, status: "running",
       startedAt: "2026-09-19T18:00:00.000Z", finishedAt: null,
@@ -357,17 +378,10 @@ describe("heartbeat yield vs session deadline", () => {
     } as AdapterExecutionContext);
 
     expect(clearJulesSessionMonitor).not.toHaveBeenCalled();
-    expect(scheduleJulesSessionMonitor).toHaveBeenCalledWith(
-      "issue-yield",
-      "session-live",
-      expect.any(String),
-      expect.any(String),
-      "token",
-      "run-yield",
-    );
+    expect(scheduleJulesSessionMonitor).not.toHaveBeenCalled();
     expect(result.resultJson).toMatchObject({
       pending: true,
-      continuation: "jules_session_monitor",
+      continuation: "native_plan_review_verdict",
     });
   });
 

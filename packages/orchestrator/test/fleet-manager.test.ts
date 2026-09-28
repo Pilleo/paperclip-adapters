@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { managedAgentInstructionsPath, reconcileManagedFleet, MANAGED_FLEET_DEFINITIONS } from "../src/core/fleet-manager.js";
+import { managedAgentInstructionsPath, nativeReviewerPath, reconcileManagedFleet, MANAGED_FLEET_DEFINITIONS } from "../src/core/fleet-manager.js";
+import { resolveGeminiAcpServerPath } from "../src/core/gemini-acp-server.js";
 
 type RecordedPatch = Readonly<{
   url: string;
@@ -15,6 +16,10 @@ function reconcileOnly(workerKey: (typeof MANAGED_FLEET_DEFINITIONS)[number]["ke
 describe("Orchestrator Managed Fleet Manager", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("puts the Codex that knows gpt-6-luna ahead of the older system Codex", () => {
+    expect(nativeReviewerPath("/usr/local/bin:/usr/bin", ["/opt/codex-155/bin"])).toBe("/opt/codex-155/bin:/usr/local/bin:/usr/bin");
   });
 
   it("derives the local managed instruction path without accepting model-controlled segments", () => {
@@ -65,6 +70,7 @@ describe("Orchestrator Managed Fleet Manager", () => {
       expect(call.adapterConfig.pollCadenceSeconds).toBe(call.adapterType === "jules" ? 900 : 0);
       if (call.adapterType === "jules") {
         expect(call.adapterConfig.planApprovalPolicy).toBe("trusted_opt_out");
+        expect(call.adapterConfig.planReviewBootstrapAgentId).toBe("orch-1");
         expect(call.runtimeConfig.heartbeat).toEqual({
           enabled: true,
           intervalSec: 900,
@@ -113,7 +119,13 @@ describe("Orchestrator Managed Fleet Manager", () => {
     const jules = createdCalls.find((call) => call.name === "[Orchestrated] Jules Async Worker");
     expect(jules?.adapterConfig.ciPolicy).toBe("required");
     expect(jules?.adapterConfig.planReviewerAgentId).toBe(result.lunaReviewerAgentId);
-    expect(jules?.adapterConfig.planStrongReviewerAgentId).toBe(result.terraReviewerAgentId);
+    expect(jules?.adapterConfig.planStrongReviewerAgentId).toBe(result.antigravityAgentId);
+    expect(createdCalls.find((call) => call.name === "[Orchestrated] Antigravity Local Worker")?.adapterConfig.model).toBe("gemini-3.8-flash-low");
+    expect(createdCalls.find((call) => call.name === "[Orchestrated] Antigravity Local Worker")?.adapterConfig.serverPath)
+      .toBe(resolveGeminiAcpServerPath() ?? undefined);
+    expect(createdCalls.find((call) => call.name === "[Orchestrated] Antigravity Local Worker")?.role).toBe("qa");
+    expect(createdCalls.find((call) => call.name === "[Orchestrated] Antigravity Local Worker")?.adapterConfig.reviewMcpArgs)
+      .toEqual([expect.stringMatching(/\/orchestrator\/dist\/server\/native-review-mcp-stdio\.js$/)]);
     expect(jules?.adapterConfig.questionReviewerAgentId).toBe(result.terraAdjudicatorAgentId);
     expect(jules?.adapterConfig.questionAdjudicatorAgentId).toBe(result.terraAdjudicatorAgentId);
     const adjudicator = createdCalls.find((call) => call.name === "[Orchestrated] Terra Jules Question Adjudicator");

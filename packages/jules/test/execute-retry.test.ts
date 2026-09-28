@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll, afterEach } from 'vitest';
 import { execute } from '../src/server/execute';
 import { AdapterExecutionContext } from '@paperclipai/adapter-utils';
 import { sessionCodec } from '../src/server/session';
@@ -28,6 +28,10 @@ vi.mock('../src/server/paperclip-client', async (importOriginal) => {
         listPaperclipInteractions: vi.fn().mockResolvedValue([]),
         listIssueComments: vi.fn().mockResolvedValue([]),
         scheduleJulesSessionMonitor: vi.fn().mockResolvedValue(undefined),
+        upsertJulesSessionHandle: vi.fn().mockResolvedValue(undefined),
+        readJulesSessionHandleState: vi.fn().mockResolvedValue(null),
+        readJulesSessionHandle: vi.fn().mockResolvedValue(null),
+        createIssueComment: vi.fn().mockResolvedValue(undefined),
     };
 });
 
@@ -40,6 +44,11 @@ beforeAll(() => {
   });
 
   describe('execute retry policies', () => {
+  const unexpectedFetch = vi.fn(async (url: RequestInfo | URL) => { throw new Error(`Unexpected retry-fixture network: ${String(url)}`); });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    expect(unexpectedFetch.mock.calls.map(([url]) => String(url))).toEqual([]);
+  });
   const baseCtx: AdapterExecutionContext = {
     agent: {
         id: '1', companyId: '1', name: 'agent', adapterType: 'jules',
@@ -81,6 +90,7 @@ beforeAll(() => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubGlobal('fetch', unexpectedFetch);
     // clearAllMocks preserves one-shot implementations. Reset the provider
     // poll mock so a heartbeat-aborted test cannot leak its queued rejection
     // into the next retry scenario.
@@ -91,7 +101,7 @@ beforeAll(() => {
     (JulesClient.prototype.getActivities as any).mockResolvedValue({ activities: [] });
   });
 
-  it('handles create session failure (transient) and returns RETRY_SCHEDULED', async () => {
+  it('holds an ambiguous transient create failure instead of scheduling another POST', async () => {
     (JulesClient.prototype.createSession as any).mockRejectedValueOnce({ status: 500, message: 'Server error' });
     vi.mocked(classifyFailure).mockReturnValueOnce('transient');
     vi.mocked(shouldRetry).mockReturnValueOnce(true);
@@ -99,13 +109,14 @@ beforeAll(() => {
     const res = await execute(baseCtx);
 
     expect(res.exitCode).toBe(1);
-    expect(res.errorCode).toBe('jules_transient_failure');
+    expect(res.errorCode).toBe('jules_create_outcome_unverified');
     expect(res.sessionParams).toBeDefined();
 
     const session = sessionCodec.decode(res.sessionParams!);
-    expect(session.phase).toBe('RETRY_SCHEDULED');
+    expect(session.phase).toBe('STARTING');
     expect(session.attempt).toBe(1);
-    expect(session.failedSessions.length).toBe(1);
+    expect(session.failedSessions.length).toBe(0);
+    expect(session.providerCreateIntent?.promptSha256).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it('handles polling failure (transient) within heartbeat and loop limits', async () => {
