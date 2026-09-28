@@ -25,6 +25,28 @@ describe("native review submission protocol", () => {
     expect(resolveNativeReviewAssignment([answered], "luna-1")).toEqual({ ok: true,
       assignment: { kind: "plan_review_recorded", interactionId: "card-1", verdict: "approve" } });
   });
+  it("recognizes an already-answered v4 child without inviting a duplicate typed verdict", () => {
+    const answered = { ...card(), status: "answered", idempotencyKey: `jules:plan-child:v4:${"b".repeat(64)}`,
+      resolvedByAgentId: "luna-1", resolvedByRunId: "luna-run", result: {
+        outcome: "resolved", complete: true, items: [{ id: "plan", verdict: "approve" }],
+      } };
+    expect(resolveNativeReviewAssignment([answered], "luna-1")).toEqual({ ok: true,
+      assignment: { kind: "plan_review_recorded", interactionId: "card-1", verdict: "approve" } });
+  });
+
+  it("classifies an answered v4 child-scoped plan verdict for its own completion path", async () => {
+    const child = card({ idempotencyKey: `jules:plan-child:v4:${"b".repeat(64)}`,
+      payload: { items: [{ id: "plan" }], target: { type: "issue_document", issueId: "parent",
+        documentId: "doc", key: "plan", revisionId: "revision", revisionNumber: 1 } } });
+    const result = await submitNativeReviewVerdict({ apiBase: "http://paperclip.test", issueId: "child",
+      agentId: "luna-1", token: "run-token", runId: "reviewer-run", cards: [child], verdict: "approve",
+      fetcher: async () => new Response(JSON.stringify({ id: child.id, status: "answered",
+        result: { items: [{ id: "plan", verdict: "approve" }] } }),
+      { status: 200, headers: { "content-type": "application/json" } }),
+    });
+    expect(result).toMatchObject({ ok: true, itemId: "plan", planReviewProtocol: "child_v4",
+      childReviewKey: child.idempotencyKey });
+  });
   it("exposes the exact addressed plan revision as a typed reviewer assignment", () => {
     const result = resolveNativeReviewAssignment([card({
       payload: {

@@ -233,6 +233,23 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
     expect(new Date(result.retryNotBefore!).getTime()).toBeLessThan(startedAt + 90_000);
   });
 
+  it("checkpoints a future v4 child for Jules to bootstrap on its own run even with a legacy manager configured", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_PLAN_APPROVAL", id: "session-141" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{
+      id: "act-plan-native", createTime: "2026-08-30T00:01:00.000Z",
+      planGenerated: { plan: { steps: [{ index: 0, title: "Implement", description: "Verify" }] } },
+    }] } as never);
+    vi.mocked(observeJulesChildPlanReview).mockResolvedValue({ kind: "waiting", childId: "child-jules" });
+    const result = await execute({ ...baseContext, agent: { ...baseContext.agent, adapterConfig: {
+      ...baseContext.agent.adapterConfig, planReviewBootstrapAgentId: "00000000-0000-4000-8000-000000000099",
+      planReviewBootstrapMode: "jules_v4",
+    } } } as AdapterExecutionContext);
+    expect(result.exitCode).toBe(0);
+    expect(sessionCodec.decode(result.sessionParams!)?.childPlanReview).toMatchObject({ childId: "child-jules",
+      identity: { version: 4, julesAgentId: "agent-jules", bootstrapAgentId: "agent-jules", stage: "luna" } });
+    expect(createJulesPlanReviewInteraction).not.toHaveBeenCalled();
+  });
+
   it.each(["waiting", "luna_approved", "terra_approved", "rejected"] as const)("advances the v3 child ladder from %s without reassigning the parent", async (step) => {
     vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_PLAN_APPROVAL", id: "session-141" } as never);
     vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{

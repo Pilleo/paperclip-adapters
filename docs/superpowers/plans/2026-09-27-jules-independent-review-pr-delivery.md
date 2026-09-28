@@ -71,6 +71,7 @@ base_revision: ae92c676deea865c156ae9842e7bf0e22307dc5b
 - [ ] The existing v3 `ChildPlanReviewIdentity` enforces **three distinct** Jules/bootstrap/reviewer principals. Qualify a versioned Jules-owned bootstrap protocol in the real-host contract; do not set `bootstrapAgentId === julesAgentId` on v3 or weaken historical v3 identity checks.
 - [ ] Move the issue-scoped bootstrap entrypoint to the Jules adapter using the existing common typed-card protocol and run-scoped credentials. Preserve old v3 child checkpoint decoding and the current orchestrator bootstrap only for already-issued children; do not reassign existing MAZ-1585/1586 or rewrite their answered verdicts.
 - [ ] Prove the full Jules plan ladder and PR registration with orchestrator disabled, then build common/Jules, run affected suites/contracts, and reload idle before testing a fresh future run.
+- [x] Isolated proof: actual Jules parent/child executors owned both v4 bootstrap runs, typed Luna→Terra, one provider approval and one immutable-head PR without orchestrator runs. A paused Luna parked the same child without provider mutations and resumed successfully after unpause. Common/Jules/orchestrator suites, workspace build, and seven authenticated host scenarios passed. Failed reviewer-run recovery and idle live reload remain outstanding before the above task can be fully checked off.
 
 **Gate:** Jules can create, observe and consume native child verdicts with no orchestrator run. This changes future issue creation only; B's already-answered cards keep their recorded identities.
 

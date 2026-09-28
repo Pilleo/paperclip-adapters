@@ -119,6 +119,8 @@ export const SettingsSchema = z.object({
   planStrongReviewerAgentId: z.string().uuid().optional(),
   /** Enables stable parent ownership with child-scoped orchestrator bootstrap. */
   planReviewBootstrapAgentId: z.string().uuid().optional(),
+  /** Future child reviews use a child-scoped Jules run; v3 checkpoints retain their distinct bootstrap owner. */
+  planReviewBootstrapMode: z.literal("jules_v4").optional(),
   /** Accept the UI's comma-separated text field as well as API arrays. */
   codeReviewerAgentIds: z.preprocess(
     value => typeof value === "string"
@@ -156,6 +158,7 @@ export interface AdapterConfig {
   planReviewerAgentId?: string | undefined;
   planStrongReviewerAgentId?: string | undefined;
   planReviewBootstrapAgentId?: string | undefined;
+  planReviewBootstrapMode?: "jules_v4" | undefined;
   e2eProviderBaseUrl?: string | undefined;
   codeReviewerAgentIds?: string[] | undefined;
 }

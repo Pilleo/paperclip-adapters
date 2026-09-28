@@ -2,6 +2,7 @@ import { appendCardHelpText, formatCardPrompt, formatCardSummary, formatCardProm
 import { createHash } from "node:crypto";
 import {
   buildNativeInteractionWakeRequest,
+  bootstrapChildPlanReview,
   executePaperclipCommand,
   nativePlanReviewStageId,
   reconcileChildPlanReview,
@@ -1059,6 +1060,26 @@ export async function observeJulesChildPlanReview(
   };
   return reconcileChildPlanReview({ identity, ...(childId ? { childId } : {}),
     api: { get: (path) => send(path, "GET"), post: (path, body) => send(path, "POST", body), patch: (path, body) => send(path, "PATCH", body) } });
+}
+
+/** Bootstrap a v4 plan card from Jules's own issue-scoped child run. */
+export async function bootstrapJulesChildPlanReview(input: {
+  readonly identity: ChildPlanReviewIdentity; readonly childId: string;
+  readonly agentId: string; readonly runId: string; readonly authToken: string;
+}): Promise<{ readonly childId: string; readonly cardId: string } |
+  { readonly kind: "reviewer_unavailable"; readonly childId: string; readonly reviewerId: string }> {
+  if (input.identity.version !== 4 || input.identity.bootstrapAgentId !== input.agentId ||
+      input.identity.julesAgentId !== input.agentId) throw new Error("Jules child bootstrap requires a v4 self-owned identity");
+  const request = async (path: string, method: string, body?: unknown): Promise<unknown> => {
+    const response = await paperclipRequest(`/api${path}`, input.authToken, {
+      method, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    }, input.runId);
+    return response.json();
+  };
+  return bootstrapChildPlanReview({ identity: input.identity, childId: input.childId,
+    agentId: input.agentId, runId: input.runId,
+    api: { get: (path) => request(path, "GET"), post: (path, body) => request(path, "POST", body),
+      patch: (path, body) => request(path, "PATCH", body) } });
 }
 
 export interface NativePlanReviewStage {

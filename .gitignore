@@ -19,9 +19,12 @@ data/
 # The root Codex hook is tracked so clones, forks, and sessions inherit it;
 # other .codex/ runtime state stays local.
 .codanna/
-.fastembed_cache/
+.fastembed_cache
 .zvec-grep/
 .claude/
+__pycache__/
+/.omo/
+/.taskplane/
 /.codex/*
 !/.codex/hooks.json
 .grok/

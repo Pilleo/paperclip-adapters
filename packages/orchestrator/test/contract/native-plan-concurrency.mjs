@@ -19,7 +19,7 @@ class ObservationTimeout extends Error {
 await mkdir(output, { recursive: true });
 if (!scenario) {
   const results = [];
-  const selectedScenarios = process.argv.includes("--stable-child") ? ["stable_child", "stable_child_reject", "stable_child_ladder", "stable_child_executor"] : scenarios;
+  const selectedScenarios = process.argv.includes("--stable-child") ? ["stable_child", "stable_child_reject", "stable_child_ladder", "stable_child_executor", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_paused"] : scenarios;
   for (const name of selectedScenarios) {
     const code = await new Promise((resolve, reject) => {
       const child = spawn(process.execPath, ["--import", require.resolve("tsx"), fileURLToPath(import.meta.url), `--scenario=${name}`], {
@@ -40,7 +40,7 @@ if (!scenario) {
   if (results.some((result) => result.result !== "observed")) process.exitCode = 1;
   else if (process.argv.includes("--require-safe") && !integrationAllowed) process.exitCode = 2;
 } else {
-  assert.ok([...scenarios, "stable_child", "stable_child_ladder", "stable_child_reject", "stable_child_executor", "stable_child_gemini", "stable_child_gemini_retry"].includes(scenario), `Unknown scenario ${scenario}`);
+  assert.ok([...scenarios, "stable_child", "stable_child_ladder", "stable_child_reject", "stable_child_executor", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_paused", "stable_child_gemini", "stable_child_gemini_retry"].includes(scenario), `Unknown scenario ${scenario}`);
   await runScenario();
 }
 
@@ -60,7 +60,7 @@ async function runScenario() {
   const released = new Set();
   let closing = false;
   let activeMutations = 0;
-  const events = report.events;
+    const events = report.events;
   const record = (name, data = {}) => events.push({ sequence: events.length + 1, at: new Date().toISOString(), name, ...data });
   const release = (name) => {
     released.add(name);
@@ -103,9 +103,13 @@ async function runScenario() {
       "maintenanceIssueId", "blockerIssueId", "documentId", "revisionId", "sessionId"].map((key) => [key, randomUUID()]));
     config.stageId = nativePlanReviewStageId(config.issueId, config.revisionId, "luna");
     config.checkpointPath = path.join(home, "child-review-checkpoint.json");
-    config.childReviewLadder = scenario === "stable_child_ladder" || scenario === "stable_child_executor";
+    config.childReviewLadder = ["stable_child_ladder", "stable_child_executor", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_paused"].includes(scenario);
     config.realJulesExecutor = scenario === "stable_child_executor";
-    if (config.realJulesExecutor) {
+    config.julesParentExecutor = scenario === "stable_child_jules_v4_executor" || scenario === "stable_child_jules_v4_paused";
+    config.pauseLunaInitially = scenario === "stable_child_jules_v4_paused";
+    config.julesOwnedBootstrap = scenario === "stable_child_jules_v4" || config.julesParentExecutor;
+    if (config.julesOwnedBootstrap) config.providerBaseUrl = "pending-listener";
+    if (config.realJulesExecutor || config.julesParentExecutor) {
       config.prReviewChildId = randomUUID();
       config.staleSessionPath = path.join(home, "jules-stale-session.json");
       config.sessionStoreDir = path.join(home, "jules-sessions");
@@ -131,19 +135,27 @@ async function runScenario() {
     const cardRows = () => db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, config.issueId));
     const issueRow = async () => (await db.select().from(issues).where(eq(issues.id, config.issueId)))[0];
     const live = (run) => ["queued", "running", "scheduled"].includes(run.status);
+    let providerApproved = false;
     const app = express();
     app.use(express.json());
-    if (config.realJulesExecutor) {
+    if (config.realJulesExecutor || config.julesOwnedBootstrap) {
       app.use("/__contract/jules/v1alpha", (req, res) => {
         record("PROVIDER_REQUEST", { method: req.method, path: req.path });
+        if (config.julesParentExecutor && req.method === "POST" && req.path === `/sessions/${config.sessionId}:approvePlan`) {
+          if (providerApproved) return res.status(409).json({ error: "duplicate plan approval" });
+          providerApproved = true;
+          return res.json({});
+        }
         if (req.method !== "GET") return res.status(405).json({ error: "provider writes forbidden in resumed-session contract" });
+        if (config.julesOwnedBootstrap && !config.julesParentExecutor) return res.status(404).json({ error: "child bootstrap must not access Jules provider" });
         if (req.path === `/sessions/${config.sessionId}`) return res.json({ name: `sessions/${config.sessionId}`,
-          state: "COMPLETED", outputs: [{ pullRequest: { url: config.prUrl } }] });
+          state: config.julesParentExecutor && !providerApproved ? "AWAITING_PLAN_APPROVAL" : "COMPLETED",
+          outputs: config.julesParentExecutor && !providerApproved ? [] : [{ pullRequest: { url: config.prUrl } }] });
         if (req.path === `/sessions/${config.sessionId}/activities`) return res.json({ activities: [{
           id: "fixture-plan-activity", createTime: "2026-09-27T01:00:00.000Z",
           planGenerated: { plan: { id: "fixture-plan", steps: [{ index: 0, title: "Contract plan" }] } },
-        }, { id: "fixture-approved-activity", createTime: "2026-09-27T01:01:00.000Z",
-          planApproved: { planId: "fixture-plan" } }] });
+        }, ...(config.julesParentExecutor && !providerApproved ? [] : [{ id: "fixture-approved-activity", createTime: "2026-09-27T01:01:00.000Z",
+          planApproved: { planId: "fixture-plan" } }]) ] });
         if (req.path === "/sources") return res.json({ sources: [] });
         return res.status(404).json({ error: "unknown provider fixture route" });
       });
@@ -200,7 +212,7 @@ async function runScenario() {
       const server = app.listen(0, "127.0.0.1", () => resolve(server)); server.once("error", reject);
     });
     process.env.PAPERCLIP_API_URL = `http://127.0.0.1:${listener.address().port}`;
-    if (config.realJulesExecutor) config.providerBaseUrl = `${process.env.PAPERCLIP_API_URL}/__contract/jules/v1alpha`;
+    if (config.realJulesExecutor || config.julesOwnedBootstrap) config.providerBaseUrl = `${process.env.PAPERCLIP_API_URL}/__contract/jules/v1alpha`;
     await db.insert(authUsers).values({ id: config.userId, name: "Contract operator", email: `${config.userId}@example.test`,
       emailVerified: true, createdAt: new Date(), updatedAt: new Date() });
     await db.insert(companies).values({ id: config.companyId, name: "Disposable concurrency contract", issuePrefix: "RACE", issueCounter: 3, defaultResponsibleUserId: config.userId });
@@ -209,7 +221,7 @@ async function runScenario() {
     const runtimeConfig = { heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1 } };
     report.runtimeConfig = runtimeConfig;
     const adapterConfig = { command: process.execPath, args: ["--import", require.resolve("tsx"), worker],
-      cwd: home, env: { CONTRACT_FIXTURE: JSON.stringify(config), ...(config.realJulesExecutor ? {
+      cwd: home, env: { CONTRACT_FIXTURE: JSON.stringify(config), ...(config.realJulesExecutor || config.julesOwnedBootstrap ? {
         PAPERCLIP_ADAPTER_E2E: "1", PAPERCLIP_JULES_SESSION_STORE_DIR: config.sessionStoreDir,
       } : {}) }, timeoutSec: config.geminiReviewer || config.prStrongGemini ? 240 : 100, graceSec: 1 };
     await db.insert(agents).values([
@@ -217,7 +229,8 @@ async function runScenario() {
       { id: config.orchestratorId, companyId: config.companyId, name: "Reconciler", role: "general", reportsTo: config.managerId,
         permissions: { canAssignTasks: true, canCreateAgents: true, canCreateSkills: true }, status: "idle", adapterType: "process", adapterConfig, runtimeConfig },
       ...[config.julesId, config.lunaId, config.terraId].map((id) => ({ id, companyId: config.companyId, name: id === config.julesId ? "Jules fixture" : id === config.lunaId ? "Luna fixture" : "Terra fixture",
-        reportsTo: config.orchestratorId, status: "idle", adapterType: "process", adapterConfig, runtimeConfig })),
+         reportsTo: config.orchestratorId, status: config.pauseLunaInitially && id === config.lunaId ? "paused" : "idle",
+         adapterType: "process", adapterConfig, runtimeConfig })),
     ]);
     await db.insert(issues).values([
       { id: config.issueId, companyId: config.companyId, identifier: "RACE-1", title: "Plan review", status: "in_progress", assigneeAgentId: config.julesId },
@@ -229,6 +242,14 @@ async function runScenario() {
     await db.insert(documentRevisions).values({ id: config.revisionId, companyId: config.companyId, documentId: config.documentId,
       revisionNumber: 1, title: "Plan", format: "markdown", body: "# Contract plan" });
     await db.insert(issueDocuments).values({ companyId: config.companyId, issueId: config.issueId, documentId: config.documentId, key: "plan" });
+    if (config.julesParentExecutor) {
+      process.env.PAPERCLIP_JULES_SESSION_STORE_DIR = config.sessionStoreDir;
+      const { saveStoredSession } = await import("../../../jules/src/server/session-store.ts");
+      await saveStoredSession({ version: 1, paperclipIssueId: config.issueId, promptHash: "fixture-prompt", promptHashVersion: 2,
+        repository: "paperclip-contract/fixture", source: "sources/github/paperclip-contract/fixture", baseBranch: "main",
+        phase: "RUNNING", sessionId: config.sessionId, julesSessionId: config.sessionId,
+        attempt: 1, failedSessions: [], createdAt: new Date().toISOString() });
+    }
     const unauthenticated = await fetch(`${process.env.PAPERCLIP_API_URL}/api/issues/${config.issueId}`);
     const anonymousActor = await fetch(`${process.env.PAPERCLIP_API_URL}/__contract/actor`).then((response) => response.json());
     assert.equal(anonymousActor.type, "none", "fixture must not fall back to the local board actor");
@@ -272,7 +293,57 @@ async function runScenario() {
     const handbacks = () => report.mutations.filter((mutation) => mutation.actorId === config.orchestratorId);
     if (scenario.startsWith("stable_child")) {
       const { runStableChildContract } = await import("./native-child-plan-contract.mjs");
+      if (config.pauseLunaInitially) {
+        await wake(config.julesId, config.issueId);
+        await settle();
+        const pending = await issueRow();
+        assert.ok(pending.monitorNextCheckAt);
+        await heartbeat.tickTimers(new Date(new Date(pending.monitorNextCheckAt).getTime() + 1));
+        await settle();
+        const child = (await db.select().from(schema.issues).where(eq(schema.issues.parentId, config.issueId)))[0];
+        assert.ok(child && child.status === "backlog", "paused reviewer must leave one durable parked child");
+        assert.equal((await db.select().from(schema.issueThreadInteractions)
+          .where(eq(schema.issueThreadInteractions.issueId, child.id))).length, 0,
+        "no native review card or provider approval is spent while Luna is paused");
+        assert.equal(report.events.filter((event) => event.name === "PROVIDER_REQUEST" && event.method !== "GET").length, 0);
+        await db.update(agents).set({ status: "idle" }).where(eq(agents.id, config.lunaId));
+        record("PAUSED_REVIEWER_RESUMED", { childId: child.id });
+      }
       await runStableChildContract({ config, report, db, schema, eq, heartbeat, wake, waitEvent, until, release, settle, issueRow, runRows, record, deliverReconciledExecutions });
+      if (config.julesOwnedBootstrap) {
+        const childRuns = (await runRows()).filter((run) => run.agentId === config.julesId && run.contextSnapshot?.issueId !== config.issueId);
+        assert.equal(childRuns.filter((run) => run.status === "succeeded").length, 2, "both plan children must bootstrap on Jules's own child-scoped runs");
+        assert.equal((await runRows()).filter((run) => run.agentId === config.orchestratorId).length, 0,
+          "Jules plan ladder must run without an orchestrator bootstrap or reconciliation heartbeat");
+        if (config.julesParentExecutor) {
+          for (let turn = 0; turn < 12; turn++) {
+            if ((await db.select().from(schema.issueWorkProducts)
+              .where(eq(schema.issueWorkProducts.issueId, config.issueId))).length) break;
+            const parent = await issueRow();
+            assert.ok(parent.monitorNextCheckAt, "Jules must retain a monitor until the verified PR is registered");
+            await heartbeat.tickTimers(new Date(new Date(parent.monitorNextCheckAt).getTime() + 1));
+            await settle();
+          }
+          assert.equal(report.events.filter((event) => event.name === "PROVIDER_REQUEST" && event.method === "POST" &&
+            event.path === `/sessions/${config.sessionId}:approvePlan`).length, 1,
+          "one Jules provider approval must follow the actual parent executor's Luna/Terra typed ladder");
+          assert.deepEqual(report.events.filter((event) => event.name === "PROVIDER_REQUEST" && event.method !== "GET")
+            .map((event) => event.path), [`/sessions/${config.sessionId}:approvePlan`],
+          "no Jules provider create or repeated approval is allowed");
+          const products = await db.select().from(schema.issueWorkProducts)
+            .where(eq(schema.issueWorkProducts.issueId, config.issueId));
+          assert.equal(products.length, 1, "the real parent Jules executor must deliver its PR after both v4 child verdicts");
+          assert.equal(products[0].url, config.prUrl);
+          assert.equal(products[0].metadata.headSha, config.prHeadSha);
+          assert.equal(products[0].status, "ready_for_review");
+          assert.equal((await issueRow()).assigneeAgentId, config.julesId);
+          report.outcome = "actual_jules_executor_self_bootstraps_v4_ladder_approves_once_and_delivers_pr";
+        } else {
+          assert.equal(report.events.filter((event) => event.name === "PROVIDER_REQUEST").length, 0,
+            "child bootstrap must never create or query a Jules cloud session");
+          report.outcome = "jules_v4_self_bootstraps_both_plan_children_without_orchestrator_runs";
+        }
+      }
       if (config.realJulesExecutor) {
         const { runJulesExecutorRecoveryContract } = await import("./native-jules-executor-contract.mjs");
         await runJulesExecutorRecoveryContract({ config, report, db, schema, eq, wake, settle, runRows, issueRow });

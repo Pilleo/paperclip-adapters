@@ -20,6 +20,17 @@ describe("stable child plan identity", () => {
     expect(ChildPlanReviewIdentitySchema.safeParse({ ...identity, bootstrapAgentId: "luna" }).success).toBe(false);
     expect(ChildPlanReviewIdentitySchema.safeParse({ ...identity, reviewerAgentId: "jules" }).success).toBe(false);
   });
+  it("round-trips a v4 Jules-owned bootstrap while keeping v3's three-principal rule", () => {
+    const selfBootstrapped = { ...identity, version: 4 as const, bootstrapAgentId: "jules" };
+    expect(ChildPlanReviewIdentitySchema.safeParse({ ...identity, bootstrapAgentId: "jules" }).success).toBe(false);
+    expect(ChildPlanReviewIdentitySchema.safeParse(selfBootstrapped).success).toBe(true);
+    expect(ChildPlanReviewIdentitySchema.safeParse({ ...selfBootstrapped, reviewerAgentId: "jules" }).success).toBe(false);
+    expect(ChildPlanReviewIdentitySchema.safeParse({ ...selfBootstrapped, bootstrapAgentId: "orchestrator" }).success).toBe(false);
+    const description = childPlanReviewDescription(selfBootstrapped as never);
+    expect(parseChildPlanReviewDescription(description)).toEqual(selfBootstrapped);
+    expect(childPlanReviewKey(selfBootstrapped as never)).toMatch(/^jules:plan-child:v4:[0-9a-f]{64}$/);
+    expect(isStablePlanReviewChild({ companyId: "company", parentId: "parent", createdByAgentId: "jules", description })).toBe(true);
+  });
   it("identifies protocol tasks for scheduler isolation only with matching company, parent and creator", () => {
     const issue = { companyId: "company", parentId: "parent", createdByAgentId: "jules", description: childPlanReviewDescription(identity) };
     expect(isStablePlanReviewChild(issue)).toBe(true);

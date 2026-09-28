@@ -66,7 +66,7 @@ type NativeReviewSuccess = {
   readonly interactionId: string;
   readonly itemId: string;
   readonly verdict: NativeReviewVerdict;
-  readonly planReviewProtocol?: "child_v3";
+  readonly planReviewProtocol?: "child_v3" | "child_v4";
   readonly childReviewKey?: string;
 };
 
@@ -146,7 +146,7 @@ export function resolveNativeReviewAssignment(
   const resolved = resolveNativeReviewCard(cards, agentId);
   if (!resolved.ok && resolved.code === "no_owned_pending_card") {
     const answeredSchema = z.object({ id: z.string(), kind: z.literal("request_item_verdicts"), status: z.literal("answered"),
-      idempotencyKey: z.string().regex(/^jules:plan-child:v3:[0-9a-f]{64}$/), addresseeAgentId: z.literal(agentId),
+      idempotencyKey: z.string().regex(/^jules:plan-child:v[34]:[0-9a-f]{64}$/), addresseeAgentId: z.literal(agentId),
       resolvedByAgentId: z.literal(agentId), resolvedByRunId: z.string().min(1),
       result: z.object({ outcome: z.literal("resolved"), complete: z.literal(true), items: z.array(z.object({
         id: z.literal("plan"), verdict: z.enum(["approve", "reject"]), reason: z.string().optional(),
@@ -267,10 +267,11 @@ export async function submitNativeReviewVerdict(input: NativeReviewSubmissionInp
   }
   const target = parsePlanTarget(resolved.card.payload?.target);
   const childReviewKey = resolved.card.idempotencyKey;
-  const childPlan = resolved.item.id === "plan" && /^jules:plan-child:v3:[0-9a-f]{64}$/.test(childReviewKey ?? "") &&
+  const childPlan = resolved.item.id === "plan" && /^jules:plan-child:v[34]:[0-9a-f]{64}$/.test(childReviewKey ?? "") &&
     target !== null && target.issueId !== input.issueId;
   return { ok: true, interactionId: resolved.card.id, itemId: resolved.item.id, verdict: input.verdict,
-    ...(childPlan && childReviewKey ? { planReviewProtocol: "child_v3" as const, childReviewKey } : {}) };
+    ...(childPlan && childReviewKey ? { planReviewProtocol: childReviewKey.startsWith("jules:plan-child:v4:")
+      ? "child_v4" as const : "child_v3" as const, childReviewKey } : {}) };
 }
 
 /**

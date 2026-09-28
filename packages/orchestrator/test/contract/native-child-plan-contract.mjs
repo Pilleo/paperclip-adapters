@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 
 export async function runStableChildContract(fixture) {
   const { config, report, db, schema, eq, heartbeat, wake, waitEvent, until, release, settle, issueRow, runRows, record, deliverReconciledExecutions } = fixture;
@@ -17,6 +18,11 @@ export async function runStableChildContract(fixture) {
     }
     await settle();
     assert.deepEqual([...consumed().keys()], ["luna", "terra"]);
+    if (config.julesParentExecutor) {
+      const checkpoint = JSON.parse(await readFile(config.checkpointPath, "utf8"));
+      config.revisionId = checkpoint.identity.revisionId;
+      config.documentId = checkpoint.identity.documentId;
+    }
     const cards = await db.select().from(schema.issueThreadInteractions).where(eq(schema.issueThreadInteractions.companyId, config.companyId));
     assert.equal(cards.length, 2);
     assert.ok(cards.every((card) => card.status === "answered" && card.payload.target.revisionId === config.revisionId));

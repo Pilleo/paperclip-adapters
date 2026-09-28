@@ -19,6 +19,7 @@ import { reconcileProviderContinuation } from "./provider-continuation.js";
 import { persistSessionBestEffort } from "./session-initializer.js";
 import { evaluatePlanClarity, composePlanForReview, createCheapReviewer, createTerraCodexReviewer, defaultCheapReviewer } from "./plan-reviewer.js";
 import { buildHostImplementationPlan, decideReviewHandoff, evaluateScopeConformity, nativePrRejectionDeliveryId, parseTaskContract, parseWorkerFeedback, planReviewIdempotencyKey as nativePlanReviewIdempotencyKey, PR_REJECTION_SUPERSEDED_PLAN_REASON, projectEffectAttempt, workerFeedbackPrompt } from "@pilleo/paperclip-adapter-common";
+import { JULES_CHILD_PLAN_REVIEW_PREFIX, parseChildPlanReviewDescription } from "@pilleo/paperclip-adapter-common";
 import { evaluateSessionFailure } from "./failure-recovery.js";
 import { extractResolvedInteraction } from "./interaction-relay.js";
 import {
@@ -86,6 +87,7 @@ import {
   createJulesPlanReviewInteraction,
   enterNativePlanReviewStage,
   observeJulesChildPlanReview,
+  bootstrapJulesChildPlanReview,
   wakeJulesPlanReviewer,
   saveJulesPlanDocument,
   getPaperclipInteraction,
@@ -745,18 +747,47 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     readContextString(readContextRecord(parsedCtxContext, "task"), "companyId") ??
     readContextString(readContextRecord(parsedCtxContext, "paperclipIssue"), "companyId");
 
-  if (process.env["NODE_ENV"] !== "test" && !projectId && effectiveTaskId && !effectiveTaskId.startsWith("resumed:")) {
+  let fetchedIssue: Record<string, unknown> | null = null;
+  const contextChildDescription = typeof extractedTask?.["description"] === "string" &&
+    extractedTask["description"].startsWith(JULES_CHILD_PLAN_REVIEW_PREFIX)
+    ? extractedTask["description"] : null;
+  if (effectiveTaskId && !effectiveTaskId.startsWith("resumed:") &&
+      (process.env["NODE_ENV"] !== "test" || contextChildDescription)) {
     try {
       const issueData = await getPaperclipJson<Record<string, unknown>>(
         `/api/issues/${encodeURIComponent(effectiveTaskId)}`,
         ctx.authToken,
         ctx.runId,
       );
+      fetchedIssue = issueData;
       if (typeof issueData["projectId"] === "string") projectId = issueData["projectId"];
       if (typeof issueData["companyId"] === "string") companyId = issueData["companyId"];
     } catch (e) {
+      if (contextChildDescription) throw new Error("Jules child bootstrap cannot verify its issue-scoped Paperclip record", { cause: e });
       if (ctx.onLog) await ctx.onLog("stderr", `[jules] Issue fetch error: ${e}\n`);
     }
+  }
+
+  const boardChildDescription = typeof fetchedIssue?.["description"] === "string" &&
+    fetchedIssue["description"].startsWith(JULES_CHILD_PLAN_REVIEW_PREFIX)
+    ? fetchedIssue["description"] : null;
+  if (contextChildDescription && contextChildDescription !== boardChildDescription) {
+    throw new Error("Jules child bootstrap description changed between the scoped wake and Paperclip");
+  }
+  if (boardChildDescription) {
+    const identity = parseChildPlanReviewDescription(boardChildDescription);
+    if (!identity || identity.version !== 4 || issueScope.kind !== "scoped" ||
+        identity.companyId !== ctx.agent.companyId || identity.bootstrapAgentId !== ctx.agent.id ||
+        !ctx.authToken || ctx.runtime?.sessionParams) {
+      throw new Error("Jules child bootstrap requires a matching v4 identity, child-scoped run and fresh runtime");
+    }
+    const bootstrapped = await bootstrapJulesChildPlanReview({ identity, childId: effectiveTaskId,
+      agentId: ctx.agent.id, runId: ctx.runId, authToken: ctx.authToken });
+    return { exitCode: 0, signal: null, timedOut: false, clearSession: false,
+      summary: "cardId" in bootstrapped
+        ? `Jules bootstrapped the child-scoped native plan card ${bootstrapped.cardId}.`
+        : `Native plan reviewer ${bootstrapped.reviewerId} is unavailable; child parked.`,
+      sessionParams: null, resultJson: { provider: "jules", childPlanReview: bootstrapped } };
   }
 
   let workspaceCwd = readContextString(rawWorkspace, "cwd");
@@ -5376,13 +5407,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                   persist: () => persistSessionBestEffort(session!, ctx.onLog),
                   run: () => saveJulesPlanDocument(taskId, activityId, fullPlan, ctx.authToken, ctx.runId),
                 });
-                if (config.planReviewBootstrapAgentId) {
-                  session.childPlanReview = { identity: {
-                    version: 3, companyId: ctx.agent.companyId, parentIssueId: taskId, sessionId: session.julesSessionId!,
-                    activityId, documentId: revision.documentId, revisionId: revision.revisionId,
-                    revisionNumber: revision.revisionNumber, stage: "luna", reviewerAgentId: config.planReviewerAgentId,
-                    bootstrapAgentId: config.planReviewBootstrapAgentId, julesAgentId: ctx.agent.id,
-                  } };
+                 if (config.planReviewBootstrapMode === "jules_v4" || config.planReviewBootstrapAgentId) {
+                   const ownBootstrap = config.planReviewBootstrapMode === "jules_v4";
+                   session.childPlanReview = { identity: {
+                     version: ownBootstrap ? 4 : 3, companyId: ctx.agent.companyId, parentIssueId: taskId, sessionId: session.julesSessionId!,
+                     activityId, documentId: revision.documentId, revisionId: revision.revisionId,
+                     revisionNumber: revision.revisionNumber, stage: "luna", reviewerAgentId: config.planReviewerAgentId,
+                     bootstrapAgentId: ownBootstrap ? ctx.agent.id : config.planReviewBootstrapAgentId!, julesAgentId: ctx.agent.id,
+                   } };
                   await saveStoredSession(session);
                   const observation = await observeJulesChildPlanReview(session.childPlanReview.identity, undefined, ctx.authToken, ctx.runId);
                   session.childPlanReview.childId = observation.childId;

@@ -71,6 +71,7 @@ describe("Orchestrator Managed Fleet Manager", () => {
       if (call.adapterType === "jules") {
         expect(call.adapterConfig.planApprovalPolicy).toBe("trusted_opt_out");
         expect(call.adapterConfig.planReviewBootstrapAgentId).toBe("orch-1");
+        expect(call.adapterConfig.planReviewBootstrapMode).toBe("jules_v4");
         expect(call.runtimeConfig.heartbeat).toEqual({
           enabled: true,
           intervalSec: 900,

@@ -542,6 +542,7 @@ export async function reconcileManagedFleet(
       ...(def.key === "jules" && (resolvedIds["luna_reviewer"] ?? config.lunaReviewerAgentId ?? config.vibeReviewerAgentId) ? { planReviewerAgentId: resolvedIds["luna_reviewer"] ?? config.lunaReviewerAgentId ?? config.vibeReviewerAgentId } : {}),
       ...(def.key === "jules" && resolvedIds["antigravity"] ? { planStrongReviewerAgentId: resolvedIds["antigravity"] } : {}),
       ...(def.key === "jules" && managerId ? { planReviewBootstrapAgentId: managerId } : {}),
+      ...(def.key === "jules" ? { planReviewBootstrapMode: "jules_v4" } : {}),
       ...(def.key === "jules" && (resolvedIds["terra_reviewer"] ?? config.terraReviewerAgentId ?? config.reviewerAgentId) ? { questionReviewerAgentId: resolvedIds["terra_reviewer"] ?? config.terraReviewerAgentId ?? config.reviewerAgentId } : {}),
       ...(def.key === "jules" && resolvedIds["terra_adjudicator"] ? { questionAdjudicatorAgentId: resolvedIds["terra_adjudicator"], questionReviewerAgentId: resolvedIds["terra_adjudicator"] } : {}),
       ...(def.key === "jules" && config.julesApiKeySecretId

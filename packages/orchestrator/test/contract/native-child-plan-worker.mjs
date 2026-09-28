@@ -14,6 +14,7 @@ let identity = { version: 3, companyId: config.companyId, parentIssueId: config.
   sessionId: config.sessionId, activityId: "fixture-plan-activity", documentId: config.documentId,
   revisionId: config.revisionId, revisionNumber: 1, stage: "luna", reviewerAgentId: config.lunaId,
   bootstrapAgentId: config.orchestratorId, julesAgentId: config.julesId };
+if (config.julesOwnedBootstrap) identity = { ...identity, version: 4, bootstrapAgentId: config.julesId };
 const base = env.PAPERCLIP_API_URL;
 assert.equal(new URL(base).hostname, "127.0.0.1");
 assert.ok(env.PAPERCLIP_API_KEY);
@@ -37,8 +38,59 @@ assert.equal(run.status, "running");
 assert.equal(run.agentId, env.PAPERCLIP_AGENT_ID);
 const issueId = run.contextSnapshot.issueId;
 if (env.PAPERCLIP_AGENT_ID === config.julesId) {
+  if (config.julesOwnedBootstrap && issueId !== config.issueId) {
+    const child = await request(`/issues/${issueId}`);
+    assert.equal(child.parentId, config.issueId);
+    assert.equal(child.assigneeAgentId, config.julesId);
+    const { execute } = await import("../../../jules/src/server/execute.ts");
+    const julesConfig = { repository: "paperclip-contract/fixture", baseBranch: "main", planApprovalPolicy: "required",
+      e2eProviderBaseUrl: config.providerBaseUrl };
+    const result = await execute({
+      runId: env.PAPERCLIP_RUN_ID, authToken: env.PAPERCLIP_API_KEY,
+      agent: { id: config.julesId, companyId: config.companyId, name: "Jules child bootstrap", adapterType: "jules", adapterConfig: julesConfig },
+      config: { ...julesConfig, env: { JULES_API_KEY: "fixture-provider-token" } },
+      runtime: { sessionId: null, sessionParams: null, taskKey: issueId },
+      context: { issueId, companyId: config.companyId, task: { id: issueId, title: child.title, description: child.description ?? "" } },
+      onLog: async (stream, chunk) => (stream === "stderr" ? process.stderr : process.stdout).write(chunk),
+    });
+    await event("JULES_OWNED_CHILD_RESULT", { childId: issueId, exitCode: result.exitCode, errorCode: result.errorCode ?? null });
+    assert.equal(result.exitCode, 0, JSON.stringify({ errorCode: result.errorCode, errorMessage: result.errorMessage }));
+    process.exit(0);
+  }
   const parent = await request(`/issues/${issueId}`);
   assert.equal(parent.assigneeAgentId, config.julesId);
+  if (config.julesParentExecutor) {
+    const { execute } = await import("../../../jules/src/server/execute.ts");
+    const { sessionCodec } = await import("../../../jules/src/server/session.ts");
+    const { loadStoredSession } = await import("../../../jules/src/server/session-store.ts");
+    const source = "sources/github/paperclip-contract/fixture";
+    const prior = await loadStoredSession(issueId, source, "main");
+    assert.ok(prior, "parent Jules session must remain durable across plan-review child restarts");
+    const julesConfig = { repository: "paperclip-contract/fixture", baseBranch: "main", planApprovalPolicy: "required",
+      planReviewerAgentId: config.lunaId, planStrongReviewerAgentId: config.terraId,
+      planReviewBootstrapMode: "jules_v4", e2eProviderBaseUrl: config.providerBaseUrl };
+    const result = await execute({
+      runId: env.PAPERCLIP_RUN_ID, authToken: env.PAPERCLIP_API_KEY,
+      agent: { id: config.julesId, companyId: config.companyId, name: "Jules parent executor", adapterType: "jules", adapterConfig: julesConfig },
+      config: { ...julesConfig, env: { JULES_API_KEY: "fixture-provider-token", PATH: config.githubPath } },
+      runtime: { sessionId: config.sessionId, sessionParams: sessionCodec.encode(prior), taskKey: issueId },
+      context: { issueId, companyId: config.companyId, task: { id: issueId, title: parent.title, description: parent.description ?? "" } },
+      onLog: async (stream, chunk) => (stream === "stderr" ? process.stderr : process.stdout).write(chunk),
+    });
+    const saved = await loadStoredSession(issueId, source, "main");
+    if (saved?.childPlanReview?.childId) {
+      await writeFile(config.checkpointPath, JSON.stringify({ childId: saved.childPlanReview.childId,
+        sessionId: config.sessionId, identity: saved.childPlanReview.identity }), { mode: 0o600 });
+    }
+    const previousStage = prior.childPlanReview?.identity.stage;
+    if (previousStage && (saved?.childPlanReview?.identity.stage !== previousStage || !saved?.childPlanReview)) {
+      await event("PARENT_CONSUMED_CHILD_VERDICT", { stage: previousStage, sessionId: config.sessionId });
+    }
+    await event("REAL_JULES_PARENT_RESULT", { exitCode: result.exitCode,
+      errorCode: result.errorCode ?? null, stage: saved?.childPlanReview?.identity.stage ?? null });
+    assert.equal(result.exitCode, 0, JSON.stringify({ errorCode: result.errorCode, errorMessage: result.errorMessage }));
+    process.exit(0);
+  }
   if (config.realJulesExecutor && run.contextSnapshot.contractPrChildActivate) {
     const child = await request(`/issues/${config.prReviewChildId}`);
     const [card] = await request(`/issues/${config.prReviewChildId}/interactions`);
@@ -221,7 +273,7 @@ if (env.PAPERCLIP_AGENT_ID === config.julesId) {
       runId: env.PAPERCLIP_RUN_ID, token: env.PAPERCLIP_API_KEY, verdict: config.childReviewVerdict,
       ...(config.childReviewVerdict === "reject" ? { reason: "Add boundary-case verification." } : {}) });
     assert.equal(result.ok, true, JSON.stringify(result));
-    assert.equal(result.planReviewProtocol, "child_v3");
+    assert.equal(result.planReviewProtocol, config.julesOwnedBootstrap ? "child_v4" : "child_v3");
     await event("CHILD_VERDICT_WRITTEN", { childId: issueId, cardId: card.id, sourceRunId: card.sourceRunId }, true);
   } else {
     const result = await readPlanReviewAssignmentAndReconcileHandback({ apiBase: base, issueId, agentId: env.PAPERCLIP_AGENT_ID,

@@ -185,7 +185,7 @@ export async function submitPlanVerdictAndReturnToJules(
   input: NativeReviewRuntimeSubmissionInput,
 ): Promise<NativeReviewSubmissionResult> {
   const submitted = await submitNativeReviewVerdictFromRuntime(input);
-  if (submitted.ok && submitted.planReviewProtocol === "child_v3") {
+  if (submitted.ok && (submitted.planReviewProtocol === "child_v3" || submitted.planReviewProtocol === "child_v4")) {
     try {
       await completeOwnChildPlanReview(input, submitted.childReviewKey, submitted.interactionId);
       return submitted;
