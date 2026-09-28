@@ -161,7 +161,7 @@ jobs:
       - name: Build workspace packages
         run: pnpm -r build
       - name: Test native gate and disposable host lifecycle
-        run: node --test scripts/paperclip-host-contract-gate.test.mjs scripts/contract/disposable-host.test.mjs
+        run: node --test scripts/paperclip-host-contract-gate.test.mjs scripts/contract/disposable-host.test.mjs scripts/contract/chain-github-fixture.test.mjs
       - name: Install pinned Paperclip control plane
         run: npm install --global paperclipai@2026.916.0
       - name: Verify disposable host persists data across a real server restart

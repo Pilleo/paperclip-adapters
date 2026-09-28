@@ -38,11 +38,19 @@ The opt-in `stable_child_jules_v4_create` scenario runs the **actual Jules
 executor** on an initially unseeded provider session. A stateful loopback Jules
 fixture accepts exactly one `POST /sessions`, serves that original session's
 plan and activities across authenticated child-review runs, accepts exactly
-one `approvePlan`, and exposes one resulting PR. It uses the installed host's
-real PostgreSQL and run-scoped worker credentials; no provider API key or live
-GitHub repository is contacted. The normal v4 executor scenario separately
-covers adopting an already durable session. Neither is a complete A→B→C
-dependency-and-merge scenario.
+one `approvePlan`, and exposes one resulting PR at an actual disposable local
+Git commit. A read-only stateful `gh` fixture serves that commit. Its separate
+external test actor can create ordinary two-parent merge commits only for the
+exact reviewed head and two distinct addressed native-approval evidence inputs; it
+refuses CLI merges and stale-base dependent PRs. This scenario uses the
+installed host's real PostgreSQL and run-scoped worker credentials; no provider
+API key or live GitHub repository is contacted. The normal v4 scenario separately
+covers adopting an already durable session. In the independent
+`stable_child_executor_pr_board` scenario, the external merger's evidence
+inputs **are** checked against the host's real addressed Luna/strong verdict
+cards and authenticated source/reviewer runs before it creates the two-parent
+commit. These are two complementary single-task scenarios, not a complete
+A→B→C dependency-and-merge scenario.
 
 Exit codes:
 

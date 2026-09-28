@@ -101,6 +101,7 @@ async function runScenario() {
     heartbeat = heartbeatService(db);
     const config = Object.fromEntries(["companyId", "userId", "managerId", "orchestratorId", "julesId", "lunaId", "terraId", "issueId",
       "maintenanceIssueId", "blockerIssueId", "documentId", "revisionId", "sessionId"].map((key) => [key, randomUUID()]));
+    let chainGitHub = null;
     config.stageId = nativePlanReviewStageId(config.issueId, config.revisionId, "luna");
     config.checkpointPath = path.join(home, "child-review-checkpoint.json");
     config.childReviewLadder = ["stable_child_ladder", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_jules_v4_paused"].includes(scenario);
@@ -132,6 +133,15 @@ async function runScenario() {
       await writeFile(ghPath, `#!/bin/sh\ncase "$1 $2" in\n  "pr view") printf '%s\\n' '{"state":"OPEN","mergedAt":null,"mergeable":"MERGEABLE","headRefOid":"${config.prHeadSha}","headRefName":"contract-head"}' ;;\n  "pr checks") printf '%s\\n' '[{"bucket":"pass","state":"SUCCESS","name":"contract"}]' ;;\n  "pr diff") printf '%s\\n' 'src/contract.ts' ;;\n  *) exit 1 ;;\nesac\n`);
       await chmod(ghPath, 0o700);
       config.githubPath = `${bin}:${process.env.PATH}`;
+      if (config.createProviderSession || config.prBoardProbe) {
+        const { createChainGitHubFixture } = await import("./chain-github-fixture.mjs");
+        chainGitHub = await createChainGitHubFixture(home);
+        const pr = await chainGitHub.openPullRequest("A", "A.txt", "alpha");
+        config.prUrl = pr.url;
+        config.prHeadSha = pr.headSha;
+        config.githubPath = `${home}:${process.env.PATH}`;
+        report.observations.push({ label: "real_git_open_pr", url: pr.url, headSha: pr.headSha, baseSha: pr.baseSha });
+      }
     }
     config.childReviewVerdict = scenario === "stable_child_reject" ? "reject" : "approve";
     config.geminiReviewer = scenario === "stable_child_gemini" || scenario === "stable_child_gemini_retry";
@@ -504,6 +514,29 @@ async function runScenario() {
           assert.equal((await issueRow()).assigneeAgentId, null);
           assert.equal((await runRows()).filter((run) => run.agentId === config.orchestratorId &&
             run.contextSnapshot?.issueId === config.maintenanceIssueId).length, 0);
+          assert.ok(chainGitHub, "the reviewed PR must belong to the disposable real Git repository");
+          const [strongSource] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, strongVerdict.sourceRunId));
+          const [strongReviewer] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, strongVerdict.resolvedByRunId));
+          assert.equal(source.agentId, config.orchestratorId);
+          assert.equal(strongSource?.agentId, config.orchestratorId);
+          assert.equal(strongSource?.status, "succeeded");
+          assert.equal(strongSource?.contextSnapshot?.issueId, strongId);
+          assert.equal(strongReviewer?.agentId, config.terraId);
+          assert.equal(strongReviewer?.status, "succeeded");
+          assert.equal(strongReviewer?.contextSnapshot?.issueId, strongId);
+          assert.ok(answered.idempotencyKey.includes(`:${childId}:${config.prUrl}:${config.prHeadSha}:luna`));
+          assert.ok(strongVerdict.idempotencyKey.includes(`:${strongId}:${config.prUrl}:${config.prHeadSha}:strong`));
+          const merge = await chainGitHub.externalMerge(config.prUrl, { headSha: config.prHeadSha, reviews: [
+            { stage: "luna", reviewerAgentId: config.lunaId, cardId: answered.id,
+              sourceRunId: source.id, resolvedByRunId: reviewer.id, verdict: answered.result.items[0].verdict },
+            { stage: "strong", reviewerAgentId: config.terraId, cardId: strongVerdict.id,
+              sourceRunId: strongSource.id, resolvedByRunId: strongReviewer.id, verdict: strongVerdict.result.items[0].verdict },
+          ] });
+          record("EXTERNAL_MERGE_VERIFIED", { headSha: merge.headSha, mergeSha: merge.mergeSha,
+            cardIds: [answered.id, strongVerdict.id] });
+          assert.ok(report.events.some((event) => event.name === "EXTERNAL_MERGE_VERIFIED" &&
+            event.headSha === config.prHeadSha),
+          "the external Git actor must merge the exact host-reviewed PR head only after both native child verdicts");
           report.outcome = "board_initiated_pr_children_luna_and_strong_approved_without_maintenance_issue";
         }
         if (config.prMigrationProbe && !config.prBoardProbe) {
