@@ -45,21 +45,40 @@ jobs:
       - name: Test GitHub CLI Fixture
         run: node scripts/paperclip-ci-gh-fixture.test.mjs
 
-      - name: Setup Node.js 24.x for Paperclip server
-        if: matrix.node-version == '22.x'
+      - name: Build Production Packages (pnpm release:pack)
+        run: pnpm release:pack
+
+      - name: Upload Release Tarballs Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: paperclip-adapter-tarballs-node-${{ matrix.node-version }}
+          path: dist-packages/*.tgz
+          retention-days: 7
+
+  recovery_canary:
+    name: Historical Jules PR authority hold on Paperclip 2026.916.0
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - name: Setup Node.js 24.x
         uses: actions/setup-node@v4
         with:
           node-version: 24.x
-
+          cache: 'pnpm'
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build workspace packages
+        run: pnpm -r build
+      - name: Test GitHub CLI Fixture
+        run: node scripts/paperclip-ci-gh-fixture.test.mjs
       - name: Install pinned Paperclip control plane
-        # Keep package download outside the server health budget. A cold npx
-        # cache can take over a minute and otherwise looks like a boot failure.
         run: npm install --global paperclipai@2026.916.0
-
       - name: Start disposable Paperclip server
-        # The orchestrator is an external process. Put the deterministic
-        # GitHub fixture on the *server* PATH before boot so spawned adapter
-        # processes inherit it; a client-side PATH change cannot test this.
         env:
           HOME: ${{ runner.temp }}/paperclip-canary-user-home
           PAPERCLIP_HOME: ${{ runner.temp }}/paperclip-canary-home
@@ -67,9 +86,6 @@ jobs:
           PORT: 3100
           HOST: 127.0.0.1
         run: |
-          # The orchestrator is an external process. Put the deterministic
-          # GitHub fixture on the *server* PATH before boot so spawned adapter
-          # processes inherit it; a client-side PATH change cannot test this.
           mkdir -p "${RUNNER_TEMP}/paperclip-e2e-bin"
           cat >"${RUNNER_TEMP}/paperclip-e2e-bin/gh" <<'EOF'
           #!/usr/bin/env sh
@@ -84,13 +100,6 @@ jobs:
           fi
           EOF
           chmod +x "${RUNNER_TEMP}/paperclip-e2e-bin/gh"
-          # In Paperclip 2026.916.0, noninteractive onboarding owns the
-          # foreground server lifecycle. Start that one process in a separate
-          # process group: waiting for onboarding and then invoking `run`
-          # deadlocks until a timeout because onboarding does not return.
-          # Pin the control-plane version used by the adapter contract test.
-          # Floating latest made upstream releases silently change the canary
-          # semantics before this repository had deliberately adopted them.
           PAPERCLIP_GH_PATH="${RUNNER_TEMP}/paperclip-e2e-bin/gh" PATH="${RUNNER_TEMP}/paperclip-e2e-bin:${PATH}" nohup setsid paperclipai onboard --config "$PAPERCLIP_HOME/config.json" --data-dir "$PAPERCLIP_HOME" --bind loopback --yes --no-install-service >"${RUNNER_TEMP}/paperclip-canary.log" 2>&1 </dev/null &
           echo $! >"${RUNNER_TEMP}/paperclip-canary.pid"
           for attempt in {1..120}; do
@@ -101,14 +110,7 @@ jobs:
           done
           cat "${RUNNER_TEMP}/paperclip-canary.log"
           exit 1
-
-      - name: Restore Node.js ${{ matrix.node-version }} for Canary
-        if: matrix.node-version == '22.x'
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node-version }}
-
-      - name: Run Jules recovery canary
+      - name: Run Jules recovery authority-hold canary
         env:
           PAPERCLIP_TEST_API_URL: http://127.0.0.1:3100
           PAPERCLIP_E2E_GH_FIXTURE: server
@@ -117,13 +119,10 @@ jobs:
           PAPERCLIP_HOME: ${{ runner.temp }}/paperclip-canary-home
           WORKSPACE_PATH: ${{ github.workspace }}
         run: pnpm test:e2e:jules-recovery
-
       - name: Stop disposable Paperclip server
         if: always()
         run: |
           if [ -f "${RUNNER_TEMP}/paperclip-canary.pid" ]; then
-            # Stop the complete onboarding/server process group, including
-            # the embedded database child. A parent-only kill leaks CI state.
             kill -TERM -- "-$(cat "${RUNNER_TEMP}/paperclip-canary.pid")" || true
             for attempt in {1..50}; do
               if ! kill -0 -- "-$(cat "${RUNNER_TEMP}/paperclip-canary.pid")" 2>/dev/null; then
@@ -141,16 +140,6 @@ jobs:
             tail -100 "${RUNNER_TEMP}/paperclip-canary.log"
           fi
           rm -rf "${RUNNER_TEMP}/paperclip-canary-home" "${RUNNER_TEMP}/paperclip-canary-user-home"
-
-      - name: Build Production Packages (pnpm release:pack)
-        run: pnpm release:pack
-
-      - name: Upload Release Tarballs Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: paperclip-adapter-tarballs-node-${{ matrix.node-version }}
-          path: dist-packages/*.tgz
-          retention-days: 7
 
   native_contracts:
     name: Positive native contracts on Paperclip 2026.916.0
