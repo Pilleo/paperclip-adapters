@@ -62,18 +62,26 @@ second create; it does not silently retry the uncertain POST or write a manual
 checkpoint. The board actor exists only inside the disposable installed-host
 contract; no live task is recovered by this scenario.
 
-`stable_child_jules_v4_chain_blocked` seeds A→B→C as three issues in **one**
+`stable_child_chain_abc_complete` seeds A→B→C as three issues in **one**
 disposable company and one authoritative Git-backed project, with real
-PostgreSQL `blocks` edges A→B and B→C. Native B/C wakes before A begins must
-start no dependent run. The actual Jules executor creates A's provider session,
-obtains both addressed plan verdicts, approves once and registers A's PR. The
-**actual orchestrator** then promotes A into review and creates its head-bound
-Luna and strong-review children. Both addressed native verdicts and their
-source/reviewer runs are checked before a distinct external actor creates a
-two-parent local merge. The actual orchestrator reconciles A to `done` and
-its work product to `merged`; the host's native dependency projection makes B
-eligible and keeps C blocked. This scenario does **not** run B or C or prove
-their subsequent provider/review/merge lifecycle.
+PostgreSQL `blocks` edges A→B and B→C. B/C begin unassigned and have no
+provider run before their predecessors merge. **For each task**, the actual
+Jules executor creates its own provider session, receives addressed Luna and
+strong plan verdicts, approves the provider plan once, and registers one PR
+at a real local Git head. The **actual orchestrator** promotes its PR and
+routes distinct Luna and strong review children with authenticated bootstrap
+and typed reviewer-run attribution. A distinct external actor produces an
+ordinary two-parent merge only after both current-head native approvals.
+Further real orchestrator heartbeats converge each issue to `done` and its
+work product to `merged`; B's `task_start` is approved via the native board
+route only after A's merge, and C's only after B's. Paperclip's status-only
+`missing_issue_comment` follow-up writes only an execution-status comment;
+it never substitutes for a verdict or repeats a provider effect. The gate
+requires A/B/C final files, three distinct sessions, exactly one PR per
+issue, no actionable terminal blocker, and no pending terminal merge gate.
+The fixture pre-populates each disposable Git PR branch after the previous
+merge, before that task's provider returns the URL; no fixture PATCH repairs
+issue status or supplies a verdict mid-test.
 
 Exit codes:
 

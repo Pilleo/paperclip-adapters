@@ -109,6 +109,9 @@ Only start when Tasks 1–5 run green in their appropriate gates. Each bullet st
 
 ## Execution evidence and remaining barrier (2026-09-28)
 
+The dated bullets below record intermediate gates. The current full-chain
+result and remaining fault injections follow them.
+
 - Commits `40d94ac`, `dd3d83c`, `b1b989d`, `b4654ef`, `c13930a`, `45ba9f0`, `8d75258`, and `950ef56` implement independent unit/package, historical safety, and native contract jobs. The contract runner requires fresh per-scenario reports, the exact scenario/host version, an observed/pass result and exit zero; launch errors, malformed/missing/stale reports and timeouts fail. CI executes the runner's Node tests.
 - Four positive `2026.916.0` real-PostgreSQL native contracts passed locally with `--require-safe`, including one board-authorized typed withdrawal of an idle historical parent PR card followed by Luna and strong child-scoped verdicts. These independent scenarios are **not** a three-task A→B→C acceptance test.
 - A disposable real Paperclip process retained an acknowledged company across stop/restart with the same embedded PostgreSQL data. Controller tests also proved timeout and stubborn worker process-group teardown. This restart has **not** yet exercised a Jules approval receipt, queued reviewer, or PR-registration boundary.
@@ -118,3 +121,20 @@ Only start when Tasks 1–5 run green in their appropriate gates. Each bullet st
 - An accepted-but-lost provider-create contract now persists the remote session, drops the POST response, requires the original Jules run to fail closed, resolves the **exact failed run** through the board-authorized typed execution-recovery route using observed completed-effect evidence, and adopts the original session through `GET /sessions`. The continued v4 plan/PR flow proves one create and one approval, with no duplicate provider mutation. This is an isolated single-task fault contract, not process-level Paperclip restart or full-chain acceptance.
 - The shared-company native contract now owns one Paperclip project/workspace with a real local Git checkout and authoritative A→B→C blocker edges. It drives actual Jules A creation, typed Luna/strong plan reviews, one approval, and PR registration. The **actual orchestrator** promotes A and dispatches its PR children; actual authenticated Luna/strong verdict and source/reviewer runs authorize an external two-parent merge. A later orchestrator heartbeat marks A `done`, product `merged`, releases B's native `blockedBy`, and leaves C blocked. A managed strong reviewer is required for the v1 child lane; without it the host creates a parent PR card and correctly waits for typed withdrawal. The gate still has **not** run B or C provider/review/merge cycles; no fixture status PATCH completes A.
 - **Next red test:** a real-host deterministic A→B→C scenario that cannot finish by manually PATCHing issues, provider checkpoints, PR products, or verdicts after fixture creation. Advance one Jules-owned provider session at a time through authenticated native plan/PR cards and locally simulated external two-parent merges; require the dependency timeline and final repository files. Then inject retained-storage crash and accepted-but-lost provider responses. Only after those gates pass begin the typed transition/effect extractions above.
+
+### Full shared-host baseline (2026-09-29)
+
+`stable_child_chain_abc_complete` now passes against installed Paperclip
+`2026.916.0` with real embedded PostgreSQL. It starts with one project and
+three real dependency-linked issues, uses distinct Jules provider sessions
+and addressed plan/PR verdicts for A, B and C, accepts task-start approvals
+through the board route only after the predecessor's merge, and lets only the
+external test actor make ordinary two-parent local Git merges. Real
+orchestrator heartbeats reconcile all three issues and products terminally;
+the test reads final file contents and rejects a terminal issue with an
+actionable execution blocker. The fixture needed an active `local-board`
+membership to keep host-generated delegated run JWTs valid. Its bounded
+status-only comment follow-up never acts as review evidence or a provider
+mutation. **This is the completion baseline**; it is not a server-process
+restart during the chain, a simultaneous-writer race, or a live-provider
+qualification. Those remain as Tasks 3–5, before Task 6 type refactoring.

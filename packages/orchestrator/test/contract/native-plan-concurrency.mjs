@@ -40,7 +40,7 @@ if (!scenario) {
   if (results.some((result) => result.result !== "observed")) process.exitCode = 1;
   else if (process.argv.includes("--require-safe") && !integrationAllowed) process.exitCode = 2;
 } else {
-  assert.ok([...scenarios, "stable_child", "stable_child_ladder", "stable_child_reject", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_jules_v4_chain_blocked", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused", "stable_child_gemini", "stable_child_gemini_retry"].includes(scenario), `Unknown scenario ${scenario}`);
+  assert.ok([...scenarios, "stable_child", "stable_child_ladder", "stable_child_reject", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_chain_abc_complete", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused", "stable_child_gemini", "stable_child_gemini_retry"].includes(scenario), `Unknown scenario ${scenario}`);
   await runScenario();
 }
 
@@ -106,7 +106,7 @@ async function runScenario() {
     let chainGitHub = null;
     config.stageId = nativePlanReviewStageId(config.issueId, config.revisionId, "luna");
     config.checkpointPath = path.join(home, "child-review-checkpoint.json");
-    config.childReviewLadder = ["stable_child_ladder", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_jules_v4_chain_blocked", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused"].includes(scenario);
+    config.childReviewLadder = ["stable_child_ladder", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_chain_abc_complete", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused"].includes(scenario);
     config.realJulesExecutor = ["stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict"].includes(scenario);
     config.producerConflictProbe = scenario === "stable_child_executor_pr_producer_conflict";
     config.prMigrationProbe = ["stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board"].includes(scenario);
@@ -117,10 +117,15 @@ async function runScenario() {
     config.prStrongGemini = scenario === "stable_child_executor_pr_gemini";
     config.prStrongFirstTurnFailure = scenario === "stable_child_executor_pr_failed";
     config.prStrongRetryMarker = path.join(home, "strong-reviewer-first-turn-failed");
-    config.chainBlockedProbe = scenario === "stable_child_jules_v4_chain_blocked";
+    config.chainBlockedProbe = scenario === "stable_child_chain_abc_complete";
     if (config.chainBlockedProbe) {
       config.projectId = randomUUID();
       config.strongReviewerId = randomUUID();
+      config.bIssueId = randomUUID();
+      config.cIssueId = randomUUID();
+      config.bSessionId = randomUUID();
+      config.cSessionId = randomUUID();
+      config.chainGitHubStatePath = path.join(home, "github-state.json");
     }
     config.createProviderSession = scenario === "stable_child_jules_v4_create" || config.chainBlockedProbe || scenario === "stable_child_jules_v4_create_lost";
     config.dropProviderCreateResponse = scenario === "stable_child_jules_v4_create_lost";
@@ -168,11 +173,61 @@ async function runScenario() {
     let providerApproved = false;
     let providerCreated = false;
     let providerCreateRequest = null;
+    const chainProviderSessions = new Map();
     const app = express();
     app.use(express.json());
     if (config.realJulesExecutor || config.julesOwnedBootstrap) {
       app.use("/__contract/jules/v1alpha", (req, res) => {
         record("PROVIDER_REQUEST", { method: req.method, path: req.path });
+        if (config.chainBlockedProbe) {
+          if (req.path === "/sources" && req.method === "GET") return res.json({ sources: [{
+            name: "sources/github/paperclip-contract/fixture", githubRepo: { owner: "paperclip-contract", repo: "fixture" },
+          }] });
+          if (req.path === "/sessions" && req.method === "POST") {
+            assert.equal(req.body.sourceContext?.source, "sources/github/paperclip-contract/fixture");
+            assert.equal(req.body.sourceContext?.githubRepoContext?.startingBranch, "main");
+            assert.equal(req.body.requirePlanApproval, true);
+            const label = /Canary B/i.test(req.body.prompt) ? "B" : /Canary C/i.test(req.body.prompt) ? "C" : "A";
+            const sessionId = label === "B" ? config.bSessionId : label === "C" ? config.cSessionId : config.sessionId;
+            if (chainProviderSessions.has(sessionId)) return res.status(409).json({ error: "duplicate provider session" });
+            chainProviderSessions.set(sessionId, { label, request: req.body, approved: false });
+            if (label === "A") { providerCreated = true; providerCreateRequest = req.body; }
+            record("CHAIN_PROVIDER_SESSION_CREATED", { label, sessionId });
+            return res.json({ name: `sessions/${sessionId}`, prompt: req.body.prompt,
+              sourceContext: req.body.sourceContext, state: "AWAITING_PLAN_APPROVAL", outputs: [] });
+          }
+          const approvalId = /^\/sessions\/([^/]+):approvePlan$/.exec(req.path)?.[1];
+          if (approvalId && req.method === "POST") {
+            const stored = chainProviderSessions.get(approvalId);
+            if (!stored || stored.approved) return res.status(409).json({ error: "missing or already approved plan" });
+            stored.approved = true;
+            if (approvalId === config.sessionId) providerApproved = true;
+            return res.json({});
+          }
+          const stateOf = (sessionId, stored) => ({ name: `sessions/${sessionId}`,
+            prompt: stored.request.prompt, sourceContext: stored.request.sourceContext,
+            state: stored.approved ? "COMPLETED" : "AWAITING_PLAN_APPROVAL",
+            outputs: stored.approved ? [{ pullRequest: { url: stored.label === "A" ? config.prUrl :
+              `https://github.com/paperclip-contract/fixture/pull/${stored.label === "B" ? 2 : 3}` } }] : [],
+          });
+          if (req.path === "/sessions" && req.method === "GET") return res.json({ sessions: [...chainProviderSessions]
+            .map(([id, stored]) => stateOf(id, stored)) });
+          const activitiesId = /^\/sessions\/([^/]+)\/activities$/.exec(req.path)?.[1];
+          if (activitiesId && req.method === "GET") {
+            const stored = chainProviderSessions.get(activitiesId);
+            if (!stored) return res.status(404).json({ error: "session absent" });
+            return res.json({ activities: [{ id: "fixture-plan-activity", createTime: "2026-09-27T01:00:00.000Z",
+              planGenerated: { plan: { id: "fixture-plan", steps: [{ index: 0, title: `Contract plan ${stored.label}` }] } } },
+              ...(stored.approved ? [{ id: "fixture-approved-activity", createTime: "2026-09-27T01:01:00.000Z",
+                planApproved: { planId: "fixture-plan" } }] : [])] });
+          }
+          const sessionId = /^\/sessions\/([^/]+)$/.exec(req.path)?.[1];
+          if (sessionId && req.method === "GET") {
+            const stored = chainProviderSessions.get(sessionId);
+            return stored ? res.json(stateOf(sessionId, stored)) : res.status(404).json({ error: "session absent" });
+          }
+          return res.status(404).json({ error: "unsupported chain provider operation" });
+        }
         if (config.createProviderSession && req.method === "POST" && req.path === "/sessions") {
           if (providerCreated) return res.status(409).json({ error: "duplicate session creation" });
           assert.equal(req.body.sourceContext?.source, "sources/github/paperclip-contract/fixture");
@@ -275,9 +330,14 @@ async function runScenario() {
     if (config.realJulesExecutor || config.julesOwnedBootstrap) config.providerBaseUrl = `${process.env.PAPERCLIP_API_URL}/__contract/jules/v1alpha`;
     await db.insert(authUsers).values({ id: config.userId, name: "Contract operator", email: `${config.userId}@example.test`,
       emailVerified: true, createdAt: new Date(), updatedAt: new Date() });
+    if (config.chainBlockedProbe) await db.insert(authUsers).values({ id: "local-board",
+      name: "Disposable local-trusted board operator", email: "local-board@contract.invalid",
+      emailVerified: true, createdAt: new Date(), updatedAt: new Date() });
     await db.insert(companies).values({ id: config.companyId, name: "Disposable concurrency contract", issuePrefix: "RACE",
       issueCounter: config.chainBlockedProbe ? 5 : 3, defaultResponsibleUserId: config.userId });
     await db.insert(companyMemberships).values({ companyId: config.companyId, principalType: "user", principalId: config.userId, status: "active", membershipRole: "owner" });
+    if (config.chainBlockedProbe) await db.insert(companyMemberships).values({ companyId: config.companyId,
+      principalType: "user", principalId: "local-board", status: "active", membershipRole: "owner" });
     const worker = fileURLToPath(new URL(scenario.startsWith("stable_child") ? "./native-child-plan-worker.mjs" : "./native-plan-worker.mjs", import.meta.url));
     const runtimeConfig = { heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1 } };
     report.runtimeConfig = runtimeConfig;
@@ -316,14 +376,12 @@ async function runScenario() {
       { id: config.blockerIssueId, companyId: config.companyId, identifier: "RACE-3", title: "Other reviewer work", status: "in_progress", assigneeAgentId: config.lunaId },
     ].map((issue) => ({ ...issue, executionPolicy: { mode: "normal", stages: [], commentRequired: false } })));
     if (config.chainBlockedProbe) {
-      config.bIssueId = randomUUID();
-      config.cIssueId = randomUUID();
       await db.insert(issues).values([
         { id: config.bIssueId, companyId: config.companyId, identifier: "RACE-4", title: "Canary B",
-          status: "todo", assigneeAgentId: config.julesId, projectId: config.projectId,
+          status: "todo", assigneeAgentId: null, projectId: config.projectId,
           description: "---\norchestrator_managed: true\n---\n\nImplement canary B after A merges." },
         { id: config.cIssueId, companyId: config.companyId, identifier: "RACE-5", title: "Canary C",
-          status: "todo", assigneeAgentId: config.julesId, projectId: config.projectId,
+          status: "todo", assigneeAgentId: null, projectId: config.projectId,
           description: "---\norchestrator_managed: true\n---\n\nImplement canary C after B merges." },
       ].map((issue) => ({ ...issue, executionPolicy: { mode: "normal", stages: [], commentRequired: false } })));
       await db.insert(schema.issueRelations).values([
@@ -395,9 +453,16 @@ async function runScenario() {
         .where(eq(schema.projectWorkspaces.projectId, config.projectId));
       assert.ok(project && workspace, "a shared real-project A B C gate needs one authoritative Paperclip project workspace");
       assert.equal(workspace.cwd, chainGitHub.repository);
-      await wake(config.julesId, config.bIssueId);
-      await wake(config.julesId, config.cIssueId);
-      await settle();
+      const operatorMemberships = await db.select().from(schema.companyMemberships)
+        .where(eq(schema.companyMemberships.companyId, config.companyId));
+      assert.ok(operatorMemberships.some((membership) => membership.principalType === "user" &&
+        membership.principalId === "local-board" && membership.status === "active"),
+      "local-trusted board operator must be a real active company member before it approves an agent task_start");
+      for (const id of [config.bIssueId, config.cIssueId]) {
+        const [dependent] = await db.select().from(issues).where(eq(issues.id, id));
+        assert.equal(dependent.assigneeAgentId, null,
+          "blocked dependent tasks must begin unassigned until their native task_start gate is approved");
+      }
       const earlyRuns = (await runRows()).filter((run) =>
         [config.bIssueId, config.cIssueId].includes(run.contextSnapshot?.issueId) && run.startedAt);
       assert.equal(earlyRuns.length, 0, "B/C provider work must not start while native predecessor blockers remain unresolved");
@@ -536,6 +601,9 @@ async function runScenario() {
             assert.deepEqual(reviewIdentities.map((identity) => identity?.stage).sort(), ["luna", "strong"]);
             assert.ok(reviewIdentities.every((identity) => identity?.headSha === config.prHeadSha &&
               identity.prUrl === config.prUrl && identity.parentIssueId === config.issueId));
+            assert.equal((await runRows()).filter((run) =>
+              [config.bIssueId, config.cIssueId].includes(run.contextSnapshot?.issueId) && run.startedAt).length, 0,
+            "neither B nor C may start while A's PR remains unmerged");
             const reviewedEvidence = [];
             for (const [index, child] of reviewChildren.entries()) {
               const [card] = await db.select().from(schema.issueThreadInteractions)
@@ -560,6 +628,9 @@ async function runScenario() {
               reviews: reviewedEvidence.sort((left, right) => left.stage === "luna" ? -1 : right.stage === "luna" ? 1 : 0) });
             record("CHAIN_A_EXTERNAL_MERGE", { mergeSha: merged.mergeSha, reviewedHeadSha: merged.headSha,
               cardIds: reviewedEvidence.map((evidence) => evidence.cardId) });
+            const bPullRequest = await chainGitHub.openPullRequest("B", "B.txt", "beta");
+            assert.equal(bPullRequest.baseSha, merged.mergeSha, "B's disposable PR must start from the verified A merge");
+            record("CHAIN_B_PR_FIXTURE_PREPARED", { baseSha: bPullRequest.baseSha, headSha: bPullRequest.headSha });
             const remotePr = JSON.parse(execFileSync(chainGitHub.ghPath,
               ["pr", "view", config.prUrl, "--json", "state,headRefOid,mergeCommit"], { encoding: "utf8", timeout: 8_000 }));
             assert.equal(remotePr.state, "MERGED", "the separate external actor must merge A only after both native verdicts");
@@ -588,10 +659,199 @@ async function runScenario() {
             assert.equal(evaluateAuthoritativeDependencies(cDetail).safe, false);
             assert.equal((await runRows()).filter((run) => run.contextSnapshot?.issueId === config.cIssueId && run.startedAt).length, 0,
               "C must remain blocked after A alone merges");
+            const pendingApprovals = await db.select().from(schema.approvals)
+              .where(eq(schema.approvals.companyId, config.companyId));
+            record("CHAIN_B_APPROVAL_SNAPSHOT", { approvals: pendingApprovals.map((approval) => ({
+              id: approval.id, status: approval.status, type: approval.type,
+              action: approval.payload?.action ?? null, issueId: approval.payload?.issueId ?? null,
+              requestedByAgentId: approval.requestedByAgentId,
+            })) });
+            const bStart = pendingApprovals.filter((approval) => approval.status === "pending" &&
+              approval.payload?.action === "task_start" && approval.payload?.issueId === config.bIssueId);
+            assert.equal(bStart.length, 1, "operator must approve only B's addressed native task_start card");
+            assert.ok(pendingApprovals.some((approval) => approval.status === "pending" &&
+              approval.payload?.action === "task_start" && approval.payload?.issueId === config.cIssueId),
+            "C's task_start must remain undecided while B is unfinished");
+            const started = await fetch(`${process.env.PAPERCLIP_API_URL}/api/approvals/${bStart[0].id}/approve`, {
+              method: "POST", headers: { "content-type": "application/json" },
+              body: JSON.stringify({ decisionNote: "Disposable A merge verified; authorize only B to start." }),
+              signal: AbortSignal.timeout(20_000),
+            });
+            assert.equal(started.status, 200, "B start must use the native typed board approval route");
+            const [approvedStart] = await db.select().from(schema.approvals).where(eq(schema.approvals.id, bStart[0].id));
+            assert.equal(approvedStart.status, "approved");
+            record("CHAIN_B_TASK_START_APPROVED", { approvalId: approvedStart.id, aMergeSha: merged.mergeSha });
+            await wake(config.orchestratorId, config.maintenanceIssueId, { contractChainReconcile: true });
+            await settle();
+            const bBeforeWake = await fetch(`${process.env.PAPERCLIP_API_URL}/api/issues/${config.bIssueId}`)
+              .then((response) => response.json());
+            record("CHAIN_B_AFTER_APPROVED_START", { status: bBeforeWake.status,
+              assigneeAgentId: bBeforeWake.assigneeAgentId, executionBlocker: bBeforeWake.executionBlocker ?? null,
+              executionPolicy: bBeforeWake.executionPolicy ?? null });
+            assert.equal((await runRows()).filter((run) => run.agentId === config.julesId &&
+              run.contextSnapshot?.issueId === config.bIssueId && ["queued", "scheduled", "running"].includes(run.status)).length, 0,
+            "do not duplicate an active addressed B Jules run after task_start approval");
+            await wake(config.julesId, config.bIssueId, { contractChainApprovedStart: approvedStart.id });
+            await settle();
+            const bCreated = report.events.filter((event) => event.name === "CHAIN_PROVIDER_SESSION_CREATED" && event.label === "B");
+            assert.equal(bCreated.length, 1, "released B must create exactly one own Jules provider session");
+            assert.equal(bCreated[0].sessionId, config.bSessionId);
+            assert.ok(bCreated[0].sequence > report.events.find((event) => event.name === "CHAIN_A_EXTERNAL_MERGE")?.sequence &&
+              bCreated[0].sequence > report.events.find((event) => event.name === "CHAIN_B_TASK_START_APPROVED")?.sequence,
+            "B provider creation requires both verified A merge and native task_start approval");
+            assert.equal(report.events.filter((event) => event.name === "CHAIN_PROVIDER_SESSION_CREATED" && event.label === "C").length, 0);
+            assert.equal((await runRows()).filter((run) => run.contextSnapshot?.issueId === config.bIssueId && run.status === "failed").length, 0,
+              "released B must not fail a provider run after A's verified merge");
+            for (let turn = 0; turn < 20; turn++) {
+              const products = await db.select().from(schema.issueWorkProducts)
+                .where(eq(schema.issueWorkProducts.issueId, config.bIssueId));
+              if (products.length) break;
+              const [currentB] = await db.select().from(issues).where(eq(issues.id, config.bIssueId));
+              assert.ok(currentB.monitorNextCheckAt,
+                `B must retain a durable Jules monitor until its PR is registered (status ${currentB.status})`);
+              await heartbeat.tickTimers(new Date(new Date(currentB.monitorNextCheckAt).getTime() + 1));
+              await settle();
+            }
+            const bProducts = await db.select().from(schema.issueWorkProducts)
+              .where(eq(schema.issueWorkProducts.issueId, config.bIssueId));
+            assert.equal(bProducts.length, 1, "B must finish its own typed plan approvals and register its PR");
+            assert.equal(bProducts[0].url, bPullRequest.url);
+            assert.equal(bProducts[0].metadata?.headSha, bPullRequest.headSha);
+            assert.equal(bProducts[0].metadata?.producer, "paperclip-jules-adapter");
+            assert.equal(bProducts[0].status, "ready_for_review");
+            assert.deepEqual(report.events.filter((event) => event.name === "PROVIDER_REQUEST" &&
+              event.method === "POST" && event.path === `/sessions/${config.bSessionId}:approvePlan`).map((event) => event.path),
+            [`/sessions/${config.bSessionId}:approvePlan`]);
+            const bPlanChildren = await db.select().from(issues).where(eq(issues.parentId, config.bIssueId));
+            const bPlanCards = (await Promise.all(bPlanChildren.map((child) => db.select().from(schema.issueThreadInteractions)
+              .where(eq(schema.issueThreadInteractions.issueId, child.id))))).flat()
+              .filter((card) => card.payload?.target?.type === "issue_document");
+            assert.equal(bPlanCards.length, 2, "B requires its own distinct Luna and strong typed plan cards");
+            assert.ok(bPlanCards.every((card) => card.status === "answered" &&
+              card.result?.items?.[0]?.verdict === "approve" && card.payload.target.issueId === config.bIssueId &&
+              card.sourceRunId && card.resolvedByRunId && card.sourceRunId !== card.resolvedByRunId));
+            assert.equal((await runRows()).filter((run) => run.contextSnapshot?.issueId === config.cIssueId && run.startedAt).length, 0,
+              "C must stay unstarted until B's external merge is reconciled");
+            record("CHAIN_B_PR_REGISTERED", { sessionId: config.bSessionId, headSha: bPullRequest.headSha,
+              planCardIds: bPlanCards.map((card) => card.id) });
+            const { runChainReviewPhase } = await import("./native-chain-review-phase.mjs");
+            let cPullRequest;
+            const bMerge = await runChainReviewPhase({ label: "B", issueId: config.bIssueId,
+              pr: bPullRequest, config, chainGitHub, db, schema, eq, wake, settle, runRows, record,
+              beforeExternalMerge: async () => {
+                assert.equal((await runRows()).filter((run) => run.contextSnapshot?.issueId === config.cIssueId && run.startedAt).length, 0,
+                  "C must not start during B's PR review before B merges");
+              },
+              onExternalMerge: async (merge) => {
+                cPullRequest = await chainGitHub.openPullRequest("C", "C.txt", "gamma");
+                assert.equal(cPullRequest.baseSha, merge.mergeSha,
+                  "C's provider PR must begin on the verified external B merge");
+              },
+            });
+            assert.ok(cPullRequest);
+            assert.notEqual(bMerge.mergeSha, merged.mergeSha);
+            const [bAfterReview] = await db.select().from(issues).where(eq(issues.id, config.bIssueId));
+            assert.equal(bAfterReview.status, "done", "B's own typed PR reviews and external merge must complete before C starts");
+            const [mergedBProduct] = await db.select().from(schema.issueWorkProducts)
+              .where(eq(schema.issueWorkProducts.issueId, config.bIssueId));
+            assert.equal(mergedBProduct.status, "merged");
+            const cReady = await fetch(`${process.env.PAPERCLIP_API_URL}/api/issues/${config.cIssueId}`)
+              .then((response) => response.json());
+            assert.deepEqual(cReady.blockedBy?.map(({ id, status }) => [id, status]), [[config.bIssueId, "done"]]);
+            assert.deepEqual(evaluateAuthoritativeDependencies(cReady), { safe: true });
+            const cStartCandidates = (await db.select().from(schema.approvals)
+              .where(eq(schema.approvals.companyId, config.companyId)))
+              .filter((approval) => approval.status === "pending" && approval.payload?.action === "task_start" &&
+                approval.payload.issueId === config.cIssueId);
+            assert.equal(cStartCandidates.length, 1, "only C's own pending native task_start may be approved after B merges");
+            const cStarted = await fetch(`${process.env.PAPERCLIP_API_URL}/api/approvals/${cStartCandidates[0].id}/approve`, {
+              method: "POST", headers: { "content-type": "application/json" },
+              body: JSON.stringify({ decisionNote: "Disposable B merge verified; authorize only C to start." }),
+              signal: AbortSignal.timeout(20_000),
+            });
+            assert.equal(cStarted.status, 200, "C start must resolve its actual board approval card");
+            record("CHAIN_C_TASK_START_APPROVED", { approvalId: cStartCandidates[0].id, bMergeSha: bMerge.mergeSha });
+            for (let turn = 0; turn < 6; turn++) {
+              if (report.events.some((event) => event.name === "CHAIN_PROVIDER_SESSION_CREATED" && event.label === "C")) break;
+              await wake(config.orchestratorId, config.maintenanceIssueId, { contractChainReconcile: true });
+              await settle();
+            }
+            const cCreates = report.events.filter((event) => event.name === "CHAIN_PROVIDER_SESSION_CREATED" && event.label === "C");
+            assert.equal(cCreates.length, 1, "the unblocked C task must create exactly one provider session");
+            assert.equal(cCreates[0].sessionId, config.cSessionId);
+            assert.ok(cCreates[0].sequence > report.events.find((event) => event.name === "CHAIN_B_EXTERNAL_MERGE")?.sequence &&
+              cCreates[0].sequence > report.events.find((event) => event.name === "CHAIN_C_TASK_START_APPROVED")?.sequence);
+            assert.equal((await runRows()).filter((run) => run.contextSnapshot?.issueId === config.cIssueId && run.status === "failed").length, 0);
+            for (let turn = 0; turn < 20; turn++) {
+              const products = await db.select().from(schema.issueWorkProducts)
+                .where(eq(schema.issueWorkProducts.issueId, config.cIssueId));
+              if (products.length) break;
+              const [currentC] = await db.select().from(issues).where(eq(issues.id, config.cIssueId));
+              assert.ok(currentC.monitorNextCheckAt,
+                `C must retain a Jules monitor until its typed plan review delivers a PR (status ${currentC.status})`);
+              await heartbeat.tickTimers(new Date(new Date(currentC.monitorNextCheckAt).getTime() + 1));
+              await settle();
+            }
+            const cProducts = await db.select().from(schema.issueWorkProducts)
+              .where(eq(schema.issueWorkProducts.issueId, config.cIssueId));
+            assert.equal(cProducts.length, 1);
+            assert.equal(cProducts[0].url, cPullRequest.url);
+            assert.equal(cProducts[0].metadata?.headSha, cPullRequest.headSha);
+            assert.equal(cProducts[0].metadata?.producer, "paperclip-jules-adapter");
+            const cPlanChildren = await db.select().from(issues).where(eq(issues.parentId, config.cIssueId));
+            const cPlanCards = (await Promise.all(cPlanChildren.map((child) => db.select().from(schema.issueThreadInteractions)
+              .where(eq(schema.issueThreadInteractions.issueId, child.id))))).flat()
+              .filter((card) => card.payload?.target?.type === "issue_document");
+            assert.equal(cPlanCards.length, 2, "C must receive distinct Luna and strong typed plan verdicts");
+            assert.ok(cPlanCards.every((card) => card.status === "answered" &&
+              card.result?.items?.[0]?.verdict === "approve" && card.payload.target.issueId === config.cIssueId &&
+              card.sourceRunId && card.resolvedByRunId && card.sourceRunId !== card.resolvedByRunId));
+            assert.deepEqual(report.events.filter((event) => event.name === "PROVIDER_REQUEST" && event.method === "POST" &&
+              event.path === `/sessions/${config.cSessionId}:approvePlan`).map((event) => event.path),
+            [`/sessions/${config.cSessionId}:approvePlan`]);
+            record("CHAIN_C_PR_REGISTERED", { sessionId: config.cSessionId, headSha: cPullRequest.headSha,
+              planCardIds: cPlanCards.map((card) => card.id) });
+            const cMerge = await runChainReviewPhase({ label: "C", issueId: config.cIssueId,
+              pr: cPullRequest, config, chainGitHub, db, schema, eq, wake, settle, runRows, record });
+            assert.notEqual(cMerge.mergeSha, bMerge.mergeSha);
+            const [cAfterBMerge] = await db.select().from(issues).where(eq(issues.id, config.cIssueId));
+            assert.equal(cAfterBMerge.status, "done", "C must complete only after the verified B merge releases it");
+            for (const [id, expected] of [[config.issueId, "alpha"], [config.bIssueId, "beta"], [config.cIssueId, "gamma"]]) {
+              const [terminal] = await db.select().from(issues).where(eq(issues.id, id));
+              const products = await db.select().from(schema.issueWorkProducts)
+                .where(eq(schema.issueWorkProducts.issueId, id));
+              const projected = await fetch(`${process.env.PAPERCLIP_API_URL}/api/issues/${id}`)
+                .then((response) => response.json());
+              assert.equal(terminal.status, "done");
+              assert.equal(projected.status, "done");
+              assert.equal(projected.executionBlocker ?? null, null,
+                "terminal issues cannot retain an actionable failed-run recovery blocker");
+              assert.equal(products.length, 1);
+              assert.equal(products[0].status, "merged");
+              assert.equal((await readFile(path.join(chainGitHub.repository, `${id === config.issueId ? "A" : id === config.bIssueId ? "B" : "C"}.txt`), "utf8")), expected);
+            }
+            assert.equal((await db.select().from(schema.approvals)
+              .where(eq(schema.approvals.companyId, config.companyId)))
+              .filter((approval) => approval.status === "pending" && approval.payload?.action === "task_merge" &&
+                [config.issueId, config.bIssueId, config.cIssueId].includes(approval.payload.issueId)).length, 0,
+            "no terminal PR may retain an actionable operator merge approval");
+            const createdSessions = report.events.filter((event) => event.name === "CHAIN_PROVIDER_SESSION_CREATED");
+            assert.deepEqual(createdSessions.map((event) => event.label), ["A", "B", "C"]);
+            assert.equal(new Set(createdSessions.map((event) => event.sessionId)).size, 3);
+            assert.equal(report.events.filter((event) => event.name === "PROVIDER_REQUEST" && event.method === "POST" &&
+              event.path === "/sessions").length, 3, "each issue must create exactly one durable Jules provider session");
+            for (const sessionId of [config.sessionId, config.bSessionId, config.cSessionId]) {
+              assert.equal(report.events.filter((event) => event.name === "PROVIDER_REQUEST" && event.method === "POST" &&
+                event.path === `/sessions/${sessionId}:approvePlan`).length, 1);
+            }
+            report.outcome = "shared_host_a_b_c_provider_native_reviews_external_merges_and_terminal_reconciliation";
             record("CHAIN_B_RELEASED_C_HELD", { aMergeSha: merged.mergeSha,
-              bIssueId: config.bIssueId, cIssueId: config.cIssueId });
+              bIssueId: config.bIssueId, cIssueId: config.cIssueId,
+              bStatus: bDetail.status,
+              bStartedRuns: (await runRows()).filter((run) =>
+                run.contextSnapshot?.issueId === config.bIssueId && run.startedAt).map((run) => ({ id: run.id, status: run.status })) });
           }
-          report.outcome = config.chainBlockedProbe ? "shared_host_a_reviewed_merged_b_released_c_held"
+          report.outcome = config.chainBlockedProbe ? report.outcome
             : "actual_jules_executor_self_bootstraps_v4_ladder_approves_once_and_delivers_pr";
         } else {
           assert.equal(report.events.filter((event) => event.name === "PROVIDER_REQUEST").length, 0,

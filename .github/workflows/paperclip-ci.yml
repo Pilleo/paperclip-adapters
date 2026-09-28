@@ -169,6 +169,7 @@ jobs:
       - name: Run supported-host positive native contracts
         env:
           CONTRACT_REPORT_DIR: ${{ runner.temp }}/paperclip-native-contracts
+          CONTRACT_SCENARIO_TIMEOUT_MS: '600000'
         run: |
           PAPERCLIP_CONTRACT_NODE_MODULES="$(npm root --global)/paperclipai/node_modules" node scripts/paperclip-host-contract-gate.mjs
       - name: Upload sanitized native contract reports

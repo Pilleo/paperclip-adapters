@@ -13,7 +13,7 @@ import { readNativeReviewAssignmentFromRuntime, submitNativeReviewVerdictFromRun
 import { submitPlanVerdictAndReturnToJules, readPlanReviewAssignmentAndReconcileHandback } from "../../src/core/native-plan-review-handback.ts";
 
 const env = process.env;
-const config = JSON.parse(env.CONTRACT_FIXTURE);
+let config = JSON.parse(env.CONTRACT_FIXTURE);
 let identity = { version: 3, companyId: config.companyId, parentIssueId: config.issueId,
   sessionId: config.sessionId, activityId: "fixture-plan-activity", documentId: config.documentId,
   revisionId: config.revisionId, revisionNumber: 1, stage: "luna", reviewerAgentId: config.lunaId,
@@ -44,6 +44,29 @@ const run = await request(`/heartbeat-runs/${env.PAPERCLIP_RUN_ID}`);
 assert.equal(run.status, "running");
 assert.equal(run.agentId, env.PAPERCLIP_AGENT_ID);
 const issueId = run.contextSnapshot.issueId;
+if (config.chainBlockedProbe && env.PAPERCLIP_AGENT_ID === config.julesId &&
+    run.contextSnapshot.wakeReason === "missing_issue_comment") {
+  await request(`/issues/${issueId}/comments`, "POST", {
+    body: "The existing Jules session is awaiting its native plan or PR lifecycle; this status-only host run performs no provider mutation or review verdict.",
+  });
+  await event("CHAIN_JULES_STATUS_ONLY_ACKNOWLEDGED", { issueId, runId: env.PAPERCLIP_RUN_ID });
+  process.exit(0);
+}
+if (config.chainBlockedProbe && issueId && issueId !== config.maintenanceIssueId) {
+  const currentIssue = await request(`/issues/${issueId}`);
+  const parentId = [config.bIssueId, config.cIssueId].includes(issueId) ? issueId : currentIssue.parentId;
+  if ([config.bIssueId, config.cIssueId].includes(parentId)) {
+    const label = parentId === config.bIssueId ? "B" : "C";
+    const github = JSON.parse(await readFile(config.chainGitHubStatePath, "utf8"));
+    const pr = github.prs.find((candidate) => candidate.number === (label === "B" ? 2 : 3));
+    assert.ok(pr, `dependent ${label} PR must be created by the provider fixture after its predecessor merge`);
+    config = { ...config, issueId: parentId,
+      sessionId: label === "B" ? config.bSessionId : config.cSessionId,
+      prUrl: pr.url, prHeadSha: pr.headSha,
+      checkpointPath: config.checkpointPath.replace(/\.json$/, `-${label}.json`) };
+    identity = { ...identity, parentIssueId: parentId, sessionId: config.sessionId };
+  }
+}
 if (env.PAPERCLIP_AGENT_ID === config.julesId) {
   if (config.julesOwnedBootstrap && issueId !== config.issueId) {
     const child = await request(`/issues/${issueId}`);
@@ -95,8 +118,10 @@ if (env.PAPERCLIP_AGENT_ID === config.julesId) {
     if (previousStage && (saved?.childPlanReview?.identity.stage !== previousStage || !saved?.childPlanReview)) {
       await event("PARENT_CONSUMED_CHILD_VERDICT", { stage: previousStage, sessionId: config.sessionId });
     }
-    await event("REAL_JULES_PARENT_RESULT", { exitCode: result.exitCode,
-      errorCode: result.errorCode ?? null, stage: saved?.childPlanReview?.identity.stage ?? null });
+    await event("REAL_JULES_PARENT_RESULT", { issueId, exitCode: result.exitCode,
+      errorCode: result.errorCode ?? null, stage: saved?.childPlanReview?.identity.stage ?? null,
+      storedSessionId: saved?.julesSessionId ?? null, phase: saved?.phase ?? null,
+      summary: typeof result.summary === "string" ? result.summary.slice(0, 160) : null });
     if (config.dropProviderCreateResponse && result.errorCode === "jules_create_outcome_unverified") {
       assert.equal(result.exitCode, 1, "uncertain provider create must fail closed before typed recovery");
       await event("JULES_CREATE_OUTCOME_UNVERIFIED", { issueId, sessionId: config.sessionId });
