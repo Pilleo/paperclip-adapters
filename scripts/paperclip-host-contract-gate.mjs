@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const supported = [
@@ -15,25 +15,44 @@ const selected = requested.length ? requested : supported;
 const reportDir = process.env.CONTRACT_REPORT_DIR;
 if (!reportDir) throw new Error("CONTRACT_REPORT_DIR must name a disposable directory for sanitized reports");
 await mkdir(reportDir, { recursive: true });
+const timeoutMs = Number(process.env.CONTRACT_SCENARIO_TIMEOUT_MS ?? 300_000);
+if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 900_000) {
+  throw new Error("CONTRACT_SCENARIO_TIMEOUT_MS must be an integer between 1 and 900000");
+}
 
 const scenarios = [];
 for (const scenario of selected) {
-  const exit = await new Promise((resolve, reject) => {
+  const freshReportDir = await mkdtemp(path.join(reportDir, `${scenario}-`));
+  const run = await new Promise((resolve) => {
     const child = spawn("pnpm", ["test:contract:plan-handback", `--scenario=${scenario}`, "--require-safe"], {
-      env: { ...process.env, CONTRACT_REPORT_DIR: reportDir },
+      env: { ...process.env, CONTRACT_REPORT_DIR: freshReportDir },
       stdio: "inherit",
+      detached: true,
     });
-    child.once("error", reject);
-    child.once("close", (code, signal) => resolve(code ?? (signal ? 1 : 0)));
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      if (child.pid) {
+        try { process.kill(-child.pid, "SIGKILL"); }
+        catch (error) { if (error.code !== "ESRCH") console.error("Contract timeout termination failed", error); }
+      }
+    }, timeoutMs);
+    child.once("error", (error) => { clearTimeout(timer); resolve({ exit: 1, error: error.code ?? "launch_error", timedOut }); });
+    child.once("close", (code, signal) => {
+      clearTimeout(timer);
+      resolve({ exit: code ?? (signal ? 1 : 0), timedOut });
+    });
   });
   let report;
   try {
-    report = JSON.parse(await readFile(path.join(reportDir, `${scenario}.json`), "utf8"));
-  } catch (error) {
-    report = { scenario, result: "missing_report", safetyGate: "not_established",
-      error: error instanceof Error ? error.message : String(error) };
+    report = JSON.parse(await readFile(path.join(freshReportDir, `${scenario}.json`), "utf8"));
+  } catch {
+    report = { scenario, result: "missing_report", safetyGate: "not_established" };
   }
-  scenarios.push({ scenario, result: report.result, safetyGate: report.safetyGate, exit });
+  const validIdentity = report.scenario === scenario && report.version === "2026.916.0";
+  scenarios.push({ scenario, result: run.timedOut ? "timeout" : run.error ? "launch_error" :
+    !validIdentity && report.result !== "missing_report" ? "invalid_report" : report.result,
+    safetyGate: validIdentity && !run.timedOut && !run.error ? report.safetyGate : "not_established", exit: run.exit });
 }
 const integrationAllowed = scenarios.every((scenario) => scenario.exit === 0 && scenario.result === "observed" && scenario.safetyGate === "pass");
 const summary = { version: "2026.916.0", integrationAllowed, scenarios };

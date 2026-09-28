@@ -7,7 +7,7 @@ import { test } from "node:test";
 
 const gate = path.resolve("scripts/paperclip-host-contract-gate.mjs");
 
-async function runGate(fixtureExit, fixtureSafetyGate, args = []) {
+async function runGate(fixtureExit, fixtureSafetyGate, args = [], options = {}) {
   const home = await mkdtemp(path.join(tmpdir(), "host-gate-test-"));
   const bin = path.join(home, "bin");
   await mkdir(bin);
@@ -16,15 +16,30 @@ async function runGate(fixtureExit, fixtureSafetyGate, args = []) {
 const fs = require('node:fs');
 const path = require('node:path');
 const scenario = process.argv.find((arg) => arg.startsWith('--scenario='))?.slice(11);
-const report = { scenario, result: 'observed', safetyGate: process.env.FIXTURE_SAFETY_GATE };
-fs.writeFileSync(path.join(process.env.CONTRACT_REPORT_DIR, scenario + '.json'), JSON.stringify(report));
+if (process.env.FIXTURE_DELAY) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.FIXTURE_DELAY));
+if (process.env.FIXTURE_WRITE !== 'no') {
+  const report = { scenario: process.env.FIXTURE_SCENARIO || scenario, version: process.env.FIXTURE_VERSION || '2026.916.0', result: 'observed', safetyGate: process.env.FIXTURE_SAFETY_GATE };
+  fs.writeFileSync(path.join(process.env.CONTRACT_REPORT_DIR, scenario + '.json'), process.env.FIXTURE_MALFORMED === 'yes' ? '{invalid-json' : JSON.stringify(report));
+}
 process.exit(Number(process.env.FIXTURE_EXIT));
 `);
   await chmod(pnpm, 0o700);
   try {
+    const reportDir = path.join(home, "reports");
+    await mkdir(reportDir);
+    if (options.staleReport) {
+      await writeFile(path.join(reportDir, "stable_child_executor_pr_board.json"), JSON.stringify({
+        scenario: "stable_child_executor_pr_board", version: "2026.916.0", result: "observed", safetyGate: "pass",
+      }));
+    }
     const child = spawn(process.execPath, [gate, ...args], {
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CONTRACT_REPORT_DIR: path.join(home, "reports"),
-        FIXTURE_EXIT: String(fixtureExit), FIXTURE_SAFETY_GATE: fixtureSafetyGate },
+      env: { ...process.env, PATH: options.noPnpm ? home : `${bin}:${process.env.PATH}`, CONTRACT_REPORT_DIR: path.join(home, "reports"),
+        FIXTURE_EXIT: String(fixtureExit), FIXTURE_SAFETY_GATE: fixtureSafetyGate,
+        FIXTURE_WRITE: options.writeReport === false ? "no" : "yes",
+        FIXTURE_SCENARIO: options.reportScenario ?? "", FIXTURE_VERSION: options.reportVersion ?? "",
+        FIXTURE_DELAY: String(options.delayMs ?? 0),
+        FIXTURE_MALFORMED: options.malformedReport ? "yes" : "no",
+        CONTRACT_SCENARIO_TIMEOUT_MS: String(options.timeoutMs ?? 120_000) },
     });
     let stdout = "";
     let stderr = "";
@@ -54,4 +69,38 @@ test("supported-host contract gate succeeds only for selected positive safe scen
   const result = await runGate(0, "pass", ["--scenario=stable_child_executor_pr_probe"]);
   assert.equal(result.exit, 0, result.stderr);
   assert.equal(result.summary.integrationAllowed, true);
+});
+
+test("missing fresh report cannot be replaced with a stale successful report", async () => {
+  const result = await runGate(0, "pass", ["--scenario=stable_child_executor_pr_board"], { staleReport: true, writeReport: false });
+  assert.notEqual(result.exit, 0);
+  assert.equal(result.summary.scenarios[0].result, "missing_report");
+});
+
+test("a report for a different scenario is not evidence of this scenario", async () => {
+  const result = await runGate(0, "pass", ["--scenario=stable_child_executor_pr_board"], { reportScenario: "stable_child_jules_v4_executor" });
+  assert.notEqual(result.exit, 0);
+});
+
+test("a report from a different host version is not a supported-host contract", async () => {
+  const result = await runGate(0, "pass", ["--scenario=stable_child_executor_pr_board"], { reportVersion: "2026.831.1" });
+  assert.notEqual(result.exit, 0);
+});
+
+test("a hung contract has a bounded failure and emits a summary", async () => {
+  const result = await runGate(0, "pass", ["--scenario=stable_child_executor_pr_board"], { delayMs: 1500, timeoutMs: 100 });
+  assert.notEqual(result.exit, 0);
+  assert.equal(result.summary.scenarios[0].result, "timeout");
+});
+
+test("a contract launch error still produces a failing summary", async () => {
+  const result = await runGate(0, "pass", ["--scenario=stable_child_executor_pr_board"], { noPnpm: true });
+  assert.notEqual(result.exit, 0);
+  assert.equal(result.summary.scenarios[0].result, "launch_error");
+});
+
+test("malformed scenario JSON cannot be a successful report", async () => {
+  const result = await runGate(0, "pass", ["--scenario=stable_child_executor_pr_board"], { malformedReport: true });
+  assert.notEqual(result.exit, 0);
+  assert.equal(result.summary.scenarios[0].result, "missing_report");
 });

@@ -115,22 +115,6 @@ jobs:
           WORKSPACE_PATH: ${{ github.workspace }}
         run: pnpm test:e2e:jules-recovery
 
-      - name: Run supported-host positive native contracts
-        if: matrix.node-version == '24.x'
-        env:
-          CONTRACT_REPORT_DIR: ${{ runner.temp }}/paperclip-native-contracts
-        run: |
-          PAPERCLIP_CONTRACT_NODE_MODULES="$(npm root --global)/paperclipai/node_modules" node scripts/paperclip-host-contract-gate.mjs
-
-      - name: Upload sanitized native contract reports
-        if: always() && matrix.node-version == '24.x'
-        uses: actions/upload-artifact@v4
-        with:
-          name: paperclip-native-contracts-node-${{ matrix.node-version }}
-          path: ${{ runner.temp }}/paperclip-native-contracts/*.json
-          if-no-files-found: ignore
-          retention-days: 7
-
       - name: Stop disposable Paperclip server
         if: always()
         run: |
@@ -162,4 +146,39 @@ jobs:
         with:
           name: paperclip-adapter-tarballs-node-${{ matrix.node-version }}
           path: dist-packages/*.tgz
+          retention-days: 7
+
+  native_contracts:
+    name: Positive native contracts on Paperclip 2026.916.0
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - name: Setup Node.js 24.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          cache: 'pnpm'
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build workspace packages
+        run: pnpm -r build
+      - name: Install pinned Paperclip control plane
+        run: npm install --global paperclipai@2026.916.0
+      - name: Run supported-host positive native contracts
+        env:
+          CONTRACT_REPORT_DIR: ${{ runner.temp }}/paperclip-native-contracts
+        run: |
+          PAPERCLIP_CONTRACT_NODE_MODULES="$(npm root --global)/paperclipai/node_modules" node scripts/paperclip-host-contract-gate.mjs
+      - name: Upload sanitized native contract reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paperclip-native-contracts-node-24.x
+          path: ${{ runner.temp }}/paperclip-native-contracts/**/*.json
+          if-no-files-found: ignore
           retention-days: 7
