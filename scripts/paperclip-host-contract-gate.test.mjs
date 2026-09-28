@@ -89,6 +89,12 @@ test("accepted provider create with a lost response must use typed recovery befo
   assert.equal(result.summary.scenarios[0].scenario, "stable_child_jules_v4_create_lost");
 });
 
+test("real A B C dependency edges must prevent B and C provider work before A merge", async () => {
+  const result = await runGate(0, "pass", ["--scenario=stable_child_jules_v4_chain_blocked"]);
+  assert.equal(result.exit, 0, result.stderr);
+  assert.equal(result.summary.scenarios[0].scenario, "stable_child_jules_v4_chain_blocked");
+});
+
 test("missing fresh report cannot be replaced with a stale successful report", async () => {
   const result = await runGate(0, "pass", ["--scenario=stable_child_executor_pr_board"], { staleReport: true, writeReport: false });
   assert.notEqual(result.exit, 0);

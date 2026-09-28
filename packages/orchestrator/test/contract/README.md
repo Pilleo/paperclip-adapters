@@ -62,6 +62,14 @@ second create; it does not silently retry the uncertain POST or write a manual
 checkpoint. The board actor exists only inside the disposable installed-host
 contract; no live task is recovered by this scenario.
 
+`stable_child_jules_v4_chain_blocked` seeds A→B→C as three issues in **one**
+disposable company, with real PostgreSQL `blocks` edges A→B and B→C. It
+attempts native wakes for B/C before A begins and checks no dependent run
+starts. The actual Jules executor then creates A's provider session, obtains
+both addressed plan verdicts, approves once and registers A's unmerged PR;
+B/C must still have no started run or PR. This is the dependency **hold**
+half of the chain, not proof that merging A releases B or that B releases C.
+
 Exit codes:
 
 - `0`: characterization completed; **inspect `safetyGate` / `integrationAllowed`**.

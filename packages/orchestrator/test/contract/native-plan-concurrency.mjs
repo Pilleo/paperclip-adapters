@@ -40,7 +40,7 @@ if (!scenario) {
   if (results.some((result) => result.result !== "observed")) process.exitCode = 1;
   else if (process.argv.includes("--require-safe") && !integrationAllowed) process.exitCode = 2;
 } else {
-  assert.ok([...scenarios, "stable_child", "stable_child_ladder", "stable_child_reject", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused", "stable_child_gemini", "stable_child_gemini_retry"].includes(scenario), `Unknown scenario ${scenario}`);
+  assert.ok([...scenarios, "stable_child", "stable_child_ladder", "stable_child_reject", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_jules_v4_chain_blocked", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused", "stable_child_gemini", "stable_child_gemini_retry"].includes(scenario), `Unknown scenario ${scenario}`);
   await runScenario();
 }
 
@@ -106,7 +106,7 @@ async function runScenario() {
     let chainGitHub = null;
     config.stageId = nativePlanReviewStageId(config.issueId, config.revisionId, "luna");
     config.checkpointPath = path.join(home, "child-review-checkpoint.json");
-    config.childReviewLadder = ["stable_child_ladder", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused"].includes(scenario);
+    config.childReviewLadder = ["stable_child_ladder", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_jules_v4_chain_blocked", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused"].includes(scenario);
     config.realJulesExecutor = ["stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict"].includes(scenario);
     config.producerConflictProbe = scenario === "stable_child_executor_pr_producer_conflict";
     config.prMigrationProbe = ["stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board"].includes(scenario);
@@ -117,7 +117,8 @@ async function runScenario() {
     config.prStrongGemini = scenario === "stable_child_executor_pr_gemini";
     config.prStrongFirstTurnFailure = scenario === "stable_child_executor_pr_failed";
     config.prStrongRetryMarker = path.join(home, "strong-reviewer-first-turn-failed");
-    config.createProviderSession = scenario === "stable_child_jules_v4_create" || scenario === "stable_child_jules_v4_create_lost";
+    config.chainBlockedProbe = scenario === "stable_child_jules_v4_chain_blocked";
+    config.createProviderSession = scenario === "stable_child_jules_v4_create" || config.chainBlockedProbe || scenario === "stable_child_jules_v4_create_lost";
     config.dropProviderCreateResponse = scenario === "stable_child_jules_v4_create_lost";
     config.julesParentExecutor = config.createProviderSession || scenario === "stable_child_jules_v4_executor" || scenario === "stable_child_jules_v4_paused";
     config.pauseLunaInitially = scenario === "stable_child_jules_v4_paused";
@@ -268,7 +269,8 @@ async function runScenario() {
     if (config.realJulesExecutor || config.julesOwnedBootstrap) config.providerBaseUrl = `${process.env.PAPERCLIP_API_URL}/__contract/jules/v1alpha`;
     await db.insert(authUsers).values({ id: config.userId, name: "Contract operator", email: `${config.userId}@example.test`,
       emailVerified: true, createdAt: new Date(), updatedAt: new Date() });
-    await db.insert(companies).values({ id: config.companyId, name: "Disposable concurrency contract", issuePrefix: "RACE", issueCounter: 3, defaultResponsibleUserId: config.userId });
+    await db.insert(companies).values({ id: config.companyId, name: "Disposable concurrency contract", issuePrefix: "RACE",
+      issueCounter: config.chainBlockedProbe ? 5 : 3, defaultResponsibleUserId: config.userId });
     await db.insert(companyMemberships).values({ companyId: config.companyId, principalType: "user", principalId: config.userId, status: "active", membershipRole: "owner" });
     const worker = fileURLToPath(new URL(scenario.startsWith("stable_child") ? "./native-child-plan-worker.mjs" : "./native-plan-worker.mjs", import.meta.url));
     const runtimeConfig = { heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1 } };
@@ -290,6 +292,20 @@ async function runScenario() {
       { id: config.maintenanceIssueId, companyId: config.companyId, identifier: "RACE-2", title: "Maintenance", status: "in_progress", assigneeAgentId: config.orchestratorId },
       { id: config.blockerIssueId, companyId: config.companyId, identifier: "RACE-3", title: "Other reviewer work", status: "in_progress", assigneeAgentId: config.lunaId },
     ].map((issue) => ({ ...issue, executionPolicy: { mode: "normal", stages: [], commentRequired: false } })));
+    if (config.chainBlockedProbe) {
+      config.bIssueId = randomUUID();
+      config.cIssueId = randomUUID();
+      await db.insert(issues).values([
+        { id: config.bIssueId, companyId: config.companyId, identifier: "RACE-4", title: "Canary B",
+          status: "todo", assigneeAgentId: config.julesId },
+        { id: config.cIssueId, companyId: config.companyId, identifier: "RACE-5", title: "Canary C",
+          status: "todo", assigneeAgentId: config.julesId },
+      ].map((issue) => ({ ...issue, executionPolicy: { mode: "normal", stages: [], commentRequired: false } })));
+      await db.insert(schema.issueRelations).values([
+        { companyId: config.companyId, issueId: config.issueId, relatedIssueId: config.bIssueId, type: "blocks" },
+        { companyId: config.companyId, issueId: config.bIssueId, relatedIssueId: config.cIssueId, type: "blocks" },
+      ]);
+    }
     await db.insert(documents).values({ id: config.documentId, companyId: config.companyId, title: "Plan", format: "markdown",
       latestBody: "# Contract plan", latestRevisionId: config.revisionId, latestRevisionNumber: 1 });
     await db.insert(documentRevisions).values({ id: config.revisionId, companyId: config.companyId, documentId: config.documentId,
@@ -344,6 +360,15 @@ async function runScenario() {
       await until("late host runs settled", async () => activeMutations === 0 && (await runRows()).every((run) => !live(run)), timeoutMs);
     }
     const handbacks = () => report.mutations.filter((mutation) => mutation.actorId === config.orchestratorId);
+    if (config.chainBlockedProbe) {
+      await wake(config.julesId, config.bIssueId);
+      await wake(config.julesId, config.cIssueId);
+      await settle();
+      const earlyRuns = (await runRows()).filter((run) =>
+        [config.bIssueId, config.cIssueId].includes(run.contextSnapshot?.issueId) && run.startedAt);
+      assert.equal(earlyRuns.length, 0, "B/C provider work must not start while native predecessor blockers remain unresolved");
+      record("CHAIN_DEPENDENTS_HELD", { bIssueId: config.bIssueId, cIssueId: config.cIssueId });
+    }
     if (scenario.startsWith("stable_child")) {
       const { runStableChildContract } = await import("./native-child-plan-contract.mjs");
       if (config.pauseLunaInitially) {
@@ -400,7 +425,24 @@ async function runScenario() {
           assert.equal(products[0].metadata.headSha, config.prHeadSha);
           assert.equal(products[0].status, "ready_for_review");
           assert.equal((await issueRow()).assigneeAgentId, config.julesId);
-          report.outcome = "actual_jules_executor_self_bootstraps_v4_ladder_approves_once_and_delivers_pr";
+          if (config.chainBlockedProbe) {
+            const dependentRuns = (await runRows()).filter((run) =>
+              [config.bIssueId, config.cIssueId].includes(run.contextSnapshot?.issueId) && run.startedAt);
+            assert.equal(dependentRuns.length, 0, "B/C cannot execute before A has a verified merge");
+            for (const id of [config.bIssueId, config.cIssueId]) {
+              const [dependent] = await db.select().from(issues).where(eq(issues.id, id));
+              assert.equal(dependent.status, "todo");
+              assert.equal((await db.select().from(schema.issueWorkProducts)
+                .where(eq(schema.issueWorkProducts.issueId, id))).length, 0);
+            }
+            const relations = await db.select().from(schema.issueRelations)
+              .where(eq(schema.issueRelations.companyId, config.companyId));
+            assert.deepEqual(relations.map((edge) => [edge.issueId, edge.relatedIssueId]), [
+              [config.issueId, config.bIssueId], [config.bIssueId, config.cIssueId],
+            ]);
+          }
+          report.outcome = config.chainBlockedProbe ? "shared_host_native_b_c_blocked_until_a_merge"
+            : "actual_jules_executor_self_bootstraps_v4_ladder_approves_once_and_delivers_pr";
         } else {
           assert.equal(report.events.filter((event) => event.name === "PROVIDER_REQUEST").length, 0,
             "child bootstrap must never create or query a Jules cloud session");
