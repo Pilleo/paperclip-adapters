@@ -1,5 +1,6 @@
 import path from "node:path";
 import { projectRecoveryCanaryState } from "../src/core/recovery-canary-state.js";
+import { buildRecoveryCanaryWorkspace } from "../src/core/recovery-canary-workspace.js";
 import { EXPLICIT_PROJECT_WAKE_REASON_PREFIX } from "../src/core/heartbeat-project-scope.js";
 
 /**
@@ -135,13 +136,10 @@ async function main(): Promise<void> {
       description: "Disposable workspace for the Jules recovery canary",
     }), "project");
     if (!project.id) throw new Error("Paperclip did not return a canary project id");
-    const projectWorkspace = requireObject(await request(`/api/projects/${project.id}/workspaces`, "POST", {
-      name: "Canary local workspace",
-      sourceType: "local_path",
-      cwd: workspacePath,
-      isPrimary: true,
-    }), "project workspace");
-    if (!projectWorkspace.id || projectWorkspace.cwd !== workspacePath || projectWorkspace.isPrimary !== true) {
+    const workspace = buildRecoveryCanaryWorkspace(workspacePath, "master");
+    const projectWorkspace = requireObject(await request(`/api/projects/${project.id}/workspaces`, "POST", workspace), "project workspace");
+    if (!projectWorkspace.id || projectWorkspace.cwd !== workspacePath || projectWorkspace.isPrimary !== true ||
+        projectWorkspace.repoUrl !== workspace.repoUrl || projectWorkspace.defaultRef !== workspace.defaultRef) {
       throw new Error(`Paperclip did not persist the primary canary workspace: ${JSON.stringify(projectWorkspace)}`);
     }
 

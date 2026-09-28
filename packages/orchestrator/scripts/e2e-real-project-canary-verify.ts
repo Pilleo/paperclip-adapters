@@ -1,5 +1,10 @@
 import process from "node:process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { resolveGitHubCliExecutable } from "../src/core/github-sync.js";
 import { evaluateCanaryDependencyProgress, parseCanaryIssueSnapshot } from "../src/core/real-e2e-canary-progress.js";
+
+const execFileAsync = promisify(execFile);
 
 const apiUrl = process.env["PAPERCLIP_TEST_API_URL"]?.replace(/\/+$/, "");
 const julesAgentId = process.env["PAPERCLIP_E2E_JULES_AGENT_ID"];
@@ -33,6 +38,33 @@ function parsePersistedIssue(label: "a" | "b" | "c", raw: unknown) {
   return parsed;
 }
 
+async function verifyGitHubMerge(label: "a" | "b" | "c", snapshot: ReturnType<typeof parsePersistedIssue>): Promise<void> {
+  const [product] = snapshot.workProducts.filter((item) => item.type === "pull_request" && item.status === "merged" && item.url);
+  if (!product?.url || !product.headSha || !/^[a-f0-9]{40}$/i.test(product.headSha)) {
+    throw new Error(`${label} GitHub merge cannot be verified: registered PR head is absent`);
+  }
+  const match = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/\d+\/?$/i.exec(product.url);
+  if (!match) throw new Error(`${label} GitHub PR URL is not canonical: ${product.url}`);
+  const gh = resolveGitHubCliExecutable();
+  const { stdout } = await execFileAsync(gh, ["pr", "view", product.url, "--json", "state,headRefOid,mergeCommit"], { timeout: 10_000 });
+  const pr: unknown = JSON.parse(stdout);
+  if (!pr || typeof pr !== "object" || Array.isArray(pr)) throw new Error(`${label} GitHub PR response is invalid`);
+  const state = (pr as Record<string, unknown>)["state"];
+  const head = (pr as Record<string, unknown>)["headRefOid"];
+  const commit = (pr as Record<string, unknown>)["mergeCommit"];
+  const sha = commit && typeof commit === "object" && !Array.isArray(commit) ? (commit as Record<string, unknown>)["oid"] : null;
+  if (state !== "MERGED" || head !== product.headSha || typeof sha !== "string" || !/^[a-f0-9]{40}$/i.test(sha)) {
+    throw new Error(`${label} GitHub merge/head differs from registered reviewed PR head`);
+  }
+  const { stdout: rawCommit } = await execFileAsync(gh, ["api", `repos/${match[1]}/${match[2]}/git/commits/${sha}`], { timeout: 10_000 });
+  const merge: unknown = JSON.parse(rawCommit);
+  if (!merge || typeof merge !== "object" || Array.isArray(merge)) throw new Error(`${label} GitHub merge commit is invalid`);
+  const parents = (merge as Record<string, unknown>)["parents"];
+  if (!Array.isArray(parents) || parents.length !== 2 || parents[1]?.sha !== product.headSha) {
+    throw new Error(`${label} GitHub merge commit must have reviewed head as its second parent`);
+  }
+}
+
 async function main(): Promise<void> {
   if (process.env["PAPERCLIP_REAL_E2E"] !== "1") {
     throw new Error("Refusing live canary verification; set PAPERCLIP_REAL_E2E=1 explicitly");
@@ -46,14 +78,22 @@ async function main(): Promise<void> {
     fetchIssue(requiredEnv("PAPERCLIP_E2E_CANARY_B_ID", issueIds.b)),
     fetchIssue(requiredEnv("PAPERCLIP_E2E_CANARY_C_ID", issueIds.c)),
   ]);
-  const progress = evaluateCanaryDependencyProgress({
+  const snapshots = {
     julesAgentId: requiredEnv("PAPERCLIP_E2E_JULES_AGENT_ID", julesAgentId),
     a: parsePersistedIssue("a", aRaw),
     b: parsePersistedIssue("b", bRaw),
     c: parsePersistedIssue("c", cRaw),
-  });
+  };
+  const progress = evaluateCanaryDependencyProgress(snapshots);
   console.log(JSON.stringify({ issueIds, progress }, null, 2));
   if (progress.kind === "invalid") throw new Error(`Dependency canary invariant failed: ${progress.reason}`);
+  if (process.argv.includes("--require-complete") && progress.kind !== "complete") {
+    throw new Error(`Dependency canary is not complete: ${progress.kind}`);
+  }
+  if (process.argv.includes("--require-complete")) {
+    for (const label of ["a", "b", "c"] as const) await verifyGitHubMerge(label, snapshots[label]);
+    console.log(JSON.stringify({ result: "passed", issueIds }));
+  }
 }
 
 main().catch((error) => {

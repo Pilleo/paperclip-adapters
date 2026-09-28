@@ -54,7 +54,7 @@ jobs:
       - name: Install pinned Paperclip control plane
         # Keep package download outside the server health budget. A cold npx
         # cache can take over a minute and otherwise looks like a boot failure.
-        run: npm install --global paperclipai@2026.831.1
+        run: npm install --global paperclipai@2026.916.0
 
       - name: Start disposable Paperclip server
         # The orchestrator is an external process. Put the deterministic
@@ -82,7 +82,7 @@ jobs:
           fi
           EOF
           chmod +x "${RUNNER_TEMP}/paperclip-e2e-bin/gh"
-          # In Paperclip 2026.831.1, noninteractive onboarding owns the
+          # In Paperclip 2026.916.0, noninteractive onboarding owns the
           # foreground server lifecycle. Start that one process in a separate
           # process group: waiting for onboarding and then invoking `run`
           # deadlocks until a timeout because onboarding does not return.
@@ -112,6 +112,22 @@ jobs:
           PAPERCLIP_E2E_GH_FIXTURE: server
           WORKSPACE_PATH: ${{ github.workspace }}
         run: pnpm test:e2e:jules-recovery
+
+      - name: Run supported-host positive native contracts
+        if: matrix.node-version == '24.x'
+        env:
+          CONTRACT_REPORT_DIR: ${{ runner.temp }}/paperclip-native-contracts
+        run: |
+          PAPERCLIP_CONTRACT_NODE_MODULES="$(npm root --global)/paperclipai/node_modules" node scripts/paperclip-host-contract-gate.mjs
+
+      - name: Upload sanitized native contract reports
+        if: always() && matrix.node-version == '24.x'
+        uses: actions/upload-artifact@v4
+        with:
+          name: paperclip-native-contracts-node-${{ matrix.node-version }}
+          path: ${{ runner.temp }}/paperclip-native-contracts/*.json
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Stop disposable Paperclip server
         if: always()

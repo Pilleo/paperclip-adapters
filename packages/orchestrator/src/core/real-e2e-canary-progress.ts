@@ -7,7 +7,8 @@ export interface CanaryIssueSnapshot {
   readonly blockedBy: readonly { readonly id: string; readonly status: string }[];
   readonly assigneeAgentId?: string | null;
   readonly executionRunId?: string | null;
-  readonly workProducts: readonly { readonly type?: string; readonly status?: string; readonly url?: string | null }[];
+  readonly executionBlocker?: { readonly runId: string; readonly cause: string } | null;
+  readonly workProducts: readonly { readonly type?: string; readonly status?: string; readonly url?: string | null; readonly headSha?: string }[];
 }
 
 export type CanaryDependencyProgress =
@@ -27,7 +28,8 @@ type CanarySnapshotInvalidReason =
   | "missing_status"
   | "missing_description"
   | "malformed_blockers"
-  | "malformed_work_products";
+  | "malformed_work_products"
+  | "malformed_execution_blocker";
 
 export function parseCanaryIssueSnapshot(raw: unknown): CanaryIssueSnapshot | { readonly kind: "invalid_snapshot"; readonly reason: CanarySnapshotInvalidReason } {
   if (!isRecord(raw)) return { kind: "invalid_snapshot", reason: "missing_id" };
@@ -42,6 +44,8 @@ export function parseCanaryIssueSnapshot(raw: unknown): CanaryIssueSnapshot | { 
   if (!blockedBy) return { kind: "invalid_snapshot", reason: "malformed_blockers" };
   const workProducts = parseWorkProducts(raw["workProducts"]);
   if (!workProducts) return { kind: "invalid_snapshot", reason: "malformed_work_products" };
+  const executionBlocker = parseExecutionBlocker(raw["executionBlocker"]);
+  if (executionBlocker === "malformed") return { kind: "invalid_snapshot", reason: "malformed_execution_blocker" };
 
   const metadata = extractIssueMetadata({
     id,
@@ -57,6 +61,7 @@ export function parseCanaryIssueSnapshot(raw: unknown): CanaryIssueSnapshot | { 
     blockedBy,
     assigneeAgentId: optionalString(raw["assigneeAgentId"]),
     executionRunId: optionalString(raw["executionRunId"]),
+    executionBlocker,
     workProducts,
   };
 }
@@ -96,6 +101,7 @@ export function evaluateCanaryDependencyProgress(input: {
 function validateChainContract(a: CanaryIssueSnapshot, b: CanaryIssueSnapshot, c: CanaryIssueSnapshot): CanaryDependencyProgress | null {
   for (const [name, issue] of [["a", a], ["b", b], ["c", c]] as const) {
     if (!issue.orchestratorManaged) return { kind: "invalid", reason: `${name}_unmanaged` };
+    if (isDone(issue) && issue.executionBlocker) return { kind: "invalid", reason: `${name}_done_with_actionable_execution_blocker` };
   }
   if (!hasOnlyBlocker(b, a.id)) return { kind: "invalid", reason: "b_missing_authoritative_blocker" };
   if (!hasOnlyBlocker(c, b.id)) return { kind: "invalid", reason: "c_missing_authoritative_blocker" };
@@ -145,6 +151,14 @@ function optionalString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
+function parseExecutionBlocker(value: unknown): { readonly runId: string; readonly cause: string } | null | "malformed" {
+  if (value === undefined || value === null) return null;
+  if (!isRecord(value)) return "malformed";
+  const runId = requiredString(value, "runId");
+  const cause = requiredString(value, "cause");
+  return runId && cause ? { runId, cause } : "malformed";
+}
+
 function parseBlockers(value: unknown): readonly { readonly id: string; readonly status: string }[] | null {
   if (!Array.isArray(value)) return null;
   const blockers: { id: string; status: string }[] = [];
@@ -158,18 +172,21 @@ function parseBlockers(value: unknown): readonly { readonly id: string; readonly
   return blockers;
 }
 
-function parseWorkProducts(value: unknown): readonly { readonly type?: string; readonly status?: string; readonly url?: string | null }[] | null {
+function parseWorkProducts(value: unknown): CanaryIssueSnapshot["workProducts"] | null {
   if (!Array.isArray(value)) return null;
-  const products: { type?: string; status?: string; url?: string | null }[] = [];
+  const products: { type?: string; status?: string; url?: string | null; headSha?: string }[] = [];
   for (const product of value) {
     if (!isRecord(product)) return null;
     const type = optionalString(product["type"]);
     const status = optionalString(product["status"]);
     const url = optionalString(product["url"]);
+    const metadata = product["metadata"];
+    const headSha = isRecord(metadata) ? optionalString(metadata["headSha"]) : null;
     products.push({
       ...(type === null ? {} : { type }),
       ...(status === null ? {} : { status }),
       ...(url === null ? {} : { url }),
+      ...(headSha === null ? {} : { headSha }),
     });
   }
   return products;

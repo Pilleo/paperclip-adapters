@@ -74,4 +74,34 @@ describe("evaluateCanaryDependencyProgress", () => {
       reason: "a_missing_merged_pull_request",
     });
   });
+
+  it("refuses to report a completed chain while a terminal issue has an actionable failed-run hold", () => {
+    const finished = chain("done", "done", "done");
+    const persisted = parseCanaryIssueSnapshot({
+      ...finished.c,
+      executionBlocker: {
+        runId: "failed-jules-run",
+        cause: "legacy_execution_requires_reconciliation",
+        nextAction: "Automatic recovery stopped",
+      },
+    });
+    expect(persisted).not.toHaveProperty("kind", "invalid_snapshot");
+    expect(evaluateCanaryDependencyProgress({ ...finished, c: persisted as typeof finished.c })).toEqual({
+      kind: "invalid",
+      reason: "c_done_with_actionable_execution_blocker",
+    });
+  });
+
+  it("does not release B when A has a terminal failed-run hold", () => {
+    const current = chain("done", "todo", "backlog");
+    expect(evaluateCanaryDependencyProgress({
+      ...current,
+      a: { ...current.a, executionBlocker: { runId: "failed-a", cause: "legacy_execution_requires_reconciliation" } },
+    })).toEqual({ kind: "invalid", reason: "a_done_with_actionable_execution_blocker" });
+  });
+
+  it("rejects malformed execution blockers at the transport boundary", () => {
+    expect(parseCanaryIssueSnapshot(issue("a", "done", { executionBlocker: { cause: "legacy_execution_requires_reconciliation" } })))
+      .toEqual({ kind: "invalid_snapshot", reason: "malformed_execution_blocker" });
+  });
 });
