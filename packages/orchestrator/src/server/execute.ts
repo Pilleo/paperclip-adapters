@@ -1017,7 +1017,14 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     const orchestratorOwnedRecoveryRecord =
       (status === "backlog" || status === "todo" || status === "in_progress" || status === "blocked") &&
       (issue["assigneeAgentId"] === orchestratorId || managedIds.has(String(issue["assigneeAgentId"] || "")));
-    return needsFullIssueRecord(status) || orchestratorOwnedRecoveryRecord ? [index] : [];
+    // The company issue list omits work products. An unassigned managed todo
+    // can still own a registered Jules PR after Paperclip cleared its previous
+    // review projection; without the detail GET it vanishes from native PR
+    // recovery forever. Keep these reads bounded by the four-worker fan-out.
+    const unassignedManagedTodo = status === "todo" && issue["assigneeAgentId"] == null &&
+      typeof issue["id"] === "string" && typeof issue["title"] === "string" &&
+      extractIssueMetadata({ ...issue, id: issue["id"], title: issue["title"], status }).orchestratorManaged;
+    return needsFullIssueRecord(status) || orchestratorOwnedRecoveryRecord || unassignedManagedTodo ? [index] : [];
   });
   let nextIssueDetail = 0;
   const failedIssueDetailIds: string[] = [];

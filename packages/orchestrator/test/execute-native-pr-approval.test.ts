@@ -104,17 +104,22 @@ describe("orchestrator native PR completion", () => {
     else process.env["PAPERCLIP_API_KEY"] = originalKey;
   });
 
-  it.each(["without a parent card", "with a pending parent card", "with unavailable GitHub PR discovery", "from todo with a cleared Jules monitor"] as const)(
+  it.each(["without a parent card", "with a pending parent card", "with unavailable GitHub PR discovery", "from todo with a cleared Jules monitor", "from compact unassigned todo projection"] as const)(
     "routes a Jules PR %s without another parent Luna verdict or wake", async (parentCardState) => {
     if (parentCardState === "with unavailable GitHub PR discovery") vi.mocked(fetchGitHubPullRequests).mockResolvedValue({
       openPrs: [], mergedPrs: [], openPrFiles: new Set(), error: "provider unavailable",
     });
-    const ready = { ...issue(), companyId,
-      ...(parentCardState === "from todo with a cleared Jules monitor" ? { status: "todo",
+    // The convergence guard is process-global. Give each independent recovery
+    // fixture its own issue identity so a prior successful test cannot absorb
+    // this scenario's project-loop status transition.
+    const effectiveIssueId = parentCardState === "from compact unassigned todo projection"
+      ? "issue-compact-1519" : issueId;
+    const ready = { ...issue(), id: effectiveIssueId, companyId,
+      ...(["from todo with a cleared Jules monitor", "from compact unassigned todo projection"].includes(parentCardState) ? { status: "todo",
         executionState: { status: "idle", monitor: { serviceName: "jules", externalRef: "[redacted]",
           status: "cleared", clearReason: "invalid_status" } } } : {}),
       workProducts: [{ ...issue().workProducts[0], metadata: {
-      source: "jules", producer: parentCardState === "from todo with a cleared Jules monitor"
+      source: "jules", producer: ["from todo with a cleared Jules monitor", "from compact unassigned todo projection"].includes(parentCardState)
         ? "operator_reconciliation" : "paperclip-jules-adapter", headSha,
     } }] };
     let persistedIssue = ready;
@@ -125,18 +130,18 @@ describe("orchestrator native PR completion", () => {
     globalThis.fetch = vi.fn(async (url: string | URL, init?: RequestInit) => {
       const href = String(url);
       const method = (init?.method || "GET").toUpperCase();
-      if (method === "POST" && href.endsWith(`/api/issues/${issueId}/children`)) {
+      if (method === "POST" && href.endsWith(`/api/issues/${effectiveIssueId}/children`)) {
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
         childPosts.push(body);
-        return new Response(JSON.stringify({ ...body, id: "review-child", companyId, parentId: issueId,
+        return new Response(JSON.stringify({ ...body, id: "review-child", companyId, parentId: effectiveIssueId,
           createdByAgentId: "orchestrator-1" }), { status: 201 });
       }
-      if (method === "POST" && href.endsWith(`/api/issues/${issueId}/interactions`)) {
+      if (method === "POST" && href.endsWith(`/api/issues/${effectiveIssueId}/interactions`)) {
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
         if (body["kind"] === "request_item_verdicts") parentCardPosts.push(body);
         return new Response(JSON.stringify({ id: "wrong-parent-card" }), { status: 201 });
       }
-      if (method === "PATCH" && href.endsWith(`/api/issues/${issueId}`)) {
+      if (method === "PATCH" && href.endsWith(`/api/issues/${effectiveIssueId}`)) {
         const patch = JSON.parse(String(init?.body)) as Record<string, unknown>;
         issuePatches.push(patch);
         persistedIssue = { ...persistedIssue, ...patch };
@@ -147,17 +152,20 @@ describe("orchestrator native PR completion", () => {
       if (href.includes("/projects")) return new Response(JSON.stringify([{ id: "project-1519", name: "fixture",
         primaryWorkspace: { cwd: process.cwd() } }]));
       if (method === "GET" && href.endsWith("/api/issues/maintenance-1519")) return new Response(JSON.stringify({ id: "maintenance-1519", projectId: null }));
-      if (method === "GET" && href.endsWith(`/api/issues/${issueId}`)) return new Response(JSON.stringify(persistedIssue));
-      if (method === "GET" && href.endsWith(`/api/issues/${issueId}/work-products`)) return new Response(JSON.stringify(ready.workProducts));
+      if (method === "GET" && href.endsWith(`/api/issues/${effectiveIssueId}`)) return new Response(JSON.stringify(persistedIssue));
+      if (method === "GET" && href.endsWith(`/api/issues/${effectiveIssueId}/work-products`)) return new Response(JSON.stringify(ready.workProducts));
       if (method === "GET" && href.includes(`/api/companies/${companyId}/issues?`) && href.includes("parentId=")) return new Response(JSON.stringify([]));
-      if (method === "GET" && href.endsWith(`/api/issues/${issueId}/interactions`)) return new Response(JSON.stringify(
-        ["with a pending parent card", "from todo with a cleared Jules monitor"].includes(parentCardState) ? [{ id: "parent-pr-card", kind: "request_item_verdicts",
+      if (method === "GET" && href.endsWith(`/api/issues/${effectiveIssueId}/interactions`)) return new Response(JSON.stringify(
+        ["with a pending parent card", "from todo with a cleared Jules monitor", "from compact unassigned todo projection"].includes(parentCardState) ? [{ id: "parent-pr-card", kind: "request_item_verdicts",
           status: "pending", createdByAgentId: null, addresseeAgentId: "luna-1",
-          idempotencyKey: `pr-review:v13:${issueId}:${prUrl}:${headSha}:luna` }] : [],
+          idempotencyKey: `pr-review:v13:${effectiveIssueId}:${prUrl}:${headSha}:luna` }] : [],
       ));
-      if (href.includes(`/api/issues/${issueId}/recovery-actions`)) return new Response(JSON.stringify({ active: null }));
+      if (href.includes(`/api/issues/${effectiveIssueId}/recovery-actions`)) return new Response(JSON.stringify({ active: null }));
       if (href.includes("/heartbeat-runs")) return new Response(JSON.stringify([]));
-      if (method === "GET" && href.includes("/issues")) return new Response(JSON.stringify([persistedIssue]));
+      if (method === "GET" && href.includes("/issues")) return new Response(JSON.stringify([
+        parentCardState === "from compact unassigned todo projection"
+          ? { ...persistedIssue, workProducts: undefined } : persistedIssue,
+      ]));
       if (href.includes("/approvals")) return new Response(JSON.stringify([]));
       return new Response(JSON.stringify([]));
     }) as typeof fetch;
@@ -170,10 +178,12 @@ describe("orchestrator native PR completion", () => {
     if (childPosts[0]) expect(childPosts[0]).toMatchObject({ status: "backlog", assigneeAgentId: "orchestrator-1", blockParentUntilDone: false });
     expect(parentCardPosts).toEqual([]);
     expect(issuePatches.some((patch) => patch["status"] === "todo")).toBe(false);
-    if (parentCardState === "from todo with a cleared Jules monitor") {
+    if (parentCardState === "from todo with a cleared Jules monitor" || parentCardState === "from compact unassigned todo projection") {
+      expect(vi.mocked(globalThis.fetch).mock.calls.filter(([url, init]) => String(url).endsWith(`/api/issues/${effectiveIssueId}`) &&
+        (init?.method ?? "GET") === "GET").length).toBeGreaterThan(0);
       expect(issuePatches).toContainEqual(expect.objectContaining({ status: "in_review", assigneeAgentId: null }));
     }
-    if (parentCardState === "with a pending parent card" || parentCardState === "from todo with a cleared Jules monitor") {
+    if (parentCardState === "with a pending parent card" || parentCardState === "from todo with a cleared Jules monitor" || parentCardState === "from compact unassigned todo projection") {
       expect(logs.join("\n")).toContain("Preserving board-created parent PR card");
       const calls = vi.mocked(globalThis.fetch).mock.calls;
       expect(calls.filter(([url]) => String(url).includes("/api/agents/luna-1/wakeup"))).toHaveLength(0);
