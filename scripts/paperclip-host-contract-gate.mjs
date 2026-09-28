@@ -6,6 +6,7 @@ const supported = [
   "stable_child_jules_v4_executor",
   "stable_child_executor_pr_board",
   "stable_child_executor_pr_probe",
+  "stable_child_executor_pr_withdraw",
 ];
 const requested = process.argv.filter((arg) => arg.startsWith("--scenario=")).map((arg) => arg.slice("--scenario=".length));
 if (requested.some((scenario) => !supported.includes(scenario))) {
