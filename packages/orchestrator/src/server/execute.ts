@@ -2751,6 +2751,23 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
     const products = asArray<Record<string, unknown>>(
       reviewTask.rawIssue["workProducts"] ?? reviewTask.rawIssue["work_products"],
     );
+    const julesProductForUrl = products.find((product) => {
+      const metadata = product["metadata"] && typeof product["metadata"] === "object" && !Array.isArray(product["metadata"])
+        ? product["metadata"] as Record<string, unknown> : {};
+      return product["type"] === "pull_request" && product["isPrimary"] === true &&
+        product["status"] === "ready_for_review" &&
+        typeof product["url"] === "string" && product["url"].replace(/\/$/, "").toLowerCase() === matchingPr.url.replace(/\/$/, "").toLowerCase() &&
+        (metadata["source"] === "jules" || metadata["producer"] === "paperclip-jules-adapter");
+    });
+    const registeredMetadata = julesProductForUrl?.["metadata"] && typeof julesProductForUrl["metadata"] === "object"
+      ? julesProductForUrl["metadata"] as Record<string, unknown> : null;
+    if (julesProductForUrl && reviewTask.status === "in_review" &&
+        reviewTask.rawIssue["assigneeAgentId"] == null &&
+        typeof registeredMetadata?.["headSha"] === "string" && /^[0-9a-f]{40}$/i.test(registeredMetadata["headSha"]) &&
+        registeredMetadata["headSha"] !== reviewHeadSha) {
+      await log(`[ORCHESTRATOR] Holding Jules PR review for [${reviewTask.identifier || reviewTask.id}]: registered PR head differs from GitHub; verify and register the new immutable head before any native reviewer card.`);
+      continue;
+    }
     const julesProduct = products.find((product) => {
       const metadata = product["metadata"] && typeof product["metadata"] === "object" && !Array.isArray(product["metadata"])
         ? product["metadata"] as Record<string, unknown> : {};
