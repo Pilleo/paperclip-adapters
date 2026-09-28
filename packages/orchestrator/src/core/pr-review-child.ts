@@ -153,14 +153,18 @@ function assertChildIdentity(identity: PrReviewChildIdentity, child: z.infer<typ
       child.createdByAgentId !== expectedCreator(identity)) throw new Error("PR review child identity or author changed");
 }
 
-async function assertRegisteredParent(identity: PrReviewChildIdentity, api: ChildReviewApi): Promise<void> {
+async function assertRegisteredParent(identity: PrReviewChildIdentity, api: ChildReviewApi,
+  allowRemediationStatus = false): Promise<void> {
   const root = `/issues/${encodeURIComponent(identity.parentIssueId)}`;
   const [parent, products] = await Promise.all([
     api.get(root).then((item) => Issue.parse(item)),
     api.get(`${root}/work-products`).then((items) => z.array(WorkProduct).parse(items)),
   ]);
+  const reviewOwnership = parent.status === "in_review" && parent.assigneeAgentId == null;
+  const remediationOwnership = allowRemediationStatus && ["blocked", "in_progress"].includes(parent.status) &&
+    parent.assigneeAgentId != null;
   if (parent.id !== identity.parentIssueId || parent.companyId !== identity.companyId ||
-      parent.status !== "in_review" || parent.assigneeAgentId != null ||
+      (!reviewOwnership && !remediationOwnership) ||
       products.filter((product) => product.type === "pull_request" && product.isPrimary &&
         product.url === identity.prUrl && product.metadata?.headSha === identity.headSha &&
         product.status === "ready_for_review").length !== 1) {
@@ -274,6 +278,8 @@ export async function activatePrReviewChild(input: {
 /** Read one child-owned structured PR decision; free-text comments cannot satisfy this gate. */
 export async function observePrReviewChild(input: {
   readonly identity: PrReviewChildIdentity; readonly childId: string; readonly api: ChildReviewApi;
+  /** Read-only historical rejection evidence after Paperclip returned the parent to its worker. */
+  readonly allowRemediationStatus?: boolean;
 }): Promise<
   | { readonly kind: "waiting"; readonly childId: string }
   | { readonly kind: "answered"; readonly childId: string; readonly cardId: string; readonly reviewerRunId: string;
@@ -284,7 +290,7 @@ export async function observePrReviewChild(input: {
   const [child, cards] = await Promise.all([
     input.api.get(root).then((item) => Issue.parse(item)),
     input.api.get(`${root}/interactions`).then((items) => z.array(Card).parse(items)),
-    assertRegisteredParent(identity, input.api),
+    assertRegisteredParent(identity, input.api, input.allowRemediationStatus === true),
   ]);
   assertChildIdentity(identity, child, input.childId);
   if (cards.length !== 1) throw new Error("PR reviewer child must have exactly one native card");
@@ -353,6 +359,7 @@ export async function inspectPrReviewChildren(input: {
   readonly companyId: string; readonly parentIssueId: string; readonly prUrl: string; readonly headSha: string;
   readonly bootstrapAgentId: string; readonly lunaAgentId: string; readonly strongAgentId: string;
   readonly protocolVersion?: 1 | 2;
+  readonly allowRemediationStatus?: boolean;
   readonly api: ChildReviewApi;
 }): Promise<PrChildReviewInspection> {
   const fields = { companyId: input.companyId, parentIssueId: input.parentIssueId,
@@ -410,7 +417,8 @@ export async function inspectPrReviewChildren(input: {
       }
       throw new Error("PR child pending card has no authorized reviewer or bootstrap owner");
     }
-    const observed = await observePrReviewChild({ identity, childId: child.id, api: input.api });
+    const observed = await observePrReviewChild({ identity, childId: child.id, api: input.api,
+      allowRemediationStatus: input.allowRemediationStatus === true });
     if (observed.kind !== "answered") throw new Error("Terminal PR child card has no typed reviewer verdict");
     projections.push(projectPrChildVerdict(identity, observed));
     if (observed.verdict === "reject") return { kind: "rejected", stage, childId: child.id,

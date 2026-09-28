@@ -25,6 +25,7 @@ import {
   fetchPullRequestHeadSha,
 } from "../src/core/github-sync.js";
 import { checkPrMergeability } from "../src/core/git-safety.js";
+import { prReviewChildDescription } from "../src/core/pr-review-child.js";
 
 const companyId = "company-1519";
 const issueId = "issue-1519";
@@ -95,6 +96,63 @@ describe("orchestrator native PR completion", () => {
     vi.mocked(fetchPullRequestHeadSha).mockResolvedValue(headSha);
     vi.mocked(checkPrCiIsGreen).mockResolvedValue({ isGreen: true, status: "success" });
     vi.mocked(checkPrMergeability).mockResolvedValue({ prNumber: 3, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN" });
+  });
+
+  it("does not reopen a rejected Jules PR head after its addressed v2 Luna child verdict", async () => {
+    const parent = { ...issue(), companyId, status: "blocked", assigneeAgentId: "jules-1",
+      executionPolicy: null, workProducts: [{ ...issue().workProducts[0],
+        metadata: { source: "jules", producer: "operator_reconciliation", headSha } }] };
+    const identity = { version: 2 as const, creatorPrincipal: "board" as const, companyId,
+      parentIssueId: issueId, prUrl, headSha, stage: "luna" as const,
+      reviewerAgentId: "luna-1", bootstrapAgentId: "orchestrator-1" };
+    const childId = "pr-child-rejected";
+    const child = { id: childId, companyId, parentId: issueId, status: "in_progress",
+      assigneeAgentId: "luna-1", createdByAgentId: null,
+      description: prReviewChildDescription(identity) };
+    const patches: Record<string, unknown>[] = [];
+    const logs: string[] = [];
+    globalThis.fetch = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      const method = (init?.method || "GET").toUpperCase();
+      if (method === "PATCH" && href.endsWith(`/api/issues/${issueId}`)) {
+        patches.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(JSON.stringify(parent));
+      }
+      if (href.includes("/agents")) return new Response(JSON.stringify(managedAgents(true)));
+      if (href.includes("/projects")) return new Response(JSON.stringify([{ id: "project-1519", name: "fixture", primaryWorkspace: { cwd: process.cwd() } }]));
+      if (method === "GET" && href.endsWith(`/api/issues/${issueId}`)) return new Response(JSON.stringify(parent));
+      if (method === "GET" && href.endsWith(`/api/issues/${issueId}/work-products`)) return new Response(JSON.stringify(parent.workProducts));
+      if (method === "GET" && href.endsWith(`/api/issues/${childId}`)) return new Response(JSON.stringify(child));
+      if (method === "GET" && href.includes("/parentId=")) return new Response(JSON.stringify([child]));
+      if (method === "GET" && href.includes("parentId=")) return new Response(JSON.stringify([child]));
+      if (method === "GET" && href.endsWith(`/api/issues/${childId}/interactions`)) return new Response(JSON.stringify([{
+        id: "typed-child-reject", kind: "request_item_verdicts", status: "answered",
+        idempotencyKey: `pr-review:v13:${childId}:${prUrl}:${headSha}:luna`, addresseeAgentId: "luna-1",
+        sourceRunId: "bootstrap-run", resolvedByAgentId: "luna-1", resolvedByRunId: "reviewer-run",
+        result: { outcome: "resolved", complete: true, items: [{ id: "pull_request", verdict: "reject",
+          reason: "Fractional input must throw TypeError." }] },
+      }]));
+      if (method === "GET" && href.endsWith(`/api/issues/${issueId}/interactions`)) return new Response(JSON.stringify([]));
+      if (method === "GET" && href.endsWith("/api/heartbeat-runs/bootstrap-run")) return new Response(JSON.stringify({
+        id: "bootstrap-run", companyId, agentId: "orchestrator-1", status: "succeeded", contextSnapshot: { issueId: childId },
+      }));
+      if (method === "GET" && href.endsWith("/api/heartbeat-runs/reviewer-run")) return new Response(JSON.stringify({
+        id: "reviewer-run", companyId, agentId: "luna-1", status: "succeeded", contextSnapshot: { issueId: childId },
+      }));
+      if (href.includes(`/api/issues/${issueId}/documents`)) return new Response(JSON.stringify([]));
+      if (href.includes(`/api/issues/${issueId}/children`)) return new Response(JSON.stringify([]));
+      if (href.includes(`/api/issues/${issueId}/recovery-actions`)) return new Response(JSON.stringify({ active: null }));
+      if (href.includes("/heartbeat-runs")) return new Response(JSON.stringify([]));
+      if (method === "GET" && href.includes("/issues")) return new Response(JSON.stringify([parent]));
+      if (href.includes("/approvals")) return new Response(JSON.stringify([]));
+      return new Response(JSON.stringify([]));
+    }) as typeof fetch;
+
+    const result = await execute({ ...context(), onLog: async (_stream, text) => { logs.push(text); } });
+
+    expect(result.exitCode).toBe(0);
+    expect(patches.some((patch) => patch["status"] === "in_review")).toBe(false);
+    expect(logs.join("\n")).toContain("Deferring rejected-head recovery");
   });
 
   afterEach(() => {

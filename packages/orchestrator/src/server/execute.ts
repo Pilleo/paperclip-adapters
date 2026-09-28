@@ -1319,6 +1319,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
   // GitHub confirms its checks are green; the normal native review pipeline
   // then owns reviewer dispatch. This replaces the old external timer bridge.
   const openPrRecoveryIds = new Set<string>();
+  const rejectedPrChildIssueIds = new Set<string>();
   // Same-heartbeat ownership fence: after a rejected/red head is routed back
   // to Jules, board reconciliation must not immediately reinterpret the stale
   // pre-PATCH snapshot as review-ready.
@@ -1371,6 +1372,17 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
             idempotencyKey: typeof interaction["idempotencyKey"] === "string" ? interaction["idempotencyKey"] : undefined,
             result: interaction["result"],
           })), issue.id, matchingPr.headRefOid, issue.description || undefined);
+          if (lunaReviewerAgentId && strongReviewerAgentId) {
+            const childInspection = await inspectPrReviewChildren({ companyId, parentIssueId: issue.id,
+              prUrl: matchingPr.url, headSha: matchingPr.headRefOid,
+              bootstrapAgentId: orchestratorId, lunaAgentId: lunaReviewerAgentId,
+              strongAgentId: strongReviewerAgentId, protocolVersion: 2,
+              allowRemediationStatus: true, api: prReviewChildApi(pc) });
+            if (childInspection.kind === "rejected") {
+              currentHeadRejected = true;
+              rejectedPrChildIssueIds.add(issue.id);
+            }
+          }
         }
       } catch (err: unknown) {
         await log(`[ORCHESTRATOR] Deferring open Jules PR recovery for [${issue.identifier || issue.id}]: could not verify monitor/review state (${String(err)}).`);
@@ -2471,7 +2483,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
   // worker; this broader repair must not immediately steal it into review.
   const reviewRecoveryIssues: ParsedIssueMetadata[] = [];
   for (const issue of overlayedIssues) {
-    const isRecoveryCandidate = !nativeReviewRecoveryIds.has(issue.id) && shouldRecoverNativePrReview({
+    const isRecoveryCandidate = !nativeReviewRecoveryIds.has(issue.id) && !rejectedPrChildIssueIds.has(issue.id) && shouldRecoverNativePrReview({
       status: issue.status,
       orchestratorManaged: issue.orchestratorManaged,
       merged: mergedIssueIds.has(issue.id),

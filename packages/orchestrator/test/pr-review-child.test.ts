@@ -183,9 +183,11 @@ describe("versioned issue-scoped PR review child identity", () => {
     expect(assignments).toBe(0);
   });
 
-  it("attributes a typed Luna PR verdict to the original bootstrap and successful reviewer child runs", async () => {
+  it.each([["in_review", "approve"], ["blocked", "reject"]] as const)(
+    "attributes a %s Luna child %s to the exact PR head even after native remediation handback", async (parentStatus, verdict) => {
     const api = { get: async (path: string) => {
-      if (path === "/issues/parent") return { id: "parent", companyId: "company", status: "in_review", assigneeAgentId: null };
+      if (path === "/issues/parent") return { id: "parent", companyId: "company", status: parentStatus,
+        assigneeAgentId: parentStatus === "blocked" ? "jules" : null };
       if (path === "/issues/parent/work-products") return [{ url: luna.prUrl, type: "pull_request", isPrimary: true,
         status: "ready_for_review", metadata: { headSha: luna.headSha } }];
       if (path === "/issues/child") return { id: "child", companyId: "company", parentId: "parent", status: "in_progress",
@@ -193,7 +195,8 @@ describe("versioned issue-scoped PR review child identity", () => {
       if (path === "/issues/child/interactions") return [{ id: "card-1", kind: "request_item_verdicts", status: "answered",
         idempotencyKey: `pr-review:v13:child:${luna.prUrl}:${luna.headSha}:luna`, addresseeAgentId: "luna",
         sourceRunId: "bootstrap-run", resolvedByAgentId: "luna", resolvedByRunId: "reviewer-run",
-        result: { outcome: "resolved", complete: true, items: [{ id: "pull_request", verdict: "approve" }] } }];
+        result: { outcome: "resolved", complete: true, items: [{ id: "pull_request", verdict,
+          ...(verdict === "reject" ? { reason: "Fractional inputs must throw TypeError." } : {}) }] } }];
       if (path === "/heartbeat-runs/bootstrap-run") return { id: "bootstrap-run", companyId: "company",
         agentId: "orchestrator", status: "succeeded", contextSnapshot: { issueId: "child" } };
       if (path === "/heartbeat-runs/reviewer-run") return { id: "reviewer-run", companyId: "company",
@@ -201,8 +204,10 @@ describe("versioned issue-scoped PR review child identity", () => {
       throw new Error(`unexpected GET ${path}`);
     }, post: async () => { throw new Error("verdict observation must be read-only"); },
     patch: async () => { throw new Error("verdict observation must be read-only"); } };
-    expect(await observePrReviewChild({ identity: luna, childId: "child", api })).toEqual({
-      kind: "answered", childId: "child", cardId: "card-1", reviewerRunId: "reviewer-run", verdict: "approve",
+    expect(await observePrReviewChild({ identity: luna, childId: "child", api,
+      allowRemediationStatus: parentStatus === "blocked" })).toEqual({
+      kind: "answered", childId: "child", cardId: "card-1", reviewerRunId: "reviewer-run", verdict,
+      ...(verdict === "reject" ? { reason: "Fractional inputs must throw TypeError." } : {}),
     });
   });
 

@@ -489,7 +489,9 @@ describe("native reviewer stdio MCP process", () => {
       for (const line of lines) if (line.trim()) responses.push(JSON.parse(line));
     });
     child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "submit_native_review_verdict", arguments: { verdict: "approve" } } })}\n`);
-    await waitFor(() => responses.some((response) => response.id === 1));
+    // This subprocess performs multiple authenticated requests; concurrent
+    // package tests can briefly slow the bridge beyond the unit-test budget.
+    await waitFor(() => responses.some((response) => response.id === 1), 15_000);
 
     expect(responses[0]).toMatchObject({
       result: { isError: false, structuredContent: { interactionId: "card-plan-1", itemId: "plan", verdict: "approve" } },
