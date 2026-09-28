@@ -151,3 +151,10 @@ be an active company member or its delegated Jules JWT fails closed with
 may post a bounded status note, but never a structured verdict or provider
 mutation. This is a worker-failure test; the real control-plane restart
 mid-chain and stale historical terminal blocker remain unverified.
+
+The disposable real-server restart contract additionally persists an
+exact-head **pending native reviewer card** with the original issue and
+company in embedded PostgreSQL; it checks the all-company live-run gate
+before restart, then reads the same card/key/reviewer/issue back from the
+new Paperclip process. This is a genuine control-plane process restart,
+but does not yet cross the Jules approve-plan-to-PR-registration boundary.

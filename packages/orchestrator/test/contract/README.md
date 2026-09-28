@@ -95,6 +95,15 @@ three provider creates and three approvals overall. This injects a failed
 worker run, **not** a Paperclip server-process restart; the retained-storage
 restart during a running chain remains a separate test milestone.
 
+The independent `disposable-host-live.mjs` contract now stops and restarts
+the **actual Paperclip server process** with its embedded PostgreSQL data
+retained after acknowledging a company, an unassigned review issue, and one
+exact-head native card addressed to an invokable reviewer. It first confirms
+all addressed runs are idle, then requires the same card ID, pending status,
+immutable key, reviewer identity, and issue after restart. This protects
+pending native review persistence but does not claim to restart a running
+Jules approval or an in-flight A→B→C provider effect.
+
 Exit codes:
 
 - `0`: characterization completed; **inspect `safetyGate` / `integrationAllowed`**.
