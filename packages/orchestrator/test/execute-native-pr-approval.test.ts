@@ -162,7 +162,7 @@ describe("orchestrator native PR completion", () => {
     else process.env["PAPERCLIP_API_KEY"] = originalKey;
   });
 
-  it.each(["without a parent card", "from company timer without a maintenance issue", "with a pending parent card", "with unavailable GitHub PR discovery", "with a newer GitHub head than the registered product", "from todo with a cleared Jules monitor", "from compact unassigned todo projection"] as const)(
+  it.each(["without a parent card", "from company timer without a maintenance issue", "with a pending parent card", "with unavailable GitHub PR discovery", "while Jules provider PR is not registered", "with a newer GitHub head than the registered product", "from todo with a cleared Jules monitor", "from compact unassigned todo projection"] as const)(
     "routes a Jules PR %s without another parent Luna verdict or wake", async (parentCardState) => {
     if (parentCardState === "with unavailable GitHub PR discovery") vi.mocked(fetchGitHubPullRequests).mockResolvedValue({
       openPrs: [], mergedPrs: [], openPrFiles: new Set(), error: "provider unavailable",
@@ -176,7 +176,10 @@ describe("orchestrator native PR completion", () => {
       ...(["from todo with a cleared Jules monitor", "from compact unassigned todo projection"].includes(parentCardState) ? { status: "todo",
         executionState: { status: "idle", monitor: { serviceName: "jules", externalRef: "[redacted]",
           status: "cleared", clearReason: "invalid_status" } } } : {}),
-      workProducts: [{ ...issue().workProducts[0], metadata: {
+      ...(parentCardState === "while Jules provider PR is not registered" ? { executionState: {
+        status: "idle", monitor: { serviceName: "jules", externalRef: "[redacted]", status: "cleared" },
+      } } : {}),
+      workProducts: parentCardState === "while Jules provider PR is not registered" ? [] : [{ ...issue().workProducts[0], metadata: {
       source: "jules", producer: ["from todo with a cleared Jules monitor", "from compact unassigned todo projection"].includes(parentCardState)
         ? "operator_reconciliation" : "paperclip-jules-adapter",
       headSha: parentCardState === "with a newer GitHub head than the registered product" ? "a".repeat(40) : headSha,
@@ -258,6 +261,9 @@ describe("orchestrator native PR completion", () => {
     expect(issuePatches.some((patch) => patch["status"] === "todo")).toBe(false);
     if (parentCardState === "with a newer GitHub head than the registered product") {
       expect(logs.join("\n")).toContain("registered PR head differs from GitHub");
+    }
+    if (parentCardState === "while Jules provider PR is not registered") {
+      expect(logs.join("\n")).toContain("Jules PR work product is missing");
     }
     if (parentCardState === "from todo with a cleared Jules monitor" || parentCardState === "from compact unassigned todo projection") {
       expect(vi.mocked(globalThis.fetch).mock.calls.filter(([url, init]) => String(url).endsWith(`/api/issues/${effectiveIssueId}`) &&

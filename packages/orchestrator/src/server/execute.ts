@@ -2751,6 +2751,15 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
     const products = asArray<Record<string, unknown>>(
       reviewTask.rawIssue["workProducts"] ?? reviewTask.rawIssue["work_products"],
     );
+    if (reviewTask.status === "in_review" && reviewTask.rawIssue["assigneeAgentId"] == null &&
+        hasJulesMonitorClaim({ executionPolicy: reviewTask.rawIssue["executionPolicy"],
+          executionState: reviewTask.rawIssue["executionState"] }) &&
+        !products.some((product) => product["type"] === "pull_request" &&
+          typeof product["url"] === "string" &&
+          product["url"].replace(/\/$/, "").toLowerCase() === matchingPr.url.replace(/\/$/, "").toLowerCase())) {
+      await log(`[ORCHESTRATOR] Holding Jules PR review for [${reviewTask.identifier || reviewTask.id}]: Jules PR work product is missing; verify and register its provider output before any native reviewer card.`);
+      continue;
+    }
     const julesProductForUrl = products.find((product) => {
       const metadata = product["metadata"] && typeof product["metadata"] === "object" && !Array.isArray(product["metadata"])
         ? product["metadata"] as Record<string, unknown> : {};
