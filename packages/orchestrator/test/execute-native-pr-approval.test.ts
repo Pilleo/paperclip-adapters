@@ -121,6 +121,7 @@ describe("orchestrator native PR completion", () => {
     const childPosts: Array<Record<string, unknown>> = [];
     const parentCardPosts: unknown[] = [];
     const issuePatches: Array<Record<string, unknown>> = [];
+    const logs: string[] = [];
     globalThis.fetch = vi.fn(async (url: string | URL, init?: RequestInit) => {
       const href = String(url);
       const method = (init?.method || "GET").toUpperCase();
@@ -151,7 +152,7 @@ describe("orchestrator native PR completion", () => {
       if (method === "GET" && href.includes(`/api/companies/${companyId}/issues?`) && href.includes("parentId=")) return new Response(JSON.stringify([]));
       if (method === "GET" && href.endsWith(`/api/issues/${issueId}/interactions`)) return new Response(JSON.stringify(
         ["with a pending parent card", "from todo with a cleared Jules monitor"].includes(parentCardState) ? [{ id: "parent-pr-card", kind: "request_item_verdicts",
-          status: "pending", addresseeAgentId: "luna-1",
+          status: "pending", createdByAgentId: null, addresseeAgentId: "luna-1",
           idempotencyKey: `pr-review:v13:${issueId}:${prUrl}:${headSha}:luna` }] : [],
       ));
       if (href.includes(`/api/issues/${issueId}/recovery-actions`)) return new Response(JSON.stringify({ active: null }));
@@ -161,7 +162,8 @@ describe("orchestrator native PR completion", () => {
       return new Response(JSON.stringify([]));
     }) as typeof fetch;
 
-    const result = await execute({ ...context(), context: { companyId, issueId: "maintenance-1519" } });
+    const result = await execute({ ...context(), context: { companyId, issueId: "maintenance-1519" },
+      onLog: async (_stream, line) => { logs.push(line); } });
 
     expect(result.exitCode).toBe(0);
     expect(childPosts).toHaveLength(parentCardState === "without a parent card" ? 1 : 0);
@@ -172,6 +174,7 @@ describe("orchestrator native PR completion", () => {
       expect(issuePatches).toContainEqual(expect.objectContaining({ status: "in_review", assigneeAgentId: null }));
     }
     if (parentCardState === "with a pending parent card" || parentCardState === "from todo with a cleared Jules monitor") {
+      expect(logs.join("\n")).toContain("Preserving board-created parent PR card");
       const calls = vi.mocked(globalThis.fetch).mock.calls;
       expect(calls.filter(([url]) => String(url).includes("/api/agents/luna-1/wakeup"))).toHaveLength(0);
     }

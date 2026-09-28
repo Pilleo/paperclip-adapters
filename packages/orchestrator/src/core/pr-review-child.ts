@@ -41,6 +41,21 @@ export function isPrReviewChild(value: unknown): boolean {
     identity.parentIssueId === issue.data.parentId && identity.bootstrapAgentId === issue.data.createdByAgentId;
 }
 
+/** A board-created historical parent card is an authority lock, not a reviewer-wake hint. */
+export function shouldHoldLegacyParentPrCard(input: {
+  readonly issueId: string; readonly status: string; readonly assigneeAgentId: string | null;
+  readonly prUrl: string; readonly headSha: string; readonly workProductSource: string | null;
+  readonly cards: readonly { readonly kind?: string; readonly status?: string;
+    readonly idempotencyKey?: string; readonly createdByAgentId?: string | null }[];
+}): boolean {
+  if (!['todo', 'in_review'].includes(input.status) || input.assigneeAgentId !== null ||
+      input.workProductSource !== 'jules') return false;
+  const immutablePrefix = `:${input.issueId}:${input.prUrl}:${input.headSha}:`;
+  return input.cards.some((card) => card.kind === "request_item_verdicts" && card.status === "pending" &&
+    card.createdByAgentId === null && card.idempotencyKey?.startsWith("pr-review:v") &&
+    card.idempotencyKey.includes(immutablePrefix));
+}
+
 export function prReviewChildKey(identity: PrReviewChildIdentity): string {
   return `pr-review:child:v1:${createHash("sha256").update(JSON.stringify(PrReviewChildIdentitySchema.parse(identity))).digest("hex")}`;
 }

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { prReviewChildDescription, prReviewChildKey, parsePrReviewChildDescription,
   ensurePrReviewChild, bootstrapPrReviewChild, activatePrReviewChild, observePrReviewChild,
   projectPrChildVerdict, isPrReviewChild } from "../src/core/pr-review-child.js";
+import { shouldHoldLegacyParentPrCard } from "../src/core/pr-review-child.js";
 import { inspectPrReviewChildren } from "../src/core/pr-review-child.js";
 import { hasCompletedNativeApprovalLadderForHead, reviewVerdictFromInteraction } from "../src/core/review-interaction-state.js";
 
@@ -31,6 +32,16 @@ describe("versioned issue-scoped PR review child identity", () => {
     expect(isPrReviewChild({ ...task, createdByAgentId: "luna" })).toBe(false);
     expect(isPrReviewChild({ ...task, parentId: "another" })).toBe(false);
     expect(isPrReviewChild({ ...task, description: "Review this PR" })).toBe(false);
+  });
+  it("holds an unassigned board-created parent PR card for typed withdrawal instead of another Luna wake", () => {
+    const card = { id: "pending-b", kind: "request_item_verdicts", status: "pending",
+      createdByAgentId: null, addresseeAgentId: "luna",
+      idempotencyKey: `pr-review:v13:parent:${luna.prUrl}:${luna.headSha}:luna` };
+    const input = { issueId: "parent", status: "in_review", assigneeAgentId: null,
+      prUrl: luna.prUrl, headSha: luna.headSha, workProductSource: "jules", cards: [card] };
+    expect(shouldHoldLegacyParentPrCard(input)).toBe(true);
+    expect(shouldHoldLegacyParentPrCard({ ...input, cards: [{ ...card, status: "cancelled" }] })).toBe(false);
+    expect(shouldHoldLegacyParentPrCard({ ...input, workProductSource: "other" })).toBe(false);
   });
 
   it("creates exactly one backlog child only for the registered immutable head on an unassigned in-review parent", async () => {

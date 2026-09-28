@@ -101,6 +101,7 @@ import { resolvedJulesPlanVerdict } from "../core/jules-plan-verdict-continuatio
 import { executeChildPlanBootstrap } from "../core/child-plan-bootstrap.js";
 import { activatePrReviewChild, bootstrapPrReviewChild, ensurePrReviewChild, inspectPrReviewChildren,
   isPrReviewChild, parsePrReviewChildDescription, prReviewChildApi, prReviewChildKey,
+  shouldHoldLegacyParentPrCard,
   PR_REVIEW_CHILD_PREFIX, type PrReviewChildIdentity } from "../core/pr-review-child.js";
 import { isStablePlanReviewChild } from "@pilleo/paperclip-adapter-common";
 import { needsFullIssueRecord } from "../core/issue-enrichment-policy.js";
@@ -2279,7 +2280,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
     const reviewHeadSha = matchingPr.headRefOid || await fetchPullRequestHeadSha(matchingPr.url);
     if (!reviewHeadSha) continue;
 
-    let interactions: Array<{ id: string; kind?: string; status?: string; idempotencyKey?: string; addresseeAgentId?: string | null; createdAt?: string }>;
+    let interactions: Array<{ id: string; kind?: string; status?: string; idempotencyKey?: string; addresseeAgentId?: string | null; createdByAgentId?: string | null; createdAt?: string }>;
     try {
       interactions = asArray<Record<string, unknown>>(await pc.listInteractions(issue.id))
         .filter((interaction): interaction is Record<string, unknown> & { id: string } => typeof interaction["id"] === "string")
@@ -2289,10 +2290,26 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
           ...(typeof interaction["status"] === "string" ? { status: interaction["status"] } : {}),
           ...(typeof interaction["idempotencyKey"] === "string" ? { idempotencyKey: interaction["idempotencyKey"] } : {}),
           ...(typeof interaction["addresseeAgentId"] === "string" ? { addresseeAgentId: interaction["addresseeAgentId"] } : {}),
+          ...(typeof interaction["createdByAgentId"] === "string" || interaction["createdByAgentId"] === null
+            ? { createdByAgentId: interaction["createdByAgentId"] as string | null } : {}),
           ...(typeof interaction["createdAt"] === "string" ? { createdAt: interaction["createdAt"] } : {}),
         }));
     } catch (error) {
       await log(`[ORCHESTRATOR] Warning: could not inspect native review cards for ${issue.identifier || issue.id}: ${String(error)}`);
+      continue;
+    }
+
+    const registeredProducts = asArray<Record<string, unknown>>(issue.rawIssue["workProducts"] ?? issue.rawIssue["work_products"]);
+    const exactProduct = registeredProducts.find((product) => product["type"] === "pull_request" &&
+      product["url"] === matchingPr.url && product["isPrimary"] === true);
+    const productMetadata = exactProduct?.["metadata"] && typeof exactProduct["metadata"] === "object"
+      ? exactProduct["metadata"] as Record<string, unknown> : null;
+    if (shouldHoldLegacyParentPrCard({ issueId: issue.id, status: issue.status,
+      assigneeAgentId: issue.assigneeAgentId ?? null, prUrl: matchingPr.url, headSha: reviewHeadSha,
+      workProductSource: typeof productMetadata?.["source"] === "string" ? productMetadata["source"] : null,
+      cards: interactions })) {
+      nativeReviewRecoveryIds.add(issue.id);
+      await log(`[ORCHESTRATOR] Preserving board-created parent PR card for [${issue.identifier || issue.id}]; typed board withdrawal precedes child routing, no duplicate reviewer wake.`);
       continue;
     }
 
