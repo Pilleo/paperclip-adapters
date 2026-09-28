@@ -17,11 +17,16 @@ async function freePort() {
 const worker = `
 import http from 'node:http';
 import fs from 'node:fs';
+import { spawn } from 'node:child_process';
 const home = process.env.PAPERCLIP_HOME;
 const countFile = home + '/starts.txt';
 fs.appendFileSync(countFile, process.pid + '\\n');
 fs.writeFileSync(home + '/environment.json', JSON.stringify({ apiKey: process.env.JULES_API_KEY, token: process.env.GH_TOKEN }));
 if (process.env.IGNORE_TERM === '1') process.on('SIGTERM', () => {});
+if (process.env.STUBBORN_CHILD === '1') {
+  const child = spawn(process.execPath, ['-e', 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  fs.writeFileSync(home + '/child.pid', String(child.pid));
+}
 if (process.env.HANG === '1') setInterval(() => {}, 1000);
 else http.createServer((req, res) => { res.writeHead(req.url === '/api/health' ? 200 : 404); res.end('ok'); })
  .listen(Number(process.env.PORT), '127.0.0.1');
@@ -64,6 +69,28 @@ test("unresponsive server is killed before removing its home", async () => {
     assert.equal(host.pid, null);
     assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
   } finally {
+    await host.dispose();
+  }
+});
+
+test("stopping the server kills a stubborn owned worker even if its parent exits", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "disposable-host-child-"));
+  const script = path.join(root, "server.mjs");
+  await writeFile(script, worker);
+  const host = createDisposableHost({ root, command: process.execPath, args: [script], port: await freePort(),
+    environment: { STUBBORN_CHILD: "1" }, readinessTimeoutMs: 3000 });
+  let workerPid;
+  try {
+    await host.start();
+    workerPid = Number(await readFile(path.join(host.home, "child.pid"), "utf8"));
+    await host.stop();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const state = await readFile(`/proc/${workerPid}/stat`, "utf8").then((value) => value.split(") ")[1]?.[0], () => null);
+    assert.ok(state === null || state === "Z", `owned worker still active after server stop: ${state}`);
+  } finally {
+    if (workerPid) {
+      try { process.kill(workerPid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+    }
     await host.dispose();
   }
 });

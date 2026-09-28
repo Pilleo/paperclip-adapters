@@ -38,6 +38,12 @@ export function createDisposableHost({ root, command, args, port, environment = 
         running.once("close", () => { clearTimeout(timer); resolve(); });
       });
     }
+    // The parent may have exited on SIGTERM while its PostgreSQL/worker children
+    // kept the process group alive. Reap the entire owned group before reuse.
+    if (running.pid) {
+      try { process.kill(-running.pid, "SIGKILL"); }
+      catch (error) { if (error.code !== "ESRCH") throw error; }
+    }
     child = null;
   };
   return {
