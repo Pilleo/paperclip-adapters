@@ -14,13 +14,14 @@ const issue = (id: string, status: string, blockedBy: { id: string; status: stri
   workProducts: status === "done" ? [{ type: "pull_request", status: "merged", url: `https://github.com/example/canary/pull/${id}` }] : [],
 });
 
-async function verify(snapshots: Record<string, unknown>, args: string[], ghResponses?: Record<string, unknown>): Promise<{ code: number | null; stdout: string; stderr: string; requests: string[] }> {
+async function verify(snapshots: Record<string, unknown> | ((id: string, requestNumber: number) => unknown), args: string[], ghResponses?: Record<string, unknown>): Promise<{ code: number | null; stdout: string; stderr: string; requests: string[] }> {
   const requests: string[] = [];
   const server = createServer((req, res) => {
     requests.push(`${req.method} ${req.url}`);
     const id = req.url?.match(/^\/api\/issues\/([^/]+)$/)?.[1];
-    res.writeHead(id && id in snapshots ? 200 : 404, { "content-type": "application/json" });
-    res.end(JSON.stringify(id ? snapshots[id] ?? null : null));
+    const snapshot = id && (typeof snapshots === "function" ? snapshots(id, requests.length) : snapshots[id]);
+    res.writeHead(snapshot ? 200 : 404, { "content-type": "application/json" });
+    res.end(JSON.stringify(snapshot ?? null));
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
@@ -168,5 +169,34 @@ describe("read-only A→B→C canary verifier", () => {
     const result = await verify(snapshots, ["--require-complete"], ghResponses);
     expect(result.code).not.toBe(0);
     expect(result.stderr).toContain("c_done_with_actionable_execution_blocker");
+  });
+
+  it("reports a bounded failure rather than accepting a still-running chain", async () => {
+    const result = await verify({ a: issue("a", "in_progress"), b: issue("b", "todo", [{ id: "a", status: "in_progress" }]),
+      c: issue("c", "backlog", [{ id: "b", status: "todo" }]) },
+    ["--wait-for-completion", "--timeout-ms=200", "--interval-ms=25"]);
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toMatch(/timeout|not complete/i);
+    expect(result.requests.length).toBeGreaterThan(3);
+    expect(result.requests.every((request) => request.startsWith("GET "))).toBe(true);
+  });
+
+  it("waits for terminal convergence and GitHub ancestry before reporting passed", async () => {
+    const final = Object.fromEntries((["a", "b", "c"] as const).map((id, index) => [id, {
+      ...issue(id, "done", index === 0 ? [] : [{ id: index === 1 ? "a" : "b", status: "done" }]),
+      workProducts: [{ type: "pull_request", status: "merged", url: `https://github.com/example/canary/pull/${index + 1}`,
+        metadata: { headSha: `${index + 1}`.repeat(40) } }],
+    }]));
+    const initial = { a: issue("a", "in_progress"), b: issue("b", "todo", [{ id: "a", status: "in_progress" }]),
+      c: issue("c", "backlog", [{ id: "b", status: "todo" }]) };
+    const ghResponses = Object.fromEntries((["a", "b", "c"] as const).map((_, index) => [
+      `https://github.com/example/canary/pull/${index + 1}`,
+      { state: "MERGED", headRefOid: `${index + 1}`.repeat(40), mergeCommit: { oid: `${index + 4}`.repeat(40) } },
+    ]));
+    const result = await verify((id, requestNumber) => (requestNumber <= 3 ? initial : final)[id],
+      ["--wait-for-completion", "--timeout-ms=1500", "--interval-ms=25"], ghResponses);
+    expect(result.code).toBe(0, result.stderr);
+    expect(result.requests.length).toBeGreaterThan(3);
+    expect(result.stdout).toContain('"result":"passed"');
   });
 });

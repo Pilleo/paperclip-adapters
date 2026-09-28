@@ -73,26 +73,44 @@ async function main(): Promise<void> {
     throw new Error(`PAPERCLIP_TEST_API_URL must be a loopback Paperclip server, got ${apiUrl || "missing"}`);
   }
 
-  const [aRaw, bRaw, cRaw] = await Promise.all([
-    fetchIssue(requiredEnv("PAPERCLIP_E2E_CANARY_A_ID", issueIds.a)),
-    fetchIssue(requiredEnv("PAPERCLIP_E2E_CANARY_B_ID", issueIds.b)),
-    fetchIssue(requiredEnv("PAPERCLIP_E2E_CANARY_C_ID", issueIds.c)),
-  ]);
-  const snapshots = {
-    julesAgentId: requiredEnv("PAPERCLIP_E2E_JULES_AGENT_ID", julesAgentId),
-    a: parsePersistedIssue("a", aRaw),
-    b: parsePersistedIssue("b", bRaw),
-    c: parsePersistedIssue("c", cRaw),
+  const waiting = process.argv.includes("--wait-for-completion");
+  const option = (name: string, fallback: number, maximum: number): number => {
+    const values = process.argv.filter((argument) => argument.startsWith(`${name}=`));
+    if (values.length > 1) throw new Error(`Repeated ${name}`);
+    if (!values.length) return fallback;
+    const value = Number(values[0]?.slice(name.length + 1));
+    if (!Number.isSafeInteger(value) || value < 1 || value > maximum) throw new Error(`Invalid ${name}`);
+    return value;
   };
-  const progress = evaluateCanaryDependencyProgress(snapshots);
-  console.log(JSON.stringify({ issueIds, progress }, null, 2));
-  if (progress.kind === "invalid") throw new Error(`Dependency canary invariant failed: ${progress.reason}`);
-  if (process.argv.includes("--require-complete") && progress.kind !== "complete") {
-    throw new Error(`Dependency canary is not complete: ${progress.kind}`);
-  }
-  if (process.argv.includes("--require-complete")) {
-    for (const label of ["a", "b", "c"] as const) await verifyGitHubMerge(label, snapshots[label]);
-    console.log(JSON.stringify({ result: "passed", issueIds }));
+  const timeoutMs = option("--timeout-ms", 30 * 60_000, 24 * 60 * 60_000);
+  const intervalMs = option("--interval-ms", 5000, 60_000);
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    const [aRaw, bRaw, cRaw] = await Promise.all([
+      fetchIssue(requiredEnv("PAPERCLIP_E2E_CANARY_A_ID", issueIds.a)),
+      fetchIssue(requiredEnv("PAPERCLIP_E2E_CANARY_B_ID", issueIds.b)),
+      fetchIssue(requiredEnv("PAPERCLIP_E2E_CANARY_C_ID", issueIds.c)),
+    ]);
+    const snapshots = {
+      julesAgentId: requiredEnv("PAPERCLIP_E2E_JULES_AGENT_ID", julesAgentId),
+      a: parsePersistedIssue("a", aRaw),
+      b: parsePersistedIssue("b", bRaw),
+      c: parsePersistedIssue("c", cRaw),
+    };
+    const progress = evaluateCanaryDependencyProgress(snapshots);
+    console.log(JSON.stringify({ issueIds, progress }, null, 2));
+    if (progress.kind === "invalid") throw new Error(`Dependency canary invariant failed: ${progress.reason}`);
+    if (progress.kind === "complete" && (waiting || process.argv.includes("--require-complete"))) {
+      for (const label of ["a", "b", "c"] as const) await verifyGitHubMerge(label, snapshots[label]);
+      console.log(JSON.stringify({ result: "passed", issueIds }));
+      return;
+    }
+    if (!waiting) {
+      if (process.argv.includes("--require-complete")) throw new Error(`Dependency canary is not complete: ${progress.kind}`);
+      return;
+    }
+    if (Date.now() >= deadline) throw new Error(`Dependency canary timeout: not complete (${progress.kind}) after ${timeoutMs}ms`);
+    await new Promise((resolve) => setTimeout(resolve, Math.min(intervalMs, deadline - Date.now())));
   }
 }
 
