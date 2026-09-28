@@ -104,6 +104,59 @@ describe("orchestrator native PR completion", () => {
     else process.env["PAPERCLIP_API_KEY"] = originalKey;
   });
 
+  it.each(["without a parent card", "with a pending parent card"] as const)(
+    "routes a Jules PR %s without another parent Luna verdict or wake", async (parentCardState) => {
+    const ready = { ...issue(), companyId, workProducts: [{ ...issue().workProducts[0], metadata: {
+      source: "jules", producer: "paperclip-jules-adapter", headSha,
+    } }] };
+    const childPosts: Array<Record<string, unknown>> = [];
+    const parentCardPosts: unknown[] = [];
+    globalThis.fetch = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      const method = (init?.method || "GET").toUpperCase();
+      if (method === "POST" && href.endsWith(`/api/issues/${issueId}/children`)) {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        childPosts.push(body);
+        return new Response(JSON.stringify({ ...body, id: "review-child", companyId, parentId: issueId,
+          createdByAgentId: "orchestrator-1" }), { status: 201 });
+      }
+      if (method === "POST" && href.endsWith(`/api/issues/${issueId}/interactions`)) {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        if (body["kind"] === "request_item_verdicts") parentCardPosts.push(body);
+        return new Response(JSON.stringify({ id: "wrong-parent-card" }), { status: 201 });
+      }
+      if (method === "POST" && href.includes("/wakeup")) return new Response(JSON.stringify({ status: "started", runId: "bootstrap-run" }), { status: 202 });
+      if (href.includes("/agents")) return new Response(JSON.stringify(managedAgents(true)));
+      if (href.includes("/projects")) return new Response(JSON.stringify([{ id: "project-1519", name: "fixture",
+        primaryWorkspace: { cwd: process.cwd() } }]));
+      if (method === "GET" && href.endsWith("/api/issues/maintenance-1519")) return new Response(JSON.stringify({ id: "maintenance-1519", projectId: null }));
+      if (method === "GET" && href.endsWith(`/api/issues/${issueId}`)) return new Response(JSON.stringify(ready));
+      if (method === "GET" && href.endsWith(`/api/issues/${issueId}/work-products`)) return new Response(JSON.stringify(ready.workProducts));
+      if (method === "GET" && href.includes(`/api/companies/${companyId}/issues?`) && href.includes("parentId=")) return new Response(JSON.stringify([]));
+      if (method === "GET" && href.endsWith(`/api/issues/${issueId}/interactions`)) return new Response(JSON.stringify(
+        parentCardState === "with a pending parent card" ? [{ id: "parent-pr-card", kind: "request_item_verdicts",
+          status: "pending", addresseeAgentId: "luna-1",
+          idempotencyKey: `pr-review:v13:${issueId}:${prUrl}:${headSha}:luna` }] : [],
+      ));
+      if (href.includes(`/api/issues/${issueId}/recovery-actions`)) return new Response(JSON.stringify({ active: null }));
+      if (href.includes("/heartbeat-runs")) return new Response(JSON.stringify([]));
+      if (method === "GET" && href.includes("/issues")) return new Response(JSON.stringify([ready]));
+      if (href.includes("/approvals")) return new Response(JSON.stringify([]));
+      return new Response(JSON.stringify([]));
+    }) as typeof fetch;
+
+    const result = await execute({ ...context(), context: { companyId, issueId: "maintenance-1519" } });
+
+    expect(result.exitCode).toBe(0);
+    expect(childPosts).toHaveLength(parentCardState === "with a pending parent card" ? 0 : 1);
+    if (childPosts[0]) expect(childPosts[0]).toMatchObject({ status: "backlog", assigneeAgentId: "orchestrator-1", blockParentUntilDone: false });
+    expect(parentCardPosts).toEqual([]);
+    if (parentCardState === "with a pending parent card") {
+      const calls = vi.mocked(globalThis.fetch).mock.calls;
+      expect(calls.filter(([url]) => String(url).includes("/api/agents/luna-1/wakeup"))).toHaveLength(0);
+    }
+  });
+
   it("bounds issue detail requests when a project has many terminal issues", async () => {
     const issues = Array.from({ length: 18 }, (_, index) => ({
       id: `terminal-${index}`, identifier: `MAZ-${index}`, title: `Finished ${index}`,

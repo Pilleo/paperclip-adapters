@@ -174,7 +174,7 @@ export function resolveNativeReviewAssignment(
     };
   }
   const prUrl = /^\*\*PR:\*\*\s*(https?:\/\/\S+)/m.exec(detailsMarkdown)?.[1];
-  const headSha = /:([a-f0-9]{40}):(?:luna|terra)(?::attempt:[1-9]\d*)?$/i.exec(resolved.card.idempotencyKey ?? "")?.[1];
+  const headSha = /:([a-f0-9]{40}):(?:luna|terra|strong)(?::contract:[a-z0-9]+)?(?::attempt:[1-9]\d*)?$/i.exec(resolved.card.idempotencyKey ?? "")?.[1];
   if (resolved.item.id !== "pull_request" || !prUrl || !headSha) return { ok: false, code: "malformed_review_card" };
   return {
     ok: true,

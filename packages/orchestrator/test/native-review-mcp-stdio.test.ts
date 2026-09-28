@@ -494,16 +494,20 @@ describe("native reviewer stdio MCP process", () => {
     expect(responses[0]).toMatchObject({
       result: { isError: false, structuredContent: { interactionId: "card-plan-1", itemId: "plan", verdict: "approve" } },
     });
-    expect(received).toEqual([
+    expect(received.slice(0, 2)).toEqual([
       "GET /api/issues/plan-issue-1/interactions",
       "POST /api/issues/plan-issue-1/interactions/card-plan-1/verdicts",
+    ]);
+    expect(received.slice(2, 4).sort()).toEqual([
       "GET /api/issues/plan-issue-1",
       "GET /api/issues/plan-issue-1/interactions",
+    ].sort());
+    expect(received.slice(4, 7).sort()).toEqual([
       "GET /api/issues/plan-issue-1/documents/plan",
       "GET /api/heartbeat-runs/jules-run-1",
       "GET /api/heartbeat-runs/luna-run-1",
-      "PATCH /api/issues/plan-issue-1",
-    ]);
+    ].sort());
+    expect(received.slice(7)).toEqual(["PATCH /api/issues/plan-issue-1"]);
     expect(patchBodies).toEqual([{ executionPolicy: null }]);
   });
 });

@@ -99,6 +99,9 @@ import {
 } from "../core/jules-execution-blocker-reconciliation.js";
 import { resolvedJulesPlanVerdict } from "../core/jules-plan-verdict-continuation.js";
 import { executeChildPlanBootstrap } from "../core/child-plan-bootstrap.js";
+import { activatePrReviewChild, bootstrapPrReviewChild, ensurePrReviewChild, inspectPrReviewChildren,
+  isPrReviewChild, parsePrReviewChildDescription, prReviewChildApi, prReviewChildKey,
+  PR_REVIEW_CHILD_PREFIX, type PrReviewChildIdentity } from "../core/pr-review-child.js";
 import { isStablePlanReviewChild } from "@pilleo/paperclip-adapter-common";
 import { needsFullIssueRecord } from "../core/issue-enrichment-policy.js";
 import { planBoardReconciliation, type BoardIssueSnapshot } from "../core/board-reconciliation.js";
@@ -212,9 +215,14 @@ export async function executeAllProjects(
     || process.env["PAPERCLIP_AGENT_TOKEN"]
     || process.env["PAPERCLIP_API_KEY"];
   const pc = createPaperclipHttp({ apiUrl, authToken, runId: runId || undefined, localTrustedBoardWrites: true });
+  // A child bootstrap is authorized by its real issue-scoped run, not by the
+  // loopback board actor used for company-level reconciliation writes.
+  const scopedPc = authToken
+    ? createPaperclipHttp({ apiUrl, authToken, runId: runId || undefined, localTrustedBoardWrites: false })
+    : pc;
   let scopeReference: Exclude<HeartbeatScopeReference, { readonly kind: "invalid_explicit_scope" }>;
   try {
-    const run = runId ? await pc.getHeartbeatRun<HeartbeatRunScopeRecord>(runId) : {};
+    const run = runId ? await scopedPc.getHeartbeatRun<HeartbeatRunScopeRecord>(runId) : {};
     const snapshot = run.contextSnapshot && typeof run.contextSnapshot === "object" && !Array.isArray(run.contextSnapshot)
       ? run.contextSnapshot as Readonly<Record<string, unknown>>
       : {};
@@ -242,7 +250,7 @@ export async function executeAllProjects(
     const boundIssueId = typeof snapshot["issueId"] === "string" ? snapshot["issueId"]
       : typeof snapshot["taskId"] === "string" ? snapshot["taskId"] : null;
     if (boundIssueId) {
-      const issue = await pc.getIssue<Record<string, unknown>>(boundIssueId);
+      const issue = await scopedPc.getIssue<Record<string, unknown>>(boundIssueId);
       if (scopeReference.kind === "project" && issue?.["projectId"] !== scopeReference.projectId) {
         throw new Error("Bootstrap issue project does not match authoritative run scope");
       }
@@ -253,6 +261,33 @@ export async function executeAllProjects(
           ? "Addressed reviewer unavailable; existing child parked for a later Jules monitor."
           : "Native child plan card created; parent Jules monitor owns reviewer activation.",
         resultJson: { childPlanReviewBootstrap: bootstrapped } };
+      const description = issue?.["description"];
+      if (typeof description === "string" && description.startsWith(PR_REVIEW_CHILD_PREFIX)) {
+        const identity = parsePrReviewChildDescription(description);
+        if (!identity || identity.companyId !== companyId || identity.bootstrapAgentId !== agentId ||
+            !authToken || !runId) {
+          throw new Error("PR child bootstrap requires an exact authenticated child-scoped v1 identity");
+        }
+        const api = {
+          get: (path: string) => scopedPc.getJson<unknown>(`/api${path}`),
+          post: async (path: string, body: unknown) => {
+            const response = await scopedPc.sendJson(`/api${path}`, "POST", body);
+            if (!response.ok || !response.data) throw new Error(`PR child bootstrap POST ${path} failed (${response.status}): ${response.text}`);
+            return response.data;
+          },
+          patch: async (path: string, body: unknown) => {
+            const response = await scopedPc.sendJson(`/api${path}`, "PATCH", body);
+            if (!response.ok || !response.data) throw new Error(`PR child bootstrap PATCH ${path} failed (${response.status}): ${response.text}`);
+            return response.data;
+          },
+        };
+        const receipt = await bootstrapPrReviewChild({ identity, childId: boundIssueId, agentId, runId, api });
+        return { exitCode: 0, signal: null, timedOut: false,
+          summary: receipt.kind === "card"
+            ? `Native PR reviewer card ${receipt.cardId} bootstrapped on child ${boundIssueId}.`
+            : `Native PR child ${boundIssueId} parked until reviewer ${receipt.reviewerId} is available.`,
+          resultJson: { prReviewChildBootstrap: { childId: boundIssueId, ...receipt } } };
+      }
     }
   } catch (err: unknown) {
     const message = `Could not load authoritative heartbeat scope: ${err instanceof Error ? err.message : String(err)}`;
@@ -1003,7 +1038,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
   }
   // v3 children are owned by their issue-scoped bootstrap and Jules parent
   // monitor. Generic PR/recovery/delegation reconciliation must not reassign them.
-  const parsedIssues: ParsedIssueMetadata[] = enrichedIssues.filter((issue) => !isStablePlanReviewChild(issue)).map((issue) =>
+  const parsedIssues: ParsedIssueMetadata[] = enrichedIssues.filter((issue) => !isStablePlanReviewChild(issue) && !isPrReviewChild(issue)).map((issue) =>
     extractIssueMetadata({
       ...issue,
       id: String(issue["id"] ?? ""),
@@ -2665,6 +2700,108 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       await log(`[ORCHESTRATOR] Warning: Failed to list review interactions for ${reviewTask.identifier}: ${msg}`);
+    }
+
+    // A Jules PR with an immutable registered head uses reviewer-owned child
+    // issues. Paperclip cannot admit a reviewer run on an unassigned in_review
+    // parent. Historical parent cards remain authoritative until explicitly
+    // withdrawn/settled through their typed route; never silently replace one.
+    const products = asArray<Record<string, unknown>>(
+      reviewTask.rawIssue["workProducts"] ?? reviewTask.rawIssue["work_products"],
+    );
+    const julesProduct = products.find((product) => {
+      const metadata = product["metadata"] && typeof product["metadata"] === "object" && !Array.isArray(product["metadata"])
+        ? product["metadata"] as Record<string, unknown> : {};
+      return product["type"] === "pull_request" && product["isPrimary"] === true &&
+        product["status"] === "ready_for_review" && product["url"] === matchingPr.url &&
+        metadata["headSha"] === reviewHeadSha &&
+        (metadata["source"] === "jules" || metadata["producer"] === "paperclip-jules-adapter");
+    });
+    const usePrChildLane = Boolean(julesProduct && reviewTask.status === "in_review" &&
+      reviewTask.rawIssue["assigneeAgentId"] == null && lunaReviewerAgentId && strongReviewerAgentId);
+    if (usePrChildLane) {
+      const historicalParentCards = reviewInteractions.filter((card) => card.kind === "request_item_verdicts" &&
+        card.idempotencyKey?.startsWith("pr-review:v") &&
+        card.idempotencyKey.includes(`:${reviewTask.id}:${matchingPr.url}:${reviewHeadSha}:`) &&
+        (card.status === "pending" || card.status === "answered"));
+      if (historicalParentCards.some((card) => card.status === "pending")) {
+        await log(`[ORCHESTRATOR] Holding Jules PR child routing for [${reviewTask.identifier || reviewTask.id}]: existing parent-owned native card requires typed disposition.`);
+        continue;
+      }
+      // An answered parent card belongs to the previous review protocol.
+      // Continue its existing ladder rather than asking another reviewer.
+      if (!historicalParentCards.length) {
+        if (!authToken || !runId || typeof rawContext["issueId"] !== "string") {
+          await log(`[ORCHESTRATOR] Waiting for issue-scoped orchestrator credentials before routing Jules PR child for [${reviewTask.identifier || reviewTask.id}].`);
+          continue;
+        }
+        const scopedReviewClient = createPaperclipHttp({ apiUrl, authToken, runId, localTrustedBoardWrites: false });
+        const childApi = prReviewChildApi(scopedReviewClient);
+        try {
+          const inspection = await inspectPrReviewChildren({ companyId, parentIssueId: reviewTask.id,
+            prUrl: matchingPr.url, headSha: reviewHeadSha, bootstrapAgentId: orchestratorId,
+            lunaAgentId: lunaReviewerAgentId!, strongAgentId: strongReviewerAgentId!, api: childApi });
+          switch (inspection.kind) {
+            case "dispatch": {
+              const identity: PrReviewChildIdentity = { version: 1, companyId, parentIssueId: reviewTask.id,
+                prUrl: matchingPr.url, headSha: reviewHeadSha, stage: inspection.stage,
+                reviewerAgentId: inspection.reviewerAgentId, bootstrapAgentId: orchestratorId };
+              const eligible = evaluateStructuredReviewerEligibility(
+                managedAgentStatuses.get(inspection.reviewerAgentId),
+                agentStructuredDecisionCapabilities.get(inspection.reviewerAgentId), "pull_request_review",
+              );
+              if (eligible.kind === "unavailable") {
+                await log(`[ORCHESTRATOR] Holding PR child ${inspection.stage}: ${eligible.reason}`);
+                continue;
+              }
+              const childId = await ensurePrReviewChild({ identity, api: childApi });
+              const wake = await scopedReviewClient.wakeup(orchestratorId,
+                `Bootstrap the one addressed native ${inspection.stage} PR card on child ${childId}.`, childId,
+                { source: "automation", triggerDetail: "system", idempotencyKey: `${prReviewChildKey(identity)}:bootstrap` });
+              if (!wake.ok || (wake.data as { status?: string } | undefined)?.status === "skipped") {
+                await log(`[ORCHESTRATOR] Native PR child ${childId} awaits scoped bootstrap admission (${wake.status}): ${wake.text}`);
+              }
+              continue;
+            }
+            case "bootstrap": {
+              const runs = asArray<Record<string, unknown>>(await childApi.get(`/issues/${encodeURIComponent(inspection.childId)}/runs`));
+              if (runs.some((run) => run["agentId"] === orchestratorId &&
+                  ["failed", "cancelled", "timed_out"].includes(String(run["status"])))) {
+                await log(`[ORCHESTRATOR] Holding failed PR child bootstrap ${inspection.childId} for typed native recovery.`);
+                continue;
+              }
+              if (!runs.some((run) => run["agentId"] === orchestratorId &&
+                  ["queued", "running", "scheduled"].includes(String(run["status"])))) {
+                const wake = await scopedReviewClient.wakeup(orchestratorId,
+                  `Resume the exact child-scoped PR card bootstrap ${inspection.childId}.`, inspection.childId,
+                  { source: "automation", triggerDetail: "system",
+                    idempotencyKey: `${prReviewChildKey(inspection.identity)}:bootstrap` });
+                if (!wake.ok) await log(`[ORCHESTRATOR] PR child bootstrap admission held (${wake.status}): ${wake.text}`);
+              }
+              continue;
+            }
+            case "activate": {
+              const action = await activatePrReviewChild({ identity: inspection.identity, childId: inspection.childId, api: childApi });
+              await log(`[ORCHESTRATOR] Native PR child ${inspection.childId}: ${action} (${inspection.stage}).`);
+              continue;
+            }
+            case "waiting":
+              await log(`[ORCHESTRATOR] Waiting for the addressed ${inspection.stage} PR child verdict on ${inspection.childId}.`);
+              continue;
+            case "rejected":
+            case "approved":
+              reviewInteractions.push(...inspection.projections.map((card) => ({
+                id: card.id, kind: card.kind ?? "request_item_verdicts", status: "answered",
+                idempotencyKey: card.idempotencyKey ?? "", addresseeAgentId: card.addresseeAgentId ?? null,
+                result: card.result,
+              })));
+              break;
+          }
+        } catch (error) {
+          await log(`[ORCHESTRATOR] Holding Jules PR child lane for [${reviewTask.identifier || reviewTask.id}]: ${String(error)}`);
+          continue;
+        }
+      }
     }
 
     // The native card is the durable review lock. Paperclip may project the

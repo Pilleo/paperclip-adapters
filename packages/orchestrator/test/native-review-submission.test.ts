@@ -82,6 +82,18 @@ describe("native review submission protocol", () => {
     });
   });
 
+  it("binds a Gemini strong PR child assignment to its immutable head", () => {
+    const headSha = "b".repeat(40);
+    const prUrl = "https://github.com/Pilleo/fixture/pull/7";
+    const result = resolveNativeReviewAssignment([card({
+      idempotencyKey: `pr-review:v13:child:${prUrl}:${headSha}:strong`,
+      addresseeAgentId: "gemini",
+      payload: { items: [{ id: "pull_request" }], detailsMarkdown: `**PR:** ${prUrl}` },
+    })], "gemini");
+    expect(result).toEqual({ ok: true, assignment: { kind: "pull_request",
+      interactionId: "card-1", itemId: "pull_request", prUrl, headSha } });
+  });
+
   it("exposes an immutable pull-request assignment without treating it as a plan", () => {
     const result = resolveNativeReviewAssignment([card({
       idempotencyKey: "pr-review:v13:issue-1:https://github.com/acme/repo/pull/7:0123456789abcdef0123456789abcdef01234567:luna",

@@ -62,12 +62,15 @@ export async function runJulesExecutorRecoveryContract({ config, report, db, sch
     assert.ok(providerRequests.every((event) => event.method === "GET"), "never repeat a provider mutation");
     assert.equal((await db.select().from(schema.issueThreadInteractions)
       .where(eq(schema.issueThreadInteractions.companyId, config.companyId))).length, 2, "no duplicate native cards");
-    const { runPrChildReviewContract } = await import("./native-pr-child-review-contract.mjs");
-    await runPrChildReviewContract({ config, report, db, schema, eq, wake, settle, runRows, issueRow });
+    if (!config.prMigrationProbe) {
+      const { runPrChildReviewContract } = await import("./native-pr-child-review-contract.mjs");
+      await runPrChildReviewContract({ config, report, db, schema, eq, wake, settle, runRows, issueRow });
+    }
     report.observations.push({ label: "real_jules_executor_restart", runIds: resumed.map((row) => row.id),
       sessionId: config.sessionId, cardId: card.id, productId: products[0].id,
       providerReads: providerRequests.length, providerWrites: 0 });
-    report.outcome = "actual_jules_executor_restart_pr_registered_and_child_scoped_pr_review_resolved";
+    report.outcome = config.prMigrationProbe ? "actual_jules_executor_restart_pr_registered_for_child_creation_probe"
+      : "actual_jules_executor_restart_pr_registered_and_child_scoped_pr_review_resolved";
   } finally {
     if (oldStore === undefined) delete process.env.PAPERCLIP_JULES_SESSION_STORE_DIR;
     else process.env.PAPERCLIP_JULES_SESSION_STORE_DIR = oldStore;

@@ -19,7 +19,7 @@ class ObservationTimeout extends Error {
 await mkdir(output, { recursive: true });
 if (!scenario) {
   const results = [];
-  const selectedScenarios = process.argv.includes("--stable-child") ? ["stable_child", "stable_child_reject", "stable_child_ladder", "stable_child_executor", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_paused"] : scenarios;
+  const selectedScenarios = process.argv.includes("--stable-child") ? ["stable_child", "stable_child_reject", "stable_child_ladder", "stable_child_executor", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_paused", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed"] : scenarios;
   for (const name of selectedScenarios) {
     const code = await new Promise((resolve, reject) => {
       const child = spawn(process.execPath, ["--import", require.resolve("tsx"), fileURLToPath(import.meta.url), `--scenario=${name}`], {
@@ -40,7 +40,7 @@ if (!scenario) {
   if (results.some((result) => result.result !== "observed")) process.exitCode = 1;
   else if (process.argv.includes("--require-safe") && !integrationAllowed) process.exitCode = 2;
 } else {
-  assert.ok([...scenarios, "stable_child", "stable_child_ladder", "stable_child_reject", "stable_child_executor", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_paused", "stable_child_gemini", "stable_child_gemini_retry"].includes(scenario), `Unknown scenario ${scenario}`);
+  assert.ok([...scenarios, "stable_child", "stable_child_ladder", "stable_child_reject", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_paused", "stable_child_gemini", "stable_child_gemini_retry"].includes(scenario), `Unknown scenario ${scenario}`);
   await runScenario();
 }
 
@@ -103,8 +103,15 @@ async function runScenario() {
       "maintenanceIssueId", "blockerIssueId", "documentId", "revisionId", "sessionId"].map((key) => [key, randomUUID()]));
     config.stageId = nativePlanReviewStageId(config.issueId, config.revisionId, "luna");
     config.checkpointPath = path.join(home, "child-review-checkpoint.json");
-    config.childReviewLadder = ["stable_child_ladder", "stable_child_executor", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_paused"].includes(scenario);
-    config.realJulesExecutor = scenario === "stable_child_executor";
+    config.childReviewLadder = ["stable_child_ladder", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_paused"].includes(scenario);
+    config.realJulesExecutor = ["stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini"].includes(scenario);
+    config.prMigrationProbe = ["stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini"].includes(scenario);
+    config.parentCardWithdrawalProbe = scenario === "stable_child_executor_pr_withdraw";
+    config.prStrongReject = scenario === "stable_child_executor_pr_reject";
+    config.prStrongPausedAfterCard = scenario === "stable_child_executor_pr_paused";
+    config.prStrongGemini = scenario === "stable_child_executor_pr_gemini";
+    config.prStrongFirstTurnFailure = scenario === "stable_child_executor_pr_failed";
+    config.prStrongRetryMarker = path.join(home, "strong-reviewer-first-turn-failed");
     config.julesParentExecutor = scenario === "stable_child_jules_v4_executor" || scenario === "stable_child_jules_v4_paused";
     config.pauseLunaInitially = scenario === "stable_child_jules_v4_paused";
     config.julesOwnedBootstrap = scenario === "stable_child_jules_v4" || config.julesParentExecutor;
@@ -347,6 +354,168 @@ async function runScenario() {
       if (config.realJulesExecutor) {
         const { runJulesExecutorRecoveryContract } = await import("./native-jules-executor-contract.mjs");
         await runJulesExecutorRecoveryContract({ config, report, db, schema, eq, wake, settle, runRows, issueRow });
+        if (config.prMigrationProbe) {
+          await db.update(issues).set({ status: "in_review", assigneeAgentId: null }).where(eq(issues.id, config.issueId));
+          if (config.parentCardWithdrawalProbe) {
+            const { buildReviewInteractionRequest } = await import("../../src/core/review-interaction-state.ts");
+            const request = buildReviewInteractionRequest({ issueId: config.issueId, prUrl: config.prUrl,
+              headSha: config.prHeadSha, stage: "luna", reviewerAgentId: config.lunaId });
+            const sourceRun = (await runRows()).find((run) => run.agentId === config.julesId &&
+              run.contextSnapshot?.issueId === config.issueId && run.status === "succeeded");
+            assert.ok(sourceRun);
+            const [pending] = await db.insert(schema.issueThreadInteractions).values({
+              companyId: config.companyId, issueId: config.issueId, kind: request.kind,
+              status: "pending", continuationPolicy: request.continuationPolicy,
+              idempotencyKey: request.idempotencyKey, title: request.title,
+              sourceRunId: sourceRun.id, createdByAgentId: null,
+              addresseeAgentId: config.lunaId, payload: request.payload,
+            }).returning();
+            assert.equal(pending.status, "pending");
+            const reviewerRuns = (await runRows()).filter((run) => run.agentId === config.lunaId &&
+              run.contextSnapshot?.issueId === config.issueId && ["queued", "running", "scheduled"].includes(run.status));
+            assert.equal(reviewerRuns.length, 0);
+            const withdrawn = await fetch(`${process.env.PAPERCLIP_API_URL}/__contract/board-api/issues/${config.issueId}/interactions/${pending.id}/withdraw`, {
+              method: "POST", headers: { "content-type": "application/json" },
+              body: JSON.stringify({ reason: `Superseded by a child-scoped native PR reviewer lane for immutable head ${config.prHeadSha}; no addressed reviewer run is active.` }),
+              signal: AbortSignal.timeout(20_000),
+            });
+            assert.equal(withdrawn.status, 200, "only a board-authorized typed withdrawal can retire a board-created parent card");
+            const [retired] = await db.select().from(schema.issueThreadInteractions)
+              .where(eq(schema.issueThreadInteractions.id, pending.id));
+            assert.equal(retired.status, "cancelled", "pending native parent PR card must be withdrawn through the typed host route");
+            assert.equal(retired.sourceRunId, pending.sourceRunId);
+            assert.equal((await runRows()).filter((run) => run.agentId === config.lunaId &&
+              run.contextSnapshot?.issueId === config.issueId && run.startedAt).length, 0);
+            record("PR_PARENT_CARD_RETIRED", { interactionId: retired.id, sourceRunId: retired.sourceRunId });
+          }
+          await wake(config.orchestratorId, config.maintenanceIssueId, { contractPrMigrationProbe: true });
+          await settle();
+          const children = await db.select().from(issues).where(eq(issues.parentId, config.issueId));
+          assert.equal(children.filter((child) => child.createdByAgentId === config.orchestratorId).length, 1,
+            "authenticated orchestrator maintenance run must create one child under unassigned PR parent");
+          const child = children.find((candidate) => candidate.createdByAgentId === config.orchestratorId);
+          assert.ok(child);
+          await wake(config.orchestratorId, child.id, { contractPrMigrationBootstrap: true });
+          await settle();
+          assert.ok(report.events.some((event) => event.name === "PR_MIGRATION_PRODUCTION_BOOTSTRAP" &&
+            event.data.childId === child.id && event.data.exitCode === 0),
+          "the actual orchestrator adapter must bootstrap the child-scoped PR card");
+          const [card] = await db.select().from(schema.issueThreadInteractions)
+            .where(eq(schema.issueThreadInteractions.issueId, child.id));
+          assert.ok(card, "the child-scoped orchestrator run must create its own addressed PR verdict card");
+          assert.equal(card.status, "pending");
+          assert.equal(card.addresseeAgentId, config.lunaId);
+          assert.equal(card.payload.items[0].id, "pull_request");
+          await wake(config.orchestratorId, config.maintenanceIssueId, { contractPrMigrationActivateChildId: child.id });
+          await settle();
+          const [answered] = await db.select().from(schema.issueThreadInteractions)
+            .where(eq(schema.issueThreadInteractions.id, card.id));
+          assert.equal(answered.status, "answered", "Luna must resolve the child-owned PR card with a typed verdict");
+          assert.equal(answered.result.items[0].verdict, "approve");
+          const [reviewerRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, answered.resolvedByRunId));
+          assert.equal(reviewerRun.agentId, config.lunaId);
+          assert.equal(reviewerRun.contextSnapshot.issueId, child.id);
+          assert.equal(reviewerRun.status, "succeeded");
+          assert.equal((await issueRow()).assigneeAgentId, null);
+          assert.equal((await issueRow()).status, "in_review");
+          await wake(config.orchestratorId, config.maintenanceIssueId, { contractPrMigrationProbe: "terra" });
+          await settle();
+          const prChildren = (await db.select().from(issues).where(eq(issues.parentId, config.issueId)))
+            .filter((candidate) => candidate.createdByAgentId === config.orchestratorId);
+          assert.equal(prChildren.length, 2, "one Luna approval must create one distinct strong-review child for the same head");
+          const strongChild = prChildren.find((candidate) => candidate.id !== child.id);
+          assert.ok(strongChild && strongChild.status === "backlog");
+          await wake(config.orchestratorId, strongChild.id, { contractPrMigrationBootstrap: true });
+          await settle();
+          const [strongCard] = await db.select().from(schema.issueThreadInteractions)
+            .where(eq(schema.issueThreadInteractions.issueId, strongChild.id));
+          assert.ok(strongCard && (strongCard.status === "pending" || (config.prStrongGemini && strongCard.status === "answered")));
+          assert.equal(strongCard.addresseeAgentId, config.terraId);
+          if (config.prStrongPausedAfterCard) {
+            await db.update(agents).set({ status: "paused" }).where(eq(agents.id, config.terraId));
+            await wake(config.orchestratorId, config.maintenanceIssueId, { contractPrMigrationActivateChildId: strongChild.id });
+            await settle();
+            const [held] = await db.select().from(issues).where(eq(issues.id, strongChild.id));
+            assert.equal(held.status, "backlog");
+            assert.equal(held.assigneeAgentId, config.orchestratorId);
+            const [heldCard] = await db.select().from(schema.issueThreadInteractions)
+              .where(eq(schema.issueThreadInteractions.id, strongCard.id));
+            assert.equal(heldCard.status, "pending");
+            assert.equal((await runRows()).filter((run) => run.agentId === config.terraId &&
+              run.contextSnapshot?.issueId === strongChild.id && run.startedAt).length, 0,
+            "no model review run may start while the addressed strong reviewer is paused");
+            await db.update(agents).set({ status: "idle" }).where(eq(agents.id, config.terraId));
+            record("PR_STRONG_REVIEWER_RESUMED", { childId: strongChild.id });
+          }
+          if (strongCard.status === "pending") {
+            if (config.prStrongGemini) assert.equal((await runRows()).find((run) => run.agentId === config.terraId &&
+              run.contextSnapshot?.issueId === strongChild.id && run.startedAt &&
+              ["failed", "cancelled", "timed_out"].includes(run.status)), undefined,
+            "a terminal Gemini reviewer run requires typed recovery, never another wake");
+            await wake(config.orchestratorId, config.maintenanceIssueId, { contractPrMigrationActivateChildId: strongChild.id });
+            if (config.prStrongFirstTurnFailure) await waitEvent("PR_STRONG_REVIEWER_FIRST_INIT_FAILED", 0, 30_000);
+            if (config.prStrongGemini) await waitEvent("PR_MIGRATION_VERDICT_WRITTEN", 0, 240_000);
+            await settle();
+          }
+          if (config.prStrongFirstTurnFailure) {
+            const [stillPending] = await db.select().from(schema.issueThreadInteractions)
+              .where(eq(schema.issueThreadInteractions.id, strongCard.id));
+            assert.equal(stillPending.status, "pending", "failed reviewer did not submit a typed verdict");
+            const failed = (await runRows()).find((run) => run.agentId === config.terraId &&
+              run.contextSnapshot?.issueId === strongChild.id && run.startedAt && run.status === "failed");
+            assert.ok(failed, "one addressed reviewer failed before its model turn");
+            const [action] = await db.select().from(schema.issueRecoveryActions)
+              .where(eq(schema.issueRecoveryActions.sourceIssueId, strongChild.id));
+            assert.ok(action, "host must record the original failed reviewer run as a typed recovery action");
+            const response = await fetch(`${process.env.PAPERCLIP_API_URL}/__contract/board-api/issues/${strongChild.id}/recovery-actions/resolve`, {
+              method: "POST", headers: { "content-type": "application/json" },
+              body: JSON.stringify({ actionId: action.id, outcome: "restored", sourceIssueStatus: "todo",
+                executionReconciliation: { runId: failed.id, providerStopped: true, actionOutcome: "not_performed",
+                  outcomeEvidence: "The first strong reviewer fixture exited before any model turn or typed verdict; the process stopped and the same PR card remains pending." } }),
+              signal: AbortSignal.timeout(20_000),
+            });
+            assert.equal(response.status, 200, "board-authorized typed recovery must accept verified pre-turn failure");
+            await deliverReconciledExecutions(db, (agentId, opts) => heartbeat.wakeup(agentId, opts));
+            await waitEvent("PR_MIGRATION_VERDICT_WRITTEN", 0, 60_000);
+            await settle();
+            const reviewerRuns = (await runRows()).filter((run) => run.agentId === config.terraId &&
+              run.contextSnapshot?.issueId === strongChild.id && run.startedAt);
+            assert.equal(reviewerRuns.filter((run) => run.status === "failed").length, 1);
+            assert.equal(reviewerRuns.filter((run) => run.status === "succeeded").length, 1);
+            assert.equal((await db.select().from(schema.issueThreadInteractions)
+              .where(eq(schema.issueThreadInteractions.issueId, strongChild.id))).length, 1,
+            "recovery must reuse the original pending PR card");
+            record("PR_STRONG_REVIEWER_TYPED_RECOVERY", { cardId: strongCard.id,
+              failedRunId: failed.id, restoredRunId: reviewerRuns.find((run) => run.status === "succeeded")?.id });
+          }
+          const [strongVerdict] = await db.select().from(schema.issueThreadInteractions)
+            .where(eq(schema.issueThreadInteractions.id, strongCard.id));
+          assert.equal(strongVerdict.status, "answered", "strong reviewer must issue its own typed PR verdict");
+          if (config.prStrongGemini) assert.ok(["approve", "reject"].includes(strongVerdict.result.items[0].verdict));
+          else assert.equal(strongVerdict.result.items[0].verdict, config.prStrongReject ? "reject" : "approve");
+          if (config.prStrongReject || strongVerdict.result.items[0].verdict === "reject") assert.ok(strongVerdict.result.items[0].reason);
+          const [strongRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, strongVerdict.resolvedByRunId));
+          assert.equal(strongRun.agentId, config.terraId);
+          assert.equal(strongRun.contextSnapshot.issueId, strongChild.id);
+          assert.equal(strongRun.status, "succeeded");
+          if (config.prStrongGemini) {
+            const model = report.events.find((event) => event.name === "PR_MIGRATION_GEMINI_MODEL_RESULT" &&
+              event.data.childId === strongChild.id);
+            assert.equal(model?.data.exitCode, 0, "actual Gemini ACP PR reviewer must complete its typed native verdict");
+          }
+          assert.notEqual(card.id, strongCard.id);
+          assert.equal((await issueRow()).status, "in_review");
+          assert.equal((await issueRow()).assigneeAgentId, null);
+          await wake(config.orchestratorId, config.maintenanceIssueId, { contractPrMigrationInspect: true });
+          await settle();
+          const expectedInspection = config.prStrongReject || strongVerdict.result.items[0].verdict === "reject" ? "rejected" : "approved";
+          assert.ok(report.events.some((event) => event.name === "PR_MIGRATION_LADDER_INSPECTED" &&
+            event.data.kind === expectedInspection && event.data.projections === 2),
+          "production PR child inspection must attribute the strong reviewer verdict before any merge gate");
+          report.outcome = config.prStrongGemini ? `gemini_native_strong_pr_${strongVerdict.result.items[0].verdict}`
+            : config.prStrongReject ? "orchestrator_child_owned_strong_rejection_without_merge"
+            : "orchestrator_child_owned_luna_then_strong_verdicts_on_unassigned_parent";
+        }
       }
     } else {
     await wake(config.julesId, config.issueId);
