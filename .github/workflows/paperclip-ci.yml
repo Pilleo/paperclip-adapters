@@ -77,6 +77,8 @@ jobs:
             printf '%s\n' '[{"number":991,"title":"canary","state":"OPEN","headRefName":"canary","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","baseRefName":"main","mergedAt":null,"url":"https://github.com/pilleo/paperclip-adapters/pull/991","files":["canary.txt"]}]'
           elif [ "$#" -eq 7 ] && [ "$1" = "pr" ] && [ "$2" = "checks" ] && [ "$3" = "991" ] && [ "$4" = "--repo" ] && [ "$5" = "pilleo/paperclip-adapters" ] && [ "$6" = "--json" ] && [ "$7" = "state,bucket,name" ]; then
             printf '%s\n' '[{"state":"SUCCESS","bucket":"pass","name":"canary"}]'
+          elif [ "$#" -eq 5 ] && [ "$1" = "pr" ] && [ "$2" = "view" ] && [ "$3" = "https://github.com/pilleo/paperclip-adapters/pull/991" ] && [ "$4" = "--json" ] && [ "$5" = "number,title,state,headRefName,headRefOid,baseRefName,mergedAt,url,files" ]; then
+            printf '%s\n' '{"number":991,"title":"canary","state":"OPEN","headRefName":"canary","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","baseRefName":"main","mergedAt":null,"url":"https://github.com/pilleo/paperclip-adapters/pull/991","files":["canary.txt"]}'
           else
             exit 1
           fi
@@ -89,7 +91,7 @@ jobs:
           # Pin the control-plane version used by the adapter contract test.
           # Floating latest made upstream releases silently change the canary
           # semantics before this repository had deliberately adopted them.
-          PATH="${RUNNER_TEMP}/paperclip-e2e-bin:${PATH}" nohup setsid paperclipai onboard --config "$PAPERCLIP_HOME/config.json" --data-dir "$PAPERCLIP_HOME" --bind loopback --yes --no-install-service >"${RUNNER_TEMP}/paperclip-canary.log" 2>&1 </dev/null &
+          PAPERCLIP_GH_PATH="${RUNNER_TEMP}/paperclip-e2e-bin/gh" PATH="${RUNNER_TEMP}/paperclip-e2e-bin:${PATH}" nohup setsid paperclipai onboard --config "$PAPERCLIP_HOME/config.json" --data-dir "$PAPERCLIP_HOME" --bind loopback --yes --no-install-service >"${RUNNER_TEMP}/paperclip-canary.log" 2>&1 </dev/null &
           echo $! >"${RUNNER_TEMP}/paperclip-canary.pid"
           for attempt in {1..120}; do
             if curl --fail --silent http://127.0.0.1:3100/api/health >/dev/null; then

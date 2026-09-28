@@ -1,6 +1,10 @@
 import path from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { projectRecoveryCanaryState } from "../src/core/recovery-canary-state.js";
-import { buildRecoveryCanaryWorkspace } from "../src/core/recovery-canary-workspace.js";
+import { buildRecoveryCanaryWorkspace, createRecoveryCanaryCheckout } from "../src/core/recovery-canary-workspace.js";
 import { EXPLICIT_PROJECT_WAKE_REASON_PREFIX } from "../src/core/heartbeat-project-scope.js";
 
 /**
@@ -14,6 +18,7 @@ import { EXPLICIT_PROJECT_WAKE_REASON_PREFIX } from "../src/core/heartbeat-proje
  */
 const apiUrl = process.env["PAPERCLIP_TEST_API_URL"]?.replace(/\/+$/, "");
 const workspacePath = path.resolve(process.env["WORKSPACE_PATH"] || process.cwd());
+const execFileAsync = promisify(execFile);
 
 type Json = Record<string, any> | any[] | null;
 
@@ -124,6 +129,7 @@ async function main(): Promise<void> {
   }
 
   let companyId = "";
+  let canaryCheckoutHome: string | undefined;
   let cleanupError: unknown;
   let operationError: unknown;
   try {
@@ -136,9 +142,15 @@ async function main(): Promise<void> {
       description: "Disposable workspace for the Jules recovery canary",
     }), "project");
     if (!project.id) throw new Error("Paperclip did not return a canary project id");
-    const workspace = buildRecoveryCanaryWorkspace(workspacePath, "master");
+    const { stdout: currentRemote } = await execFileAsync("git", ["remote", "get-url", "origin"], { cwd: workspacePath, timeout: 8_000 });
+    if (!/^(?:git@github\.com:|ssh:\/\/git@github\.com\/|https:\/\/github\.com\/)Pilleo\/paperclip-adapters(?:\.git)?$/i.test(currentRemote.trim())) {
+      throw new Error(`Recovery canary requires the paperclip-adapters origin, not ${currentRemote.trim()}`);
+    }
+    canaryCheckoutHome = await mkdtemp(path.join(tmpdir(), "paperclip-recovery-canary-"));
+    const checkout = await createRecoveryCanaryCheckout(canaryCheckoutHome, "https://github.com/pilleo/paperclip-adapters.git", "master");
+    const workspace = buildRecoveryCanaryWorkspace(checkout, "master");
     const projectWorkspace = requireObject(await request(`/api/projects/${project.id}/workspaces`, "POST", workspace), "project workspace");
-    if (!projectWorkspace.id || projectWorkspace.cwd !== workspacePath || projectWorkspace.isPrimary !== true ||
+    if (!projectWorkspace.id || projectWorkspace.cwd !== checkout || projectWorkspace.isPrimary !== true ||
         projectWorkspace.repoUrl !== workspace.repoUrl || projectWorkspace.defaultRef !== workspace.defaultRef) {
       throw new Error(`Paperclip did not persist the primary canary workspace: ${JSON.stringify(projectWorkspace)}`);
     }
@@ -249,7 +261,8 @@ async function main(): Promise<void> {
     const prUrl = "https://github.com/pilleo/paperclip-adapters/pull/991";
     await request(`/api/issues/${issueId}/work-products`, "POST", {
       type: "pull_request", provider: "github", title: "Canary Jules PR", url: prUrl,
-      externalId: prUrl, status: "ready_for_review", isPrimary: true, metadata: { source: "jules" },
+      externalId: prUrl, status: "ready_for_review", isPrimary: true,
+      metadata: { source: "jules", headSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
     });
     // Reproduce MAZ-1519: a normal implementation dispatch installed
     // Paperclip's Luna/Terra execution policy before Jules registered its PR.
@@ -506,6 +519,13 @@ async function main(): Promise<void> {
         await request(`/api/companies/${companyId}`, "DELETE");
       } catch (error) {
         cleanupError = error;
+      }
+    }
+    if (canaryCheckoutHome) {
+      try {
+        await rm(canaryCheckoutHome, { recursive: true, force: true });
+      } catch (error) {
+        cleanupError ??= error;
       }
     }
     if (cleanupError && !operationError) {

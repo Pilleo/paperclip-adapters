@@ -42,9 +42,15 @@ async function runTest() {
     },
     {
       name: "Exact match: pr checks",
-      args: ["pr", "checks", "991", "--json", "state,bucket,name"],
+      args: ["pr", "checks", "991", "--repo", "pilleo/paperclip-adapters", "--json", "state,bucket,name"],
       shouldSucceed: true,
       expectedStdout: '[{"state":"SUCCESS","bucket":"pass","name":"canary"}]\n'
+    },
+    {
+      name: "Exact match: canonical PR head view",
+      args: ["pr", "view", "https://github.com/pilleo/paperclip-adapters/pull/991", "--json", "number,title,state,headRefName,headRefOid,baseRefName,mergedAt,url,files"],
+      shouldSucceed: true,
+      expectedStdout: '{"number":991,"title":"canary","state":"OPEN","headRefName":"canary","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","baseRefName":"main","mergedAt":null,"url":"https://github.com/pilleo/paperclip-adapters/pull/991","files":["canary.txt"]}\n'
     },
     {
       name: "Fail: extra argument",

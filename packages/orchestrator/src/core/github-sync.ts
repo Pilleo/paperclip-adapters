@@ -71,8 +71,12 @@ export function registeredPullRequestFromIssue(issue: ParsedIssueMetadata): GitH
       const producer = metadata && typeof metadata === "object" && !Array.isArray(metadata)
         ? (metadata as Record<string, unknown>)["producer"]
         : undefined;
+      const headSha = metadata && typeof metadata === "object" && !Array.isArray(metadata)
+        ? (metadata as Record<string, unknown>)["headSha"]
+        : undefined;
       return {
         candidate,
+        headSha: typeof headSha === "string" && /^[0-9a-f]{40}$/i.test(headSha) ? headSha : undefined,
         // A Jules session is the authoritative producer for this adapter's
         // PR handoff. Prefer it over imported/demo placeholders, then use the
         // board's primary marker as a deterministic tie-breaker.
@@ -82,7 +86,7 @@ export function registeredPullRequestFromIssue(issue: ParsedIssueMetadata): GitH
       };
     })
     .sort((left, right) => right.score - left.score);
-  for (const { candidate } of candidates) {
+  for (const { candidate, headSha } of candidates) {
     const type = candidate["type"] ?? candidate["kind"];
     const url = candidate["url"];
     if ((type !== "pull_request" && type !== "pull-request") || typeof url !== "string") continue;
@@ -93,6 +97,7 @@ export function registeredPullRequestFromIssue(issue: ParsedIssueMetadata): GitH
       title: typeof candidate["title"] === "string" ? candidate["title"] : issue.title,
       state: "OPEN",
       headRefName: "",
+      ...(headSha ? { headRefOid: headSha } : {}),
       baseRefName: "",
       mergedAt: null,
       url,

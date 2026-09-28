@@ -30,6 +30,24 @@ describe("GitHub PR Sync Module", () => {
     expect(registeredPullRequestFromIssue(issue)?.url).toBe("https://github.com/Pilleo/paperclip-adapters/pull/5");
   });
 
+  it("retains a verified immutable PR head from the registered Jules work product when gh discovery is unavailable", () => {
+    const issue = extractIssueMetadata({
+      id: "issue-canary", title: "Canary", status: "in_review",
+      workProducts: [{ type: "pull_request", url: "https://github.com/pilleo/paperclip-adapters/pull/991",
+        status: "ready_for_review", metadata: { source: "jules", headSha: "a".repeat(40) } }],
+    });
+    expect(registeredPullRequestFromIssue(issue)?.headRefOid).toBe("a".repeat(40));
+  });
+
+  it("does not promote a malformed work-product head to immutable review evidence", () => {
+    const issue = extractIssueMetadata({
+      id: "issue-invalid-head", title: "Canary", status: "in_review",
+      workProducts: [{ type: "pull_request", url: "https://github.com/pilleo/paperclip-adapters/pull/991",
+        metadata: { source: "jules", headSha: "unverified-branch-name" } }],
+    });
+    expect(registeredPullRequestFromIssue(issue)?.headRefOid).toBeUndefined();
+  });
+
   it("uses an explicit repository when building gh discovery arguments", () => {
     expect(buildGitHubPullRequestListArgs("Pilleo/paperclip-adapters", 50)).toEqual([
       "pr", "list", "--repo", "Pilleo/paperclip-adapters", "--state", "all", "--limit", "50",
