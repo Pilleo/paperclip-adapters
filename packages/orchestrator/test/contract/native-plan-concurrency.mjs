@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { nativePlanReviewStageId } from "@pilleo/paperclip-adapter-common";
 
 const require = createRequire(import.meta.url);
@@ -118,6 +118,10 @@ async function runScenario() {
     config.prStrongFirstTurnFailure = scenario === "stable_child_executor_pr_failed";
     config.prStrongRetryMarker = path.join(home, "strong-reviewer-first-turn-failed");
     config.chainBlockedProbe = scenario === "stable_child_jules_v4_chain_blocked";
+    if (config.chainBlockedProbe) {
+      config.projectId = randomUUID();
+      config.strongReviewerId = randomUUID();
+    }
     config.createProviderSession = scenario === "stable_child_jules_v4_create" || config.chainBlockedProbe || scenario === "stable_child_jules_v4_create_lost";
     config.dropProviderCreateResponse = scenario === "stable_child_jules_v4_create_lost";
     config.julesParentExecutor = config.createProviderSession || scenario === "stable_child_jules_v4_executor" || scenario === "stable_child_jules_v4_paused";
@@ -144,6 +148,8 @@ async function runScenario() {
         config.prUrl = pr.url;
         config.prHeadSha = pr.headSha;
         config.githubPath = `${home}:${process.env.PATH}`;
+        config.chainWorkspacePath = chainGitHub.repository;
+        config.githubExecutablePath = chainGitHub.ghPath;
         report.observations.push({ label: "real_git_open_pr", url: pr.url, headSha: pr.headSha, baseSha: pr.baseSha });
       }
     }
@@ -217,7 +223,7 @@ async function runScenario() {
     if (config.geminiFirstInitFailure || config.parentCardWithdrawalProbe || config.prStrongFirstTurnFailure || config.prBoardProbe || config.dropProviderCreateResponse) {
       app.use("/__contract/board-api", actorMiddleware(db, { deploymentMode: "local_trusted" }), issueRoutes(db, {}), agentRoutes(db, {}), activityRoutes(db));
     }
-    app.use(actorMiddleware(db, { deploymentMode: "authenticated" }));
+    app.use(actorMiddleware(db, { deploymentMode: config.chainBlockedProbe ? "local_trusted" : "authenticated" }));
     app.get("/__contract/actor", (req, res) => res.json({ type: req.actor.type }));
     app.post("/__contract/events", async (req, res, next) => {
       try {
@@ -283,13 +289,30 @@ async function runScenario() {
       { id: config.managerId, companyId: config.companyId, name: "Manager", role: "ceo", status: "paused", adapterType: "process", adapterConfig: { command: "true" } },
       { id: config.orchestratorId, companyId: config.companyId, name: "Reconciler", role: "general", reportsTo: config.managerId,
         permissions: { canAssignTasks: true, canCreateAgents: true, canCreateSkills: true }, status: "idle", adapterType: "process", adapterConfig, runtimeConfig },
-      ...[config.julesId, config.lunaId, config.terraId].map((id) => ({ id, companyId: config.companyId, name: id === config.julesId ? "Jules fixture" : id === config.lunaId ? "Luna fixture" : "Terra fixture",
-         reportsTo: config.orchestratorId, status: config.pauseLunaInitially && id === config.lunaId ? "paused" : "idle",
-         adapterType: "process", adapterConfig, runtimeConfig })),
+      ...[config.julesId, config.lunaId, config.terraId, ...(config.chainBlockedProbe ? [config.strongReviewerId] : [])].map((id) => ({ id, companyId: config.companyId,
+          name: id === config.julesId ? "Jules fixture" : id === config.lunaId ? "Luna fixture" : id === config.terraId ? "Terra fixture" : "Antigravity strong reviewer fixture",
+          reportsTo: config.orchestratorId, status: config.pauseLunaInitially && id === config.lunaId ? "paused" : "idle",
+          ...(config.chainBlockedProbe ? { metadata: { managedBy: "paperclip-orchestrator",
+            workerKey: id === config.julesId ? "jules" : id === config.lunaId ? "luna_reviewer" : id === config.terraId ? "terra_reviewer" : "antigravity",
+            ...(id === config.julesId ? {} : { structuredDecisionCapability: { version: 1,
+              transports: ["mcp_tool"], decisionKinds: ["plan_review", "pull_request_review"] } }) } } : {}),
+          adapterType: id === config.strongReviewerId ? "antigravity" : "process", adapterConfig, runtimeConfig })),
     ]);
+    if (config.chainBlockedProbe) {
+      const repoUrl = "https://github.com/paperclip-contract/fixture.git";
+      await db.insert(schema.projects).values({ id: config.projectId, companyId: config.companyId,
+        name: "Disposable A B C repository", status: "in_progress" });
+      await db.insert(schema.projectWorkspaces).values({ companyId: config.companyId, projectId: config.projectId,
+        name: "Shared clean Git checkout", sourceType: "local_path", cwd: chainGitHub.repository,
+        repoUrl, repoRef: "main", defaultRef: "main", isPrimary: true });
+      execFileSync("git", ["-C", chainGitHub.repository, "config",
+        `url.file://${chainGitHub.repository}.insteadOf`, repoUrl], { timeout: 8_000 });
+    }
     await db.insert(issues).values([
-      { id: config.issueId, companyId: config.companyId, identifier: "RACE-1", title: "Plan review", status: "in_progress", assigneeAgentId: config.julesId },
-      { id: config.maintenanceIssueId, companyId: config.companyId, identifier: "RACE-2", title: "Maintenance", status: "in_progress", assigneeAgentId: config.orchestratorId },
+      { id: config.issueId, companyId: config.companyId, identifier: "RACE-1", title: "Plan review", status: "in_progress", assigneeAgentId: config.julesId,
+        ...(config.chainBlockedProbe ? { projectId: config.projectId, description: "---\norchestrator_managed: true\n---\n\nImplement canary A." } : {}) },
+      { id: config.maintenanceIssueId, companyId: config.companyId, identifier: "RACE-2", title: "Maintenance", status: "in_progress", assigneeAgentId: config.orchestratorId,
+        ...(config.chainBlockedProbe ? { projectId: config.projectId } : {}) },
       { id: config.blockerIssueId, companyId: config.companyId, identifier: "RACE-3", title: "Other reviewer work", status: "in_progress", assigneeAgentId: config.lunaId },
     ].map((issue) => ({ ...issue, executionPolicy: { mode: "normal", stages: [], commentRequired: false } })));
     if (config.chainBlockedProbe) {
@@ -297,9 +320,11 @@ async function runScenario() {
       config.cIssueId = randomUUID();
       await db.insert(issues).values([
         { id: config.bIssueId, companyId: config.companyId, identifier: "RACE-4", title: "Canary B",
-          status: "todo", assigneeAgentId: config.julesId },
+          status: "todo", assigneeAgentId: config.julesId, projectId: config.projectId,
+          description: "---\norchestrator_managed: true\n---\n\nImplement canary B after A merges." },
         { id: config.cIssueId, companyId: config.companyId, identifier: "RACE-5", title: "Canary C",
-          status: "todo", assigneeAgentId: config.julesId },
+          status: "todo", assigneeAgentId: config.julesId, projectId: config.projectId,
+          description: "---\norchestrator_managed: true\n---\n\nImplement canary C after B merges." },
       ].map((issue) => ({ ...issue, executionPolicy: { mode: "normal", stages: [], commentRequired: false } })));
       await db.insert(schema.issueRelations).values([
         { companyId: config.companyId, issueId: config.issueId, relatedIssueId: config.bIssueId, type: "blocks" },
@@ -321,8 +346,11 @@ async function runScenario() {
     }
     const unauthenticated = await fetch(`${process.env.PAPERCLIP_API_URL}/api/issues/${config.issueId}`);
     const anonymousActor = await fetch(`${process.env.PAPERCLIP_API_URL}/__contract/actor`).then((response) => response.json());
-    assert.equal(anonymousActor.type, "none", "fixture must not fall back to the local board actor");
-    assert.ok([401, 403, 404].includes(unauthenticated.status), `existing fixture issue must deny or conceal anonymous access (${unauthenticated.status})`);
+    assert.equal(anonymousActor.type, config.chainBlockedProbe ? "board" : "none",
+      "only the real-project chain emulates Paperclip's local-trusted board actor");
+    if (config.chainBlockedProbe) assert.equal(unauthenticated.status, 200);
+    else assert.ok([401, 403, 404].includes(unauthenticated.status),
+      `existing fixture issue must deny or conceal anonymous access (${unauthenticated.status})`);
     report.anonymousAccess = { actorType: anonymousActor.type, issueStatus: unauthenticated.status };
     const invalidToken = await fetch(`${process.env.PAPERCLIP_API_URL}/api/issues/${config.issueId}`, {
       headers: { Authorization: "Bearer invalid-contract-token" },
@@ -361,6 +389,12 @@ async function runScenario() {
     }
     const handbacks = () => report.mutations.filter((mutation) => mutation.actorId === config.orchestratorId);
     if (config.chainBlockedProbe) {
+      const [project] = await db.select().from(schema.projects)
+        .where(eq(schema.projects.id, config.projectId));
+      const [workspace] = await db.select().from(schema.projectWorkspaces)
+        .where(eq(schema.projectWorkspaces.projectId, config.projectId));
+      assert.ok(project && workspace, "a shared real-project A B C gate needs one authoritative Paperclip project workspace");
+      assert.equal(workspace.cwd, chainGitHub.repository);
       await wake(config.julesId, config.bIssueId);
       await wake(config.julesId, config.cIssueId);
       await settle();
@@ -440,8 +474,124 @@ async function runScenario() {
             assert.deepEqual(relations.map((edge) => [edge.issueId, edge.relatedIssueId]), [
               [config.issueId, config.bIssueId], [config.bIssueId, config.cIssueId],
             ]);
+            await wake(config.orchestratorId, config.maintenanceIssueId, { contractChainReconcile: true });
+            await settle();
+            assert.equal((await issueRow()).status, "in_review",
+              "the actual orchestrator must promote A's registered Jules PR into native review before external merge");
+            const parentCards = await db.select().from(schema.issueThreadInteractions)
+              .where(eq(schema.issueThreadInteractions.issueId, config.issueId));
+            const pendingPr = parentCards.filter((card) => card.status === "pending" &&
+              card.kind === "request_item_verdicts" && card.createdByAgentId === null &&
+              card.addresseeAgentId === config.lunaId &&
+              card.idempotencyKey?.includes(`:${config.issueId}:${config.prUrl}:${config.prHeadSha}:luna`));
+            assert.ok(pendingPr.length <= 1, "more than one parent PR card has ambiguous native review authority");
+            const [registeredPr] = await db.select().from(schema.issueWorkProducts)
+              .where(eq(schema.issueWorkProducts.issueId, config.issueId));
+            assert.equal(registeredPr?.url, config.prUrl);
+            assert.equal(registeredPr?.metadata?.headSha, config.prHeadSha);
+            assert.equal(registeredPr?.isPrimary, true, "Jules PR must be the primary registered work product");
+            assert.equal(registeredPr?.status, "ready_for_review");
+            assert.ok(registeredPr?.metadata?.source === "jules" || registeredPr?.metadata?.producer === "paperclip-jules-adapter",
+              `registered Jules PR producer metadata is missing: ${JSON.stringify(registeredPr?.metadata)}`);
+            if (pendingPr.length === 1) {
+              assert.equal(parentCards.filter((card) => card.status === "pending").length, 1,
+                "an unrelated pending card must not be retired as the original PR card");
+              assert.equal((await runRows()).filter((run) => run.agentId === config.lunaId &&
+                run.contextSnapshot?.issueId === config.issueId && ["queued", "scheduled", "running"].includes(run.status)).length, 0,
+              "a live addressed reviewer run forbids parent card withdrawal");
+              const withdrawal = await fetch(`${process.env.PAPERCLIP_API_URL}/api/issues/${config.issueId}/interactions/${pendingPr[0].id}/withdraw`, {
+                method: "POST", headers: { "content-type": "application/json" },
+                body: JSON.stringify({ reason: `Original idle parent PR card for immutable head ${config.prHeadSha} is superseded by issue-scoped child review; no verdict is inferred.` }),
+                signal: AbortSignal.timeout(20_000),
+              });
+              assert.equal(withdrawal.status, 200, "the board must use native typed withdrawal, not a status PATCH");
+              const [retired] = await db.select().from(schema.issueThreadInteractions)
+                .where(eq(schema.issueThreadInteractions.id, pendingPr[0].id));
+              assert.equal(retired.status, "cancelled");
+              record("CHAIN_PARENT_CARD_TYPED_WITHDRAWAL", { cardId: retired.id, headSha: config.prHeadSha });
+            } else assert.equal(parentCards.filter((card) => card.status === "pending").length, 0,
+              "a child-scoped PR review must not bypass an unknown pending parent card");
+            for (let turn = 0; turn < 20; turn++) {
+              await wake(config.orchestratorId, config.maintenanceIssueId, { contractChainReconcile: true });
+              await settle();
+              const created = (await db.select().from(issues).where(eq(issues.parentId, config.issueId)))
+                .filter((child) => child.description?.startsWith("<!-- paperclip-pr-review-child:v1\n"));
+              if (created.length === 2) {
+                const childCards = await Promise.all(created.map((child) => db.select().from(schema.issueThreadInteractions)
+                  .where(eq(schema.issueThreadInteractions.issueId, child.id))));
+                if (childCards.every((cards) => cards.length === 1 && cards[0].status === "answered")) break;
+              }
+            }
+            const allReviewChildren = await db.select().from(issues).where(eq(issues.parentId, config.issueId));
+            record("CHAIN_REVIEW_CHILD_OBSERVATION", { children: allReviewChildren.map((child) => ({
+              id: child.id, status: child.status, createdByAgentId: child.createdByAgentId,
+              descriptor: child.description?.split("\n", 1)[0] ?? null,
+            })) });
+            const reviewChildren = allReviewChildren
+              .filter((child) => child.description?.startsWith("<!-- paperclip-pr-review-child:v1\n"));
+            const { parsePrReviewChildDescription } = await import("../../src/core/pr-review-child.ts");
+            const reviewIdentities = reviewChildren.map((child) => parsePrReviewChildDescription(child.description));
+            assert.equal(reviewChildren.length, 2,
+              "the actual orchestrator must create distinct Luna and strong native PR children before any merge");
+            assert.deepEqual(reviewIdentities.map((identity) => identity?.stage).sort(), ["luna", "strong"]);
+            assert.ok(reviewIdentities.every((identity) => identity?.headSha === config.prHeadSha &&
+              identity.prUrl === config.prUrl && identity.parentIssueId === config.issueId));
+            const reviewedEvidence = [];
+            for (const [index, child] of reviewChildren.entries()) {
+              const [card] = await db.select().from(schema.issueThreadInteractions)
+                .where(eq(schema.issueThreadInteractions.issueId, child.id));
+              assert.ok(card && card.status === "answered", `${reviewIdentities[index]?.stage} child requires an addressed typed verdict`);
+              assert.equal(card.result.items[0].verdict, "approve");
+              assert.equal(card.resolvedByAgentId, reviewIdentities[index].reviewerAgentId);
+              assert.ok(card.idempotencyKey.includes(`:${child.id}:${config.prUrl}:${config.prHeadSha}:${reviewIdentities[index].stage}`));
+              const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, card.sourceRunId));
+              const [reviewer] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, card.resolvedByRunId));
+              assert.equal(source?.agentId, config.orchestratorId);
+              assert.equal(source?.status, "succeeded");
+              assert.equal(source?.contextSnapshot?.issueId, child.id);
+              assert.equal(reviewer?.agentId, reviewIdentities[index].reviewerAgentId);
+              assert.equal(reviewer?.status, "succeeded");
+              assert.equal(reviewer?.contextSnapshot?.issueId, child.id);
+              reviewedEvidence.push({ stage: reviewIdentities[index].stage,
+                reviewerAgentId: reviewer.agentId, cardId: card.id,
+                sourceRunId: source.id, resolvedByRunId: reviewer.id, verdict: card.result.items[0].verdict });
+            }
+            const merged = await chainGitHub.externalMerge(config.prUrl, { headSha: config.prHeadSha,
+              reviews: reviewedEvidence.sort((left, right) => left.stage === "luna" ? -1 : right.stage === "luna" ? 1 : 0) });
+            record("CHAIN_A_EXTERNAL_MERGE", { mergeSha: merged.mergeSha, reviewedHeadSha: merged.headSha,
+              cardIds: reviewedEvidence.map((evidence) => evidence.cardId) });
+            const remotePr = JSON.parse(execFileSync(chainGitHub.ghPath,
+              ["pr", "view", config.prUrl, "--json", "state,headRefOid,mergeCommit"], { encoding: "utf8", timeout: 8_000 }));
+            assert.equal(remotePr.state, "MERGED", "the separate external actor must merge A only after both native verdicts");
+            assert.equal(remotePr.headRefOid, config.prHeadSha);
+            assert.equal(remotePr.mergeCommit.oid, merged.mergeSha);
+            for (let turn = 0; turn < 8; turn++) {
+              await wake(config.orchestratorId, config.maintenanceIssueId, { contractChainReconcile: true });
+              await settle();
+              const [observed] = await db.select().from(schema.issueWorkProducts)
+                .where(eq(schema.issueWorkProducts.issueId, config.issueId));
+              if ((await issueRow()).status === "done" && observed?.status === "merged") break;
+            }
+            const [productAfterExternalMerge] = await db.select().from(schema.issueWorkProducts)
+              .where(eq(schema.issueWorkProducts.issueId, config.issueId));
+            assert.equal((await issueRow()).status, "done",
+              "the real orchestrator must reconcile external Git merge before B is released");
+            assert.equal(productAfterExternalMerge.status, "merged");
+            const bDetail = await fetch(`${process.env.PAPERCLIP_API_URL}/api/issues/${config.bIssueId}`)
+              .then((response) => response.json());
+            const cDetail = await fetch(`${process.env.PAPERCLIP_API_URL}/api/issues/${config.cIssueId}`)
+              .then((response) => response.json());
+            const { evaluateAuthoritativeDependencies } = await import("../../src/core/dependency-gate.ts");
+            assert.deepEqual(bDetail.blockedBy?.map(({ id, status }) => [id, status]), [[config.issueId, "done"]]);
+            assert.deepEqual(evaluateAuthoritativeDependencies(bDetail), { safe: true });
+            assert.deepEqual(cDetail.blockedBy?.map(({ id }) => id), [config.bIssueId]);
+            assert.equal(evaluateAuthoritativeDependencies(cDetail).safe, false);
+            assert.equal((await runRows()).filter((run) => run.contextSnapshot?.issueId === config.cIssueId && run.startedAt).length, 0,
+              "C must remain blocked after A alone merges");
+            record("CHAIN_B_RELEASED_C_HELD", { aMergeSha: merged.mergeSha,
+              bIssueId: config.bIssueId, cIssueId: config.cIssueId });
           }
-          report.outcome = config.chainBlockedProbe ? "shared_host_native_b_c_blocked_until_a_merge"
+          report.outcome = config.chainBlockedProbe ? "shared_host_a_reviewed_merged_b_released_c_held"
             : "actual_jules_executor_self_bootstraps_v4_ladder_approves_once_and_delivers_pr";
         } else {
           assert.equal(report.events.filter((event) => event.name === "PROVIDER_REQUEST").length, 0,

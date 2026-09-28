@@ -164,6 +164,33 @@ if (env.PAPERCLIP_AGENT_ID === config.julesId) {
     await event("PARENT_MONITOR_ARMED");
   }
 } else if (env.PAPERCLIP_AGENT_ID === config.orchestratorId) {
+  if (config.chainBlockedProbe && (issueId === config.maintenanceIssueId ||
+      (issueId !== config.issueId && parsePrReviewChildDescription((await request(`/issues/${issueId}`)).description)?.parentIssueId === config.issueId))) {
+    const { execute } = await import("../../src/server/execute.ts");
+    process.env.PAPERCLIP_GH_PATH = config.githubExecutablePath;
+    const orchConfig = { apiUrl: base, workspacePath: config.chainWorkspacePath,
+      backlogDirectory: ".paperclip-contract-empty", reconcileFleet: false,
+      lunaReviewerAgentId: config.lunaId, terraReviewerAgentId: config.terraId,
+      maxConcurrentJules: 1, maxConcurrentVibe: 0 };
+    const diagnostics = [];
+    const result = await execute({
+      runId: env.PAPERCLIP_RUN_ID, authToken: env.PAPERCLIP_API_KEY,
+      agent: { id: config.orchestratorId, companyId: config.companyId, name: "Contract orchestrator",
+        adapterType: "orchestrator", adapterConfig: orchConfig },
+      config: orchConfig,
+      runtime: { sessionId: null, sessionParams: null, taskKey: issueId },
+      context: { issueId, companyId: config.companyId, projectId: config.projectId },
+      onLog: async (stream, chunk) => {
+        (stream === "stderr" ? process.stderr : process.stdout).write(chunk);
+        diagnostics.push(...String(chunk).split("\n").filter((line) =>
+          line.startsWith("[ORCHESTRATOR]") && /PR|review|Jules|sync|worker/i.test(line)).map((line) => line.slice(0, 300)));
+      },
+    });
+    await event("CHAIN_REAL_ORCHESTRATOR_RESULT", { exitCode: result.exitCode,
+      errorMessage: result.errorMessage ?? null, summary: result.summary ?? null, diagnostics: diagnostics.slice(-8) });
+    assert.equal(result.exitCode, 0, JSON.stringify({ errorMessage: result.errorMessage, summary: result.summary }));
+    process.exit(0);
+  }
   const inspectPrLadder = async () => {
     const inspected = await inspectPrReviewChildren({ companyId: config.companyId, parentIssueId: config.issueId,
       prUrl: config.prUrl, headSha: config.prHeadSha, bootstrapAgentId: config.orchestratorId,
@@ -296,11 +323,11 @@ if (env.PAPERCLIP_AGENT_ID === config.julesId) {
   assert.ok(receipt);
   await event("CHILD_CARD_CHECKPOINTED", { childId: issueId, cardId: receipt.cardId, sourceRunId: env.PAPERCLIP_RUN_ID });
   await event("CHILD_BOOTSTRAP_FINISHED", { childId: issueId });
-} else if ([config.lunaId, config.terraId].includes(env.PAPERCLIP_AGENT_ID)) {
+} else if ([config.lunaId, config.terraId, config.strongReviewerId].includes(env.PAPERCLIP_AGENT_ID)) {
   const child = await request(`/issues/${issueId}`);
   assert.equal(child.parentId, config.issueId);
   assert.equal(child.assigneeAgentId, env.PAPERCLIP_AGENT_ID);
-  if (config.prMigrationProbe) {
+  if (config.prMigrationProbe || config.chainBlockedProbe) {
     const [card] = await request(`/issues/${issueId}/interactions`);
     if (card?.payload?.items?.[0]?.id === "pull_request") {
       if (config.prStrongFirstTurnFailure && env.PAPERCLIP_AGENT_ID === config.terraId && card.status === "pending") {

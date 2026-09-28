@@ -63,12 +63,17 @@ checkpoint. The board actor exists only inside the disposable installed-host
 contract; no live task is recovered by this scenario.
 
 `stable_child_jules_v4_chain_blocked` seeds A→B→C as three issues in **one**
-disposable company, with real PostgreSQL `blocks` edges A→B and B→C. It
-attempts native wakes for B/C before A begins and checks no dependent run
-starts. The actual Jules executor then creates A's provider session, obtains
-both addressed plan verdicts, approves once and registers A's unmerged PR;
-B/C must still have no started run or PR. This is the dependency **hold**
-half of the chain, not proof that merging A releases B or that B releases C.
+disposable company and one authoritative Git-backed project, with real
+PostgreSQL `blocks` edges A→B and B→C. Native B/C wakes before A begins must
+start no dependent run. The actual Jules executor creates A's provider session,
+obtains both addressed plan verdicts, approves once and registers A's PR. The
+**actual orchestrator** then promotes A into review and creates its head-bound
+Luna and strong-review children. Both addressed native verdicts and their
+source/reviewer runs are checked before a distinct external actor creates a
+two-parent local merge. The actual orchestrator reconciles A to `done` and
+its work product to `merged`; the host's native dependency projection makes B
+eligible and keeps C blocked. This scenario does **not** run B or C or prove
+their subsequent provider/review/merge lifecycle.
 
 Exit codes:
 
