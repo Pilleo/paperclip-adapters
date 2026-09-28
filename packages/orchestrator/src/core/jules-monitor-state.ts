@@ -63,6 +63,10 @@ export interface JulesPrHandoffHeartbeatRun {
 function monitorSessionId(executionPolicy: unknown): string | null {
   if (!isAuthoritativeJulesMonitor(executionPolicy)) return null;
   const monitor = (executionPolicy as Record<string, unknown>)["monitor"] as Record<string, unknown>;
+  // Paperclip retains a redacted monitor projection after it has already
+  // cleared execution ownership. It is history, not a live provider lease:
+  // an operator-reconciled PR may have no adapter producer run to override it.
+  if (monitor["status"] === "cleared") return null;
   return monitor["externalRef"] as string;
 }
 

@@ -84,6 +84,16 @@ describe("deriveJulesPrHandoffEvidence", () => {
     })).toEqual({ kind: "no_authoritative_monitor" });
   });
 
+  it("does not treat a cleared historical monitor as active when an operator-linked PR has no producer run", () => {
+    expect(deriveJulesPrHandoffEvidence({
+      executionPolicy: null,
+      executionState: { status: "idle", monitor: {
+        serviceName: "jules", externalRef: "[redacted]", status: "cleared", clearReason: "invalid_status",
+      } },
+      issueId: "issue-b", producerRunId: null, heartbeatRuns: [],
+    })).toEqual({ kind: "no_authoritative_monitor" });
+  });
+
   it("hydrates the immutable PR producer when Paperclip retains its monitor only in executionState", () => {
     expect(deriveJulesPrHandoffEvidence({
       executionPolicy: null,
