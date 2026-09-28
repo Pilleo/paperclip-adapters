@@ -3,8 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { projectRecoveryCanaryState } from "../src/core/recovery-canary-state.js";
-import { buildRecoveryCanaryWorkspace, createRecoveryCanaryCheckout } from "../src/core/recovery-canary-workspace.js";
+import { classifyRecoveryCanaryParentHold, projectRecoveryCanaryState } from "../src/core/recovery-canary-state.js";
+import { buildRecoveryCanaryWorkspace, createRecoveryCanaryCheckout, isDisposableRecoveryCanaryHost } from "../src/core/recovery-canary-workspace.js";
 import { EXPLICIT_PROJECT_WAKE_REASON_PREFIX } from "../src/core/heartbeat-project-scope.js";
 
 /**
@@ -416,6 +416,27 @@ async function main(): Promise<void> {
     const stalePlanAfter = (Array.isArray(interactionsAfter) ? interactionsAfter : []).find((card) =>
       card && typeof card === "object" && String((card as Record<string, unknown>).id) === String(stalePlan.id),
     ) as Record<string, unknown> | undefined;
+    const addressedRuns = await request(`/api/issues/${issueId}/runs`, "GET");
+    const authorityHold = classifyRecoveryCanaryParentHold({ issue: repeated, prUrl,
+      headSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", reviewerAgentId: String(luna.id),
+      cards: Array.isArray(interactionsAfter) ? interactionsAfter : [],
+      reviewerRuns: Array.isArray(addressedRuns) ? addressedRuns : [],
+      children: Array.isArray(childrenAfter) ? childrenAfter : [] });
+    if (authorityHold.kind === "board_disposition_required") {
+      if (authorityHold.parentCardId !== String(lunaCard.id) ||
+          authorityHold.stalePlanCardId !== String(stalePlan.id)) {
+        throw new Error("The historical native authority hold no longer preserves the original PR and plan cards");
+      }
+      const companyRuns = await request(`/api/companies/${companyId}/heartbeat-runs`, "GET");
+      if (Array.isArray(companyRuns) && companyRuns.some((run) => run && typeof run === "object" &&
+          run.agentId === jules.id && run.startedAt)) {
+        throw new Error("Historical authority hold unexpectedly started a new Jules provider run");
+      }
+      console.log("JULES_RECOVERY_CANARY_AUTHORITY_HOLD", JSON.stringify({ result: authorityHold.kind,
+        issueId, parentCardId: authorityHold.parentCardId, stalePlanCardId: authorityHold.stalePlanCardId,
+        next: "Board-authorized typed withdrawal is required; the separate native contract verifies v2 child reviews." }));
+      return;
+    }
     if (repeated.status !== "in_review" || repeated.assigneeAgentId !== null ||
         recoveredPrCards.length !== 1 || !recoveredLunaCard || stalePlanAfter?.status !== "cancelled") {
       throw new Error(`Canary did not recover the typed PR review authority: ${JSON.stringify({
@@ -515,10 +536,14 @@ async function main(): Promise<void> {
     throw error;
   } finally {
     if (companyId) {
-      try {
-        await request(`/api/companies/${companyId}`, "DELETE");
-      } catch (error) {
-        cleanupError = error;
+      if (isDisposableRecoveryCanaryHost(process.env)) {
+        console.log(`Disposable Paperclip canary company ${companyId} will be removed with the isolated server home after its process group stops.`);
+      } else {
+        try {
+          await request(`/api/companies/${companyId}`, "DELETE");
+        } catch (error) {
+          cleanupError = error;
+        }
       }
     }
     if (canaryCheckoutHome) {

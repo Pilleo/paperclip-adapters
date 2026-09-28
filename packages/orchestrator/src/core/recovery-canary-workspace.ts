@@ -22,3 +22,10 @@ export async function createRecoveryCanaryCheckout(home: string, repoUrl: string
   await run("git", ["clone", "--single-branch", "--branch", ref, repoUrl, checkout], { timeout: 60_000 });
   return checkout;
 }
+
+/** Paperclip v916 company DELETE can violate a heartbeat-event FK. Dispose the whole isolated host instead. */
+export function isDisposableRecoveryCanaryHost(environment: Readonly<Record<string, string | undefined>>): boolean {
+  return environment["PAPERCLIP_E2E_DISPOSABLE_HOST"] === "1" &&
+    environment["PAPERCLIP_INSTANCE_ID"] === "canary" &&
+    /\/paperclip-canary-home\/?$/.test(environment["PAPERCLIP_HOME"] ?? "");
+}

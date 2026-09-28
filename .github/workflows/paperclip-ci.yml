@@ -112,6 +112,9 @@ jobs:
         env:
           PAPERCLIP_TEST_API_URL: http://127.0.0.1:3100
           PAPERCLIP_E2E_GH_FIXTURE: server
+          PAPERCLIP_E2E_DISPOSABLE_HOST: '1'
+          PAPERCLIP_INSTANCE_ID: canary
+          PAPERCLIP_HOME: ${{ runner.temp }}/paperclip-canary-home
           WORKSPACE_PATH: ${{ github.workspace }}
         run: pnpm test:e2e:jules-recovery
 
@@ -137,6 +140,7 @@ jobs:
           if [ -f "${RUNNER_TEMP}/paperclip-canary.log" ]; then
             tail -100 "${RUNNER_TEMP}/paperclip-canary.log"
           fi
+          rm -rf "${RUNNER_TEMP}/paperclip-canary-home" "${RUNNER_TEMP}/paperclip-canary-user-home"
 
       - name: Build Production Packages (pnpm release:pack)
         run: pnpm release:pack

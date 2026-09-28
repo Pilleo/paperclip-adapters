@@ -4,13 +4,21 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { buildRecoveryCanaryWorkspace, createRecoveryCanaryCheckout } from "../src/core/recovery-canary-workspace.js";
+import { buildRecoveryCanaryWorkspace, createRecoveryCanaryCheckout, isDisposableRecoveryCanaryHost } from "../src/core/recovery-canary-workspace.js";
 import { resolveProjectMetadata } from "../src/core/parser.js";
 import { checkWorkspaceConsistency } from "../src/core/consistency.js";
 
 const run = promisify(execFile);
 
 describe("pinned-host recovery canary workspace", () => {
+  it("defers company deletion only inside the explicitly marked disposable CI instance", () => {
+    const disposable = { PAPERCLIP_E2E_DISPOSABLE_HOST: "1", PAPERCLIP_INSTANCE_ID: "canary",
+      PAPERCLIP_HOME: "/tmp/job/paperclip-canary-home" };
+    expect(isDisposableRecoveryCanaryHost(disposable)).toBe(true);
+    expect(isDisposableRecoveryCanaryHost({ ...disposable, PAPERCLIP_E2E_DISPOSABLE_HOST: undefined })).toBe(false);
+    expect(isDisposableRecoveryCanaryHost({ ...disposable, PAPERCLIP_INSTANCE_ID: "production" })).toBe(false);
+    expect(isDisposableRecoveryCanaryHost({ ...disposable, PAPERCLIP_HOME: "/home/user/.paperclip" })).toBe(false);
+  });
   it("registers the real local repository metadata required before native PR review", () => {
     const workspace = buildRecoveryCanaryWorkspace("/tmp/disposable-clean-checkout", "master");
     expect(workspace).toMatchObject({
