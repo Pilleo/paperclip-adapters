@@ -1,3 +1,10 @@
+---
+title: A→B→C regression gates and typed lifecycle
+status: in_progress
+document_type: execution_plan
+base_revision: 5d64409
+---
+
 # A→B→C Regression Gates and Typed Lifecycle Implementation Plan
 
 > **For agentic workers:** Execute the tasks in order, inline on `master`. Each task is a separate red/green/verify/commit cycle; do not use a worktree or send GitHub merges.
