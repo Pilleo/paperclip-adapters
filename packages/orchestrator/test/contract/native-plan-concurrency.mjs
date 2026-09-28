@@ -40,7 +40,7 @@ if (!scenario) {
   if (results.some((result) => result.result !== "observed")) process.exitCode = 1;
   else if (process.argv.includes("--require-safe") && !integrationAllowed) process.exitCode = 2;
 } else {
-  assert.ok([...scenarios, "stable_child", "stable_child_ladder", "stable_child_reject", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_jules_v4_paused", "stable_child_gemini", "stable_child_gemini_retry"].includes(scenario), `Unknown scenario ${scenario}`);
+  assert.ok([...scenarios, "stable_child", "stable_child_ladder", "stable_child_reject", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused", "stable_child_gemini", "stable_child_gemini_retry"].includes(scenario), `Unknown scenario ${scenario}`);
   await runScenario();
 }
 
@@ -91,6 +91,8 @@ async function runScenario() {
       heartbeatRuns, issueThreadInteractions, agentWakeupRequests, issueRecoveryActions } = schema;
     const { issueRoutes } = await load("@paperclipai/server/dist/routes/issues.js");
     const { agentRoutes } = await load("@paperclipai/server/dist/routes/agents.js");
+    const { approvalRoutes } = await load("@paperclipai/server/dist/routes/approvals.js");
+    const { projectRoutes } = await load("@paperclipai/server/dist/routes/projects.js");
     const { activityRoutes } = await load("@paperclipai/server/dist/routes/activity.js");
     const { actorMiddleware } = await load("@paperclipai/server/dist/middleware/auth.js");
     const { errorHandler } = await load("@paperclipai/server/dist/middleware/index.js");
@@ -104,7 +106,7 @@ async function runScenario() {
     let chainGitHub = null;
     config.stageId = nativePlanReviewStageId(config.issueId, config.revisionId, "luna");
     config.checkpointPath = path.join(home, "child-review-checkpoint.json");
-    config.childReviewLadder = ["stable_child_ladder", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_jules_v4_paused"].includes(scenario);
+    config.childReviewLadder = ["stable_child_ladder", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused"].includes(scenario);
     config.realJulesExecutor = ["stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict"].includes(scenario);
     config.producerConflictProbe = scenario === "stable_child_executor_pr_producer_conflict";
     config.prMigrationProbe = ["stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board"].includes(scenario);
@@ -115,7 +117,8 @@ async function runScenario() {
     config.prStrongGemini = scenario === "stable_child_executor_pr_gemini";
     config.prStrongFirstTurnFailure = scenario === "stable_child_executor_pr_failed";
     config.prStrongRetryMarker = path.join(home, "strong-reviewer-first-turn-failed");
-    config.createProviderSession = scenario === "stable_child_jules_v4_create";
+    config.createProviderSession = scenario === "stable_child_jules_v4_create" || scenario === "stable_child_jules_v4_create_lost";
+    config.dropProviderCreateResponse = scenario === "stable_child_jules_v4_create_lost";
     config.julesParentExecutor = config.createProviderSession || scenario === "stable_child_jules_v4_executor" || scenario === "stable_child_jules_v4_paused";
     config.pauseLunaInitially = scenario === "stable_child_jules_v4_paused";
     config.julesOwnedBootstrap = scenario === "stable_child_jules_v4" || config.julesParentExecutor;
@@ -170,6 +173,11 @@ async function runScenario() {
           assert.equal(req.body.requirePlanApproval, true);
           providerCreated = true;
           providerCreateRequest = req.body;
+          if (config.dropProviderCreateResponse) {
+            record("PROVIDER_CREATE_RESPONSE_LOST", { sessionId: config.sessionId });
+            req.socket.destroy();
+            return;
+          }
           return res.json({ name: `sessions/${config.sessionId}`, prompt: req.body.prompt,
             sourceContext: req.body.sourceContext, state: "AWAITING_PLAN_APPROVAL", outputs: [] });
         }
@@ -205,7 +213,7 @@ async function runScenario() {
     }
     // Use the host's real local-trusted board actor only for the typed recovery
     // route. Reviewer, bootstrap, and parent requests remain authenticated.
-    if (config.geminiFirstInitFailure || config.parentCardWithdrawalProbe || config.prStrongFirstTurnFailure || config.prBoardProbe) {
+    if (config.geminiFirstInitFailure || config.parentCardWithdrawalProbe || config.prStrongFirstTurnFailure || config.prBoardProbe || config.dropProviderCreateResponse) {
       app.use("/__contract/board-api", actorMiddleware(db, { deploymentMode: "local_trusted" }), issueRoutes(db, {}), agentRoutes(db, {}), activityRoutes(db));
     }
     app.use(actorMiddleware(db, { deploymentMode: "authenticated" }));
@@ -244,6 +252,8 @@ async function runScenario() {
     });
     app.use("/api", issueRoutes(db, {}));
     app.use("/api", agentRoutes(db, {}));
+    app.use("/api", approvalRoutes(db, {}));
+    app.use("/api", projectRoutes(db));
     app.use("/api", activityRoutes(db));
     app.use((error, req, res, next) => {
       if (scenario.startsWith("stable_child")) record("FIXTURE_HTTP_ERROR", { path: req.path,
@@ -374,6 +384,15 @@ async function runScenario() {
             .map((event) => event.path), config.createProviderSession
             ? ["/sessions", `/sessions/${config.sessionId}:approvePlan`] : [`/sessions/${config.sessionId}:approvePlan`],
           "the provider create and approval must each be accepted once, never replayed");
+          if (config.dropProviderCreateResponse) {
+            const lost = report.events.find((event) => event.name === "PROVIDER_CREATE_RESPONSE_LOST");
+            const remoteLookup = report.events.find((event) => event.name === "PROVIDER_REQUEST" &&
+              event.method === "GET" && event.path === "/sessions" && event.sequence > lost?.sequence);
+            const typedRecovery = report.events.find((event) => event.name === "JULES_CREATE_TYPED_RECOVERY");
+            assert.ok(lost && remoteLookup && typedRecovery,
+              "the original accepted create must be reconciled by remote session lookup and typed host recovery");
+            assert.equal(lost.sessionId, config.sessionId);
+          }
           const products = await db.select().from(schema.issueWorkProducts)
             .where(eq(schema.issueWorkProducts.issueId, config.issueId));
           assert.equal(products.length, 1, "the real parent Jules executor must deliver its PR after both v4 child verdicts");

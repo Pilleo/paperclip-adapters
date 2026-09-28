@@ -6,6 +6,30 @@ export async function runStableChildContract(fixture) {
   if (config.childReviewLadder) {
     release("CHILD_VERDICT_WRITTEN");
     await wake(config.julesId, config.issueId);
+    let failedCreateRunId = null;
+    if (config.dropProviderCreateResponse) {
+      await settle();
+      const failed = (await runRows()).find((run) => run.agentId === config.julesId &&
+        run.contextSnapshot?.issueId === config.issueId && run.status === "failed");
+      assert.ok(failed, "accepted-but-lost create must leave a failed host run, never a silent retry");
+      failedCreateRunId = failed.id;
+      const writes = report.events.filter((event) => event.name === "PROVIDER_REQUEST" && event.method === "POST");
+      assert.deepEqual(writes.map((event) => event.path), ["/sessions"], "provider create must not be replayed after the lost response");
+      const [action] = await db.select().from(schema.issueRecoveryActions)
+        .where(eq(schema.issueRecoveryActions.sourceIssueId, config.issueId));
+      assert.ok(action, "host must retain a typed recovery action for the original failed Jules run");
+      const resolution = await fetch(`${process.env.PAPERCLIP_API_URL}/__contract/board-api/issues/${config.issueId}/recovery-actions/resolve`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ actionId: action.id, outcome: "restored", sourceIssueStatus: "todo",
+          executionReconciliation: { runId: failed.id, providerStopped: true, actionOutcome: "completed",
+            outcomeEvidence: `The provider accepted exactly one createSession for sessions/${config.sessionId}; its reply was lost, the original process stopped, and the same remote session remains observable.` } }),
+        signal: AbortSignal.timeout(20_000),
+      });
+      assert.equal(resolution.status, 200, `typed host recovery of uncertain Jules create failed (${resolution.status}): ${await resolution.text()}`);
+      await deliverReconciledExecutions(db, (agentId, options) => heartbeat.wakeup(agentId, options));
+      await settle();
+      record("JULES_CREATE_TYPED_RECOVERY", { failedRunId: failed.id, recoveryActionId: action.id });
+    }
     const consumed = () => new Map(report.events.filter((event) => event.name === "PARENT_CONSUMED_CHILD_VERDICT")
       .map((event) => [event.data.stage, event.data]));
     for (let turn = 0; turn < 12; turn++) {
@@ -28,7 +52,9 @@ export async function runStableChildContract(fixture) {
     assert.ok(cards.every((card) => card.status === "answered" && card.payload.target.revisionId === config.revisionId));
     assert.notEqual(cards[0].issueId, cards[1].issueId);
     const runs = await runRows();
-    assert.ok(runs.filter((run) => run.agentId === config.julesId).every((run) => run.status === "succeeded"));
+    assert.ok(runs.filter((run) => run.agentId === config.julesId)
+      .every((run) => run.status === "succeeded" || (run.id === failedCreateRunId && run.status === "failed")),
+    "the original uncertain create run is the only allowed failed Jules run");
     assert.ok(runs.filter((run) => [config.lunaId, config.terraId].includes(run.agentId) && run.startedAt)
       .every((run) => run.status === "succeeded"));
     assert.ok(report.mutations.every((mutation) => mutation.body.status !== "in_review" && mutation.body.assigneeAgentId === undefined));

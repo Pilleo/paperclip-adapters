@@ -83,6 +83,12 @@ test("actual provider session creation, plan approval and PR delivery is a requi
   assert.equal(result.summary.scenarios[0].scenario, "stable_child_jules_v4_create");
 });
 
+test("accepted provider create with a lost response must use typed recovery before continuation", async () => {
+  const result = await runGate(0, "pass", ["--scenario=stable_child_jules_v4_create_lost"]);
+  assert.equal(result.exit, 0, result.stderr);
+  assert.equal(result.summary.scenarios[0].scenario, "stable_child_jules_v4_create_lost");
+});
+
 test("missing fresh report cannot be replaced with a stale successful report", async () => {
   const result = await runGate(0, "pass", ["--scenario=stable_child_executor_pr_board"], { staleReport: true, writeReport: false });
   assert.notEqual(result.exit, 0);

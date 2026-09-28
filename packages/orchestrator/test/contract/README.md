@@ -52,6 +52,16 @@ cards and authenticated source/reviewer runs before it creates the two-parent
 commit. These are two complementary single-task scenarios, not a complete
 A→B→C dependency-and-merge scenario.
 
+`stable_child_jules_v4_create_lost` adds a controlled accepted-but-lost
+provider-create response. The provider persists its original session but drops
+the HTTP reply; the real Jules run fails closed. A board-authorized **typed
+execution recovery** records the observed completed create on the exact failed
+run. Its native continuation lists the remote session before proceeding with
+both addressed plan verdicts, one approval, and one PR. The contract rejects a
+second create; it does not silently retry the uncertain POST or write a manual
+checkpoint. The board actor exists only inside the disposable installed-host
+contract; no live task is recovered by this scenario.
+
 Exit codes:
 
 - `0`: characterization completed; **inspect `safetyGate` / `integrationAllowed`**.

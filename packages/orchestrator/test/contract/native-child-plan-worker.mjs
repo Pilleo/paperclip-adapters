@@ -81,7 +81,7 @@ if (env.PAPERCLIP_AGENT_ID === config.julesId) {
       runId: env.PAPERCLIP_RUN_ID, authToken: env.PAPERCLIP_API_KEY,
       agent: { id: config.julesId, companyId: config.companyId, name: "Jules parent executor", adapterType: "jules", adapterConfig: julesConfig },
       config: { ...julesConfig, env: { JULES_API_KEY: "fixture-provider-token", PATH: config.githubPath } },
-      runtime: { sessionId: prior ? config.sessionId : null,
+      runtime: { sessionId: prior?.julesSessionId ? config.sessionId : null,
         sessionParams: prior ? sessionCodec.encode(prior) : null, taskKey: issueId },
       context: { issueId, companyId: config.companyId, task: { id: issueId, title: parent.title, description: parent.description ?? "" } },
       onLog: async (stream, chunk) => (stream === "stderr" ? process.stderr : process.stdout).write(chunk),
@@ -97,6 +97,11 @@ if (env.PAPERCLIP_AGENT_ID === config.julesId) {
     }
     await event("REAL_JULES_PARENT_RESULT", { exitCode: result.exitCode,
       errorCode: result.errorCode ?? null, stage: saved?.childPlanReview?.identity.stage ?? null });
+    if (config.dropProviderCreateResponse && result.errorCode === "jules_create_outcome_unverified") {
+      assert.equal(result.exitCode, 1, "uncertain provider create must fail closed before typed recovery");
+      await event("JULES_CREATE_OUTCOME_UNVERIFIED", { issueId, sessionId: config.sessionId });
+      process.exit(1);
+    }
     assert.equal(result.exitCode, 0, JSON.stringify({ errorCode: result.errorCode, errorMessage: result.errorMessage }));
     process.exit(0);
   }
