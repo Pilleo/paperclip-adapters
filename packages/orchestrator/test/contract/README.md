@@ -147,6 +147,28 @@ approval, or plan verdict. The server startup log must load Jules's built
 comment handles Paperclip's `missing_issue_comment` follow-up without
 updating provider state, deliverables, or review verdicts.
 
+### Pinned-host terminal recovery gap (opt-in, separate from positive CI)
+
+`pnpm test:contract:terminal-blocker` starts the real v2026.916.0 host
+services on embedded PostgreSQL, admits one **host-created failed worker
+run**, and calls the installed `settleUnrecoverableExecutions` service. It
+asserts the action is resolved as `outcome: blocked` with
+`automaticRecovery.replay: blocked`. A board-owned merged work product and
+terminal issue transition then exercise the host's ordinary issue read
+model. On the pinned host the result reports `safe: false`: `done` still
+exposes `legacy_execution_requires_reconciliation`. This reproduces the
+historical C-shaped *projection boundary*, rather than a manually settled
+recovery action (which does clear the blocker). The static merged work
+product isolates the host projection; this is **not** a second full
+provider/PR lifecycle test.
+
+Use `pnpm test:contract:terminal-blocker --require-safe` for upstream
+qualification: it exits **2** on this known defect, and must pass only when
+a new pinned host version distinguishes historical no-replay audit evidence
+from a current actionable hold without authorizing a failed provider retry.
+Do not put this negative characterization in the positive CI matrix, clear
+the evidence by issue-status repair, or silently reinterpret it as success.
+
 Exit codes:
 
 - `0`: characterization completed; **inspect `safetyGate` / `integrationAllowed`**.

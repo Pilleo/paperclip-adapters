@@ -231,3 +231,21 @@ fallback; a malformed nonempty SHA is unavailable evidence, not a valid
 commit. An older unit fixture that used a six-character pseudo-SHA was
 replaced with a 40-character Git object ID without weakening its immutable
 head-retention assertion.
+
+### Confirmed upstream host blocker (2026-09-29)
+
+The opt-in real-PostgreSQL `pnpm test:contract:terminal-blocker --require-safe`
+reproduces the original C-style inconsistency on unpatched Paperclip
+`2026.916.0` (strict exit 2). A **host-created** failed worker run receives
+one active recovery action; the installed automatic recovery service settles
+it as `outcome: blocked`, `automaticRecovery.replay: blocked`. After a
+board-owned merged work product and ordinary terminal issue transition, the
+host issue read model reports `done` **and** an actionable
+`legacy_execution_requires_reconciliation` blocker from that resolved run.
+The previous generic-failure experiments did not exercise automatic
+settlement and therefore cleared their blocker; they were not evidence
+against this case. Do not mask this host field in the adapter or treat a
+resolved unknown-effect audit as replay permission. An upstream host
+projection/reconciliation contract must distinguish historical evidence
+from the current actionable hold before claiming this final invariant
+green. The ten positive adapter scenarios remain independent and passing.
