@@ -174,7 +174,11 @@ export function processRawPullRequests(
   const openPrFiles = new Set<string>();
 
   for (const item of rawList) {
-    const stateUpper = (item.state || "").toUpperCase() as "OPEN" | "CLOSED" | "MERGED";
+    const stateUpper = typeof item.state === "string" ? item.state.trim().toUpperCase() : "";
+    if (stateUpper !== "OPEN" && stateUpper !== "CLOSED" && stateUpper !== "MERGED") {
+      return { openPrs: Object.freeze([]), mergedPrs: Object.freeze([]),
+        openPrFiles: Object.freeze(new Set<string>()), error: `Unknown GitHub PR state for #${item.number}` };
+    }
     const files: string[] = (item.files || [])
       .map((f) => (typeof f === "string" ? f : f.path || ""))
       .filter(Boolean);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveIssuePullRequestObservation } from "../src/core/github-sync.js";
+import { processRawPullRequests, resolveIssuePullRequestObservation } from "../src/core/github-sync.js";
 import { extractIssueMetadata } from "../src/core/parser.js";
 import type { GitHubPullRequest, GitHubSyncStatus } from "../src/core/types.js";
 
@@ -41,5 +41,14 @@ describe("issue PR discovery at bounded GitHub boundary", () => {
     expect(resolveIssuePullRequestObservation(issue(true), status([
       remote("https://github.com/example/repo/pull/9", "MAZ-1 task"), remote(registeredUrl),
     ]))).toMatchObject({ kind: "remote_open", pr: { url: "https://github.com/example/repo/pull/9" } });
+  });
+
+  it("fails closed on an unknown provider PR state instead of treating it as confirmed absence", () => {
+    const malformed = processRawPullRequests([{ number: 7, title: "MAZ-1", url: registeredUrl,
+      state: "SUSPENDED", headRefName: "topic", baseRefName: "main", mergedAt: null }]);
+    expect(malformed.error).toMatch(/unknown.*PR state/i);
+    expect(malformed.openPrs).toEqual([]);
+    expect(resolveIssuePullRequestObservation(issue(true), malformed))
+      .toMatchObject({ kind: "registered_after_unavailable", registered: { url: registeredUrl } });
   });
 });

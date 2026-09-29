@@ -217,3 +217,9 @@ optional-property rules; CI runs it independently from runtime tests. The
 full A→B→C host contract and focused native review regressions passed after
 this extraction. Historical terminal recovery projection is still an
 upstream host question, not a reason to silently erase its evidence.
+
+The next tiny boundary decoder removes an unsafe cast from GitHub's raw PR
+state to `OPEN | CLOSED | MERGED`. Unknown provider values now fail closed
+as unavailable discovery rather than silently becoming an apparently
+empty remote window. Focused tests and the full A→B→C installed-host
+contract pass with that stricter runtime check.
