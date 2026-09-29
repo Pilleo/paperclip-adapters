@@ -9,16 +9,31 @@ export type StressProjectSelection =
   | { readonly kind: "found"; readonly project: RecordLike }
   | { readonly kind: "invalid"; readonly reason: string };
 
-export function selectStressProject(projects: readonly RecordLike[], runKey: string): StressProjectSelection {
+export function selectStressProject(projects: readonly RecordLike[], runKey: string, explicitProjectId?: string): StressProjectSelection {
   const marked = projects.filter((project) => typeof project["description"] === "string" && project["description"].includes(STRESS_PROJECT_MARKER));
   if (marked.length === 0) return { kind: "missing" };
   if (marked.length !== 1) return { kind: "invalid", reason: "ambiguous_stress_project" };
   const project = marked[0]!;
   if (typeof project["id"] !== "string" || !project["id"] ||
-      typeof project["name"] !== "string" || !project["name"].includes(`[stress:${runKey}]`)) {
+      (explicitProjectId && project["id"] !== explicitProjectId) ||
+      typeof project["name"] !== "string" || (!explicitProjectId && !project["name"].includes(`[stress:${runKey}]`))) {
     return { kind: "invalid", reason: "different_or_malformed_stress_project" };
   }
   return { kind: "found", project };
+}
+
+/** A new run cannot coexist with an unfinished original run in this project. */
+export function assertStressProjectReadyForRun(
+  issues: readonly RecordLike[], runKey: string,
+): { readonly ok: true } | { readonly ok: false; readonly blockingIssueIds: readonly string[] } {
+  const blockerIds = issues.flatMap((issue) => {
+    const description = issue["description"];
+    if (typeof description !== "string") return [];
+    const previous = /<!-- paperclip-adapters:stress-run:([^\s>]+) -->/.exec(description)?.[1];
+    if (!previous || previous === runKey || issue["status"] === "done" || issue["status"] === "cancelled") return [];
+    return [String(issue["id"] ?? "missing")];
+  });
+  return blockerIds.length ? { ok: false, blockingIssueIds: blockerIds } : { ok: true };
 }
 
 function blockers(detail: RecordLike): readonly string[] {

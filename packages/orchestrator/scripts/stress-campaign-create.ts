@@ -2,8 +2,8 @@ import { open, readFile, stat } from "node:fs/promises";
 import process from "node:process";
 import { assertProjectBackedGitWorkspace } from "../src/core/real-e2e-project-contract.js";
 import { buildCanaryOrchestratorWake } from "../src/core/real-e2e-canary-fixture.js";
-import { buildStressIssue, stressTasks, validateStressTasks } from "../src/core/stress-campaign-manifest.js";
-import { assertStressReadback, selectStressProject, STRESS_PROJECT_MARKER, stressIssueDecision } from "../src/core/stress-campaign-receipts.js";
+import { buildStressIssue, stressPilotTasks, stressTasks, validateStressPilotTasks, validateStressTasks } from "../src/core/stress-campaign-manifest.js";
+import { assertStressProjectReadyForRun, assertStressReadback, selectStressProject, STRESS_PROJECT_MARKER, stressIssueDecision } from "../src/core/stress-campaign-receipts.js";
 
 type JsonObject = Record<string, unknown>;
 type Mode = "--dry-run" | "--provision" | "--create" | "--activate" | "--wake";
@@ -13,6 +13,14 @@ const API = process.env["PAPERCLIP_TEST_API_URL"]?.replace(/\/+$/, "");
 const COMPANY = process.env["PAPERCLIP_E2E_COMPANY_ID"];
 const ORCHESTRATOR = process.env["PAPERCLIP_E2E_ORCHESTRATOR_ID"];
 const JOURNAL = process.env["PAPERCLIP_STRESS_JOURNAL_DIR"];
+const PROJECT_ID = process.env["PAPERCLIP_STRESS_PROJECT_ID"];
+const CAMPAIGN_KIND = process.env["PAPERCLIP_STRESS_KIND"] ?? "full";
+
+function tasksForRun(runKey: string): ReturnType<typeof stressTasks> {
+  if (CAMPAIGN_KIND === "pilot") return stressPilotTasks(runKey);
+  if (CAMPAIGN_KIND === "full") return stressTasks(runKey);
+  throw new Error(`Unknown PAPERCLIP_STRESS_KIND ${CAMPAIGN_KIND}`);
+}
 
 function record(value: unknown, label: string): JsonObject {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid ${label} response`);
@@ -73,9 +81,16 @@ async function projects(): Promise<JsonObject[]> {
 }
 
 async function projectForRun(runKey: string): Promise<JsonObject> {
-  const result = selectStressProject(await projects(), runKey);
+  const result = selectStressProject(await projects(), runKey, PROJECT_ID);
   if (result.kind !== "found") throw new Error(`Expected one provisioned campaign project: ${result.kind}`);
   return result.project as JsonObject;
+}
+
+async function requirePreviousRunsTerminal(projectId: string, runKey: string): Promise<void> {
+  const issues = await issueList(projectId);
+  if (issues.length >= 200) throw new Error("Project issue list reached its bounded read limit; previous run cannot be verified");
+  const readiness = assertStressProjectReadyForRun(issues, runKey);
+  if (!readiness.ok) throw new Error(`Previous stress run has unfinished nonterminal issues: ${readiness.blockingIssueIds.join(",")}`);
 }
 
 function idOf(item: JsonObject, label: string): string {
@@ -105,10 +120,11 @@ async function existingIssue(projectId: string, task: ReturnType<typeof stressTa
 
 async function provision(runKey: string): Promise<void> {
   if (!COMPANY) throw new Error("PAPERCLIP_E2E_COMPANY_ID is required");
-  const selection = selectStressProject(await projects(), runKey);
+  const selection = selectStressProject(await projects(), runKey, PROJECT_ID);
   if (selection.kind === "invalid") throw new Error(`Cannot provision: ${selection.reason}`);
   let project = selection.kind === "found" ? selection.project as JsonObject : undefined;
   if (!project) {
+    if (PROJECT_ID) throw new Error("Explicit stress project does not exist; refusing to create a replacement");
     if (await hasIntent(runKey, "project_create_intent")) throw new Error("Unresolved project creation intent; inspect the exact prior POST before continuing");
     await journal(runKey, "project_create_intent", { companyId: COMPANY });
     try {
@@ -123,6 +139,7 @@ async function provision(runKey: string): Promise<void> {
   }
   const projectId = idOf(project, "project");
   project = await projectForRun(runKey);
+  await requirePreviousRunsTerminal(projectId, runKey);
   await journal(runKey, "project_identity", { projectId });
   const workspacePath = `/api/projects/${encodeURIComponent(projectId)}/workspaces`;
   const existing = list(await request(workspacePath), "workspaces").filter((item) => item["isPrimary"] === true);
@@ -157,7 +174,8 @@ async function provision(runKey: string): Promise<void> {
 async function verifiedGraph(runKey: string, allowed: "backlog" | "backlog_or_todo" | "todo"): Promise<{ projectId: string; ids: Map<string, string> }> {
   const project = await projectForRun(runKey);
   const projectId = idOf(project, "project");
-  const tasks = stressTasks(runKey);
+  await requirePreviousRunsTerminal(projectId, runKey);
+  const tasks = tasksForRun(runKey);
   const found = new Map<string, string>();
   for (const task of tasks) {
     const predecessorIds = task.predecessors.map((key) => {
@@ -177,7 +195,7 @@ async function verifiedGraph(runKey: string, allowed: "backlog" | "backlog_or_to
   }
   const marked = (await issueList(projectId)).filter((issue) => typeof issue["description"] === "string" &&
     issue["description"].includes(`<!-- paperclip-adapters:stress-run:${runKey} -->`));
-  if (marked.length !== 20 || new Set(marked.map((issue) => issue["id"])).size !== 20) throw new Error("Campaign does not contain exactly 20 unique run-marked tasks");
+  if (marked.length !== tasks.length || new Set(marked.map((issue) => issue["id"])).size !== tasks.length) throw new Error("Campaign does not contain exactly its uniquely marked tasks");
   return { projectId, ids: found };
 }
 
@@ -185,8 +203,9 @@ async function create(runKey: string): Promise<void> {
   const project = await projectForRun(runKey);
   const projectId = idOf(project, "project");
   if (!assertProjectBackedGitWorkspace(project, REPO, "master").ok) throw new Error("Campaign project workspace is not qualified");
+  await requirePreviousRunsTerminal(projectId, runKey);
   const ids = new Map<string, string>();
-  for (const task of stressTasks(runKey)) {
+  for (const task of tasksForRun(runKey)) {
     const predecessorIds = task.predecessors.map((key) => {
       const id = ids.get(key);
       if (!id) throw new Error(`Missing predecessor ${key}`);
@@ -210,7 +229,7 @@ async function create(runKey: string): Promise<void> {
     await journal(runKey, "issue_verified", { task: task.key, issueId, predecessorIds });
   }
   await verifiedGraph(runKey, "backlog");
-  console.log(JSON.stringify({ runKey, projectId, stage: "20_backlog_issues_verified", issues: Object.fromEntries(ids) }));
+  console.log(JSON.stringify({ runKey, projectId, stage: `${ids.size}_backlog_issues_verified`, issues: Object.fromEntries(ids) }));
 }
 
 async function activate(runKey: string): Promise<void> {
@@ -230,7 +249,7 @@ async function activate(runKey: string): Promise<void> {
     await journal(runKey, "issue_activated", { task: key, issueId });
   }
   await verifiedGraph(runKey, "todo");
-  console.log(JSON.stringify({ runKey, projectId, stage: "20_issues_activated" }));
+  console.log(JSON.stringify({ runKey, projectId, stage: `${ids.size}_issues_activated` }));
 }
 
 async function wake(runKey: string): Promise<void> {
@@ -254,8 +273,8 @@ async function main(): Promise<void> {
   if (!mode || !runKey || args.length !== 3 || (keyAt !== 0 && keyAt !== 1) || args.filter((arg) => modes.includes(arg as Mode)).length !== 1) {
     throw new Error("Usage: stress-campaign-create.ts --dry-run|--provision|--create|--activate|--wake --run-key <safe-key>");
   }
-  const tasks = stressTasks(runKey);
-  const validated = validateStressTasks(tasks);
+  const tasks = tasksForRun(runKey);
+  const validated = CAMPAIGN_KIND === "pilot" ? validateStressPilotTasks(tasks) : validateStressTasks(tasks);
   if (!validated.ok) throw new Error(`Invalid stress campaign: ${validated.reason}`);
   if (mode === "--dry-run") {
     console.log(JSON.stringify({ runKey, graph: tasks.map((task) => ({ key: task.key, predecessors: task.predecessors, implementationFile: task.implementationFile, testFile: task.testFile, description: buildStressIssue(task, "dry-run-project", task.predecessors)["description"] })) }, null, 2));

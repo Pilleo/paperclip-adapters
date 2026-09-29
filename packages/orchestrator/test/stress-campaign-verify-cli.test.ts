@@ -50,6 +50,38 @@ describe("stress verifier transport", () => {
     }
   });
 
+  it("counts only the two original marked pilot roots while retaining GET-only observation", async () => {
+    const methods: string[] = [];
+    const pilotRows = rows.filter((issue) => issue.title.startsWith("Stress 03:") || issue.title.startsWith("Stress 04:"));
+    const server = createServer((request, response) => {
+      methods.push(request.method ?? "missing");
+      response.setHeader("content-type", "application/json");
+      const url = new URL(request.url ?? "/", "http://localhost");
+      const issueId = url.pathname.startsWith("/api/issues/") ? url.pathname.split("/")[3] : null;
+      const payload = url.pathname.endsWith("/approvals")
+        ? pilotRows.map((issue) => ({ id: `approval-${issue.id}`, status: "pending", payload: { action: "task_start", issueId: issue.id } }))
+        : url.pathname.endsWith("/documents") || url.pathname.includes("/interactions") || url.searchParams.has("parentId") ? []
+        : issueId ? pilotRows.find((issue) => issue.id === issueId) ?? null : pilotRows;
+      response.end(JSON.stringify(payload));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("No loopback listener");
+    try {
+      const { stdout } = await exec("pnpm", ["exec", "tsx", "scripts/stress-campaign-verify.ts", "--run-key", key, "--project-id", projectId], {
+        cwd: process.cwd(), timeout: 30_000, env: { ...process.env,
+          PAPERCLIP_TEST_API_URL: `http://127.0.0.1:${address.port}`, PAPERCLIP_E2E_COMPANY_ID: "company",
+          PAPERCLIP_STRESS_KIND: "pilot" },
+      });
+      const report = JSON.parse(stdout) as { issues: readonly unknown[]; progress: { kind: string } };
+      expect(report.issues).toHaveLength(2);
+      expect(report.progress.kind).toBe("awaiting_user_start");
+      expect(new Set(methods)).toEqual(new Set(["GET"]));
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("reports the original Jules session from a head-bound document when PR metadata omits providerSessionId", async () => {
     const methods: string[] = [];
     const prUrl = "https://github.com/Pilleo/paperclip-adapters-e2e-20260923-vanilla-review/pull/4";

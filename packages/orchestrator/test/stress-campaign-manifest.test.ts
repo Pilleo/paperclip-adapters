@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildStressIssue, stressTasks, validateStressTasks } from "../src/core/stress-campaign-manifest.js";
+import { buildStressIssue, stressPilotTasks, stressTasks, validateStressPilotTasks, validateStressTasks } from "../src/core/stress-campaign-manifest.js";
 
 const runKey = "stress-20260929-a";
 
@@ -37,5 +37,19 @@ describe("disposable stress campaign manifest", () => {
     expect(root.description).toContain(`<!-- paperclip-adapters:stress-run:${runKey} -->`);
     expect(root.description).toContain(`node --test ${tasks[0]!.testFile}`);
     expect(root.description).toContain(tasks[0]!.implementationFile);
+  });
+
+  it("creates only two independent pilot roots sharing one file with safe-integer boundary requirements", () => {
+    const pilot = stressPilotTasks("stress-20260929-pilot-b");
+    expect(pilot.map((task) => task.key)).toEqual(["03", "04"]);
+    expect(pilot.map((task) => task.predecessors)).toEqual([[], []]);
+    expect(pilot[0]?.implementationFile).toBe(pilot[1]?.implementationFile);
+    expect(pilot[0]?.testFile).not.toBe(pilot[1]?.testFile);
+    expect(buildStressIssue(pilot[0]!, "pilot-project", [])["description"]).toContain("Number.isSafeInteger");
+    expect(buildStressIssue(pilot[0]!, "pilot-project", [])["description"]).toContain("MAX_SAFE_INTEGER");
+    expect(buildStressIssue(stressTasks("stress-20260929-20pr-a")[2]!, "pilot-project", [])["description"])
+      .not.toContain("Number.isSafeInteger");
+    expect(validateStressPilotTasks(pilot)).toEqual({ ok: true });
+    expect(validateStressPilotTasks([pilot[0]!, { ...pilot[1]!, testFile: pilot[0]!.testFile }]).ok).toBe(false);
   });
 });

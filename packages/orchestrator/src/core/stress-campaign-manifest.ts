@@ -50,9 +50,31 @@ export function stressTasks(runKey: string): readonly StressTask[] {
     implementationFile: filename(key),
     testFile: `stress-${runKey}-${key}.test.js`,
     exportName: name,
-    contract: contract(filename),
+    // The failed original run's issue descriptions are immutable audit data.
+    // New pilot/replay tasks require the safe-integer boundary found by its
+    // addressed Luna reviewer without rewriting that historical task.
+    contract: key === "03" && runKey !== "stress-20260929-20pr-a"
+      ? `${contract(filename)} Accept an integer only when Number.isSafeInteger returns true; test Number.MAX_SAFE_INTEGER (MAX_SAFE_INTEGER), its negative, and values just beyond the safe range.`
+      : contract(filename),
     runKey,
   })));
+}
+
+/** Small real-provider handoff pilot: the two competing original root roles. */
+export function stressPilotTasks(runKey: string): readonly StressTask[] {
+  const tasks = stressTasks(runKey);
+  return Object.freeze([tasks[2]!, tasks[3]!]);
+}
+
+export function validateStressPilotTasks(tasks: readonly StressTask[]): { readonly ok: true } | { readonly ok: false; readonly reason: string } {
+  if (tasks.length !== 2 || tasks[0]?.key !== "03" || tasks[1]?.key !== "04" ||
+      tasks.some((task) => task.predecessors.length > 0 || !task.contract || !task.testFile || !task.implementationFile) ||
+      tasks[0].runKey !== tasks[1].runKey || tasks[0].testFile === tasks[1].testFile ||
+      tasks[0].implementationFile !== tasks[1].implementationFile ||
+      !tasks[0].contract.includes("Number.isSafeInteger")) {
+    return { ok: false, reason: "invalid_two_root_pilot_contract" };
+  }
+  return { ok: true };
 }
 
 export function validateStressTasks(tasks: readonly StressTask[]): { readonly ok: true } | { readonly ok: false; readonly reason: string } {

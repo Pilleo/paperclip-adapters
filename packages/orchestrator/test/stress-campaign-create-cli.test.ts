@@ -86,4 +86,40 @@ describe("disposable stress campaign operator CLI", () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
+
+  it("reuses the marked project for a new pilot only after old stress issues are terminal", async () => {
+    let oldStatus = "blocked";
+    const methods: string[] = [];
+    const server = createServer((request, response) => {
+      methods.push(request.method ?? "missing");
+      response.setHeader("content-type", "application/json");
+      const url = new URL(request.url ?? "/", "http://localhost");
+      const payload = url.pathname.endsWith("/projects") ? [old, project]
+        : url.pathname.endsWith("/workspaces") ? [workspace]
+        : [{ id: "old-stress-issue", status: oldStatus,
+          description: "<!-- paperclip-adapters:stress-run:stress-20260929-a -->" }];
+      response.end(JSON.stringify(payload));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing loopback listener");
+    const dir = await mkdtemp(path.join(tmpdir(), "paperclip-stress-reuse-"));
+    dirs.push(dir);
+    await chmod(dir, 0o700);
+    const execute = () => exec("pnpm", ["exec", "tsx", "scripts/stress-campaign-create.ts", "--provision", "--run-key", "stress-20260929-pilot-b"], {
+      cwd: process.cwd(), timeout: 20_000,
+      env: { ...process.env, PAPERCLIP_TEST_API_URL: `http://127.0.0.1:${address.port}`,
+        PAPERCLIP_E2E_COMPANY_ID: "company", PAPERCLIP_STRESS_JOURNAL_DIR: `${dir}/`,
+        PAPERCLIP_STRESS_PROJECT_ID: "campaign-id", PAPERCLIP_STRESS_KIND: "pilot" },
+    });
+    try {
+      await expect(execute()).rejects.toThrow(/unfinished.*stress|previous.*nonterminal/i);
+      oldStatus = "cancelled";
+      const { stdout } = await execute();
+      expect(JSON.parse(stdout)).toMatchObject({ projectId: "campaign-id", stage: "provisioned" });
+      expect(new Set(methods)).toEqual(new Set(["GET"]));
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
 });

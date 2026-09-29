@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { stressTasks } from "../src/core/stress-campaign-manifest.js";
+import { stressPilotTasks, stressTasks } from "../src/core/stress-campaign-manifest.js";
 import { evaluateStressProgress, type StressIssueEvidence } from "../src/core/stress-campaign-progress.js";
 
 const tasks = stressTasks("stress-20260929-a");
@@ -20,6 +20,14 @@ const complete = (): StressIssueEvidence[] => issues().map((issue) => ({
 }));
 
 describe("read-only 20-task stress acceptance", () => {
+  it("accepts exactly two independently approved and merged pilot roots without weakening the full-run cardinality", () => {
+    const pilot = stressPilotTasks("stress-20260929-a");
+    const initial = issues().filter((issue) => issue.key === "03" || issue.key === "04");
+    const finished = complete().filter((issue) => issue.key === "03" || issue.key === "04");
+    expect(evaluateStressProgress(pilot, initial).kind).toBe("awaiting_user_start");
+    expect(evaluateStressProgress(pilot, finished).kind).toBe("passed");
+    expect(evaluateStressProgress(tasks, finished).kind).toBe("invalid");
+  });
   it("distinguishes user start/merge waits, provider progress and the complete proof", () => {
     expect(evaluateStressProgress(tasks, issues()).kind).toBe("awaiting_user_start");
     const working = issues().map((issue) => ({ ...issue, startApproval: "approved" }));

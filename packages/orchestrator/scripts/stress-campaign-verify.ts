@@ -4,7 +4,7 @@ import process from "node:process";
 import { promisify } from "node:util";
 import { parseChildPlanReviewDescription } from "@pilleo/paperclip-adapter-common";
 import { resolveGitHubCliExecutable } from "../src/core/github-sync.js";
-import { stressTasks } from "../src/core/stress-campaign-manifest.js";
+import { stressPilotTasks, stressTasks } from "../src/core/stress-campaign-manifest.js";
 import { evaluateStressProgress, type StressIssueEvidence, type StressReviewEvidence } from "../src/core/stress-campaign-progress.js";
 import { parsePrReviewChildDescription } from "../src/core/pr-review-child.js";
 import { parseJulesPrHandoffHandle } from "../src/core/pr-handoff-registration.js";
@@ -13,6 +13,12 @@ const exec = promisify(execFile);
 const API = process.env["PAPERCLIP_TEST_API_URL"]?.replace(/\/+$/, "");
 const COMPANY = process.env["PAPERCLIP_E2E_COMPANY_ID"];
 const REPO = "Pilleo/paperclip-adapters-e2e-20260923-vanilla-review";
+const CAMPAIGN_KIND = process.env["PAPERCLIP_STRESS_KIND"] ?? "full";
+function tasksForRun(runKey: string): ReturnType<typeof stressTasks> {
+  if (CAMPAIGN_KIND === "pilot") return stressPilotTasks(runKey);
+  if (CAMPAIGN_KIND === "full") return stressTasks(runKey);
+  throw new Error(`Unknown PAPERCLIP_STRESS_KIND ${CAMPAIGN_KIND}`);
+}
 type Row = Record<string, unknown>;
 
 function row(value: unknown, label: string): Row {
@@ -175,10 +181,11 @@ async function snapshot(runKey: string, projectId: string): Promise<readonly Str
   const issues = array(await get(`/api/companies/${COMPANY}/issues?projectId=${encodeURIComponent(projectId)}&limit=200`), "campaign issues");
   const marked = issues.filter((issue) => typeof issue["description"] === "string" &&
     issue["description"].includes(`<!-- paperclip-adapters:stress-run:${runKey} -->`));
-  if (marked.length !== 20) throw new Error(`Expected 20 original run-marked issues; saw ${marked.length}`);
+  const tasks = tasksForRun(runKey);
+  if (marked.length !== tasks.length) throw new Error(`Expected ${tasks.length} original run-marked issues; saw ${marked.length}`);
   const approvals = array(await get(`/api/companies/${COMPANY}/approvals`), "company approvals");
   const mapped = new Map<string, string>();
-  for (const task of stressTasks(runKey)) {
+  for (const task of tasks) {
     const matching = marked.filter((issue) => issue["title"] === `Stress ${task.key}: ${task.exportName} [stress:${runKey}:${task.key}]`);
     if (matching.length !== 1) throw new Error(`Campaign task ${task.key} has ${matching.length} identities`);
     const issueId = text(matching[0]?.["id"]);
@@ -188,7 +195,7 @@ async function snapshot(runKey: string, projectId: string): Promise<readonly Str
   const results: StressIssueEvidence[] = [];
   // Deliberately sequential: the installed host has previously stalled under
   // wide concurrent detail hydration, and this observer should not compete.
-  for (const task of stressTasks(runKey)) {
+  for (const task of tasks) {
     results.push(await collectIssue(task.key, mapped.get(task.key)!, task.predecessors.map((key) => mapped.get(key)!), approvals));
   }
   return results;
@@ -218,7 +225,7 @@ async function main(): Promise<void> {
   let sequence = 0;
   while (true) {
     const issues = await snapshot(runKey, projectId);
-    const progress = evaluateStressProgress(stressTasks(runKey), issues);
+    const progress = evaluateStressProgress(tasksForRun(runKey), issues);
     sequence += 1;
     const report = { sequence, observedAt: new Date().toISOString(), runKey, projectId, progress,
       issues: issues.map((issue) => ({ key: issue.key, id: issue.id, status: issue.status, blockedBy: issue.blockedBy,

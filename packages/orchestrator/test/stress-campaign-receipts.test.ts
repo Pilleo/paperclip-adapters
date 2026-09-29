@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildStressIssue, stressTasks } from "../src/core/stress-campaign-manifest.js";
-import { assertStressReadback, selectStressProject, stressIssueDecision } from "../src/core/stress-campaign-receipts.js";
+import { assertStressProjectReadyForRun, assertStressReadback, selectStressProject, stressIssueDecision } from "../src/core/stress-campaign-receipts.js";
 
 const key = "stress-20260929-a";
 const task = stressTasks(key)[6]!;
@@ -16,6 +16,16 @@ describe("journaled stress campaign readbacks", () => {
       .toEqual({ kind: "found", project: { id: "one", name: `Stress [stress:${key}]`, description: marker } });
     expect(selectStressProject([{ id: "one", name: "Other stress", description: marker }], key).kind).toBe("invalid");
     expect(selectStressProject(Array.from({ length: 2 }, (_, i) => ({ id: `${i}`, name: `Stress [stress:${key}]`, description: marker })), key).kind).toBe("invalid");
+  });
+
+  it("reuses the exact existing marked project for a new run only after all older marked tasks are terminal", () => {
+    const project = { id: "campaign-id", name: `Stress [stress:${key}]`, description: "<!-- paperclip-adapters:stress-project:v1 -->" };
+    expect(selectStressProject([project], "stress-20260929-pilot-b", "campaign-id")).toEqual({ kind: "found", project });
+    expect(selectStressProject([project], "stress-20260929-pilot-b", "wrong-id").kind).toBe("invalid");
+    const old = { id: "old-01", description: `<!-- paperclip-adapters:stress-run:${key} -->` };
+    expect(assertStressProjectReadyForRun([{ ...old, status: "blocked" }], "stress-20260929-pilot-b").ok).toBe(false);
+    expect(assertStressProjectReadyForRun([{ ...old, status: "cancelled" }], "stress-20260929-pilot-b"))
+      .toEqual({ ok: true });
   });
 
   it("resumes one exactly matching issue but never reposts an uncertain or conflicting result", () => {

@@ -65,11 +65,13 @@ function verifiedMerge(issue: StressIssueEvidence): boolean {
 }
 
 export function evaluateStressProgress(tasks: readonly StressTask[], issues: readonly StressIssueEvidence[]): StressProgress {
-  if (tasks.length !== 20 || issues.length !== 20 || new Set(issues.map((issue) => issue.id)).size !== 20) {
+  const pilot = tasks.length === 2 && tasks[0]?.key === "03" && tasks[1]?.key === "04";
+  if ((!pilot && tasks.length !== 20) || issues.length !== tasks.length ||
+      new Set(issues.map((issue) => issue.id)).size !== tasks.length) {
     return { kind: "invalid", reason: "incomplete_or_duplicate_campaign_issues" };
   }
   const byKey = new Map(issues.map((issue) => [issue.key, issue]));
-  if (byKey.size !== 20) return { kind: "invalid", reason: "duplicate_task_key" };
+  if (byKey.size !== tasks.length) return { kind: "invalid", reason: "duplicate_task_key" };
   const sessionOwners = new Map<string, string>();
   let waitingStart = false;
   let waitingMerge = false;
