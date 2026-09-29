@@ -159,6 +159,21 @@ before restart, then reads the same card/key/reviewer/issue back from the
 new Paperclip process. This is a genuine control-plane process restart,
 but does not yet cross the Jules approve-plan-to-PR-registration boundary.
 
+`jules-server-restart.mjs` now crosses that specific boundary on the actual
+installed host. Jules itself creates the remote session, two addressed native
+plan cards receive distinct authenticated reviewer-run approvals, and the
+single provider approval is durably confirmed while PR output remains
+withheld. The test waits for fleet idle, restarts Paperclip with its original
+embedded PostgreSQL data and Jules session store, verifies both startups
+loaded the built Jules package and the same session/approval/cards survived,
+then releases one PR output from the **original** provider session and checks
+exactly one registered head. This is a genuine process restart; the complete
+three-task chain is still exercised by the separate in-process-host contracts.
+The formerly failing `missing_issue_comment` status-only host run is now
+fenced at the Jules executor boundary by an authoritative run/issue/agent
+check and a single run-scoped execution-status comment. It cannot spend a
+provider mutation, alter a deliverable, or stand in for a typed verdict.
+
 `stable_child_chain_abc_lost_b_approval` now exercises the other high-value
 ambiguous provider boundary **inside the complete shared-company chain**.
 The B approval effect has a durable started journal entry; the provider

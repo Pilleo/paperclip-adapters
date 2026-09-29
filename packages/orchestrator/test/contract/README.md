@@ -115,6 +115,20 @@ immutable key, reviewer identity, and issue after restart. This protects
 pending native review persistence but does not claim to restart a running
 Jules approval or an in-flight A→B→C provider effect.
 
+`jules-server-restart.mjs` crosses the **actual approval-to-PR boundary**:
+the installed Jules adapter creates one remote session, bootstraps its own
+v4 plan children, receives two distinct authenticated typed verdicts, and
+durably confirms one provider plan approval. Its provider fixture withholds
+the PR output. At fleet idle the test kills and relaunches Paperclip with
+the same embedded PostgreSQL data and Jules session-store directory, verifies
+the original session/effect journal and native card/run IDs survived, then
+releases the original provider session's PR output. One issue work product
+must register at that exact Git head, with no second provider create,
+approval, or plan verdict. The server startup log must load Jules's built
+`dist/index.js` in both processes. A separately tested exact-run status-only
+comment handles Paperclip's `missing_issue_comment` follow-up without
+updating provider state, deliverables, or review verdicts.
+
 Exit codes:
 
 - `0`: characterization completed; **inspect `safetyGate` / `integrationAllowed`**.

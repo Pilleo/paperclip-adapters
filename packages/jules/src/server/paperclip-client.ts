@@ -482,6 +482,22 @@ export async function postSessionLink(
   }, runId);
 }
 
+/** Host-requested status-only follow-up. Never treat this prose as a typed review verdict. */
+export async function reportJulesStatusOnlyRun(
+  issueId: string,
+  authToken: string | undefined,
+  runId: string,
+): Promise<void> {
+  if (!issueId.trim() || !runId.trim()) throw new Error("Status-only reporting requires exact issue and run attribution");
+  await paperclipRequest(`/api/issues/${encodeURIComponent(issueId)}/comments`, authToken, {
+    method: "POST",
+    headers: { "Idempotency-Key": `jules:status-only:${runId}` },
+    body: JSON.stringify({
+      body: "Jules status-only host follow-up: the existing provider session remains under its durable monitor. No provider mutation, deliverable update, or native review verdict was attempted in this run.",
+    }),
+  }, runId);
+}
+
 export async function registerPullRequestWorkProduct(
   issueId: string,
   prUrl: string,

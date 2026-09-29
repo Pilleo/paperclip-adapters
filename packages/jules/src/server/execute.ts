@@ -67,6 +67,7 @@ import { beginMutation, markMutationFailed, markMutationSucceeded } from "./muta
 import { deleteStoredSession, findStoredSessionByJulesSessionId, loadStoredSession, saveStoredSession } from "./session-store.js";
 import { observeProviderCreateIntent } from "./provider-create-reconciliation.js";
 import { decidePlanProviderAction } from "./plan-provider-decision.js";
+import { classifyJulesStatusOnlyRun } from "./status-only-run.js";
 import {
   isAfterCheckpoint,
   laterCheckpoint,
@@ -96,6 +97,7 @@ import {
   moveIssueToBlocked,
   moveIssueToInProgress,
   postSessionLink,
+  reportJulesStatusOnlyRun,
   readJulesSessionHandle,
   readJulesSessionHandleState,
   moveIssueToDone,
@@ -765,6 +767,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     } catch (e) {
       if (contextChildDescription) throw new Error("Jules child bootstrap cannot verify its issue-scoped Paperclip record", { cause: e });
       if (ctx.onLog) await ctx.onLog("stderr", `[jules] Issue fetch error: ${e}\n`);
+    }
+  }
+
+  if (issueScope.kind === "scoped" && process.env["NODE_ENV"] !== "test") {
+    let authoritativeRun: unknown;
+    try {
+      authoritativeRun = await getPaperclipJson<unknown>(
+        `/api/heartbeat-runs/${encodeURIComponent(ctx.runId)}`, ctx.authToken, ctx.runId);
+    } catch (error) {
+      return { exitCode: 1, signal: null, timedOut: false, clearSession: false,
+        errorCode: "paperclip_run_identity_unverified", errorFamily: null,
+        errorMessage: `Cannot verify this Jules run before provider effects: ${error instanceof Error ? error.message : String(error)}`,
+        sessionParams: ctx.runtime?.sessionParams ?? null };
+    }
+    const statusOnly = classifyJulesStatusOnlyRun({ run: authoritativeRun, expected: {
+      runId: ctx.runId, companyId: String(ctx.agent.companyId ?? ""), agentId: ctx.agent.id,
+      issueId: String(effectiveTaskId),
+    } });
+    if (statusOnly.kind === "invalid") {
+      return { exitCode: 1, signal: null, timedOut: false, clearSession: false,
+        errorCode: "paperclip_run_identity_unverified", errorFamily: null,
+        errorMessage: statusOnly.reason, sessionParams: ctx.runtime?.sessionParams ?? null };
+    }
+    if (statusOnly.kind === "status_comment") {
+      await reportJulesStatusOnlyRun(statusOnly.issueId, ctx.authToken, ctx.runId);
+      return { exitCode: 0, signal: null, timedOut: false, clearSession: false,
+        summary: "Reported the exact Paperclip status-only follow-up; Jules provider and native review state were not modified.",
+        sessionParams: ctx.runtime?.sessionParams ?? null,
+        resultJson: { provider: "jules", issueId: statusOnly.issueId, statusOnly: true } };
     }
   }
 

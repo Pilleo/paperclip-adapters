@@ -166,6 +166,8 @@ jobs:
         run: npm install --global paperclipai@2026.916.0
       - name: Verify disposable host persists data across a real server restart
         run: node packages/orchestrator/test/contract/disposable-host-live.mjs
+      - name: Verify Jules approval and typed plan reviews survive Paperclip restart before PR delivery
+        run: node packages/orchestrator/test/contract/jules-server-restart.mjs
       - name: Run supported-host positive native contracts
         env:
           CONTRACT_REPORT_DIR: ${{ runner.temp }}/paperclip-native-contracts
