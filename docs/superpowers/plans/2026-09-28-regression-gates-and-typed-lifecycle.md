@@ -223,3 +223,11 @@ state to `OPEN | CLOSED | MERGED`. Unknown provider values now fail closed
 as unavailable discovery rather than silently becoming an apparently
 empty remote window. Focused tests and the full A→B→C installed-host
 contract pass with that stricter runtime check.
+
+Another isolated boundary test rejects a present but malformed remote
+`headRefOid` before it can authorize a native head-bound verdict card.
+Missing head evidence retains the existing read-only `git ls-remote`
+fallback; a malformed nonempty SHA is unavailable evidence, not a valid
+commit. An older unit fixture that used a six-character pseudo-SHA was
+replaced with a 40-character Git object ID without weakening its immutable
+head-retention assertion.

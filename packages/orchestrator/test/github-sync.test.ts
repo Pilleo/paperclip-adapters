@@ -195,9 +195,9 @@ describe("GitHub PR Sync Module", () => {
 
   it("retains the immutable PR head SHA for review-card invalidation", () => {
     expect(processRawPullRequests([{
-      number: 1, title: "Review", state: "OPEN", headRefName: "feature", headRefOid: "abc123",
+      number: 1, title: "Review", state: "OPEN", headRefName: "feature", headRefOid: "a".repeat(40),
       baseRefName: "main", mergedAt: null, url: "https://github.com/acme/repo/pull/1",
-    }]).openPrs[0]?.headRefOid).toBe("abc123");
+    }]).openPrs[0]?.headRefOid).toBe("a".repeat(40));
   });
 
   it("matches PR to issue by UUID in title", () => {

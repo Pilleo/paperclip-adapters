@@ -51,4 +51,12 @@ describe("issue PR discovery at bounded GitHub boundary", () => {
     expect(resolveIssuePullRequestObservation(issue(true), malformed))
       .toMatchObject({ kind: "registered_after_unavailable", registered: { url: registeredUrl } });
   });
+
+  it("refuses malformed immutable remote heads before they can authorize native review", () => {
+    const malformed = processRawPullRequests([{ number: 7, title: "MAZ-1", url: registeredUrl,
+      state: "OPEN", headRefName: "topic", headRefOid: "short-sha", baseRefName: "main", mergedAt: null }]);
+    expect(malformed.error).toMatch(/head.*SHA/i);
+    expect(resolveIssuePullRequestObservation(issue(true), malformed))
+      .toMatchObject({ kind: "registered_after_unavailable", registered: { headRefOid: "b".repeat(40) } });
+  });
 });

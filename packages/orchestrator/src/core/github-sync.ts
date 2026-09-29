@@ -179,6 +179,10 @@ export function processRawPullRequests(
       return { openPrs: Object.freeze([]), mergedPrs: Object.freeze([]),
         openPrFiles: Object.freeze(new Set<string>()), error: `Unknown GitHub PR state for #${item.number}` };
     }
+    if (item.headRefOid !== undefined && !(/^[0-9a-f]{40}$/i.test(item.headRefOid))) {
+      return { openPrs: Object.freeze([]), mergedPrs: Object.freeze([]),
+        openPrFiles: Object.freeze(new Set<string>()), error: `Invalid GitHub PR head SHA for #${item.number}` };
+    }
     const files: string[] = (item.files || [])
       .map((f) => (typeof f === "string" ? f : f.path || ""))
       .filter(Boolean);
