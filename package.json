@@ -12,7 +12,7 @@
     "lint": "npm run lint --workspaces --if-present",
     "check:secrets": "node scripts/check-no-secrets.mjs",
     "typecheck": "npm run build -w @pilleo/paperclip-adapter-common && tsc --noEmit -p packages/orchestrator/tsconfig.json && tsc --noEmit -p packages/jules/tsconfig.json",
-    "typecheck:invariants": "pnpm --filter @pilleo/paperclip-orchestrator-adapter exec tsc -p tsconfig.type-tests.json",
+    "typecheck:invariants": "pnpm --filter @pilleo/paperclip-orchestrator-adapter exec tsc -p tsconfig.type-tests.json && pnpm --filter @pilleo/paperclip-jules-adapter exec tsc -p tsconfig.type-tests.json",
     "test:e2e": "tsx packages/orchestrator/scripts/e2e-paperclip-lifecycle.ts",
     "test:e2e:jules-recovery": "tsx packages/orchestrator/scripts/e2e-jules-recovery.ts",
     "test:contract:plan-handback": "tsx packages/orchestrator/test/contract/native-plan-concurrency.mjs",

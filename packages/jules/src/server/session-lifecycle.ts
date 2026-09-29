@@ -3,19 +3,15 @@ import { PaperclipId, asJulesSessionId, asPrUrl } from "./brands.js";
 import type { JulesSessionHandle } from "./jules-session-handle.js";
 import { mergeEffectJournals } from "./lifecycle-effect-journal.js";
 
-export type StartupActionType =
-  | "RESUME_EXISTING"
-  | "START_FRESH"
-  | "RELAY_INTERACTION"
-  | "NO_OP";
+export type SessionStartupDecision =
+  | { readonly action: "START_FRESH"; readonly forceFreshSession: boolean;
+    readonly isInteractionResume: false; readonly session: null; readonly reason: string }
+  | { readonly action: "RESUME_EXISTING"; readonly forceFreshSession: false;
+    readonly isInteractionResume: boolean; readonly session: JulesAdapterSessionV1; readonly reason: string }
+  | { readonly action: "RELAY_INTERACTION"; readonly forceFreshSession: false;
+    readonly isInteractionResume: true; readonly session: JulesAdapterSessionV1; readonly reason: string };
 
-export interface SessionStartupDecision {
-  action: StartupActionType;
-  forceFreshSession: boolean;
-  isInteractionResume: boolean;
-  session: JulesAdapterSessionV1 | null;
-  reason: string;
-}
+export type StartupActionType = SessionStartupDecision["action"];
 
 export function readContextString(context: Record<string, unknown> | undefined, key: string): string | null {
   if (!context) return null;

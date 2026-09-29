@@ -249,3 +249,14 @@ resolved unknown-effect audit as replay permission. An upstream host
 projection/reconciliation contract must distinguish historical evidence
 from the current actionable hold before claiming this final invariant
 green. The ten positive adapter scenarios remain independent and passing.
+
+The next type-only lifecycle slice replaces Jules's optional-bag
+`SessionStartupDecision` with a discriminated union and removes the unused
+`NO_OP` action. `START_FRESH` cannot carry an attached provider session,
+`RESUME_EXISTING` cannot omit one, and `RELAY_INTERACTION` must identify an
+interaction wake. The emitted startup behavior and historical session codec
+are unchanged. The type test deliberately failed on four unused
+`@ts-expect-error` annotations before the change; the expanded
+`pnpm typecheck:invariants`, Jules test suite, workspace build and full
+A→B→C installed-host contract passed after it. The host blocker above
+remains upstream-owned rather than being hidden by this adapter type.
