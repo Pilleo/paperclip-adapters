@@ -40,7 +40,7 @@ if (!scenario) {
   if (results.some((result) => result.result !== "observed")) process.exitCode = 1;
   else if (process.argv.includes("--require-safe") && !integrationAllowed) process.exitCode = 2;
 } else {
-  assert.ok([...scenarios, "stable_child", "stable_child_ladder", "stable_child_reject", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_chain_abc_complete", "stable_child_chain_abc_lost_b_create", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused", "stable_child_gemini", "stable_child_gemini_retry"].includes(scenario), `Unknown scenario ${scenario}`);
+  assert.ok([...scenarios, "stable_child", "stable_child_ladder", "stable_child_reject", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_chain_abc_complete", "stable_child_chain_abc_lost_b_create", "stable_child_chain_abc_lost_b_approval", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused", "stable_child_gemini", "stable_child_gemini_retry"].includes(scenario), `Unknown scenario ${scenario}`);
   await runScenario();
 }
 
@@ -106,7 +106,7 @@ async function runScenario() {
     let chainGitHub = null;
     config.stageId = nativePlanReviewStageId(config.issueId, config.revisionId, "luna");
     config.checkpointPath = path.join(home, "child-review-checkpoint.json");
-    config.childReviewLadder = ["stable_child_ladder", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_chain_abc_complete", "stable_child_chain_abc_lost_b_create", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused"].includes(scenario);
+    config.childReviewLadder = ["stable_child_ladder", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_chain_abc_complete", "stable_child_chain_abc_lost_b_create", "stable_child_chain_abc_lost_b_approval", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused"].includes(scenario);
     config.realJulesExecutor = ["stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict"].includes(scenario);
     config.producerConflictProbe = scenario === "stable_child_executor_pr_producer_conflict";
     config.prMigrationProbe = ["stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board"].includes(scenario);
@@ -117,8 +117,10 @@ async function runScenario() {
     config.prStrongGemini = scenario === "stable_child_executor_pr_gemini";
     config.prStrongFirstTurnFailure = scenario === "stable_child_executor_pr_failed";
     config.prStrongRetryMarker = path.join(home, "strong-reviewer-first-turn-failed");
-    config.chainBlockedProbe = scenario === "stable_child_chain_abc_complete" || scenario === "stable_child_chain_abc_lost_b_create";
+    config.chainBlockedProbe = ["stable_child_chain_abc_complete", "stable_child_chain_abc_lost_b_create",
+      "stable_child_chain_abc_lost_b_approval"].includes(scenario);
     config.chainLostBCreateResponse = scenario === "stable_child_chain_abc_lost_b_create";
+    config.chainLostBApprovalResponse = scenario === "stable_child_chain_abc_lost_b_approval";
     if (config.chainBlockedProbe) {
       config.projectId = randomUUID();
       config.strongReviewerId = randomUUID();
@@ -207,7 +209,13 @@ async function runScenario() {
             const stored = chainProviderSessions.get(approvalId);
             if (!stored || stored.approved) return res.status(409).json({ error: "missing or already approved plan" });
             stored.approved = true;
+            stored.approvedAt = new Date().toISOString();
             if (approvalId === config.sessionId) providerApproved = true;
+            if (approvalId === config.bSessionId && config.chainLostBApprovalResponse) {
+              record("CHAIN_B_PROVIDER_APPROVAL_RESPONSE_LOST", { sessionId: approvalId });
+              req.socket.destroy();
+              return;
+            }
             return res.json({});
           }
           const stateOf = (sessionId, stored) => ({ name: `sessions/${sessionId}`,
@@ -224,7 +232,7 @@ async function runScenario() {
             if (!stored) return res.status(404).json({ error: "session absent" });
             return res.json({ activities: [{ id: "fixture-plan-activity", createTime: "2026-09-27T01:00:00.000Z",
               planGenerated: { plan: { id: "fixture-plan", steps: [{ index: 0, title: `Contract plan ${stored.label}` }] } } },
-              ...(stored.approved ? [{ id: "fixture-approved-activity", createTime: "2026-09-27T01:01:00.000Z",
+              ...(stored.approved ? [{ id: "fixture-approved-activity", createTime: stored.approvedAt,
                 planApproved: { planId: "fixture-plan" } }] : [])] });
           }
           const sessionId = /^\/sessions\/([^/]+)$/.exec(req.path)?.[1];
@@ -444,7 +452,24 @@ async function runScenario() {
       report.observations.push(observation);
       return observation;
     }
-    failureSnapshot = () => snapshot("failure");
+    failureSnapshot = async () => {
+      await snapshot("failure");
+      if (config.chainLostBApprovalResponse) {
+        const previousStore = process.env.PAPERCLIP_JULES_SESSION_STORE_DIR;
+        process.env.PAPERCLIP_JULES_SESSION_STORE_DIR = config.sessionStoreDir;
+        try {
+          const { loadStoredSession } = await import("../../../jules/src/server/session-store.ts");
+          const stored = await loadStoredSession(config.bIssueId, "sources/github/paperclip-contract/fixture", "main");
+          report.observations.push({ label: "b_approval_lost_checkpoint", sessionId: stored?.julesSessionId ?? null,
+            planStage: stored?.childPlanReview?.identity.stage ?? null,
+            effects: stored?.lifecycleEffectJournal?.effects.map((effect) => ({ effectId: effect.effectId,
+              attempt: effect.attempt.kind })) ?? [] });
+        } finally {
+          if (previousStore === undefined) delete process.env.PAPERCLIP_JULES_SESSION_STORE_DIR;
+          else process.env.PAPERCLIP_JULES_SESSION_STORE_DIR = previousStore;
+        }
+      }
+    };
     async function settle() {
       const timeoutMs = config.prStrongGemini ? 240_000 : 60_000;
       await until("all run executions and PATCH handlers settled", async () => activeMutations === 0 && (await runRows()).every((run) => !live(run)), timeoutMs);
@@ -888,6 +913,16 @@ async function runScenario() {
                 lost.sequence < unverified.sequence && unverified.sequence < lookup.sequence &&
                 lookup.sequence < approval.sequence && recovered.sequence < approval.sequence,
               "B must reconcile the original accepted session by GET after its failed run and typed recovery, not replay create");
+            }
+            if (config.chainLostBApprovalResponse) {
+              const lost = report.events.find((event) => event.name === "CHAIN_B_PROVIDER_APPROVAL_RESPONSE_LOST");
+              const activityRead = report.events.find((event) => event.name === "PROVIDER_REQUEST" &&
+                event.method === "GET" && event.path === `/sessions/${config.bSessionId}/activities` &&
+                event.sequence > lost?.sequence);
+              const bPr = report.events.find((event) => event.name === "CHAIN_B_PR_REGISTERED");
+              assert.ok(lost && activityRead && bPr && lost.sessionId === config.bSessionId &&
+                lost.sequence < activityRead.sequence && activityRead.sequence < bPr.sequence,
+              "the accepted B approval must be verified from same-session activity after its reply was lost, not posted twice");
             }
             report.outcome = "shared_host_a_b_c_provider_native_reviews_external_merges_and_terminal_reconciliation";
             record("CHAIN_B_RELEASED_C_HELD", { aMergeSha: merged.mergeSha,

@@ -101,6 +101,12 @@ test("full A B C must still complete after B's accepted provider create response
   assert.equal(result.summary.scenarios[0].scenario, "stable_child_chain_abc_lost_b_create");
 });
 
+test("full A B C must still complete after B's accepted plan approval response is lost", async () => {
+  const result = await runGate(0, "pass", ["--scenario=stable_child_chain_abc_lost_b_approval"]);
+  assert.equal(result.exit, 0, result.stderr);
+  assert.equal(result.summary.scenarios[0].scenario, "stable_child_chain_abc_lost_b_approval");
+});
+
 test("missing fresh report cannot be replaced with a stale successful report", async () => {
   const result = await runGate(0, "pass", ["--scenario=stable_child_executor_pr_board"], { staleReport: true, writeReport: false });
   assert.notEqual(result.exit, 0);

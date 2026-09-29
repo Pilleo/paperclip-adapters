@@ -95,6 +95,17 @@ three provider creates and three approvals overall. This injects a failed
 worker run, **not** a Paperclip server-process restart; the retained-storage
 restart during a running chain remains a separate test milestone.
 
+`stable_child_chain_abc_lost_b_approval` drops the response after the provider
+accepts B's exact typed strong-plan `approvePlan`. The approval activity's
+timestamp is recorded **when that request is accepted**, after the durable
+effect attempt begins; a backdated activity cannot prove that this effect
+succeeded. The real Jules executor reads that same session's activities,
+confirms the started effect without reposting it, registers B's PR, and the
+whole A→B→C native-review/external-merge chain still converges. A lost
+provider response alone is not a reason to invent a verdict or issue a second
+approval. Unlike lost session creation, this scenario needs no operator
+reconciliation when exact same-session provider activity verifies the effect.
+
 The independent `disposable-host-live.mjs` contract now stops and restarts
 the **actual Paperclip server process** with its embedded PostgreSQL data
 retained after acknowledging a company, an unassigned review issue, and one

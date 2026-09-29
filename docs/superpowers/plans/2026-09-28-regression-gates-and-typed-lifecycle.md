@@ -158,3 +158,16 @@ company in embedded PostgreSQL; it checks the all-company live-run gate
 before restart, then reads the same card/key/reviewer/issue back from the
 new Paperclip process. This is a genuine control-plane process restart,
 but does not yet cross the Jules approve-plan-to-PR-registration boundary.
+
+`stable_child_chain_abc_lost_b_approval` now exercises the other high-value
+ambiguous provider boundary **inside the complete shared-company chain**.
+The B approval effect has a durable started journal entry; the provider
+accepts that exact approval, records `planApproved` with a post-attempt
+timestamp, then drops the HTTP reply. Jules must verify same-session
+activities and register B's PR without a second `approvePlan`; all three
+issues/products still converge. An initially backdated fixture activity
+correctly failed closed as `unverified_progress`, demonstrating that a
+historical approval cannot authorize an uncertain current effect. The
+remaining unverified cases are an actual server-process restart across a
+Jules provider effect, sendMessage response loss, and C's historical
+terminal failed-run blocker.
