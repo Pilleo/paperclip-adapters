@@ -29,7 +29,7 @@ import {
   type HeartbeatRunScopeRecord,
 } from "../core/heartbeat-project-scope.js";
 import { ensureManagedProjectCheckout, managedProjectCheckoutPath } from "../core/project-managed-checkout.js";
-import { fetchGitHubPullRequest, fetchGitHubPullRequests, hasUnreviewedReadyPullRequest, matchPrToIssue, registeredPullRequestFromIssue, checkPrCiIsGreen, fetchPullRequestHeadSha, resolvePrCiGate } from "../core/github-sync.js";
+import { fetchGitHubPullRequest, fetchGitHubPullRequests, hasUnreviewedReadyPullRequest, matchPrToIssue, registeredPullRequestFromIssue, resolveIssuePullRequestObservation, checkPrCiIsGreen, fetchPullRequestHeadSha, resolvePrCiGate } from "../core/github-sync.js";
 import { needsJulesPlanPolicyPatch } from "../core/jules-plan-policy.js";
 import { evaluateIssueTransition } from "../core/state-machine.js";
 import { readWorkspaceGitRemote, syncBacklogMarkdownToPaperclip } from "../core/backlog-sync.js";
@@ -2654,12 +2654,20 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
     // list traditionally matches the human identifier. Prefer that list when
     // it matches, but fall back to the hydrated registered work product so a
     // valid Jules PR cannot disappear merely because its title shape differs.
-    const registeredPr = registeredPullRequestFromIssue(reviewTask);
-    const matchingPr = !ghStatus.error
-      ? ghStatus.openPrs.find((pr) => matchPrToIssue(pr, reviewTask))
-        ?? ghStatus.openPrs.find((pr) => registeredPr && pr.url.replace(/\/$/, "") === registeredPr.url.replace(/\/$/, ""))
-        ?? registeredPr
-      : registeredPr;
+    const observedPr = resolveIssuePullRequestObservation(reviewTask, ghStatus);
+    const matchingPr = (() => {
+      switch (observedPr.kind) {
+        case "remote_open": return observedPr.pr;
+        case "registered_after_unavailable": return observedPr.registered;
+        case "registered_outside_window": return observedPr.registered;
+        case "unavailable": return undefined;
+        case "not_in_window": return undefined;
+        default: {
+          const impossible: never = observedPr;
+          return impossible;
+        }
+      }
+    })();
     if (!matchingPr) {
       await log(`[ORCHESTRATOR] Ignoring in_review issue [${reviewTask.identifier || reviewTask.id}] without a registered PR.`);
       continue;

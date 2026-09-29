@@ -39,6 +39,9 @@ jobs:
       - name: Typecheck Monorepo
         run: pnpm typecheck
 
+      - name: Typecheck negative domain invariants
+        run: pnpm typecheck:invariants
+
       - name: Run Full Test Matrix (399+ unit tests)
         run: pnpm -r test
 

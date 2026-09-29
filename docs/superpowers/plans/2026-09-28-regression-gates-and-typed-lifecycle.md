@@ -58,18 +58,18 @@ Safety fails on wrong identity, duplicate effects, premature execution, invalid 
 
 ## Task 1 — completion-safe canary verification and supported host alignment
 
-- [ ] Add a **failing** test that calls the real canary verification CLI with isolated loopback fixture snapshots for `await_a` and expects nonzero in terminal-acceptance mode; preserve snapshot mode's current successful observation and forbid writes.
-- [ ] Add a failing test for all-three-done Paperclip snapshots where GitHub has not verified merge heads/parents; terminal acceptance must not pass merely because work products say `merged`.
+- [x] Add a **failing** test that calls the real canary verification CLI with isolated loopback fixture snapshots for `await_a` and expects nonzero in terminal-acceptance mode; preserve snapshot mode's current successful observation and forbid writes.
+- [x] Add a failing test for all-three-done Paperclip snapshots where GitHub has not verified merge heads/parents; terminal acceptance must not pass merely because work products say `merged`.
 - [ ] Implement explicit result handling: `awaiting_human`, `awaiting_progress`, `invalid`, `passed`, with bounded `--wait-for-completion` deadline and terminal exit codes. Keep default read-only snapshot behavior compatible.
-- [ ] Pin CI Paperclip install to `2026.916.0`; test the CI/YAML host pin and add a Node 24 supported-host step invoking selected positive `--require-safe` scenarios (`stable_child_jules_v4_executor`, `stable_child_executor_pr_board`, `stable_child_executor_pr_probe`). Do not include the deliberately unsafe negative handback scenarios as a green gate. Save/upload the contract JSON reports even when a scenario fails.
-- [ ] Run focused unit tests, selected installed-host scenarios, `pnpm build`, and `pnpm test`; commit this independently useful gate slice.
+- [x] Pin CI Paperclip install to `2026.916.0`; test the CI/YAML host pin and add a Node 24 supported-host step invoking selected positive `--require-safe` scenarios (`stable_child_jules_v4_executor`, `stable_child_executor_pr_board`, `stable_child_executor_pr_probe`). Do not include the deliberately unsafe negative handback scenarios as a green gate. Save/upload the contract JSON reports even when a scenario fails.
+- [x] Run focused unit tests, selected installed-host scenarios, `pnpm build`, and `pnpm test`; commit this independently useful gate slice.
 
 ## Task 2 — deterministic baseline full chain
 
-- [ ] Add a failing host-contract scenario requiring A→B→C terminal issue/product convergence, exact predecessor merge gate, native typed plan/PR verdicts and unique provider sessions/products.
-- [ ] Extend the existing host-contract infrastructure with stateful Jules responses and a local Git repo plus fixture `gh` that observes PR heads and merged commits. Seed only the initial company/project/agents/issues; no repair PATCH after start.
-- [ ] Add a distinct external merger test actor that performs ordinary two-parent local Git merges after valid head-bound typed approvals, then exposes authoritative merged state to the CLI fixture. Assert adapters never invoke a merge command.
-- [ ] Record a bounded chronological event log and verify final repository files, head ancestry, no duplicate cards/effects/products, and A/B/C dependency release. Run through `--require-safe`, integrate it into CI, and commit.
+- [x] Add a failing host-contract scenario requiring A→B→C terminal issue/product convergence, exact predecessor merge gate, native typed plan/PR verdicts and unique provider sessions/products.
+- [x] Extend the existing host-contract infrastructure with stateful Jules responses and a local Git repo plus fixture `gh` that observes PR heads and merged commits. Seed only the initial company/project/agents/issues; no repair PATCH after start.
+- [x] Add a distinct external merger test actor that performs ordinary two-parent local Git merges after valid head-bound typed approvals, then exposes authoritative merged state to the CLI fixture. Assert adapters never invoke a merge command.
+- [x] Record a bounded chronological event log and verify final repository files, head ancestry, no duplicate cards/effects/products, and A/B/C dependency release. Run through `--require-safe`, integrate it into CI, and commit.
 
 ## Task 3 — genuine retained-storage restart
 
@@ -93,7 +93,7 @@ Safety fails on wrong identity, duplicate effects, premature execution, invalid 
 
 Only start when Tasks 1–5 run green in their appropriate gates. Each bullet starts with a test that would fail for the observed bug or a passing characterization test for a behavior-preserving extraction; compile-time negative fixtures prove impossible values are rejected.
 
-- [ ] **PR observation:** decode `unavailable | confirmed_absent | observed(head, repo, PR)` at the HTTP boundary; prevent failed GitHub lookups or compact issue lists from erasing registered PR evidence.
+- [ ] **PR observation:** first extraction completed for `remote_open | registered_after_unavailable | registered_outside_window | unavailable | not_in_window` at the bounded list boundary. A separate authoritative targeted-view/REST decoder is still needed before `confirmed_absent` can be represented safely; protect registered PR evidence against failed GitHub lookups and compact issue lists.
 - [ ] **Review evidence:** construct a validated immutable-head/revision/reviewer/run proof after runtime equality and provenance checks; accept only that proof in merge-eligibility decisions.
 - [ ] **Effect state:** introduce one versioned discriminated union `prepared | inFlight | outcomeUnknown | confirmed | failed`, with mandatory receipt on `confirmed`, and pure exhaustive reducer. Keep wire-compatible historical codecs; migrate one effect at a time.
 - [ ] **Command boundary:** for the migrated effect have the reducer return typed commands to existing durable effect executors. Check one serialized intent/one receipt or unresolved unknown after crash/replay.
@@ -204,3 +204,16 @@ fresh follow-up); the outer-timeout attempt itself was **not** reported as
 a successful complete matrix. The next gates remain the exact historical
 C terminal recovery-blocker disposition and scope-limited compiler-enforced
 refactors behind this completion/fault matrix.
+
+The first **behavior-preserving type extraction** is now guarded by those
+tests: `resolveIssuePullRequestObservation` distinguishes an observed remote
+open PR, an immutable registered work product retained after GitHub failure,
+a registered PR outside bounded discovery, an unavailable lookup, and a PR
+not found in the bounded window. The window is deliberately **not** treated
+as confirmed remote absence. The review pipeline consumes that discriminated
+union in an exhaustive `never`-checked switch. `pnpm typecheck:invariants`
+compiles negative cases under the workspace's existing strict null and
+optional-property rules; CI runs it independently from runtime tests. The
+full A→B→C host contract and focused native review regressions passed after
+this extraction. Historical terminal recovery projection is still an
+upstream host question, not a reason to silently erase its evidence.

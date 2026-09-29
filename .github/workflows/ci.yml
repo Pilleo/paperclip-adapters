@@ -33,5 +33,8 @@ jobs:
       - name: Build all packages
         run: pnpm -r build
 
+      - name: Reject illegal domain state types
+        run: pnpm typecheck:invariants
+
       - name: Run test suites across all packages
         run: pnpm -r test

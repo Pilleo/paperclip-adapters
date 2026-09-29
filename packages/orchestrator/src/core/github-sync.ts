@@ -107,6 +107,30 @@ export function registeredPullRequestFromIssue(issue: ParsedIssueMetadata): GitH
   return undefined;
 }
 
+/** Bounded discovery is not an authoritative proof that an unlisted PR is absent. */
+export type IssuePullRequestObservation =
+  | { readonly kind: "remote_open"; readonly pr: GitHubPullRequest }
+  | { readonly kind: "registered_after_unavailable"; readonly registered: GitHubPullRequest; readonly error: string }
+  | { readonly kind: "registered_outside_window"; readonly registered: GitHubPullRequest }
+  | { readonly kind: "unavailable"; readonly error: string }
+  | { readonly kind: "not_in_window" };
+
+export function resolveIssuePullRequestObservation(
+  issue: ParsedIssueMetadata,
+  status: GitHubSyncStatus,
+): IssuePullRequestObservation {
+  const registered = registeredPullRequestFromIssue(issue);
+  if (status.error) return registered
+    ? { kind: "registered_after_unavailable", registered, error: status.error }
+    : { kind: "unavailable", error: status.error };
+
+  const remote = status.openPrs.find((pr) => pr.state === "OPEN" && matchPrToIssue(pr, issue)) ??
+    status.openPrs.find((pr) => pr.state === "OPEN" && registered &&
+      pr.url.replace(/\/$/, "") === registered.url.replace(/\/$/, ""));
+  if (remote) return { kind: "remote_open", pr: remote };
+  return registered ? { kind: "registered_outside_window", registered } : { kind: "not_in_window" };
+}
+
 /**
  * Detect the only safe review recovery case: Paperclip says the issue is in a
  * non-executing board state, but its orchestrator-owned PR is still explicitly
