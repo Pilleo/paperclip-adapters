@@ -116,6 +116,14 @@ requires exactly one create, one sendMessage, one approvePlan, three native
 cards (old rejection plus two revised approvals), and one registered PR.
 This is a single-task plan revision, not a full-chain PR-feedback amendment.
 
+The independent CI runner `node scripts/paperclip-host-contract-gate.mjs`
+requires all ten positive installed-host scenarios, each in a fresh report
+directory. It rejects missing, mismatched, stale, malformed, or unsafe
+evidence. Each scenario has a bounded deadline; SIGINT/SIGTERM kills its
+owned process group, writes a failing `interrupted` summary, and does not
+start another scenario. The original unsafe read-then-PATCH handback
+characterization remains separate and is **never** a positive CI gate.
+
 The independent `disposable-host-live.mjs` contract now stops and restarts
 the **actual Paperclip server process** with its embedded PostgreSQL data
 retained after acknowledging a company, an unassigned review issue, and one

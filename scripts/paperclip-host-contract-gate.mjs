@@ -27,8 +27,20 @@ if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 900_000) {
   throw new Error("CONTRACT_SCENARIO_TIMEOUT_MS must be an integer between 1 and 900000");
 }
 
+let activeChild = null;
+let interruptedSignal = null;
+const stopOwnedGroup = (child, reason) => {
+  if (!child?.pid) return;
+  try { process.kill(-child.pid, "SIGKILL"); }
+  catch (error) { if (error.code !== "ESRCH") console.error(`Contract ${reason} termination failed`, error); }
+};
+for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => {
+  interruptedSignal ??= signal;
+  stopOwnedGroup(activeChild, "interruption");
+});
 const scenarios = [];
 for (const scenario of selected) {
+  if (interruptedSignal) break;
   const freshReportDir = await mkdtemp(path.join(reportDir, `${scenario}-`));
   const run = await new Promise((resolve) => {
     const child = spawn("pnpm", ["test:contract:plan-handback", `--scenario=${scenario}`, "--require-safe"], {
@@ -36,17 +48,20 @@ for (const scenario of selected) {
       stdio: "inherit",
       detached: true,
     });
+    activeChild = child;
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      if (child.pid) {
-        try { process.kill(-child.pid, "SIGKILL"); }
-        catch (error) { if (error.code !== "ESRCH") console.error("Contract timeout termination failed", error); }
-      }
+      stopOwnedGroup(child, "timeout");
     }, timeoutMs);
-    child.once("error", (error) => { clearTimeout(timer); resolve({ exit: 1, error: error.code ?? "launch_error", timedOut }); });
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      activeChild = null;
+      resolve({ exit: 1, error: error.code ?? "launch_error", timedOut });
+    });
     child.once("close", (code, signal) => {
       clearTimeout(timer);
+      activeChild = null;
       resolve({ exit: code ?? (signal ? 1 : 0), timedOut });
     });
   });
@@ -57,12 +72,14 @@ for (const scenario of selected) {
     report = { scenario, result: "missing_report", safetyGate: "not_established" };
   }
   const validIdentity = report.scenario === scenario && report.version === "2026.916.0";
-  scenarios.push({ scenario, result: run.timedOut ? "timeout" : run.error ? "launch_error" :
+  scenarios.push({ scenario, result: interruptedSignal ? "interrupted" : run.timedOut ? "timeout" : run.error ? "launch_error" :
     !validIdentity && report.result !== "missing_report" ? "invalid_report" : report.result,
-    safetyGate: validIdentity && !run.timedOut && !run.error ? report.safetyGate : "not_established", exit: run.exit });
+    safetyGate: validIdentity && !interruptedSignal && !run.timedOut && !run.error ? report.safetyGate : "not_established", exit: run.exit });
 }
-const integrationAllowed = scenarios.every((scenario) => scenario.exit === 0 && scenario.result === "observed" && scenario.safetyGate === "pass");
-const summary = { version: "2026.916.0", integrationAllowed, scenarios };
+const integrationAllowed = !interruptedSignal && scenarios.length === selected.length &&
+  scenarios.every((scenario) => scenario.exit === 0 && scenario.result === "observed" && scenario.safetyGate === "pass");
+const summary = { version: "2026.916.0", integrationAllowed, scenarios,
+  ...(interruptedSignal ? { interruptedSignal } : {}) };
 await writeFile(path.join(reportDir, "summary.json"), JSON.stringify(summary, null, 2));
 console.log("SUPPORTED_HOST_CONTRACT_SUMMARY", JSON.stringify(summary));
-if (!integrationAllowed) process.exitCode = 1;
+if (!integrationAllowed) process.exitCode = interruptedSignal === "SIGINT" ? 130 : interruptedSignal === "SIGTERM" ? 143 : 1;

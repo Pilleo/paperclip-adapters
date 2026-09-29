@@ -16,6 +16,7 @@ async function runGate(fixtureExit, fixtureSafetyGate, args = [], options = {}) 
 const fs = require('node:fs');
 const path = require('node:path');
 const scenario = process.argv.find((arg) => arg.startsWith('--scenario='))?.slice(11);
+fs.writeFileSync(process.env.FIXTURE_PID_FILE, String(process.pid));
 if (process.env.FIXTURE_DELAY) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.FIXTURE_DELAY));
 if (process.env.FIXTURE_WRITE !== 'no') {
   const report = { scenario: process.env.FIXTURE_SCENARIO || scenario, version: process.env.FIXTURE_VERSION || '2026.916.0', result: 'observed', safetyGate: process.env.FIXTURE_SAFETY_GATE };
@@ -39,14 +40,28 @@ process.exit(Number(process.env.FIXTURE_EXIT));
         FIXTURE_SCENARIO: options.reportScenario ?? "", FIXTURE_VERSION: options.reportVersion ?? "",
         FIXTURE_DELAY: String(options.delayMs ?? 0),
         FIXTURE_MALFORMED: options.malformedReport ? "yes" : "no",
+        FIXTURE_PID_FILE: path.join(home, "fixture.pid"),
         CONTRACT_SCENARIO_TIMEOUT_MS: String(options.timeoutMs ?? 120_000) },
     });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (part) => { stdout += part.toString(); });
     child.stderr.on("data", (part) => { stderr += part.toString(); });
+    if (options.interruptAfterStart) {
+      for (let turn = 0; turn < 100; turn++) {
+        try { await readFile(path.join(home, "fixture.pid"), "utf8"); break; }
+        catch (error) { if (error.code !== "ENOENT") throw error; }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      child.kill("SIGTERM");
+    }
     const exit = await new Promise((resolve, reject) => { child.on("close", resolve); child.on("error", reject); });
     const summary = JSON.parse(await readFile(path.join(home, "reports", "summary.json"), "utf8"));
+    if (options.interruptAfterStart) {
+      const pid = Number(await readFile(path.join(home, "fixture.pid"), "utf8"));
+      const state = await readFile(`/proc/${pid}/stat`, "utf8").then((value) => value.split(") ")[1]?.[0], () => null);
+      assert.ok(state === null || state === "Z", `interrupted native contract child is still running: ${state}`);
+    }
     return { exit, stdout, stderr, summary };
   } finally {
     await rm(home, { recursive: true, force: true });
@@ -145,4 +160,11 @@ test("malformed scenario JSON cannot be a successful report", async () => {
   const result = await runGate(0, "pass", ["--scenario=stable_child_executor_pr_board"], { malformedReport: true });
   assert.notEqual(result.exit, 0);
   assert.equal(result.summary.scenarios[0].result, "missing_report");
+});
+
+test("SIGTERM terminates the owned contract process group and persists an interrupted summary", async () => {
+  const result = await runGate(0, "pass", ["--scenario=stable_child_executor_pr_board"],
+    { delayMs: 3000, interruptAfterStart: true });
+  assert.notEqual(result.exit, 0);
+  assert.equal(result.summary.scenarios[0].result, "interrupted");
 });

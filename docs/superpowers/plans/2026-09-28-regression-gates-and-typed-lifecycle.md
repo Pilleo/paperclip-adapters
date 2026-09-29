@@ -194,3 +194,13 @@ does not send a second message, and obtains revised Luna/strong typed
 approvals before one provider approval and PR registration. This is the
 single-task plan-revision lane; old-head PR rejection feedback inside a
 three-task chain remains a separate fault case.
+
+CI now requires ten positive installed-host scenarios. The native runner
+has a red/green interruption regression: SIGTERM kills an owned detached
+scenario and emits a failing, sanitized partial summary instead of leaving
+a process running. All ten scenarios were observed passing across two
+bounded local batches (seven prior to an outer command timeout, three in a
+fresh follow-up); the outer-timeout attempt itself was **not** reported as
+a successful complete matrix. The next gates remain the exact historical
+C terminal recovery-blocker disposition and scope-limited compiler-enforced
+refactors behind this completion/fault matrix.
