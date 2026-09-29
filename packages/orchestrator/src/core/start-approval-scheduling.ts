@@ -11,11 +11,12 @@ import type { ParsedIssueMetadata } from "./types.js";
 export function selectStartApprovalCandidates(
   issues: readonly ParsedIssueMetadata[],
   rootIssueIds?: readonly string[],
+  alreadyAuthorizedRootIssueIds: readonly string[] = [],
 ): readonly ParsedIssueMetadata[] {
   const eligibleIssues = issues.filter(isEligibleForStartApproval);
   const selectedIssueIds = rootIssueIds === undefined
     ? undefined
-    : collectApprovalWaveIssueIds(eligibleIssues, rootIssueIds);
+    : collectApprovalWaveIssueIds(eligibleIssues, [...rootIssueIds, ...alreadyAuthorizedRootIssueIds]);
 
   return eligibleIssues
     .filter((issue) => selectedIssueIds === undefined || selectedIssueIds.has(issue.id))

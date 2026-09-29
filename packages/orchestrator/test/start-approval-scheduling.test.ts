@@ -52,6 +52,17 @@ describe("start approval scheduling", () => {
       .map((candidate) => candidate.id)).toEqual(["03", "04", "14"]);
   });
 
+  it("completes a pending root's shared-file wave even while other unapproved roots consume dispatch slots", () => {
+    const selectedA = issue({ id: "01", targetFiles: ["first.js"], priorityRank: 5 });
+    const selectedB = issue({ id: "02", targetFiles: ["second.js"], priorityRank: 4 });
+    const pendingRoot = issue({ id: "03", targetFiles: ["numbers.js", "int.test.js"], priorityRank: 3 });
+    const competingRoot = issue({ id: "04", targetFiles: ["numbers.js", "decimal.test.js"], priorityRank: 2 });
+    const join = issue({ id: "14", targetFiles: ["pair.js"], dependencies: ["03", "04"], priorityRank: 1 });
+
+    expect(selectStartApprovalCandidates([selectedA, selectedB, pendingRoot, competingRoot, join],
+      ["01", "02"], ["03"]).map((candidate) => candidate.id)).toEqual(["01", "02", "03", "04", "14"]);
+  });
+
   it.each([
     ["unmanaged", issue({ orchestratorManaged: false })],
     ["question", issue({ openQuestions: true })],

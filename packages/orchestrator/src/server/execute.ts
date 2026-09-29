@@ -3605,6 +3605,13 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
     const earlyApprovalCandidates = selectStartApprovalCandidates(
       dispatchIssues,
       candidateSelections.map((selection) => selection.issue.id),
+      // A selected root can lose its dispatch slot to an earlier unapproved
+      // root on later ticks. Keep its existing native approval as a wave seed
+      // so a conflicting independent root can also be authorized up front.
+      dispatchIssues
+        .filter((issue) => issue.dependencies.length === 0 &&
+          ["pending", "approved"].includes(findTaskStartApproval(existingApprovals, issue.id)?.status ?? ""))
+        .map((issue) => issue.id),
     );
     for (const issue of earlyApprovalCandidates) {
       const approvalDecision = evaluateTaskStartApproval(issue, existingApprovals, requireApproval);
