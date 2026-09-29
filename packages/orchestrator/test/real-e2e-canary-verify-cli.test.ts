@@ -177,7 +177,9 @@ describe("read-only A→B→C canary verifier", () => {
     ["--wait-for-completion", "--timeout-ms=200", "--interval-ms=25"]);
     expect(result.code).not.toBe(0);
     expect(result.stderr).toMatch(/timeout|not complete/i);
-    expect(result.requests.length).toBeGreaterThan(3);
+    // A loaded CI worker can consume the 200ms budget before a second poll;
+    // the separate convergence test requires polling beyond this first GET trio.
+    expect(result.requests.length).toBeGreaterThanOrEqual(3);
     expect(result.requests.every((request) => request.startsWith("GET "))).toBe(true);
   });
 
