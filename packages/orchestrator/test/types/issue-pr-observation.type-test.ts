@@ -21,6 +21,13 @@ void remoteWithoutPr;
 void fallbackWithoutProduct;
 void absentRemote;
 
+// @ts-expect-error A merged GitHub PR must carry an authoritative merge timestamp.
+const mergedWithoutTimestamp: GitHubPullRequest = { ...pr, state: "MERGED", mergedAt: null };
+// @ts-expect-error An open PR cannot simultaneously declare a completed merge.
+const openWithMergeTimestamp: GitHubPullRequest = { ...pr, state: "OPEN", mergedAt: "2026-09-29T01:00:00Z" };
+void mergedWithoutTimestamp;
+void openWithMergeTimestamp;
+
 function exhaustive(observation: IssuePullRequestObservation): GitHubPullRequest | undefined {
   switch (observation.kind) {
     case "remote_open": return observation.pr;

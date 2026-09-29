@@ -103,18 +103,21 @@ export interface MultiLaneOptions {
   readonly julesOnlyIssueIds: ReadonlySet<string>;
 }
 
-export interface GitHubPullRequest {
+interface GitHubPullRequestFields {
   readonly number: number;
   readonly title: string;
-  readonly state: "OPEN" | "CLOSED" | "MERGED";
   readonly headRefName: string;
   /** Immutable Git commit identity used to invalidate prior review verdicts. */
   readonly headRefOid?: string | undefined;
   readonly baseRefName: string;
-  readonly mergedAt: string | null;
   readonly url: string;
   readonly files: readonly string[];
 }
+
+export type GitHubPullRequest = GitHubPullRequestFields & (
+  | { readonly state: "MERGED"; readonly mergedAt: string }
+  | { readonly state: "OPEN" | "CLOSED"; readonly mergedAt: null }
+);
 
 export interface GitHubSyncStatus {
   readonly openPrs: readonly GitHubPullRequest[];

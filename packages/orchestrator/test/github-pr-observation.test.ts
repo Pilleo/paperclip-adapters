@@ -59,4 +59,13 @@ describe("issue PR discovery at bounded GitHub boundary", () => {
     expect(resolveIssuePullRequestObservation(issue(true), malformed))
       .toMatchObject({ kind: "registered_after_unavailable", registered: { headRefOid: "b".repeat(40) } });
   });
+
+  it("does not recognize a merged PR without a merge timestamp or an open PR with one", () => {
+    const raw = { number: 7, title: "MAZ-1", url: registeredUrl,
+      headRefName: "topic", headRefOid: "a".repeat(40), baseRefName: "main" };
+    expect(processRawPullRequests([{ ...raw, state: "MERGED", mergedAt: null }]).error)
+      .toMatch(/merge.*timestamp/i);
+    expect(processRawPullRequests([{ ...raw, state: "OPEN", mergedAt: "2026-09-29T01:00:00Z" }]).error)
+      .toMatch(/merge.*timestamp/i);
+  });
 });

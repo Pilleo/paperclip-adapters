@@ -187,17 +187,29 @@ export function processRawPullRequests(
       .map((f) => (typeof f === "string" ? f : f.path || ""))
       .filter(Boolean);
 
-    const pr: GitHubPullRequest = Object.freeze({
+    const fields = {
       number: item.number,
       title: item.title,
-      state: stateUpper,
       headRefName: item.headRefName,
       ...(typeof item.headRefOid === "string" && item.headRefOid ? { headRefOid: item.headRefOid } : {}),
       baseRefName: item.baseRefName,
-      mergedAt: item.mergedAt,
       url: item.url,
       files: Object.freeze(files),
-    });
+    };
+    let pr: GitHubPullRequest;
+    if (stateUpper === "MERGED") {
+      if (typeof item.mergedAt !== "string" || !item.mergedAt.trim()) {
+        return { openPrs: Object.freeze([]), mergedPrs: Object.freeze([]),
+          openPrFiles: Object.freeze(new Set<string>()), error: `Inconsistent GitHub PR merge timestamp for #${item.number}` };
+      }
+      pr = Object.freeze({ ...fields, state: "MERGED", mergedAt: item.mergedAt });
+    } else {
+      if (item.mergedAt !== null) {
+        return { openPrs: Object.freeze([]), mergedPrs: Object.freeze([]),
+          openPrFiles: Object.freeze(new Set<string>()), error: `Inconsistent GitHub PR merge timestamp for #${item.number}` };
+      }
+      pr = Object.freeze({ ...fields, state: stateUpper, mergedAt: null });
+    }
 
     if (stateUpper === "OPEN") {
       openPrs.push(pr);
