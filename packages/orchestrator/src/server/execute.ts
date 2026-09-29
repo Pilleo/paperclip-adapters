@@ -1888,7 +1888,8 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
         : issue.assigneeAgentId && issue.assigneeAgentId === vibeReviewerAgentId
           ? "vibe_reviewer"
           : issue.assigneeAgentId === orchestratorId ? "orchestrator" : "other",
-      executionRunLive: Boolean(issue.executionRunId) || ["queued", "running", "active", "waiting"].includes(String(executionStatus)),
+      executionRunLive: Boolean(issue.executionRunId) || ["queued", "running", "active", "waiting"].includes(String(executionStatus)) ||
+        heartbeatRuns.some((run) => run.issueId === issue.id && ["queued", "claimed", "running", "active"].includes(run.status)),
       // The lifecycle pass may have just reattached a native Jules monitor.
       // Carry that same-tick proof into board reconciliation; otherwise the
       // stale pre-PATCH projection can immediately recover the open PR into
@@ -1924,6 +1925,24 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     // the target status is observed on the board.
     if (snapshot && snapshot.status !== targetStatus) lifecycleConvergenceGuard.clear(guardKey);
     await lifecycleConvergenceGuard.runOnce(guardKey, async () => {
+      if (isReviewRecovery && snapshot?.assigneeKind === "jules") {
+        try {
+          const current = await pc.getIssue<Record<string, unknown>>(command.issueId);
+          const recentRuns = julesAgentId ? await pc.listHeartbeatRuns(companyId, julesAgentId, 50) : [];
+          const liveJulesRun = recentRuns.map((run) => parseHeartbeatRun(run)).some((run) =>
+            run.issueId === command.issueId && ["queued", "claimed", "running", "active"].includes(run.status));
+          if (current["status"] !== snapshot.status || current["assigneeAgentId"] !== julesAgentId ||
+              current["executionBlocker"] != null || current["executionRunId"] != null || liveJulesRun) {
+            lifecycleConvergenceGuard.clear(guardKey);
+            await log(`[ORCHESTRATOR] Deferring board PR review recovery for [${command.issueId}]: fresh Jules execution or ownership supersedes this snapshot.`);
+            return;
+          }
+        } catch (error: unknown) {
+          lifecycleConvergenceGuard.clear(guardKey);
+          await log(`[ORCHESTRATOR] Deferring board PR review recovery for [${command.issueId}]: fresh execution evidence unavailable (${String(error)}).`);
+          return;
+        }
+      }
       if (command.action === "cancel_duplicate_child") {
         // Paperclip can immediately re-project an issue as in_progress when
         // its queued/running heartbeat is still alive. Fence the run first,

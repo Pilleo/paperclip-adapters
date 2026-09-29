@@ -45,7 +45,8 @@ export function planBoardReconciliation(issues: readonly BoardIssueSnapshot[]): 
     // head; until then no board transition may replace Jules ownership.
     if (issue.ciRemediationInProgress) continue;
     if (issue.executionReconciliationRequired) continue;
-    if (issue.status === "in_progress" && issue.registeredOpenPullRequest && !issue.resumableMonitor) {
+    if (issue.status === "in_progress" && issue.registeredOpenPullRequest &&
+        !issue.resumableMonitor && !issue.executionRunLive) {
       commands.push({
         action: "recover_to_review",
         issueId: issue.id,

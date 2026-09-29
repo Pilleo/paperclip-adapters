@@ -40,7 +40,7 @@ if (!scenario) {
   if (results.some((result) => result.result !== "observed")) process.exitCode = 1;
   else if (process.argv.includes("--require-safe") && !integrationAllowed) process.exitCode = 2;
 } else {
-  assert.ok([...scenarios, "stable_child", "stable_child_ladder", "stable_child_reject", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_jules_v4_revise_message_lost", "stable_child_chain_abc_complete", "stable_child_chain_abc_recover_auto_blocker", "stable_child_chain_abc_lost_b_create", "stable_child_chain_abc_lost_b_approval", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused", "stable_child_gemini", "stable_child_gemini_retry"].includes(scenario), `Unknown scenario ${scenario}`);
+  assert.ok([...scenarios, "stable_child", "stable_child_ladder", "stable_child_reject", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_jules_v4_revise_message_lost", "stable_child_chain_abc_complete", "stable_child_chain_abc_later_jules_run", "stable_child_chain_abc_recover_auto_blocker", "stable_child_chain_abc_lost_b_create", "stable_child_chain_abc_lost_b_approval", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused", "stable_child_gemini", "stable_child_gemini_retry"].includes(scenario), `Unknown scenario ${scenario}`);
   await runScenario();
 }
 
@@ -60,6 +60,8 @@ async function runScenario() {
   const released = new Set();
   let closing = false;
   let activeMutations = 0;
+  let holdLaterJulesProviderGet = false;
+  let pendingLaterJulesProviderReply = null;
     const events = report.events;
   const record = (name, data = {}) => events.push({ sequence: events.length + 1, at: new Date().toISOString(), name, ...data });
   const release = (name) => {
@@ -106,7 +108,7 @@ async function runScenario() {
     let chainGitHub = null;
     config.stageId = nativePlanReviewStageId(config.issueId, config.revisionId, "luna");
     config.checkpointPath = path.join(home, "child-review-checkpoint.json");
-    config.childReviewLadder = ["stable_child_ladder", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_jules_v4_revise_message_lost", "stable_child_chain_abc_complete", "stable_child_chain_abc_recover_auto_blocker", "stable_child_chain_abc_lost_b_create", "stable_child_chain_abc_lost_b_approval", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused"].includes(scenario);
+    config.childReviewLadder = ["stable_child_ladder", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_jules_v4_revise_message_lost", "stable_child_chain_abc_complete", "stable_child_chain_abc_later_jules_run", "stable_child_chain_abc_recover_auto_blocker", "stable_child_chain_abc_lost_b_create", "stable_child_chain_abc_lost_b_approval", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused"].includes(scenario);
     config.realJulesExecutor = ["stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict"].includes(scenario);
     config.producerConflictProbe = scenario === "stable_child_executor_pr_producer_conflict";
     config.prMigrationProbe = ["stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board"].includes(scenario);
@@ -117,8 +119,9 @@ async function runScenario() {
     config.prStrongGemini = scenario === "stable_child_executor_pr_gemini";
     config.prStrongFirstTurnFailure = scenario === "stable_child_executor_pr_failed";
     config.prStrongRetryMarker = path.join(home, "strong-reviewer-first-turn-failed");
-    config.chainBlockedProbe = ["stable_child_chain_abc_complete", "stable_child_chain_abc_lost_b_create",
+    config.chainBlockedProbe = ["stable_child_chain_abc_complete", "stable_child_chain_abc_later_jules_run", "stable_child_chain_abc_lost_b_create",
       "stable_child_chain_abc_lost_b_approval", "stable_child_chain_abc_recover_auto_blocker"].includes(scenario);
+    config.chainLaterJulesRunProbe = scenario === "stable_child_chain_abc_later_jules_run";
     config.chainAutoSettledPrFailure = scenario === "stable_child_chain_abc_recover_auto_blocker";
     config.chainLostBCreateResponse = scenario === "stable_child_chain_abc_lost_b_create";
     config.chainLostBApprovalResponse = scenario === "stable_child_chain_abc_lost_b_approval";
@@ -183,6 +186,12 @@ async function runScenario() {
     let providerRevised = false;
     let providerRevisionAt = null;
     const chainProviderSessions = new Map();
+    const maybeHoldLaterJulesGet = (reply) => {
+      if (!config.chainLaterJulesRunProbe || !holdLaterJulesProviderGet || pendingLaterJulesProviderReply) return false;
+      pendingLaterJulesProviderReply = reply;
+      record("CHAIN_LATER_JULES_PROVIDER_GET_HELD", { issueId: config.issueId });
+      return true;
+    };
     const app = express();
     app.use(express.json());
     if (config.realJulesExecutor || config.julesOwnedBootstrap) {
@@ -230,8 +239,12 @@ async function runScenario() {
             outputs: stored.approved ? [{ pullRequest: { url: stored.label === "A" ? config.prUrl :
               `https://github.com/paperclip-contract/fixture/pull/${stored.label === "B" ? 2 : 3}` } }] : [],
           });
-          if (req.path === "/sessions" && req.method === "GET") return res.json({ sessions: [...chainProviderSessions]
-            .map(([id, stored]) => stateOf(id, stored)) });
+          if (req.path === "/sessions" && req.method === "GET") {
+            const reply = () => res.json({ sessions: [...chainProviderSessions]
+              .map(([id, stored]) => stateOf(id, stored)) });
+            if (maybeHoldLaterJulesGet(reply)) return;
+            return reply();
+          }
           const activitiesId = /^\/sessions\/([^/]+)\/activities$/.exec(req.path)?.[1];
           if (activitiesId && req.method === "GET") {
             const stored = chainProviderSessions.get(activitiesId);
@@ -244,7 +257,10 @@ async function runScenario() {
           const sessionId = /^\/sessions\/([^/]+)$/.exec(req.path)?.[1];
           if (sessionId && req.method === "GET") {
             const stored = chainProviderSessions.get(sessionId);
-            return stored ? res.json(stateOf(sessionId, stored)) : res.status(404).json({ error: "session absent" });
+            if (!stored) return res.status(404).json({ error: "session absent" });
+            const reply = () => res.json(stateOf(sessionId, stored));
+            if (maybeHoldLaterJulesGet(reply)) return;
+            return reply();
           }
           return res.status(404).json({ error: "unsupported chain provider operation" });
         }
@@ -335,6 +351,11 @@ async function runScenario() {
       activeMutations++;
       const mutation = { actorId: req.actor.agentId, runId: req.actor.runId, body: req.body, status: null, returnedStatus: null };
       report.mutations.push(mutation);
+      if (config.chainLaterJulesRunProbe) record("CHAIN_SOURCE_ISSUE_PATCH_OBSERVED", {
+        actorType: req.actor.type, actorId: req.actor.agentId ?? null, runId: req.actor.runId ?? null,
+        status: req.body.status ?? null, assigneeAgentId: req.body.assigneeAgentId ?? null,
+        fieldNames: Object.keys(req.body),
+      });
       // Observe handler completion, not socket close: reassignment may kill the caller first.
       const original = res.json.bind(res);
       let completed = false;
@@ -591,6 +612,35 @@ async function runScenario() {
           assert.equal(products[0].metadata.headSha, config.prHeadSha);
           assert.equal(products[0].status, "ready_for_review");
           assert.equal((await issueRow()).assigneeAgentId, config.julesId);
+          if (config.chainLaterJulesRunProbe) {
+            holdLaterJulesProviderGet = true;
+            const laterWake = await wake(config.julesId, config.issueId, { contractLaterJulesMonitor: true });
+            await waitEvent("CHAIN_LATER_JULES_PROVIDER_GET_HELD", 0, 60_000);
+            const [later] = (await runRows()).filter((run) => run.agentId === config.julesId &&
+              run.contextSnapshot?.issueId === config.issueId && run.id !== laterWake?.id && run.status === "running")
+              .sort((a, b) => b.createdAt - a.createdAt);
+            const inFlight = later ?? (await runRows()).find((run) => run.agentId === config.julesId &&
+              run.contextSnapshot?.issueId === config.issueId && run.status === "running");
+            assert.ok(inFlight, "a later same-issue Jules run must remain genuinely running before PR handoff");
+            const orchestratorWake = await wake(config.orchestratorId, config.maintenanceIssueId,
+              { contractChainReconcile: true });
+            await until("orchestrator tick holds later Jules execution", async () => {
+              const runs = await runRows();
+              return runs.some((run) => run.id === orchestratorWake.id && run.status === "succeeded");
+            }, 60_000);
+            const stillRunning = (await runRows()).find((run) => run.id === inFlight.id);
+            assert.equal(stillRunning?.status, "running", "handoff must not cancel the newer Jules run");
+            assert.equal((await issueRow()).assigneeAgentId, config.julesId);
+            const held = await fetch(`${process.env.PAPERCLIP_API_URL}/api/issues/${config.issueId}`)
+              .then((response) => response.json());
+            assert.equal(held.executionBlocker ?? null, null, "no issue_reassigned blocker may be manufactured");
+            record("CHAIN_LATER_JULES_HANDOFF_HELD", { laterRunId: inFlight.id, prUrl: config.prUrl });
+            holdLaterJulesProviderGet = false;
+            const releaseProvider = pendingLaterJulesProviderReply;
+            pendingLaterJulesProviderReply = null;
+            releaseProvider?.();
+            await settle();
+          }
           if (config.chainBlockedProbe) {
             if (config.chainAutoSettledPrFailure) {
               await wake(config.julesId, config.issueId, { contractFailAfterRegisteredPr: true });
@@ -1488,6 +1538,8 @@ async function runScenario() {
     }
   } finally {
     closing = true;
+    pendingLaterJulesProviderReply?.();
+    pendingLaterJulesProviderReply = null;
     for (const { response } of pending.values()) response.json({ ok: true });
     pending.clear();
     if (heartbeat) {

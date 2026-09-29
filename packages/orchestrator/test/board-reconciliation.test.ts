@@ -101,6 +101,11 @@ describe("board reconciliation planner", () => {
     ]);
   });
 
+  it("keeps a registered Jules PR provider-owned while the exact source run remains live", () => {
+    expect(planBoardReconciliation([parent({ assigneeKind: "jules", registeredOpenPullRequest: true,
+      resumableMonitor: false, executionRunLive: true })])).toEqual([]);
+  });
+
   it("does not promote a PR while the same heartbeat has returned failed CI to Jules", () => {
     expect(planBoardReconciliation([parent({
       registeredOpenPullRequest: true,
