@@ -16,3 +16,34 @@
 ## Next qualified operation
 
 Once the user has reviewed the written implementation plan, invoke the journaled `stress-campaign-create.ts --create --run-key stress-20260929-20pr-a` with `PAPERCLIP_TEST_API_URL=http://127.0.0.1:3100`, the company ID above and `PAPERCLIP_STRESS_JOURNAL_DIR=/tmp/paperclip-stress-20260929-20pr-a/`. That operation creates **20 backlog issues**, compares all native `blockedBy` relations, and prints the issue IDs. Verify the entire graph before a separate `--activate` (backlog → todo) and one `--wake` to request the 20 task-scoped approvals. The user, not the operator script, decides each start/merge approval and merges PRs.
+
+## User-approved issue creation and start-card qualification
+
+The user reviewed and approved the written implementation plan before any task POST. The journaled `--create` operation created **exactly 20** run-marked `backlog` issues in numeric native-DAG order; independent GET verification found six roots, 16 native blocker edges, the sole declared 03/04 shared implementation file, 20 unique tests, zero assignments, and zero work products. The journaled `--activate` operation changed and read back **those same 20** issues as `todo`. One project-scoped `--wake` returned succeeded orchestrator run `584f2209-7c40-4a1b-830c-3ac95daa8b9a`. No start card was approved by the operator.
+
+A timer heartbeat created nine task-start cards even while the issues were still staged as `backlog`: orchestrator logs at `2026-09-29T11:03:42Z` explicitly requested them. A subsequent one-shot wake raised this to 19 pending cards without duplicates, leaving independent shared-file root **04** unauthorised. Red/green test `start-approval-scheduling.test.ts` first proved the scheduler omitted a conflicting root from an otherwise selected root's approval wave. Fix `f337517` included such peers, but live post-reload ticks still did not revisit root 03 because higher-ranked unapproved roots 01/02 occupied the selection slots. A second red/green regression demonstrated this exact pending-root starvation; fix `66694c8` seeds approval waves from already-pending or approved roots as well as newly selected ones, while keeping dispatch's file conflict lock and native dependency gate intact. After both fixes, focused tests, full `pnpm test`, `pnpm build`, and pinned-host positive `stable_child_chain_abc_complete --require-safe` passed. Each reload waited for all companies to be idle and for all 20 campaign tasks to remain `todo`/unassigned with only pending start cards. Startup logs confirmed the orchestrator's built `dist/index.js` load. A normal post-reload heartbeat requested root 04's **original** pending native start card at `2026-09-29T11:38:31Z`; no board-created replacement, text approval, or duplicate wake was sent.
+
+Read-only verifier `stress-campaign-verify.ts --run-key stress-20260929-20pr-a --project-id db166929-2e4e-454d-aee9-25f5380543c4` now reports `awaiting_user_start`: **20 issues, 20 distinct pending native `task_start` cards, zero assigned tasks, zero PR products.** These are the exact Paperclip approval cards for the user to decide in the Mazewall Approvals view:
+
+| Task | Issue | Native issue ID | Pending start approval ID |
+| --- | --- | --- | --- |
+| 01 | MAZ-1596 | `28f4b726-364b-4fa2-ba88-1ea88838357d` | `ba657c53-2e89-4abe-bed3-034fb6c19271` |
+| 02 | MAZ-1597 | `fc872be9-93eb-4050-a08f-c514243a129e` | `f31519a1-1e3e-40c7-9b0d-ae81558fe233` |
+| 03 | MAZ-1598 | `90e18d18-ba72-4b78-adc2-d7a5a3f92152` | `31d1fcdc-0c79-4450-8965-89c72785c618` |
+| 04 | MAZ-1599 | `dcebae09-cca5-4646-bf1c-01f10995d55f` | `b8564ef9-5c0b-46a9-8fd6-e8a5d96cd4ea` |
+| 05 | MAZ-1600 | `0d7e5609-0b0f-4e8f-bd56-d2a1db056db0` | `c52a9fc1-1117-4f10-86de-eea4e7a7c91c` |
+| 06 | MAZ-1601 | `6eb8f38c-57b0-415e-bd01-054c00cd920c` | `dfc0b215-ad02-4c1b-945c-fa460b4fb26b` |
+| 07 | MAZ-1602 | `ce7f8e35-1990-4767-a72e-f5e322546417` | `ce64f010-10e7-47f4-ba56-6f38fcdb0f39` |
+| 08 | MAZ-1603 | `9ac8b9ba-b370-4ddc-866f-fbc1f9553f9f` | `1762aeb8-c36a-490a-8292-00c96ca81b36` |
+| 09 | MAZ-1604 | `30356527-9f19-480e-a916-252ea53e05d7` | `37305c22-b3b7-4c7a-aee5-c61e89b6209c` |
+| 10 | MAZ-1605 | `282c9466-d4da-41ec-828e-947c18c0e3ef` | `6aa403fd-c32c-409f-bbb5-aece0865f6ba` |
+| 11 | MAZ-1606 | `29b656f0-3257-4df7-9b45-91e005943f06` | `dcd5afa8-4420-4bc3-8162-d49ab7cc58c8` |
+| 12 | MAZ-1607 | `84e21e0b-a905-45fb-b1de-08c12610df2f` | `065cd9e3-b119-4efa-bc1f-d05eb7cbbdc4` |
+| 13 | MAZ-1608 | `723b7f55-781f-463c-89cc-61cf42d7bb20` | `2c18552c-c338-425c-b402-4b029d9bf3b4` |
+| 14 | MAZ-1609 | `0f7aa178-b147-4203-a42b-7b0b5ed9a1df` | `deb3aada-2f6c-4dcb-9d5f-9a30951b3db6` |
+| 15 | MAZ-1610 | `52b470e2-ac4f-40bc-9052-97f3758b401c` | `dac2c24b-3aa4-47f0-b765-7a914c318426` |
+| 16 | MAZ-1611 | `4baa858b-db77-4b61-8967-0c7049a1a583` | `069c806c-630a-4404-be3a-cea0311bc859` |
+| 17 | MAZ-1612 | `a0a43a21-0dd4-4b32-8f5f-0ccbdd2873a6` | `c56c21e2-aac1-40de-93ec-da4509d30066` |
+| 18 | MAZ-1613 | `e456edef-43b0-43d8-aa02-d041e96e1e6a` | `f8a9480e-0c5b-4bb0-b208-4bb301c8d12f` |
+| 19 | MAZ-1614 | `7750b5c9-906e-4822-8e0e-807505c94a28` | `5bf12837-e77f-4033-8a5a-c98dd1257cd5` |
+| 20 | MAZ-1615 | `ff5f3818-5883-429b-b39a-62c2a140fc31` | `dd55e880-ffec-4bd0-8ef6-bef9e5dfa5f0` |
