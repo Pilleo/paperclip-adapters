@@ -1408,7 +1408,6 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
           }
         }
       } catch (err: unknown) {
-        openPrExecutionHoldIssueIds.add(issue.id);
         await log(`[ORCHESTRATOR] Deferring open Jules PR recovery for [${issue.identifier || issue.id}]: could not verify monitor/review state (${String(err)}).`);
         continue;
       }
@@ -1535,6 +1534,30 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
         assigneeAgentId: issue.assigneeAgentId ?? null,
       });
       await lifecycleConvergenceGuard.runOnce(recoveryKey, async () => {
+        // The company run snapshot was taken before GitHub/reviewer reads.
+        // A due Jules monitor can start meanwhile. Paperclip cancels that
+        // same-issue run as issue_reassigned if this PATCH clears its owner.
+        // Fail closed on fresh host evidence before releasing Jules ownership.
+        let latestIssue: Record<string, unknown>;
+        let latestJulesRuns: HeartbeatRunSummary[];
+        try {
+          latestIssue = await pc.getIssue<Record<string, unknown>>(issue.id);
+          latestJulesRuns = julesAgentId
+            ? (await pc.listHeartbeatRuns(companyId, julesAgentId, 50)).map((run) => parseHeartbeatRun(run))
+            : [];
+        } catch (error: unknown) {
+          lifecycleConvergenceGuard.clear(recoveryKey);
+          await log(`[ORCHESTRATOR] Deferring Jules PR handoff for [${issue.identifier || issue.id}]: fresh execution evidence unavailable (${String(error)}).`);
+          return;
+        }
+        const liveIssueRun = latestJulesRuns.some((run) => run.issueId === issue.id &&
+          ["queued", "claimed", "running", "active"].includes(run.status));
+        if (latestIssue["executionBlocker"] != null || liveIssueRun ||
+            (typeof latestIssue["executionRunId"] === "string" && latestIssue["executionRunId"] !== producerRunId)) {
+          lifecycleConvergenceGuard.clear(recoveryKey);
+          await log(`[ORCHESTRATOR] Deferring Jules PR handoff for [${issue.identifier || issue.id}]: a newer run or execution blocker retains authority.`);
+          return;
+        }
         await retireStaleJulesChildren(issue.id, issue.identifier || issue.id);
         // Paperclip can still consider a host execution policy active when it
         // reprojects this issue as `in_progress`. Clear that host-owned state
@@ -2090,6 +2113,21 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
 
   let stalledReclaimedCount = 0;
   for (const { issue, idleDurationMs } of stalled) {
+    if (issue.assigneeAgentId && managedJulesIds.has(issue.assigneeAgentId)) {
+      try {
+        const latest = await pc.getIssue<Record<string, unknown>>(issue.id);
+        const recent = await pc.listHeartbeatRuns(companyId, issue.assigneeAgentId, 50);
+        if (recent.map((run) => parseHeartbeatRun(run)).some((run) => run.issueId === issue.id &&
+            ["queued", "claimed", "running", "active"].includes(run.status)) ||
+            latest["executionBlocker"] != null || latest["executionRunId"] != null) {
+          await log(`[ORCHESTRATOR] Keeping [${issue.identifier || issue.id}] with Jules: a fresh run or execution hold supersedes the stale reclaim snapshot.`);
+          continue;
+        }
+      } catch (error: unknown) {
+        await log(`[ORCHESTRATOR] Deferring stalled Jules reclaim for [${issue.identifier || issue.id}]: fresh execution evidence unavailable (${String(error)}).`);
+        continue;
+      }
+    }
     const mins = Math.round(idleDurationMs / 60000);
     await log(
       `[ORCHESTRATOR] Reclaiming stalled task [${issue.identifier || issue.id}] "${issue.title}" (idle ${mins}m with no active heartbeat) -> todo`
@@ -2558,6 +2596,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
   }
   const reviewRecoveryIds = new Set([...nativeReviewRecoveryIds, ...reviewRecoveryIssues.map((issue) => issue.id), ...boardReviewRecoveryIds, ...openPrRecoveryIds]);
   const inReviewIssues = overlayedIssues.filter((i) => {
+    if (openPrExecutionHoldIssueIds.has(i.id) || i.rawIssue["executionBlocker"] != null) return false;
     if (i.status === "in_review" || reviewRecoveryIds.has(i.id)) return true;
     if (i.orchestratorManaged && i.assigneeAgentId === orchestratorId && isReviewWaitState(i.rawIssue["executionState"])) return true;
     // Paperclip may transiently normalize a native review handoff to
@@ -2662,6 +2701,10 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       await log(`[ORCHESTRATOR] Deferring review for [${listedReviewTask.identifier || listedReviewTask.id}]: enriched issue state unavailable: ${msg}`);
+      continue;
+    }
+    if (reviewTask.rawIssue["executionBlocker"] != null || openPrExecutionHoldIssueIds.has(reviewTask.id)) {
+      await log(`[ORCHESTRATOR] Holding native PR review for [${reviewTask.identifier || reviewTask.id}]: execution blocker requires exact typed reconciliation.`);
       continue;
     }
     if (isDelegatedReviewChild(reviewTask)) {

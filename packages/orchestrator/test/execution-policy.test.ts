@@ -60,6 +60,7 @@ describe("mazewall execution policy builder", () => {
     ["rejects residual Jules ownership", { status: "in_review", assigneeAgentId: "jules-1", executionPolicy: null, executionState: null }, false],
     ["rejects a scheduled provider monitor", { status: "in_review", assigneeAgentId: null, executionPolicy: null, executionState: { status: "idle", monitor: { status: "scheduled", serviceName: "jules" } } }, false],
     ["rejects a triggered provider monitor without terminal producer evidence", { status: "in_review", assigneeAgentId: null, executionPolicy: null, executionState: { status: "idle", monitor: { status: "triggered", serviceName: "jules" } } }, false],
+    ["rejects reassignment's cancelled-run execution blocker", { status: "in_review", assigneeAgentId: null, executionPolicy: null, executionState: null, executionBlocker: { runId: "cancelled-jules-run", cause: "legacy_execution_requires_reconciliation" } }, false],
   ] as const)("%s", (_name, issue, expected) => {
     expect(isNativePrReviewHandoffProjection(issue)).toBe(expected);
   });

@@ -619,6 +619,93 @@ describe("orchestrator native PR completion", () => {
     expect(logs.join("\n")).toContain("Recovered open Jules PR for [MAZ-1519] into native review.");
   });
 
+  it("does not cancel a later Jules monitor when it starts after the original PR producer", async () => {
+    const producerId = "producer-before-later-monitor";
+    const liveId = "live-after-producer";
+    const original = { ...issue(), status: "in_progress", assigneeAgentId: "jules-1",
+      executionPolicy: { mode: "normal", stages: [], monitor: { kind: "external_service", serviceName: "jules", externalRef: "session-pr-11" } },
+      executionState: { status: "idle", monitor: { kind: "external_service", serviceName: "jules", status: "scheduled" } },
+      workProducts: [{ ...issue().workProducts[0], createdByRunId: producerId,
+        metadata: { source: "jules", producer: "paperclip-jules-adapter", headSha } }] };
+    let persisted: Record<string, unknown> = original;
+    let issueReads = 0;
+    const patches: Record<string, unknown>[] = [];
+    const cancelled: string[] = [];
+    const logs: string[] = [];
+    globalThis.fetch = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (href.includes("/agents")) return new Response(JSON.stringify(managedAgents()));
+      if (href.includes("/projects")) return new Response(JSON.stringify([{ id: "project-1519", primaryWorkspace: { cwd: process.cwd() } }]));
+      if (method === "GET" && href.endsWith(`/api/issues/${issueId}`)) {
+        issueReads++;
+        // The first authoritative detail has no active execution. The host
+        // starts a same-issue Jules monitor while the orchestrator is reading
+        // PR/review state, before it attempts to release Jules ownership.
+        if (issueReads > 1 && persisted["assigneeAgentId"] === "jules-1") {
+          return new Response(JSON.stringify({ ...persisted, executionRunId: liveId }));
+        }
+        return new Response(JSON.stringify(persisted));
+      }
+      if (method === "PATCH" && href.endsWith(`/api/issues/${issueId}`)) {
+        const patch = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        patches.push(patch);
+        if (patch["assigneeAgentId"] === null || patch["status"] === "todo") {
+          cancelled.push(liveId);
+          persisted = { ...persisted, ...patch, executionRunId: null,
+            executionBlocker: { runId: liveId, cause: "legacy_execution_requires_reconciliation" } };
+        }
+        return new Response(JSON.stringify(persisted));
+      }
+      if (href.endsWith(`/api/heartbeat-runs/${producerId}`)) return new Response(JSON.stringify({
+        id: producerId, agentId: "jules-1", status: "succeeded", startedAt: "2026-09-21T09:16:30Z",
+        finishedAt: "2026-09-21T09:16:46Z", contextSnapshot: { issueId },
+        resultJson: { provider: "jules", julesSessionId: "session-pr-11", julesState: "COMPLETED", stopReason: "completed" },
+      }));
+      if (href.endsWith(`/api/heartbeat-runs/${liveId}`)) return new Response(JSON.stringify({
+        id: liveId, agentId: "jules-1", status: "running", startedAt: "2026-09-21T09:17:00Z", contextSnapshot: { issueId },
+      }));
+      if (href.includes("/heartbeat-runs")) return new Response(JSON.stringify([{
+        id: producerId, agentId: "jules-1", status: "succeeded", startedAt: "2026-09-21T09:16:30Z",
+        finishedAt: "2026-09-21T09:16:46Z", contextSnapshot: { issueId },
+      }, ...(issueReads > 1 ? [{ id: liveId, agentId: "jules-1", status: "running", startedAt: "2026-09-21T09:17:00Z", contextSnapshot: { issueId } }] : [])]));
+      if (href.includes("/interactions") || href.includes("/children") || href.includes("/approvals")) return new Response(JSON.stringify([]));
+      if (method === "GET" && href.includes("/issues")) return new Response(JSON.stringify([original]));
+      return new Response(JSON.stringify([]));
+    }) as typeof fetch;
+
+    await expect(execute({ ...context(), onLog: async (_stream, line) => { logs.push(line); } }))
+      .resolves.toMatchObject({ exitCode: 0 });
+    expect(cancelled).toEqual([]);
+    expect(patches).not.toContainEqual(expect.objectContaining({ assigneeAgentId: null }));
+    expect(logs.join("\n")).not.toContain("Recovered open Jules PR");
+  });
+
+  it("does not create a PR reviewer child from a blocked unassigned in_review Jules issue", async () => {
+    const blocked = { ...issue(), executionBlocker: { runId: "cancelled-during-handoff",
+      recoveryActionId: "settled-recovery", cause: "legacy_execution_requires_reconciliation" },
+      workProducts: [{ ...issue().workProducts[0], metadata: { source: "jules", producer: "paperclip-jules-adapter", headSha } }] };
+    const creations: string[] = [];
+    globalThis.fetch = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (method === "POST" && (href.includes("/children") || href.includes("/interactions") || href.includes("/wakeup"))) {
+        creations.push(href);
+      }
+      if (href.includes("/agents")) return new Response(JSON.stringify(managedAgents(true)));
+      if (href.includes("/projects")) return new Response(JSON.stringify([{ id: "project-1519", primaryWorkspace: { cwd: process.cwd() } }]));
+      if (method === "GET" && href.endsWith(`/api/issues/${issueId}`)) return new Response(JSON.stringify(blocked));
+      if (href.includes("/recovery-actions")) return new Response(JSON.stringify({ active: null }));
+      if (method === "GET" && href.includes("/issues") && !href.includes("parentId=")) return new Response(JSON.stringify([blocked]));
+      if (href.includes("/issues") || href.includes("/heartbeat-runs") || href.includes("/approvals")) return new Response(JSON.stringify([]));
+      return new Response(JSON.stringify([]));
+    }) as typeof fetch;
+
+    await expect(execute(context())).resolves.toMatchObject({ exitCode: 0 });
+    expect(creations.filter((href) => href.includes(`/api/issues/${issueId}/children`) ||
+      href.includes("/wakeup"))).toEqual([]);
+  });
+
   it("invalidates only the matching pending merge approval after GitHub confirms an external merge", async () => {
     const logs: string[] = [];
     const mergedIssue = {

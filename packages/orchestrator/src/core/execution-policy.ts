@@ -122,6 +122,7 @@ export function isNativePrReviewHandoffProjection(
   return issue["status"] === "in_review" &&
     issue["assigneeAgentId"] === null &&
     issue["executionPolicy"] === null &&
+    issue["executionBlocker"] == null &&
     isPaperclipNormalizedTerminalExecutionState(issue["executionState"], Boolean(evidence.terminalJulesProducer));
 }
 

@@ -7,6 +7,7 @@ import { resolveGitHubCliExecutable } from "../src/core/github-sync.js";
 import { stressTasks } from "../src/core/stress-campaign-manifest.js";
 import { evaluateStressProgress, type StressIssueEvidence, type StressReviewEvidence } from "../src/core/stress-campaign-progress.js";
 import { parsePrReviewChildDescription } from "../src/core/pr-review-child.js";
+import { parseJulesPrHandoffHandle } from "../src/core/pr-handoff-registration.js";
 
 const exec = promisify(execFile);
 const API = process.env["PAPERCLIP_TEST_API_URL"]?.replace(/\/+$/, "");
@@ -125,13 +126,20 @@ async function collectIssue(key: string, issueId: string, expectedBlockers: read
   const metadata = product?.["metadata"] && typeof product["metadata"] === "object" ? row(product["metadata"], "work product metadata") : null;
   const headSha = text(metadata?.["headSha"]);
   const url = text(product?.["url"]);
-  const providerSessionId = text(metadata?.["providerSessionId"]);
+  const recordedProductSessionId = text(metadata?.["providerSessionId"]);
   const normalized = product && url && headSha ? { url, headSha, status: text(product["status"]) ?? "unknown" } : null;
   if (products.length && !normalized) throw new Error(`Campaign task ${key} has incomplete PR product metadata`);
   const docs = array(await get(`/api/issues/${encodeURIComponent(issueId)}/documents`), "issue documents");
   const sessions = docs.filter((doc) => doc["key"] === "jules-session");
   if (sessions.length > 1) throw new Error(`Campaign task ${key} has duplicate Jules session documents`);
   const startedAt = text(sessions[0]?.["createdAt"]);
+  const handle = sessions[0] ? parseJulesPrHandoffHandle(sessions[0]["body"]) : null;
+  if (handle && normalized && (handle.prUrl.replace(/\/$/, "") !== normalized.url.replace(/\/$/, "") ||
+      handle.headSha !== normalized.headSha)) throw new Error(`Campaign task ${key} session handle does not bind its primary PR head`);
+  if (handle && recordedProductSessionId && handle.sessionId !== recordedProductSessionId) {
+    throw new Error(`Campaign task ${key} work-product session differs from the original session document`);
+  }
+  const providerSessionId = handle?.sessionId ?? recordedProductSessionId;
   const children = array(await get(`/api/companies/${COMPANY}/issues?limit=1000&parentId=${encodeURIComponent(issueId)}`), "review children");
   const planReviews: StressReviewEvidence[] = [];
   const prReviews: StressReviewEvidence[] = [];
