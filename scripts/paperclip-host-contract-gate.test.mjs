@@ -89,6 +89,12 @@ test("accepted provider create with a lost response must use typed recovery befo
   assert.equal(result.summary.scenarios[0].scenario, "stable_child_jules_v4_create_lost");
 });
 
+test("lost revision sendMessage response must reconcile the original Jules session and revised typed plan", async () => {
+  const result = await runGate(0, "pass", ["--scenario=stable_child_jules_v4_revise_message_lost"]);
+  assert.equal(result.exit, 0, result.stderr);
+  assert.equal(result.summary.scenarios[0].scenario, "stable_child_jules_v4_revise_message_lost");
+});
+
 test("full A B C native lifecycle must reach three externally merged and terminal PRs", async () => {
   const result = await runGate(0, "pass", ["--scenario=stable_child_chain_abc_complete"]);
   assert.equal(result.exit, 0, result.stderr);

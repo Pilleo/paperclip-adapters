@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import { readFile, writeFile } from "node:fs/promises";
+import { parseChildPlanReviewDescription } from "@pilleo/paperclip-adapter-common";
 import { fileURLToPath } from "node:url";
 import { observeJulesChildPlanReview } from "../../../jules/src/server/paperclip-client.ts";
 import { executeChildPlanBootstrap } from "../../src/core/child-plan-bootstrap.ts";
@@ -543,10 +544,13 @@ if (env.PAPERCLIP_AGENT_ID === config.julesId) {
     assert.equal(assignment.ok, true, JSON.stringify(assignment));
     assert.equal(assignment.assignment.kind, "plan");
     assert.equal(assignment.assignment.target.issueId, config.issueId);
-    assert.ok(assignment.assignment.detailsMarkdown.includes("Contract plan"));
+    assert.match(assignment.assignment.detailsMarkdown, /contract plan/i);
+    const descriptor = parseChildPlanReviewDescription(child.description);
+    const verdict = config.planRevisionMessageLoss && descriptor?.activityId === "fixture-plan-activity" &&
+      env.PAPERCLIP_AGENT_ID === config.lunaId ? "reject" : config.childReviewVerdict;
     const result = await submitPlanVerdictAndReturnToJules({ apiBase: base, issueId, agentId: env.PAPERCLIP_AGENT_ID,
-      runId: env.PAPERCLIP_RUN_ID, token: env.PAPERCLIP_API_KEY, verdict: config.childReviewVerdict,
-      ...(config.childReviewVerdict === "reject" ? { reason: "Add boundary-case verification." } : {}) });
+      runId: env.PAPERCLIP_RUN_ID, token: env.PAPERCLIP_API_KEY, verdict,
+      ...(verdict === "reject" ? { reason: "Add boundary-case verification." } : {}) });
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.equal(result.planReviewProtocol, config.julesOwnedBootstrap ? "child_v4" : "child_v3");
     await event("CHILD_VERDICT_WRITTEN", { childId: issueId, cardId: card.id, sourceRunId: card.sourceRunId }, true);

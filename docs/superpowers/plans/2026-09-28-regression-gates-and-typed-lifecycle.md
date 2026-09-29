@@ -182,7 +182,15 @@ timestamp, then drops the HTTP reply. Jules must verify same-session
 activities and register B's PR without a second `approvePlan`; all three
 issues/products still converge. An initially backdated fixture activity
 correctly failed closed as `unverified_progress`, demonstrating that a
-historical approval cannot authorize an uncertain current effect. The
-remaining unverified cases are an actual server-process restart across a
-Jules provider effect, sendMessage response loss, and C's historical
-terminal failed-run blocker.
+historical approval cannot authorize an uncertain current effect. A restart
+*inside* an uncertain provider mutation and C's historical terminal
+failed-run blocker remain unverified.
+
+`stable_child_jules_v4_revise_message_lost` now covers accepted-but-lost
+`sendMessage` on an addressed plan rejection in the **original** Jules
+session. The provider persists a userMessaged echo and a second plan
+activity but drops the HTTP reply. Jules reads that session's activities,
+does not send a second message, and obtains revised Luna/strong typed
+approvals before one provider approval and PR registration. This is the
+single-task plan-revision lane; old-head PR rejection feedback inside a
+three-task chain remains a separate fault case.

@@ -40,7 +40,7 @@ if (!scenario) {
   if (results.some((result) => result.result !== "observed")) process.exitCode = 1;
   else if (process.argv.includes("--require-safe") && !integrationAllowed) process.exitCode = 2;
 } else {
-  assert.ok([...scenarios, "stable_child", "stable_child_ladder", "stable_child_reject", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_chain_abc_complete", "stable_child_chain_abc_lost_b_create", "stable_child_chain_abc_lost_b_approval", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused", "stable_child_gemini", "stable_child_gemini_retry"].includes(scenario), `Unknown scenario ${scenario}`);
+  assert.ok([...scenarios, "stable_child", "stable_child_ladder", "stable_child_reject", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_jules_v4_revise_message_lost", "stable_child_chain_abc_complete", "stable_child_chain_abc_lost_b_create", "stable_child_chain_abc_lost_b_approval", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused", "stable_child_gemini", "stable_child_gemini_retry"].includes(scenario), `Unknown scenario ${scenario}`);
   await runScenario();
 }
 
@@ -106,7 +106,7 @@ async function runScenario() {
     let chainGitHub = null;
     config.stageId = nativePlanReviewStageId(config.issueId, config.revisionId, "luna");
     config.checkpointPath = path.join(home, "child-review-checkpoint.json");
-    config.childReviewLadder = ["stable_child_ladder", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_chain_abc_complete", "stable_child_chain_abc_lost_b_create", "stable_child_chain_abc_lost_b_approval", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused"].includes(scenario);
+    config.childReviewLadder = ["stable_child_ladder", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_jules_v4_revise_message_lost", "stable_child_chain_abc_complete", "stable_child_chain_abc_lost_b_create", "stable_child_chain_abc_lost_b_approval", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused"].includes(scenario);
     config.realJulesExecutor = ["stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict"].includes(scenario);
     config.producerConflictProbe = scenario === "stable_child_executor_pr_producer_conflict";
     config.prMigrationProbe = ["stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board"].includes(scenario);
@@ -130,7 +130,9 @@ async function runScenario() {
       config.cSessionId = randomUUID();
       config.chainGitHubStatePath = path.join(home, "github-state.json");
     }
-    config.createProviderSession = scenario === "stable_child_jules_v4_create" || config.chainBlockedProbe || scenario === "stable_child_jules_v4_create_lost";
+    config.planRevisionMessageLoss = scenario === "stable_child_jules_v4_revise_message_lost";
+    config.createProviderSession = scenario === "stable_child_jules_v4_create" || config.chainBlockedProbe ||
+      config.planRevisionMessageLoss || scenario === "stable_child_jules_v4_create_lost";
     config.dropProviderCreateResponse = scenario === "stable_child_jules_v4_create_lost";
     config.julesParentExecutor = config.createProviderSession || scenario === "stable_child_jules_v4_executor" || scenario === "stable_child_jules_v4_paused";
     config.pauseLunaInitially = scenario === "stable_child_jules_v4_paused";
@@ -174,8 +176,11 @@ async function runScenario() {
     const issueRow = async () => (await db.select().from(issues).where(eq(issues.id, config.issueId)))[0];
     const live = (run) => ["queued", "running", "scheduled"].includes(run.status);
     let providerApproved = false;
+    let providerApprovedAt = null;
     let providerCreated = false;
     let providerCreateRequest = null;
+    let providerRevised = false;
+    let providerRevisionAt = null;
     const chainProviderSessions = new Map();
     const app = express();
     app.use(express.json());
@@ -261,7 +266,18 @@ async function runScenario() {
           if (config.createProviderSession && !providerCreated) return res.status(409).json({ error: "session absent" });
           if (providerApproved) return res.status(409).json({ error: "duplicate plan approval" });
           providerApproved = true;
+          providerApprovedAt = new Date().toISOString();
           return res.json({});
+        }
+        if (config.planRevisionMessageLoss && req.method === "POST" &&
+            req.path === `/sessions/${config.sessionId}:sendMessage`) {
+          if (providerRevised) return res.status(409).json({ error: "duplicate same-session plan revision request" });
+          assert.equal(typeof req.body?.prompt, "string");
+          providerRevised = true;
+          providerRevisionAt = new Date().toISOString();
+          record("PROVIDER_REVISION_MESSAGE_RESPONSE_LOST", { sessionId: config.sessionId });
+          req.socket.destroy();
+          return;
         }
         if (req.method !== "GET") return res.status(405).json({ error: "provider writes forbidden in resumed-session contract" });
         if (config.julesOwnedBootstrap && !config.julesParentExecutor) return res.status(404).json({ error: "child bootstrap must not access Jules provider" });
@@ -279,8 +295,12 @@ async function runScenario() {
         if (req.path === `/sessions/${config.sessionId}/activities`) return res.json({ activities: [{
           id: "fixture-plan-activity", createTime: "2026-09-27T01:00:00.000Z",
           planGenerated: { plan: { id: "fixture-plan", steps: [{ index: 0, title: "Contract plan" }] } },
-        }, ...(config.julesParentExecutor && !providerApproved ? [] : [{ id: "fixture-approved-activity", createTime: "2026-09-27T01:01:00.000Z",
-          planApproved: { planId: "fixture-plan" } }]) ] });
+        }, ...(providerRevised ? [{ id: "fixture-user-revision-request", createTime: providerRevisionAt,
+          userMessaged: { userMessage: "Please revise the exact rejected plan." } },
+          { id: "fixture-plan-activity-revised", createTime: new Date(Date.parse(providerRevisionAt) + 10).toISOString(),
+            planGenerated: { plan: { id: "fixture-plan-revised", steps: [{ index: 0, title: "Revised contract plan" }] } } }] : []),
+        ...(config.julesParentExecutor && !providerApproved ? [] : [{ id: "fixture-approved-activity", createTime: providerApprovedAt ?? "2026-09-27T01:01:00.000Z",
+          planApproved: { planId: providerRevised ? "fixture-plan-revised" : "fixture-plan" } }]) ] });
         if (req.path === "/sources") return res.json({ sources: config.createProviderSession ? [{
           name: "sources/github/paperclip-contract/fixture", githubRepo: { owner: "paperclip-contract", repo: "fixture" },
         }] : [] });
@@ -520,7 +540,9 @@ async function runScenario() {
       await runStableChildContract({ config, report, db, schema, eq, heartbeat, wake, waitEvent, until, release, settle, issueRow, runRows, record, deliverReconciledExecutions });
       if (config.julesOwnedBootstrap) {
         const childRuns = (await runRows()).filter((run) => run.agentId === config.julesId && run.contextSnapshot?.issueId !== config.issueId);
-        assert.equal(childRuns.filter((run) => run.status === "succeeded").length, 2, "both plan children must bootstrap on Jules's own child-scoped runs");
+        assert.equal(childRuns.filter((run) => run.status === "succeeded").length,
+          config.planRevisionMessageLoss ? 3 : 2,
+        "each distinct original/revised plan child must bootstrap on Jules's own child-scoped run");
         assert.equal((await runRows()).filter((run) => run.agentId === config.orchestratorId).length, 0,
           "Jules plan ladder must run without an orchestrator bootstrap or reconciliation heartbeat");
         if (config.julesParentExecutor) {
@@ -536,8 +558,10 @@ async function runScenario() {
             event.path === `/sessions/${config.sessionId}:approvePlan`).length, 1,
           "one Jules provider approval must follow the actual parent executor's Luna/Terra typed ladder");
           assert.deepEqual(report.events.filter((event) => event.name === "PROVIDER_REQUEST" && event.method !== "GET")
-            .map((event) => event.path), config.createProviderSession
-            ? ["/sessions", `/sessions/${config.sessionId}:approvePlan`] : [`/sessions/${config.sessionId}:approvePlan`],
+            .map((event) => event.path), config.planRevisionMessageLoss
+            ? ["/sessions", `/sessions/${config.sessionId}:sendMessage`, `/sessions/${config.sessionId}:approvePlan`]
+            : config.createProviderSession
+              ? ["/sessions", `/sessions/${config.sessionId}:approvePlan`] : [`/sessions/${config.sessionId}:approvePlan`],
           "the provider create and approval must each be accepted once, never replayed");
           if (config.dropProviderCreateResponse) {
             const lost = report.events.find((event) => event.name === "PROVIDER_CREATE_RESPONSE_LOST");
@@ -547,6 +571,17 @@ async function runScenario() {
             assert.ok(lost && remoteLookup && typedRecovery,
               "the original accepted create must be reconciled by remote session lookup and typed host recovery");
             assert.equal(lost.sessionId, config.sessionId);
+          }
+          if (config.planRevisionMessageLoss) {
+            const lost = report.events.find((event) => event.name === "PROVIDER_REVISION_MESSAGE_RESPONSE_LOST");
+            const activities = report.events.find((event) => event.name === "PROVIDER_REQUEST" &&
+              event.method === "GET" && event.path === `/sessions/${config.sessionId}/activities` &&
+              event.sequence > lost?.sequence);
+            const approved = report.events.find((event) => event.name === "PROVIDER_REQUEST" &&
+              event.method === "POST" && event.path === `/sessions/${config.sessionId}:approvePlan`);
+            assert.ok(lost && activities && approved && lost.sessionId === config.sessionId &&
+              lost.sequence < activities.sequence && activities.sequence < approved.sequence,
+            "lost sendMessage must be reconciled by same-session provider activities before approving revised plan");
           }
           const products = await db.select().from(schema.issueWorkProducts)
             .where(eq(schema.issueWorkProducts.issueId, config.issueId));
@@ -932,7 +967,8 @@ async function runScenario() {
                 run.contextSnapshot?.issueId === config.bIssueId && run.startedAt).map((run) => ({ id: run.id, status: run.status })) });
           }
           report.outcome = config.chainBlockedProbe ? report.outcome
-            : "actual_jules_executor_self_bootstraps_v4_ladder_approves_once_and_delivers_pr";
+            : config.planRevisionMessageLoss ? "actual_jules_v4_rejected_plan_revised_once_after_lost_send_message"
+              : "actual_jules_executor_self_bootstraps_v4_ladder_approves_once_and_delivers_pr";
         } else {
           assert.equal(report.events.filter((event) => event.name === "PROVIDER_REQUEST").length, 0,
             "child bootstrap must never create or query a Jules cloud session");

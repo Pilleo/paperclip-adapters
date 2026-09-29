@@ -106,6 +106,16 @@ provider response alone is not a reason to invent a verdict or issue a second
 approval. Unlike lost session creation, this scenario needs no operator
 reconciliation when exact same-session provider activity verifies the effect.
 
+`stable_child_jules_v4_revise_message_lost` exercises the third provider
+mutation boundary without a second session. An addressed Luna card rejects
+the original plan once. Jules sends one revision `sendMessage`; the provider
+persists the user-message echo and a new plan activity, then drops its reply.
+Jules reads the **same session's** activities before another mutation, and
+distinct revised Luna/strong cards approve the new revision. The contract
+requires exactly one create, one sendMessage, one approvePlan, three native
+cards (old rejection plus two revised approvals), and one registered PR.
+This is a single-task plan revision, not a full-chain PR-feedback amendment.
+
 The independent `disposable-host-live.mjs` contract now stops and restarts
 the **actual Paperclip server process** with its embedded PostgreSQL data
 retained after acknowledging a company, an unassigned review issue, and one

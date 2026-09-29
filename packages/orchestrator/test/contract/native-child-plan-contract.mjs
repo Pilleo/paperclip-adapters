@@ -48,9 +48,20 @@ export async function runStableChildContract(fixture) {
       config.documentId = checkpoint.identity.documentId;
     }
     const cards = await db.select().from(schema.issueThreadInteractions).where(eq(schema.issueThreadInteractions.companyId, config.companyId));
-    assert.equal(cards.length, 2);
-    assert.ok(cards.every((card) => card.status === "answered" && card.payload.target.revisionId === config.revisionId));
-    assert.notEqual(cards[0].issueId, cards[1].issueId);
+    assert.equal(cards.length, config.planRevisionMessageLoss ? 3 : 2);
+    assert.ok(cards.every((card) => card.status === "answered"));
+    if (config.planRevisionMessageLoss) {
+      const rejected = cards.filter((card) => card.result?.items?.[0]?.verdict === "reject");
+      const approved = cards.filter((card) => card.result?.items?.[0]?.verdict === "approve");
+      assert.equal(rejected.length, 1, "the old Luna plan must be rejected exactly once");
+      assert.equal(approved.length, 2, "the revised Luna and strong plan must each be approved");
+      assert.notEqual(rejected[0].payload.target.revisionId, config.revisionId);
+      assert.ok(approved.every((card) => card.payload.target.revisionId === config.revisionId));
+      assert.equal(new Set(cards.map((card) => card.issueId)).size, 3);
+    } else {
+      assert.ok(cards.every((card) => card.payload.target.revisionId === config.revisionId));
+      assert.notEqual(cards[0].issueId, cards[1].issueId);
+    }
     const runs = await runRows();
     assert.ok(runs.filter((run) => run.agentId === config.julesId)
       .every((run) => run.status === "succeeded" || (run.id === failedCreateRunId && run.status === "failed")),

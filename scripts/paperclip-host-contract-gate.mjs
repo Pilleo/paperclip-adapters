@@ -6,6 +6,7 @@ const supported = [
   "stable_child_jules_v4_executor",
   "stable_child_jules_v4_create",
   "stable_child_jules_v4_create_lost",
+  "stable_child_jules_v4_revise_message_lost",
   "stable_child_chain_abc_complete",
   "stable_child_chain_abc_lost_b_create",
   "stable_child_chain_abc_lost_b_approval",
