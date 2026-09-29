@@ -84,7 +84,7 @@ export function buildStressIssue(task: StressTask, projectId: string, predecesso
   const targetFiles = [task.implementationFile, task.testFile];
   return {
     title: `Stress ${task.key}: ${task.exportName} [stress:${task.runKey}:${task.key}]`,
-    description: `---\norchestrator_managed: true\ncomponent: "core"\ntarget_files: ${JSON.stringify(targetFiles)}\n---\n<!-- paperclip-adapters:stress-run:${task.runKey} -->\n\n${task.contract}\n\nImplement and export ${task.exportName} in CommonJS at ${task.implementationFile}. Add node:test coverage in ${task.testFile}; preserve existing exports and other tests. Run \`node --test ${task.testFile}\` and expect all tests to pass before opening a PR. Create exactly one PR for this task against master in the configured disposable repository.`,
+    description: `---\norchestrator_managed: true\ncomponent: "core"\ntarget_files: ${JSON.stringify(targetFiles)}\n---\n<!-- paperclip-adapters:stress-run:${task.runKey} -->\n<!-- paperclip-adapters:stress-task:${task.key} -->\n\n${task.contract}\n\nImplement and export ${task.exportName} in CommonJS at ${task.implementationFile}. Add node:test coverage in ${task.testFile}; preserve existing exports and other tests. Run \`node --test ${task.testFile}\` and expect all tests to pass before opening a PR. Create exactly one PR for this task against master in the configured disposable repository.`,
     projectId,
     status: "backlog",
     priority: "medium",
