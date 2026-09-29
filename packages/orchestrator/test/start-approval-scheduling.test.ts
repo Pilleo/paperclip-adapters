@@ -36,10 +36,20 @@ describe("start approval scheduling", () => {
   it("limits an early approval wave to selected roots and their dependents", () => {
     const root = issue({ id: "a", priorityRank: 3 });
     const dependent = issue({ id: "b", dependencies: ["a"], priorityRank: 2 });
-    const unrelated = issue({ id: "c", priorityRank: 1 });
+    const unrelated = issue({ id: "c", targetFiles: ["unrelated.ts"], priorityRank: 1 });
 
     expect(selectStartApprovalCandidates([root, dependent, unrelated], [root.id]).map((candidate) => candidate.id))
       .toEqual(["a", "b"]);
+  });
+
+  it("authorizes a root sharing a selected root's file before either can be dispatched together", () => {
+    const integer = issue({ id: "03", targetFiles: ["numbers.js", "int.test.js"], priorityRank: 3 });
+    const decimal = issue({ id: "04", targetFiles: ["numbers.js", "decimal.test.js"], priorityRank: 2 });
+    const pair = issue({ id: "14", targetFiles: ["pair.js"], dependencies: ["03", "04"], priorityRank: 1 });
+    const unrelated = issue({ id: "unrelated", targetFiles: ["other.js"], priorityRank: 0 });
+
+    expect(selectStartApprovalCandidates([integer, decimal, pair, unrelated], [integer.id])
+      .map((candidate) => candidate.id)).toEqual(["03", "04", "14"]);
   });
 
   it.each([

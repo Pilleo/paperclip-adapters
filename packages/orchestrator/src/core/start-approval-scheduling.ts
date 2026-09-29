@@ -34,6 +34,17 @@ function collectApprovalWaveIssueIds(
   }
 
   const selectedIds = new Set(rootIssueIds);
+  // File conflicts serialize execution, not the operator's authorization.
+  // Include other independent roots contending for a selected root's scope
+  // before expanding the dependency wave. Unrelated roots stay outside it.
+  const selectedRootFiles = new Set(issues
+    .filter((issue) => selectedIds.has(issue.id) && issue.dependencies.length === 0)
+    .flatMap((issue) => issue.targetFiles));
+  for (const issue of issues) {
+    if (issue.dependencies.length === 0 && issue.targetFiles.some((file) => selectedRootFiles.has(file))) {
+      selectedIds.add(issue.id);
+    }
+  }
   let added = true;
   while (added) {
     added = false;
