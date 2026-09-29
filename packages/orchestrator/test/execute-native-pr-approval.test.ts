@@ -55,6 +55,7 @@ function managedAgents(includeGemini = false) {
 function issue() {
   return {
     id: issueId,
+    companyId,
     identifier: "MAZ-1519",
     title: "native review completion canary",
     description: "---\norchestrator_managed: true\n---\nCreate an immutable PR review handoff.",
@@ -130,7 +131,7 @@ describe("orchestrator native PR completion", () => {
         idempotencyKey: `pr-review:v13:${childId}:${prUrl}:${headSha}:luna`, addresseeAgentId: "luna-1",
         sourceRunId: "bootstrap-run", resolvedByAgentId: "luna-1", resolvedByRunId: "reviewer-run",
         result: { outcome: "resolved", complete: true, items: [{ id: "pull_request", verdict: "reject",
-          reason: "Fractional input must throw TypeError." }] },
+          reason: "Fractional input must throw TypeError.", resolvedAt: "2026-09-29T17:20:16.959Z" }] },
       }]));
       if (method === "GET" && href.endsWith(`/api/issues/${issueId}/interactions`)) return new Response(JSON.stringify([]));
       if (method === "GET" && href.endsWith("/api/heartbeat-runs/bootstrap-run")) return new Response(JSON.stringify({
@@ -153,6 +154,66 @@ describe("orchestrator native PR completion", () => {
     expect(result.exitCode).toBe(0);
     expect(patches.some((patch) => patch["status"] === "in_review")).toBe(false);
     expect(logs.join("\n")).toContain("Deferring rejected-head recovery");
+  });
+
+  it("wakes the original Jules session with exact typed v2 PR-child rejection evidence using Terra fallback", async () => {
+    const identity = { version: 2 as const, creatorPrincipal: "board" as const, companyId,
+      parentIssueId: issueId, prUrl, headSha, stage: "luna" as const,
+      reviewerAgentId: "luna-1", bootstrapAgentId: "orchestrator-1" };
+    const childId = "v2-rejected-child";
+    const cardId = "v2-rejected-card";
+    const rejection = "Reject non-decimal hex, binary and octal inputs before parsing.";
+    let persisted: Record<string, unknown> = { ...issue(), companyId, status: "in_progress", assigneeAgentId: "jules-1",
+      executionPolicy: null, executionState: { status: "idle", monitor: { status: "cleared" } },
+      workProducts: [{ ...issue().workProducts[0], id: "rejected-head-product",
+        metadata: { source: "jules", producer: "paperclip-jules-adapter", headSha } }] };
+    const child = { id: childId, companyId, parentId: issueId, status: "done",
+      assigneeAgentId: "luna-1", createdByAgentId: null, description: prReviewChildDescription(identity) };
+    const wakes: Record<string, unknown>[] = [];
+    const getRun = (id: string, agentId: string) => ({ id, companyId, agentId, status: "succeeded",
+      contextSnapshot: { issueId: childId } });
+    globalThis.fetch = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      const method = (init?.method || "GET").toUpperCase();
+      if (method === "POST" && href.includes("/agents/jules-1/wakeup")) {
+        wakes.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(JSON.stringify({ id: "bound-jules-wake", status: "queued" }), { status: 202 });
+      }
+      if (href.includes("/agents")) return new Response(JSON.stringify(managedAgents(false)));
+      if (href.includes("/projects")) return new Response(JSON.stringify([{ id: "project-1519", primaryWorkspace: { cwd: process.cwd() } }]));
+      if (method === "GET" && href.endsWith(`/api/issues/${issueId}`)) return new Response(JSON.stringify(persisted));
+      if (method === "PATCH" && href.endsWith(`/api/issues/${issueId}`)) {
+        persisted = { ...persisted, ...JSON.parse(String(init?.body)) };
+        return new Response(JSON.stringify(persisted));
+      }
+      if (href.endsWith(`/api/issues/${issueId}/documents`)) return new Response(JSON.stringify([{
+        key: "jules-session", body: `julesSessionId: session-pr-11\nprUrl: ${prUrl}\nprHeadSha: ${headSha}\n`,
+      }]));
+      if (href.endsWith(`/api/issues/${issueId}/work-products`)) return new Response(JSON.stringify(persisted["workProducts"]));
+      if (href.endsWith(`/api/issues/${childId}`)) return new Response(JSON.stringify(child));
+      if (href.includes("parentId=")) return new Response(JSON.stringify([child]));
+      if (href.endsWith(`/api/issues/${childId}/interactions`)) return new Response(JSON.stringify([{
+        id: cardId, kind: "request_item_verdicts", status: "answered", createdByAgentId: "orchestrator-1",
+        idempotencyKey: `pr-review:v13:${childId}:${prUrl}:${headSha}:luna`, addresseeAgentId: "luna-1",
+        sourceRunId: "bootstrap-run", resolvedByRunId: "reviewer-run",
+        result: { outcome: "resolved", complete: true, items: [{ id: "pull_request", verdict: "reject",
+          reason: rejection, resolvedByRunId: "reviewer-run", resolvedAt: "2026-09-29T17:20:16.959Z" }] },
+      }]));
+      if (href.endsWith("/api/heartbeat-runs/bootstrap-run")) return new Response(JSON.stringify(getRun("bootstrap-run", "orchestrator-1")));
+      if (href.endsWith("/api/heartbeat-runs/reviewer-run")) return new Response(JSON.stringify(getRun("reviewer-run", "luna-1")));
+      if (href.includes("/recovery-actions")) return new Response(JSON.stringify({ active: null }));
+      if (href.includes("/heartbeat-runs") || href.includes("/comments") || href.includes("/interactions") || href.includes("/approvals")) return new Response(JSON.stringify([]));
+      if (method === "GET" && href.includes("/issues")) return new Response(JSON.stringify([persisted]));
+      return new Response(JSON.stringify([]));
+    }) as typeof fetch;
+
+    await expect(execute(context())).resolves.toMatchObject({ exitCode: 0 });
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({ payload: { issueId, workerFeedback: {
+      version: 1, kind: "code_review_rejection", issueId, reviewInteractionId: cardId,
+      reviewStage: "luna", prUrl, headSha, reason: rejection,
+      createdAt: "2026-09-29T17:20:16.959Z", deliveryId: `native-review:${cardId}:${headSha}`,
+    } } });
   });
 
   afterEach(() => {

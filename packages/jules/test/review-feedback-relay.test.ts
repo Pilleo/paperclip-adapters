@@ -3,6 +3,8 @@ import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { execute } from "../src/server/execute.js";
 import { JulesClient } from "../src/server/jules-client.js";
 import { sessionCodec } from "../src/server/session.js";
+import { getPullRequestDetails } from "../src/server/ci-status.js";
+import { workerFeedbackPrompt } from "@pilleo/paperclip-adapter-common";
 import { getPaperclipIssue, getPaperclipJson, listIssueComments, listPaperclipInteractions, readJulesSessionHandleState, withdrawPaperclipInteraction } from "../src/server/paperclip-client.js";
 
 vi.mock("../src/server/ci-status.js", () => ({
@@ -74,6 +76,7 @@ describe("Review Feedback Relay to Jules", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(getPullRequestDetails).mockResolvedValue({ merged: false, ciStatus: "success", state: "OPEN", headSha: "abc123" } as never);
     vi.mocked(readJulesSessionHandleState).mockResolvedValue(null);
     vi.mocked(getPaperclipIssue).mockResolvedValue({ id: "replacement-plan-review-child-1", status: "backlog" } as never);
     vi.mocked(getPaperclipJson).mockResolvedValue([]);
@@ -182,7 +185,7 @@ describe("Review Feedback Relay to Jules", () => {
     expect(JulesClient.prototype.sendMessage).toHaveBeenCalledTimes(1);
     expect(JulesClient.prototype.sendMessage).toHaveBeenCalledWith("session-141", expect.objectContaining({
       prompt: expect.stringContaining("Add a bounded cache eviction test."),
-    }));
+    }), expect.objectContaining({ effectId: expect.stringContaining("jules:pr-rejection-feedback:issue-141:session-141:") }));
 
     const resumed = sessionCodec.decode(first.sessionParams);
     expect(resumed?.workerFeedbackDeliveryId).toBe("review-feedback:issue-141:abc123:luna_review");
@@ -190,6 +193,41 @@ describe("Review Feedback Relay to Jules", () => {
     await execute({ ...ctx, runtime: { sessionParams: first.sessionParams } });
     expect(JulesClient.prototype.sendMessage).toHaveBeenCalledTimes(1);
     expect(JulesClient.prototype.getSession).toHaveBeenCalled();
+  });
+
+  it("never repeats a typed rejection sendMessage when its accepted response is lost", async () => {
+    const feedback = {
+      version: 1 as const, kind: "code_review_rejection" as const,
+      deliveryId: "native-review:v2-rejected-card:abc123", issueId: "issue-141",
+      reviewInteractionId: "v2-rejected-card", reviewStage: "luna" as const,
+      prUrl: session.currentPrUrl, headSha: "abc123",
+      reason: "Reject hexadecimal, binary and octal string forms.", createdAt: "2026-09-29T17:20:16.959Z",
+    };
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ id: "session-141", state: "COMPLETED",
+      url: "https://jules.example/session-141" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValueOnce({ activities: [] } as never)
+      .mockResolvedValue({ activities: [{
+      id: "echo-1", createTime: "2026-09-29T17:20:17.000Z",
+      userMessaged: { userMessage: workerFeedbackPrompt(feedback) },
+    }] } as never);
+    vi.mocked(JulesClient.prototype.sendMessage).mockRejectedValueOnce(new Error("provider accepted but response lost"));
+    const ctx = { agent: { id: "jules-1", companyId: "c-1", name: "Jules", adapterType: "jules", adapterConfig },
+      runtime: { sessionParams: sessionCodec.encode({ ...session, phase: "COMPLETED" as const, currentPrHeadSha: "abc123" }) },
+      context: { task: { id: "issue-141", title: "PR rejection continuation" }, payload: { workerFeedback: feedback } },
+      config: adapterConfig, authToken: "mock-token", runId: "run-1", onLog: vi.fn().mockResolvedValue(undefined),
+    } as unknown as AdapterExecutionContext;
+
+    const first = await execute(ctx);
+    expect(first.exitCode).toBe(0);
+    expect(sessionCodec.decode(first.sessionParams!)?.mutationCheckpoint?.status).toBe("pending");
+    const second = await execute({ ...ctx, runtime: { sessionParams: first.sessionParams! }, runId: "run-2" });
+    expect(second.exitCode).toBe(0);
+    expect(sessionCodec.decode(second.sessionParams!)?.mutationCheckpoint?.status).toBe("pending");
+    expect(JulesClient.prototype.sendMessage).toHaveBeenCalledTimes(1);
+    const third = await execute({ ...ctx, runtime: { sessionParams: second.sessionParams! }, runId: "run-3" });
+    expect(third.exitCode).toBe(0);
+    expect(JulesClient.prototype.sendMessage).toHaveBeenCalledTimes(1);
+    expect(sessionCodec.decode(third.sessionParams!)?.workerFeedbackDeliveryId).toBe(feedback.deliveryId);
   });
 
   it("supersedes a stale Terra plan card before relaying a matching PR rejection", async () => {
@@ -356,7 +394,7 @@ describe("Review Feedback Relay to Jules", () => {
     await execute(ctx);
     expect(JulesClient.prototype.sendMessage).toHaveBeenCalledWith("session-141", expect.objectContaining({
       prompt: expect.stringContaining("Fix the null branch."),
-    }));
+    }), expect.objectContaining({ effectId: expect.stringContaining("jules:pr-rejection-feedback:issue-141:session-141:") }));
   });
 
   it("recovers a native rejection when Paperclip auto-continues Jules without wake payload", async () => {
@@ -377,7 +415,56 @@ describe("Review Feedback Relay to Jules", () => {
     await execute(ctx);
     expect(JulesClient.prototype.sendMessage).toHaveBeenCalledWith("session-141", expect.objectContaining({
       prompt: expect.stringContaining("Fix teardown failure handling."),
-    }));
+    }), expect.objectContaining({ effectId: expect.stringContaining("jules:pr-rejection-feedback:issue-141:session-141:") }));
+  });
+
+  it("recovers an answered board-owned PR child rejection on its original Jules monitor after a deferred wake drops payload", async () => {
+    const childId = "board-pr-child-1";
+    const cardId = "board-pr-card-1";
+    const reason = "Reject non-decimal hexadecimal, binary and octal inputs.";
+    const headSha = "a".repeat(40);
+    vi.mocked(getPullRequestDetails).mockResolvedValue({ merged: false, ciStatus: "success", state: "OPEN", headSha } as never);
+    const identity = { version: 2, creatorPrincipal: "board", companyId: "c-1",
+      parentIssueId: "issue-141", prUrl: session.currentPrUrl, headSha,
+      stage: "luna", reviewerAgentId: "luna-1", bootstrapAgentId: "orchestrator-1" };
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([]);
+    vi.mocked(getPaperclipJson).mockImplementation(async (path: string) => {
+      if (path.includes("/companies/c-1/issues?") && path.includes("parentId=issue-141")) return [{
+        id: childId, companyId: "c-1", parentId: "issue-141", status: "done", assigneeAgentId: "luna-1",
+        createdByAgentId: null, description: `<!-- paperclip-pr-review-child:v2\n${JSON.stringify(identity)}\n-->`,
+      }] as never;
+      if (path.endsWith(`/issues/${childId}/interactions`)) return [{
+        id: cardId, kind: "request_item_verdicts", status: "answered",
+        idempotencyKey: `pr-review:v13:${childId}:${session.currentPrUrl}:${headSha}:luna`,
+        sourceRunId: "bootstrap-run", resolvedByRunId: "reviewer-run", addresseeAgentId: "luna-1",
+        result: { outcome: "resolved", complete: true, items: [{ id: "pull_request", verdict: "reject", reason,
+          resolvedAt: "2026-09-29T17:20:16.959Z", resolvedByRunId: "reviewer-run" }] },
+      }] as never;
+      if (path.endsWith("/heartbeat-runs/bootstrap-run")) return {
+        id: "bootstrap-run", companyId: "c-1", agentId: "orchestrator-1", status: "succeeded",
+        contextSnapshot: { issueId: childId },
+      } as never;
+      if (path.endsWith("/heartbeat-runs/reviewer-run")) return {
+        id: "reviewer-run", companyId: "c-1", agentId: "luna-1", status: "succeeded",
+        contextSnapshot: { issueId: childId },
+      } as never;
+      throw new Error(`Unexpected Paperclip GET ${path}`);
+    });
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ id: "session-141", state: "COMPLETED" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [] } as never);
+    vi.mocked(JulesClient.prototype.sendMessage).mockResolvedValue(null);
+    const result = await execute({
+      agent: { id: "jules-1", companyId: "c-1", name: "Jules", adapterType: "jules", adapterConfig },
+      runtime: { sessionParams: sessionCodec.encode({ ...session, phase: "COMPLETED" as const, currentPrHeadSha: headSha }) },
+      context: { task: { id: "issue-141", title: "Review" } },
+      config: adapterConfig, authToken: "mock-token", runId: "parent-run", onLog: vi.fn().mockResolvedValue(undefined),
+    } as unknown as AdapterExecutionContext);
+    expect(result.exitCode).toBe(0);
+    expect(JulesClient.prototype.sendMessage).toHaveBeenCalledTimes(1);
+    expect(JulesClient.prototype.sendMessage).toHaveBeenCalledWith("session-141", {
+      prompt: expect.stringContaining(reason),
+    }, expect.objectContaining({ effectId: expect.stringContaining(cardId) }));
+    expect(sessionCodec.decode(result.sessionParams!)?.workerFeedbackDeliveryId).toBe(`native-review:${cardId}:${headSha}`);
   });
 
   it("recovers the exact persisted PR head when GitHub is temporarily unavailable", async () => {
@@ -399,7 +486,7 @@ describe("Review Feedback Relay to Jules", () => {
 
     expect(JulesClient.prototype.sendMessage).toHaveBeenCalledWith("session-141", expect.objectContaining({
       prompt: expect.stringContaining("issue-scoped cancellation endpoint"),
-    }));
+    }), expect.objectContaining({ effectId: expect.stringContaining("jules:pr-rejection-feedback:issue-141:session-141:") }));
   });
 
   it("recovers a rejection from the Jules-owned handle when Paperclip drops wake payload and GitHub has no head", async () => {
@@ -424,7 +511,7 @@ describe("Review Feedback Relay to Jules", () => {
 
     expect(JulesClient.prototype.sendMessage).toHaveBeenCalledWith("session-141", expect.objectContaining({
       prompt: expect.stringContaining("canonical cancellation test"),
-    }));
+    }), expect.objectContaining({ effectId: expect.stringContaining("jules:pr-rejection-feedback:issue-141:session-141:") }));
   });
 
   it("prefers a complete same-session handle over a stale legacy PR pointer", async () => {
@@ -448,7 +535,7 @@ describe("Review Feedback Relay to Jules", () => {
 
     expect(JulesClient.prototype.sendMessage).toHaveBeenCalledWith("session-141", expect.objectContaining({
       prompt: expect.stringContaining("migrated immutable identity"),
-    }));
+    }), expect.objectContaining({ effectId: expect.stringContaining("jules:pr-rejection-feedback:issue-141:session-141:") }));
   });
 
   it("supersedes a stale plan card when recovering a lost rejection wake", async () => {

@@ -46,6 +46,7 @@ import { isGhCliAuthenticated, createRemoteGitHubRepo } from "./git-remote-creat
 import { JulesAdapterSessionV1, normalizeJulesState, sessionCodec, serializeSession } from "./session.js";
 import { parsePlanReviewInteraction, parsePlanReviewVerdictResult } from "./plan-review-protocol.js";
 import { hasNativeReviewVerdictAttestation } from "./native-review-attestation.js";
+import { recoverBoardPrChildRejection } from "./pr-child-feedback.js";
 import { decidePlanGateRecovery, recoverMissingPlanGatePointer } from "./plan-gate-state.js";
 import {
   createPlanRevisionRequest,
@@ -1399,6 +1400,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           createdAt: new Date().toISOString(),
         };
         await ctx.onLog?.("stdout", `[jules] Recovered native review rejection ${rejection.id} from Paperclip issue state.\n`);
+      } else if (session.currentPrHeadSha && currentHeadSha === session.currentPrHeadSha &&
+          (companyId || ctx.agent?.companyId)) {
+        workerFeedback = await recoverBoardPrChildRejection({
+          companyId: (companyId || ctx.agent.companyId)!, issueId: taskId,
+          prUrl: session.currentPrUrl, headSha: currentHeadSha,
+          authToken: ctx.authToken, runId: ctx.runId,
+        });
+        if (workerFeedback) await ctx.onLog?.("stdout",
+          `[jules] Recovered native PR child rejection ${workerFeedback.reviewInteractionId} from its verified reviewer run.\n`);
       }
     } catch (error) {
       await ctx.onLog?.("stderr", `[jules] Could not recover native review rejection: ${sanitizeError(error)}\n`);
@@ -1482,7 +1492,34 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (workerFeedback && session.currentPrUrl && session.currentPrUrl !== workerFeedback.prUrl) {
       await ctx.onLog?.("stderr", `[jules] Ignoring worker feedback for ${workerFeedback.prUrl}; session is bound to ${session.currentPrUrl}.\n`);
     } else if (workerFeedback) {
-      await client.sendMessage(session.julesSessionId, { prompt: workerFeedbackPrompt(workerFeedback) });
+      const prompt = workerFeedbackPrompt(workerFeedback);
+      const feedbackEffectId = `jules:pr-rejection-feedback:${taskId}:${session.julesSessionId}:${workerFeedback.deliveryId}`;
+      if (session.mutationCheckpoint?.key === feedbackEffectId) {
+        // sendMessage has no provider idempotency key. A prior accepted request
+        // may have lost its response; reconcile only the exact provider echo,
+        // never repeat the POST because an activity GET is momentarily stale.
+        const observed = await client.getActivities(session.julesSessionId);
+        const echo = observed.activities.find((activity) => activity.userMessaged?.userMessage === prompt);
+        if (!echo) {
+          await ctx.onLog?.("stdout", `[jules] Waiting for the exact provider echo of native PR rejection ${workerFeedback.deliveryId}; no second message is authorized.\n`);
+          await scheduleLiveSessionMonitor(session, true);
+          return createPendingResult(session, true);
+        }
+        session.mutationCheckpoint = markMutationSucceeded(session.mutationCheckpoint);
+      } else {
+        session.mutationCheckpoint = beginMutation({ key: feedbackEffectId,
+          operation: "send_native_pr_rejection_feedback", issueId: taskId,
+          sessionId: session.julesSessionId });
+        await saveStoredSession(session);
+        try {
+          await client.sendMessage(session.julesSessionId, { prompt }, { effectId: feedbackEffectId });
+        } catch (error) {
+          await ctx.onLog?.("stderr", `[jules] Native PR rejection delivery outcome unknown for ${workerFeedback.deliveryId}: ${sanitizeError(error)}. Waiting for the exact provider echo.\n`);
+          await scheduleLiveSessionMonitor(session, true);
+          return createPendingResult(session, true);
+        }
+        session.mutationCheckpoint = markMutationSucceeded(session.mutationCheckpoint);
+      }
       // Persist the canonical identity generated from the native card, not
       // only an incidental wake payload value. Recovery scans and direct wakes
       // must consume the same rejection exactly once.

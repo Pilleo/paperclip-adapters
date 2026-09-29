@@ -40,7 +40,7 @@ if (!scenario) {
   if (results.some((result) => result.result !== "observed")) process.exitCode = 1;
   else if (process.argv.includes("--require-safe") && !integrationAllowed) process.exitCode = 2;
 } else {
-  assert.ok([...scenarios, "stable_child", "stable_child_ladder", "stable_child_reject", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_jules_v4_revise_message_lost", "stable_child_chain_abc_complete", "stable_child_chain_abc_later_jules_run", "stable_child_chain_abc_recover_auto_blocker", "stable_child_chain_abc_lost_b_create", "stable_child_chain_abc_lost_b_approval", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused", "stable_child_gemini", "stable_child_gemini_retry"].includes(scenario), `Unknown scenario ${scenario}`);
+  assert.ok([...scenarios, "stable_child", "stable_child_ladder", "stable_child_reject", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_board_reject", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_jules_v4_revise_message_lost", "stable_child_chain_abc_complete", "stable_child_chain_abc_later_jules_run", "stable_child_chain_abc_recover_auto_blocker", "stable_child_chain_abc_lost_b_create", "stable_child_chain_abc_lost_b_approval", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused", "stable_child_gemini", "stable_child_gemini_retry"].includes(scenario), `Unknown scenario ${scenario}`);
   await runScenario();
 }
 
@@ -108,13 +108,14 @@ async function runScenario() {
     let chainGitHub = null;
     config.stageId = nativePlanReviewStageId(config.issueId, config.revisionId, "luna");
     config.checkpointPath = path.join(home, "child-review-checkpoint.json");
-    config.childReviewLadder = ["stable_child_ladder", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_jules_v4_revise_message_lost", "stable_child_chain_abc_complete", "stable_child_chain_abc_later_jules_run", "stable_child_chain_abc_recover_auto_blocker", "stable_child_chain_abc_lost_b_create", "stable_child_chain_abc_lost_b_approval", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused"].includes(scenario);
-    config.realJulesExecutor = ["stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict"].includes(scenario);
+    config.childReviewLadder = ["stable_child_ladder", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_board_reject", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_jules_v4_revise_message_lost", "stable_child_chain_abc_complete", "stable_child_chain_abc_later_jules_run", "stable_child_chain_abc_recover_auto_blocker", "stable_child_chain_abc_lost_b_create", "stable_child_chain_abc_lost_b_approval", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused"].includes(scenario);
+    config.realJulesExecutor = ["stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_board_reject", "stable_child_executor_pr_producer_conflict"].includes(scenario);
     config.producerConflictProbe = scenario === "stable_child_executor_pr_producer_conflict";
-    config.prMigrationProbe = ["stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board"].includes(scenario);
-    config.prBoardProbe = scenario === "stable_child_executor_pr_board";
+    config.prMigrationProbe = ["stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_board_reject"].includes(scenario);
+    config.prBoardProbe = scenario === "stable_child_executor_pr_board" || scenario === "stable_child_executor_pr_board_reject";
+    config.prBoardReject = scenario === "stable_child_executor_pr_board_reject";
     config.parentCardWithdrawalProbe = scenario === "stable_child_executor_pr_withdraw";
-    config.prStrongReject = scenario === "stable_child_executor_pr_reject";
+    config.prStrongReject = scenario === "stable_child_executor_pr_reject" || config.prBoardReject;
     config.prStrongPausedAfterCard = scenario === "stable_child_executor_pr_paused";
     config.prStrongGemini = scenario === "stable_child_executor_pr_gemini";
     config.prStrongFirstTurnFailure = scenario === "stable_child_executor_pr_failed";
@@ -123,6 +124,7 @@ async function runScenario() {
       "stable_child_chain_abc_lost_b_approval", "stable_child_chain_abc_recover_auto_blocker"].includes(scenario);
     config.chainLaterJulesRunProbe = scenario === "stable_child_chain_abc_later_jules_run";
     config.chainAutoSettledPrFailure = scenario === "stable_child_chain_abc_recover_auto_blocker";
+    if (config.prBoardReject) config.projectId = randomUUID();
     config.chainLostBCreateResponse = scenario === "stable_child_chain_abc_lost_b_create";
     config.chainLostBApprovalResponse = scenario === "stable_child_chain_abc_lost_b_approval";
     if (config.chainBlockedProbe) {
@@ -185,6 +187,7 @@ async function runScenario() {
     let providerCreateRequest = null;
     let providerRevised = false;
     let providerRevisionAt = null;
+    let boardPrFeedbackPrompt = null;
     const chainProviderSessions = new Map();
     const maybeHoldLaterJulesGet = (reply) => {
       if (!config.chainLaterJulesRunProbe || !holdLaterJulesProviderGet || pendingLaterJulesProviderReply) return false;
@@ -296,18 +299,29 @@ async function runScenario() {
           req.socket.destroy();
           return;
         }
+        if (config.prBoardReject && req.method === "POST" &&
+            req.path === `/sessions/${config.sessionId}:sendMessage`) {
+          if (boardPrFeedbackPrompt) return res.status(409).json({ error: "duplicate native PR rejection feedback" });
+          assert.ok(req.body?.prompt?.includes(config.prUrl) &&
+            req.body.prompt.includes(config.prHeadSha) && req.body.prompt.includes("native Paperclip code review"),
+          "only exact head-bound native PR feedback may reach the original provider session");
+          boardPrFeedbackPrompt = req.body.prompt;
+          record("BOARD_PR_CHILD_FEEDBACK_SENT", { sessionId: config.sessionId, prUrl: config.prUrl,
+            headSha: config.prHeadSha });
+          return res.json({});
+        }
         if (req.method !== "GET") return res.status(405).json({ error: "provider writes forbidden in resumed-session contract" });
         if (config.julesOwnedBootstrap && !config.julesParentExecutor) return res.status(404).json({ error: "child bootstrap must not access Jules provider" });
         if (req.path === "/sessions") return res.json({ sessions: config.createProviderSession && !providerCreated ? [] : [{
           name: `sessions/${config.sessionId}`, prompt: providerCreateRequest?.prompt,
-          sourceContext: providerCreateRequest?.sourceContext, state: providerApproved ? "COMPLETED" : "AWAITING_PLAN_APPROVAL",
+          sourceContext: providerCreateRequest?.sourceContext, state: boardPrFeedbackPrompt ? "IN_PROGRESS" : providerApproved ? "COMPLETED" : "AWAITING_PLAN_APPROVAL",
           outputs: providerApproved ? [{ pullRequest: { url: config.prUrl } }] : [],
         }] });
         if (config.createProviderSession && !providerCreated && req.path === `/sessions/${config.sessionId}`) {
           return res.status(404).json({ error: "session absent" });
         }
         if (req.path === `/sessions/${config.sessionId}`) return res.json({ name: `sessions/${config.sessionId}`,
-          state: config.julesParentExecutor && !providerApproved ? "AWAITING_PLAN_APPROVAL" : "COMPLETED",
+          state: boardPrFeedbackPrompt ? "IN_PROGRESS" : config.julesParentExecutor && !providerApproved ? "AWAITING_PLAN_APPROVAL" : "COMPLETED",
           outputs: config.julesParentExecutor && !providerApproved ? [] : [{ pullRequest: { url: config.prUrl } }] });
         if (req.path === `/sessions/${config.sessionId}/activities`) return res.json({ activities: [{
           id: "fixture-plan-activity", createTime: "2026-09-27T01:00:00.000Z",
@@ -317,7 +331,9 @@ async function runScenario() {
           { id: "fixture-plan-activity-revised", createTime: new Date(Date.parse(providerRevisionAt) + 10).toISOString(),
             planGenerated: { plan: { id: "fixture-plan-revised", steps: [{ index: 0, title: "Revised contract plan" }] } } }] : []),
         ...(config.julesParentExecutor && !providerApproved ? [] : [{ id: "fixture-approved-activity", createTime: providerApprovedAt ?? "2026-09-27T01:01:00.000Z",
-          planApproved: { planId: providerRevised ? "fixture-plan-revised" : "fixture-plan" } }]) ] });
+          planApproved: { planId: providerRevised ? "fixture-plan-revised" : "fixture-plan" } }]),
+        ...(boardPrFeedbackPrompt ? [{ id: "fixture-native-pr-feedback-echo", createTime: new Date().toISOString(),
+          userMessaged: { userMessage: boardPrFeedbackPrompt } }] : []) ] });
         if (req.path === "/sources") return res.json({ sources: config.createProviderSession ? [{
           name: "sources/github/paperclip-contract/fixture", githubRepo: { owner: "paperclip-contract", repo: "fixture" },
         }] : [] });
@@ -329,7 +345,7 @@ async function runScenario() {
     if (config.geminiFirstInitFailure || config.parentCardWithdrawalProbe || config.prStrongFirstTurnFailure || config.prBoardProbe || config.dropProviderCreateResponse) {
       app.use("/__contract/board-api", actorMiddleware(db, { deploymentMode: "local_trusted" }), issueRoutes(db, {}), agentRoutes(db, {}), activityRoutes(db));
     }
-    app.use(actorMiddleware(db, { deploymentMode: config.chainBlockedProbe ? "local_trusted" : "authenticated" }));
+    app.use(actorMiddleware(db, { deploymentMode: config.chainBlockedProbe || config.prBoardReject ? "local_trusted" : "authenticated" }));
     app.get("/__contract/actor", (req, res) => res.json({ type: req.actor.type }));
     app.post("/__contract/events", async (req, res, next) => {
       try {
@@ -386,13 +402,13 @@ async function runScenario() {
     if (config.realJulesExecutor || config.julesOwnedBootstrap) config.providerBaseUrl = `${process.env.PAPERCLIP_API_URL}/__contract/jules/v1alpha`;
     await db.insert(authUsers).values({ id: config.userId, name: "Contract operator", email: `${config.userId}@example.test`,
       emailVerified: true, createdAt: new Date(), updatedAt: new Date() });
-    if (config.chainBlockedProbe) await db.insert(authUsers).values({ id: "local-board",
+    if (config.chainBlockedProbe || config.prBoardReject) await db.insert(authUsers).values({ id: "local-board",
       name: "Disposable local-trusted board operator", email: "local-board@contract.invalid",
       emailVerified: true, createdAt: new Date(), updatedAt: new Date() });
     await db.insert(companies).values({ id: config.companyId, name: "Disposable concurrency contract", issuePrefix: "RACE",
       issueCounter: config.chainBlockedProbe ? 5 : 3, defaultResponsibleUserId: config.userId });
     await db.insert(companyMemberships).values({ companyId: config.companyId, principalType: "user", principalId: config.userId, status: "active", membershipRole: "owner" });
-    if (config.chainBlockedProbe) await db.insert(companyMemberships).values({ companyId: config.companyId,
+    if (config.chainBlockedProbe || config.prBoardReject) await db.insert(companyMemberships).values({ companyId: config.companyId,
       principalType: "user", principalId: "local-board", status: "active", membershipRole: "owner" });
     const worker = fileURLToPath(new URL(scenario.startsWith("stable_child") ? "./native-child-plan-worker.mjs" : "./native-plan-worker.mjs", import.meta.url));
     const runtimeConfig = { heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1 } };
@@ -408,13 +424,13 @@ async function runScenario() {
       ...[config.julesId, config.lunaId, config.terraId, ...(config.chainBlockedProbe ? [config.strongReviewerId] : [])].map((id) => ({ id, companyId: config.companyId,
           name: id === config.julesId ? "Jules fixture" : id === config.lunaId ? "Luna fixture" : id === config.terraId ? "Terra fixture" : "Antigravity strong reviewer fixture",
           reportsTo: config.orchestratorId, status: config.pauseLunaInitially && id === config.lunaId ? "paused" : "idle",
-          ...(config.chainBlockedProbe ? { metadata: { managedBy: "paperclip-orchestrator",
+           ...(config.chainBlockedProbe || config.prBoardReject ? { metadata: { managedBy: "paperclip-orchestrator",
             workerKey: id === config.julesId ? "jules" : id === config.lunaId ? "luna_reviewer" : id === config.terraId ? "terra_reviewer" : "antigravity",
             ...(id === config.julesId ? {} : { structuredDecisionCapability: { version: 1,
               transports: ["mcp_tool"], decisionKinds: ["plan_review", "pull_request_review"] } }) } } : {}),
           adapterType: id === config.strongReviewerId ? "antigravity" : "process", adapterConfig, runtimeConfig })),
     ]);
-    if (config.chainBlockedProbe) {
+    if (config.chainBlockedProbe || config.prBoardReject) {
       const repoUrl = "https://github.com/paperclip-contract/fixture.git";
       await db.insert(schema.projects).values({ id: config.projectId, companyId: config.companyId,
         name: "Disposable A B C repository", status: "in_progress" });
@@ -426,9 +442,9 @@ async function runScenario() {
     }
     await db.insert(issues).values([
       { id: config.issueId, companyId: config.companyId, identifier: "RACE-1", title: "Plan review", status: "in_progress", assigneeAgentId: config.julesId,
-        ...(config.chainBlockedProbe ? { projectId: config.projectId, description: "---\norchestrator_managed: true\n---\n\nImplement canary A." } : {}) },
+         ...(config.chainBlockedProbe || config.prBoardReject ? { projectId: config.projectId, description: "---\norchestrator_managed: true\n---\n\nImplement canary A." } : {}) },
       { id: config.maintenanceIssueId, companyId: config.companyId, identifier: "RACE-2", title: "Maintenance", status: "in_progress", assigneeAgentId: config.orchestratorId,
-        ...(config.chainBlockedProbe ? { projectId: config.projectId } : {}) },
+        ...(config.chainBlockedProbe || config.prBoardReject ? { projectId: config.projectId } : {}) },
       { id: config.blockerIssueId, companyId: config.companyId, identifier: "RACE-3", title: "Other reviewer work", status: "in_progress", assigneeAgentId: config.lunaId },
     ].map((issue) => ({ ...issue, executionPolicy: { mode: "normal", stages: [], commentRequired: false } })));
     if (config.chainBlockedProbe) {
@@ -460,9 +476,9 @@ async function runScenario() {
     }
     const unauthenticated = await fetch(`${process.env.PAPERCLIP_API_URL}/api/issues/${config.issueId}`);
     const anonymousActor = await fetch(`${process.env.PAPERCLIP_API_URL}/__contract/actor`).then((response) => response.json());
-    assert.equal(anonymousActor.type, config.chainBlockedProbe ? "board" : "none",
-      "only the real-project chain emulates Paperclip's local-trusted board actor");
-    if (config.chainBlockedProbe) assert.equal(unauthenticated.status, 200);
+    assert.equal(anonymousActor.type, config.chainBlockedProbe || config.prBoardReject ? "board" : "none",
+      "only real-project host probes emulate Paperclip's local-trusted board actor");
+    if (config.chainBlockedProbe || config.prBoardReject) assert.equal(unauthenticated.status, 200);
     else assert.ok([401, 403, 404].includes(unauthenticated.status),
       `existing fixture issue must deny or conceal anonymous access (${unauthenticated.status})`);
     report.anonymousAccess = { actorType: anonymousActor.type, issueStatus: unauthenticated.status };
@@ -1208,6 +1224,63 @@ async function runScenario() {
           const [strongVerdict] = await db.select().from(schema.issueThreadInteractions)
             .where(eq(schema.issueThreadInteractions.id, strongCard.id));
           assert.equal(strongVerdict.status, "answered");
+          if (config.prBoardReject) {
+            assert.equal(strongVerdict.result.items[0].verdict, "reject",
+              "addressed strong PR child must produce a typed rejection, not issue prose");
+            assert.ok(strongVerdict.result.items[0].reason);
+            const { inspectPrReviewChildren: inspectBoardRejection } = await import("../../src/core/pr-review-child.ts");
+            const verified = await inspectBoardRejection({ companyId: config.companyId, parentIssueId: config.issueId,
+              prUrl: config.prUrl, headSha: config.prHeadSha, bootstrapAgentId: config.orchestratorId,
+              lunaAgentId: config.lunaId, strongAgentId: config.terraId,
+              protocolVersion: 2, allowRemediationStatus: true, api: boardApi });
+            assert.equal(verified.kind, "rejected", "actual v2 child verdict must be reviewable before orchestrator handback");
+            assert.ok(verified.projections.some((projection) => projection.id === strongCard.id));
+            const pendingParent = (await db.select().from(schema.issueThreadInteractions)
+              .where(eq(schema.issueThreadInteractions.issueId, config.issueId)))
+              .filter((card) => card.status === "pending" && card.kind === "request_item_verdicts");
+            assert.ok(pendingParent.length <= 1, "ambiguous original parent PR review authority");
+            if (pendingParent.length) {
+              assert.equal((await runRows()).filter((run) => run.agentId === pendingParent[0].addresseeAgentId &&
+                run.contextSnapshot?.issueId === config.issueId && ["queued", "running"].includes(run.status)).length, 0,
+              "do not withdraw a live addressed parent reviewer card");
+              const withdrawal = await fetch(`${process.env.PAPERCLIP_API_URL}/__contract/board-api/issues/${config.issueId}/interactions/${pendingParent[0].id}/withdraw`, {
+                method: "POST", headers: { "content-type": "application/json" },
+                body: JSON.stringify({ reason: `Idle parent PR card superseded by answered native strong child ${strongCard.id} on head ${config.prHeadSha}; no verdict is inferred.` }),
+                signal: AbortSignal.timeout(20_000),
+              });
+              assert.equal(withdrawal.status, 200, "only typed board withdrawal may retire the old parent PR authority lock");
+              record("BOARD_IDLE_PARENT_CARD_TYPED_WITHDRAWAL", { cardId: pendingParent[0].id });
+            }
+            // The fixture executed Terra's typed verdict under the process
+            // adapter. Model the production managed Codex reviewer identity
+            // only after that terminal run, before orchestrator resolution;
+            // resolveManagedFleet correctly rejects process as Terra.
+            await db.update(agents).set({ adapterType: "codex_local" }).where(eq(agents.id, config.terraId));
+            const before = report.events.filter((event) => event.name === "PROVIDER_REQUEST" &&
+              event.method === "POST" && event.path === `/sessions/${config.sessionId}:sendMessage`).length;
+            assert.equal(before, 0);
+            await wake(config.orchestratorId, config.maintenanceIssueId, { contractBoardChildPrReject: true });
+            await settle();
+            for (let turn = 0; turn < 5; turn++) {
+              if (report.events.some((event) => event.name === "BOARD_PR_CHILD_FEEDBACK_SENT")) break;
+              const source = await issueRow();
+              if (!source.monitorNextCheckAt) break;
+              await heartbeat.tickTimers(new Date(new Date(source.monitorNextCheckAt).getTime() + 1));
+              await settle();
+            }
+            const after = report.events.filter((event) => event.name === "PROVIDER_REQUEST" &&
+              event.method === "POST" && event.path === `/sessions/${config.sessionId}:sendMessage`);
+            assert.equal(after.length, 1, "real orchestrator must relay exactly one immutable-head v2 child rejection to original Jules session");
+            assert.ok(report.events.some((event) => event.name === "BOARD_PR_CHILD_FEEDBACK_SENT" &&
+              event.sessionId === config.sessionId && event.headSha === config.prHeadSha));
+            assert.equal((await issueRow()).assigneeAgentId, config.julesId);
+            await wake(config.orchestratorId, config.maintenanceIssueId, { contractBoardChildPrRejectReplay: true });
+            await settle();
+            assert.equal(report.events.filter((event) => event.name === "PROVIDER_REQUEST" &&
+              event.method === "POST" && event.path === `/sessions/${config.sessionId}:sendMessage`).length, 1,
+            "repeated orchestrator reconciliation must not replay same PR feedback");
+            report.outcome = "board_owned_v2_strong_rejection_delivered_once_to_original_jules_session";
+          } else {
           assert.equal(strongVerdict.result.items[0].verdict, "approve");
           const inspected = await inspectPrReviewChildren({ companyId: config.companyId,
             parentIssueId: config.issueId, prUrl: config.prUrl, headSha: config.prHeadSha,
@@ -1242,6 +1315,7 @@ async function runScenario() {
             event.headSha === config.prHeadSha),
           "the external Git actor must merge the exact host-reviewed PR head only after both native child verdicts");
           report.outcome = "board_initiated_pr_children_luna_and_strong_approved_without_maintenance_issue";
+          }
         }
         if (config.prMigrationProbe && !config.prBoardProbe) {
           await db.update(issues).set({ status: "in_review", assigneeAgentId: null }).where(eq(issues.id, config.issueId));

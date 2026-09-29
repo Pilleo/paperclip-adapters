@@ -6,6 +6,7 @@ import {
   buildNativeInteractionWakeRequest,
   executePaperclipCommand,
   type PaperclipCommandResponse,
+  type WorkerFeedbackEnvelope,
 } from "@pilleo/paperclip-adapter-common";
 
 export class OrchestratorPaperclipError extends Error {
@@ -354,6 +355,8 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
         forceFreshSession?: boolean | undefined;
         /** Compatibility wake anchor required by Paperclip v831. */
         wakeCommentId?: string | undefined;
+        /** Exact answered PR verdict from an addressed native reviewer child. */
+        workerFeedback?: WorkerFeedbackEnvelope | undefined;
         source?: "automation" | "on_demand" | undefined;
         triggerDetail?: "system" | "ping" | undefined;
       },
@@ -369,11 +372,12 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
         // receive a fresh prompt, otherwise the model can act on a cancelled
         // historical card even though the wake carries a new interaction id.
         forceFreshSession: options?.forceFreshSession === true || options?.reviewInteractionId !== undefined,
-        ...(issueId || options?.resumeFromRunId
+        ...(issueId || options?.resumeFromRunId || options?.workerFeedback
           ? {
               payload: {
                 ...(issueId ? { issueId } : {}),
                 ...(options?.resumeFromRunId ? { resumeFromRunId: options.resumeFromRunId } : {}),
+                ...(options?.workerFeedback ? { workerFeedback: options.workerFeedback } : {}),
                 // Vanilla Paperclip deliberately clears interactionId unless
                 // this marks an interaction continuation. Without it a
                 // reviewer wake loses the addressed native-card binding.

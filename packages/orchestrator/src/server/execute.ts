@@ -103,7 +103,7 @@ import { activatePrReviewChild, bootstrapPrReviewChild, ensurePrReviewChild, ins
   isPrReviewChild, parsePrReviewChildDescription, prReviewChildApi, prReviewChildKey,
   shouldHoldLegacyParentPrCard,
   PR_REVIEW_CHILD_PREFIX, BOARD_PR_REVIEW_CHILD_PREFIX, type PrReviewChildIdentity } from "../core/pr-review-child.js";
-import { isStablePlanReviewChild } from "@pilleo/paperclip-adapter-common";
+import { isStablePlanReviewChild, nativePrRejectionDeliveryId, WorkerFeedbackEnvelopeSchema, type WorkerFeedbackEnvelope } from "@pilleo/paperclip-adapter-common";
 import { needsFullIssueRecord } from "../core/issue-enrichment-policy.js";
 import { planBoardReconciliation, type BoardIssueSnapshot } from "../core/board-reconciliation.js";
 import { decideBlockedManagedWork, decideRecoveryArtifact } from "../core/recovery-artifact.js";
@@ -574,7 +574,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     agentId: string | undefined,
     reason: string,
     issueId?: string,
-    options?: { resumeFromRunId?: string | undefined; recoverStaleExecution?: boolean | undefined; reviewInteractionId?: string | undefined; forceFreshSession?: boolean | undefined; recoveryRunId?: string | undefined; idempotencyKey?: string | undefined },
+    options?: { resumeFromRunId?: string | undefined; recoverStaleExecution?: boolean | undefined; reviewInteractionId?: string | undefined; forceFreshSession?: boolean | undefined; recoveryRunId?: string | undefined; idempotencyKey?: string | undefined; workerFeedback?: WorkerFeedbackEnvelope | undefined },
   ) => {
     if (!agentId || !managedIds.has(agentId)) return;
     const circuitKey = `managed-wakeup:${agentId}`;
@@ -1365,6 +1365,8 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       // compact issue list is allowed to omit both fields.
       let currentHeadRejected = false;
       let currentHeadReviewComplete = false;
+      let rejectedPrChildFeedback: WorkerFeedbackEnvelope | null = null;
+      let rejectedPrChildNeedsFeedback = false;
       let authoritativeExecutionPolicy: Record<string, unknown> | null = null;
       let authoritativeIssue: Record<string, unknown> | null = null;
       try {
@@ -1395,15 +1397,47 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
             idempotencyKey: typeof interaction["idempotencyKey"] === "string" ? interaction["idempotencyKey"] : undefined,
             result: interaction["result"],
           })), issue.id, matchingPr.headRefOid, issue.description || undefined);
-          if (lunaReviewerAgentId && strongReviewerAgentId) {
+          // The v2 child ladder uses managed Gemini when available, otherwise
+          // Terra is its strong reviewer. Omitting that fallback here loses an
+          // answered Luna child rejection and re-promotes its old PR head.
+          const prStrongAgentId = strongReviewerAgentId ?? terraReviewerAgentId;
+          if (lunaReviewerAgentId && prStrongAgentId) {
             const childInspection = await inspectPrReviewChildren({ companyId, parentIssueId: issue.id,
               prUrl: matchingPr.url, headSha: matchingPr.headRefOid,
               bootstrapAgentId: orchestratorId, lunaAgentId: lunaReviewerAgentId,
-              strongAgentId: strongReviewerAgentId, protocolVersion: 2,
+              strongAgentId: prStrongAgentId, protocolVersion: 2,
               allowRemediationStatus: true, api: prReviewChildApi(pc) });
             if (childInspection.kind === "rejected") {
               currentHeadRejected = true;
               rejectedPrChildIssueIds.add(issue.id);
+              ciRemediationIssueIds.add(issue.id);
+              rejectedPrChildNeedsFeedback = true;
+              const rejection = childInspection.projections.find((projection) => {
+                const result = projection.result as { items?: readonly { verdict?: string }[] } | undefined;
+                return result?.items?.some((item) => item.verdict === "reject");
+              });
+              if (!rejection?.id || childInspection.reason !==
+                  (rejection.result as { items: readonly { reason?: string }[] }).items[0]?.reason) {
+                throw new Error("Native PR child rejection projection lost its original typed card or reason");
+              }
+              const cards = asArray<Record<string, unknown>>(await pc.listInteractions(childInspection.childId));
+              if (cards.length !== 1 || cards[0]?.["id"] !== rejection.id || cards[0]["status"] !== "answered") {
+                throw new Error("Native PR child rejection card changed during provider handback");
+              }
+              const cardResult = cards[0]["result"] as { items?: readonly { id?: string; verdict?: string; reason?: string; resolvedAt?: string }[] } | undefined;
+              const originalVerdict = cardResult?.items?.[0];
+              if (originalVerdict?.id !== "pull_request" || originalVerdict.verdict !== "reject" ||
+                  originalVerdict.reason !== childInspection.reason ||
+                  !originalVerdict.resolvedAt || !Number.isFinite(Date.parse(originalVerdict.resolvedAt))) {
+                throw new Error("Native PR child rejection has no stable answered verdict timestamp");
+              }
+              rejectedPrChildFeedback = WorkerFeedbackEnvelopeSchema.parse({
+                version: 1, kind: "code_review_rejection", issueId: issue.id,
+                deliveryId: nativePrRejectionDeliveryId({ interactionId: rejection.id, headSha: matchingPr.headRefOid }),
+                reviewInteractionId: rejection.id, reviewStage: childInspection.stage,
+                prUrl: matchingPr.url, headSha: matchingPr.headRefOid,
+                reason: childInspection.reason, createdAt: originalVerdict.resolvedAt,
+              });
             }
           }
         }
@@ -1443,6 +1477,10 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
           await log(`[ORCHESTRATOR] Keeping [${issue.identifier || issue.id}] with Jules: its provider monitor remains authoritative.`);
           continue;
         case "recover_provider": {
+          if (rejectedPrChildNeedsFeedback && !rejectedPrChildFeedback) {
+            await log(`[ORCHESTRATOR] Refusing rejected Jules PR recovery for [${issue.identifier || issue.id}]: the addressed child feedback has no verified envelope.`);
+            continue;
+          }
           if (!julesAgentId || !managedIds.has(julesAgentId)) {
             await log(`[ORCHESTRATOR] Refusing rejected-head recovery for [${issue.identifier || issue.id}]: managed Jules worker is unavailable.`);
             continue;
@@ -1462,7 +1500,9 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
             await log(`[ORCHESTRATOR] Deferring rejected-head recovery for [${issue.identifier || issue.id}]: could not read the durable Jules session handle (${String(error)}).`);
             continue;
           }
-          const recoveryKey = `jules-rejected-head-recovery:${issue.id}:${matchingPr.url}:${matchingPr.headRefOid || "unknown"}`;
+          const recoveryKey = rejectedPrChildFeedback
+            ? `jules-rejected-child-feedback:v2:${issue.id}:${matchingPr.url}:${matchingPr.headRefOid}:${rejectedPrChildFeedback.deliveryId}`
+            : `jules-rejected-head-recovery:${issue.id}:${matchingPr.url}:${matchingPr.headRefOid || "unknown"}`;
           ciRemediationIssueIds.add(issue.id);
           await lifecycleConvergenceGuard.runOnce(recoveryKey, async () => {
             const resumed = await pc.patchIssue(issue.id, {
@@ -1474,7 +1514,10 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
               return;
             }
             statusOverrides.set(issue.id, "in_progress");
-            await managedWakeup(julesAgentId, `Resume existing Jules session for rejected PR #${matchingPr.number}`, issue.id, { idempotencyKey: recoveryKey });
+            await managedWakeup(julesAgentId, `Resume existing Jules session for rejected PR #${matchingPr.number}`, issue.id, {
+              idempotencyKey: recoveryKey,
+              ...(rejectedPrChildFeedback ? { workerFeedback: rejectedPrChildFeedback } : {}),
+            });
             wokeThisTick.add(`${julesAgentId}:${issue.id}`);
           });
           continue;

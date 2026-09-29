@@ -156,7 +156,10 @@ if (env.PAPERCLIP_AGENT_ID === config.julesId) {
     await event("PR_CHILD_ACTIVATED_BY_PARENT", { childId: child.id, cardId: card.id });
     process.exit(0);
   }
-  if (run.contextSnapshot.contractJulesExecute && config.realJulesExecutor) {
+  const boardPrFeedbackDue = config.prBoardReject && !run.contextSnapshot.contractJulesExecute &&
+    (await request(`/companies/${config.companyId}/issues?limit=1000&parentId=${issueId}`))
+      .some((child) => child.description?.startsWith("<!-- paperclip-pr-review-child:v2\n"));
+  if ((run.contextSnapshot.contractJulesExecute || boardPrFeedbackDue) && config.realJulesExecutor) {
     const { execute } = await import("../../../jules/src/server/execute.ts");
     const { sessionCodec } = await import("../../../jules/src/server/session.ts");
     const stale = JSON.parse(await readFile(config.staleSessionPath, "utf8"));
@@ -201,7 +204,7 @@ if (env.PAPERCLIP_AGENT_ID === config.julesId) {
     await event("PARENT_MONITOR_ARMED");
   }
 } else if (env.PAPERCLIP_AGENT_ID === config.orchestratorId) {
-  if (config.chainBlockedProbe && (issueId === config.maintenanceIssueId ||
+  if ((config.chainBlockedProbe || config.prBoardReject) && (issueId === config.maintenanceIssueId ||
       (issueId !== config.issueId && parsePrReviewChildDescription((await request(`/issues/${issueId}`)).description)?.parentIssueId === config.issueId))) {
     const { execute } = await import("../../src/server/execute.ts");
     process.env.PAPERCLIP_GH_PATH = config.githubExecutablePath;
@@ -224,7 +227,8 @@ if (env.PAPERCLIP_AGENT_ID === config.julesId) {
       },
     });
     await event("CHAIN_REAL_ORCHESTRATOR_RESULT", { exitCode: result.exitCode,
-      errorMessage: result.errorMessage ?? null, summary: result.summary ?? null, diagnostics: diagnostics.slice(-8) });
+      errorMessage: result.errorMessage ?? null, summary: result.summary ?? null,
+      diagnostics: diagnostics.slice(config.prBoardReject ? -80 : -8) });
     assert.equal(result.exitCode, 0, JSON.stringify({ errorMessage: result.errorMessage, summary: result.summary }));
     process.exit(0);
   }
