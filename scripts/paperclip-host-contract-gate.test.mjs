@@ -116,6 +116,12 @@ test("full A B C native lifecycle must reach three externally merged and termina
   assert.equal(result.summary.scenarios[0].scenario, "stable_child_chain_abc_complete");
 });
 
+test("auto-settled Jules PR hold requires exact typed recovery before the same A B C chain can finish", async () => {
+  const result = await runGate(0, "pass", ["--scenario=stable_child_chain_abc_recover_auto_blocker"]);
+  assert.equal(result.exit, 0, result.stderr);
+  assert.equal(result.summary.scenarios[0].scenario, "stable_child_chain_abc_recover_auto_blocker");
+});
+
 test("full A B C must still complete after B's accepted provider create response is lost", async () => {
   const result = await runGate(0, "pass", ["--scenario=stable_child_chain_abc_lost_b_create"]);
   assert.equal(result.exit, 0, result.stderr);

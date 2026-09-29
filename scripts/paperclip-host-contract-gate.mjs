@@ -8,6 +8,7 @@ const supported = [
   "stable_child_jules_v4_create_lost",
   "stable_child_jules_v4_revise_message_lost",
   "stable_child_chain_abc_complete",
+  "stable_child_chain_abc_recover_auto_blocker",
   "stable_child_chain_abc_lost_b_create",
   "stable_child_chain_abc_lost_b_approval",
   "stable_child_executor_pr_board",

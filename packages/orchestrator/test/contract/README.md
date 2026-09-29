@@ -83,6 +83,20 @@ The fixture pre-populates each disposable Git PR branch after the previous
 merge, before that task's provider returns the URL; no fixture PATCH repairs
 issue status or supplies a verdict mid-test.
 
+`stable_child_chain_abc_recover_auto_blocker` injects one additional failed
+Jules *local process* run after A has already registered its provider PR and
+before any further remote mutation. The installed host automatically settles
+that exact failure with `replay: blocked`. An actual orchestrator heartbeat
+must leave A `blocked` and Jules-owned, dispatch **no** reviewer, and replay
+**no** provider POST. With the process stopped and the failure outcome
+known `not_performed` for that single fixture run, the local board resolves
+the *same* action via Paperclip's typed route. Only then do orchestrator
+heartbeats obtain native PR verdicts, observe external A/B/C two-parent
+merges, and converge all three tasks to merged/done with no terminal blocker.
+This proves the supported adapter path against a real auto-settled host hold;
+it does not authorize classifying an unrelated failed Jules provider action
+as `not_performed` without independently verified outcome evidence.
+
 `stable_child_chain_abc_lost_b_create` repeats the entire same-host chain but
 lets Jules's `POST /sessions` for **B** succeed remotely and destroys its
 response. The first B run fails closed and the host records its exact failed
@@ -117,7 +131,7 @@ cards (old rejection plus two revised approvals), and one registered PR.
 This is a single-task plan revision, not a full-chain PR-feedback amendment.
 
 The independent CI runner `node scripts/paperclip-host-contract-gate.mjs`
-requires all ten positive installed-host scenarios, each in a fresh report
+requires all eleven positive installed-host scenarios, each in a fresh report
 directory. It rejects missing, mismatched, stale, malformed, or unsafe
 evidence. Each scenario has a bounded deadline; SIGINT/SIGTERM kills its
 owned process group, writes a failing `interrupted` summary, and does not
@@ -168,6 +182,22 @@ a new pinned host version distinguishes historical no-replay audit evidence
 from a current actionable hold without authorizing a failed provider retry.
 Do not put this negative characterization in the positive CI matrix, clear
 the evidence by issue-status repair, or silently reinterpret it as success.
+
+There is a **supported adapter-side path without modifying Paperclip**:
+`pnpm test:contract:terminal-blocker --typed-recover-before-terminal --require-safe`
+exits 0. Before losing the failed run's current Jules ownership, the
+board-authorized native recovery route reopens the exact auto-settled action
+with stopped-process proof and its *observed* action outcome, then clears
+the effective hold without replaying the original run. The example process
+ran `false`, so the proven outcome is `not_performed`. A Jules provider
+session that did perform remote work needs independently verified evidence
+and the matching `completed` or `mixed` outcome; do not copy the example's
+outcome. The orchestrator now holds both open-PR review handoff and merged-PR
+terminalization while an effective execution blocker remains, leaving
+source ownership intact for that typed recovery. A later heartbeat retries
+normal reconciliation only after the hold is cleared. Direct board-driven
+terminalization outside this adapter can still expose the host projection
+defect; the separate backlog issue tracks that upstream boundary.
 
 Exit codes:
 

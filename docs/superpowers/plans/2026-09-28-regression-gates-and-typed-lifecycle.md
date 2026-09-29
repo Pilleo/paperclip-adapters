@@ -195,7 +195,7 @@ approvals before one provider approval and PR registration. This is the
 single-task plan-revision lane; old-head PR rejection feedback inside a
 three-task chain remains a separate fault case.
 
-CI now requires ten positive installed-host scenarios. The native runner
+At this milestone CI required ten positive installed-host scenarios. The native runner
 has a red/green interruption regression: SIGTERM kills an owned detached
 scenario and emits a failing, sanitized partial summary instead of leaving
 a process running. All ten scenarios were observed passing across two
@@ -232,7 +232,7 @@ commit. An older unit fixture that used a six-character pseudo-SHA was
 replaced with a 40-character Git object ID without weakening its immutable
 head-retention assertion.
 
-### Confirmed upstream host blocker (2026-09-29)
+### Auto-settled host blocker and supported adapter recovery (2026-09-29)
 
 The opt-in real-PostgreSQL `pnpm test:contract:terminal-blocker --require-safe`
 reproduces the original C-style inconsistency on unpatched Paperclip
@@ -245,10 +245,38 @@ host issue read model reports `done` **and** an actionable
 The previous generic-failure experiments did not exercise automatic
 settlement and therefore cleared their blocker; they were not evidence
 against this case. Do not mask this host field in the adapter or treat a
-resolved unknown-effect audit as replay permission. An upstream host
-projection/reconciliation contract must distinguish historical evidence
-from the current actionable hold before claiming this final invariant
-green. The ten positive adapter scenarios remain independent and passing.
+resolved unknown-effect audit as replay permission. On the same unpatched
+host, the opt-in `--typed-recover-before-terminal --require-safe` variant
+exits 0: the board-authorized native route reopens the exact settled action
+while the original failed-run owner remains assigned. Stopped-process proof
+and the *observed* outcome of the process (`not_performed` in this fixture)
+clear the effective blocker; a later terminal transition retains the audit
+without presenting an actionable hold. A Jules run that performed a remote
+effect requires independent evidence and the matching `completed` or `mixed`
+decision—never guess `not_performed` from a failed adapter exit.
+
+The orchestrator now holds an open registered Jules PR **before** handing
+its blocked parent to reviewers and holds a merged PR **before** setting
+`done` when authoritative issue detail contains an execution blocker. It
+does not cache either hold as a completed merge; once native typed recovery
+clears the blocker, the next heartbeat resumes ordinary PR reconciliation.
+The unit regression also covers compact issue lists that omit the blocker.
+This supported adapter path needs **no upstream Paperclip edit**. The opt-in
+strict host characterization remains red for direct board terminalization
+that bypasses typed recovery; its separate backlog issue records that
+host-wide behavior. `stable_child_chain_abc_recover_auto_blocker` now covers
+that **combined** path on unpatched v2026.916.0. After A's Jules PR
+registration, a separate Jules local run fails before any new provider
+effect; the installed automatic service settles its action as `replay:
+blocked`. The real orchestrator preserves A's `blocked`/Jules ownership,
+creates no PR reviewer child, and replays no provider POST. The board-owned
+native route reconciles the exact stopped run with *proved* `not_performed`
+outcome for this fixture, then normal A/B/C typed PR reviews, external
+two-parent merges and terminal reconciliation complete. The same host's
+direct board `done` PATCH remains the opt-in red negative characterization;
+**managed adapter operation needs no upstream change**. Other ambiguous
+Jules effects require their own verified `completed`/`mixed` evidence before
+using the typed route. The positive CI runner now includes eleven scenarios.
 
 The next type-only lifecycle slice replaces Jules's optional-bag
 `SessionStartupDecision` with a discriminated union and removes the unused
@@ -259,4 +287,4 @@ are unchanged. The type test deliberately failed on four unused
 `@ts-expect-error` annotations before the change; the expanded
 `pnpm typecheck:invariants`, Jules test suite, workspace build and full
 A→B→C installed-host contract passed after it. The host blocker above
-remains upstream-owned rather than being hidden by this adapter type.
+remains auditable rather than being hidden by this adapter type.

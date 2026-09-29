@@ -21,5 +21,15 @@ Pinned Paperclip 2026.916.0 real-PostgreSQL repro: a host-created failed run is 
 **Needed:**
 1. Fix and version-qualify the upstream Paperclip execution-blocker read model so resolved automatic no-replay history remains auditable but cannot appear as a current actionable blocker on done issues; rerun pnpm test:contract:terminal-blocker --require-safe.
 
+**Adapter-side recovery on the existing host:**
+The same opt-in contract passes with `--typed-recover-before-terminal --require-safe`.
+The board's native recovery route validates the exact failed run, stopped process,
+and independently observed external action outcome while the original owner is
+still assigned. The orchestrator now preserves that ownership and holds both
+open-PR review handoff and merged-PR terminalization until this typed resolution
+clears the effective blocker. This issue concerns direct host/board terminalization
+that bypasses that supported adapter path; it is **not** permission to replay an
+uncertain Jules effect or a prerequisite for using the adapter recovery route.
+
 ---
 <!-- id: issue-20260929-072545-150-paperclip-v916-terminal-issues-retain-automatic-no  file: issue-20260929-072545-150-paperclip-v916-terminal-issues-retain-automatic-no.md -->

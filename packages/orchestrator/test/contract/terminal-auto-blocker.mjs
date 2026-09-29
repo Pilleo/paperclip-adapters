@@ -92,6 +92,23 @@ try {
   assert.equal(settled.evidence.runId, failed.id);
   const before = await board(`/issues/${issueId}`);
   assert.equal(before.executionBlocker?.runId, failed.id);
+  let typedReconciliation = null;
+  if (process.argv.includes("--typed-recover-before-terminal")) {
+    typedReconciliation = await board(`/issues/${issueId}/recovery-actions/resolve`, "POST", {
+      actionId: settled.id,
+      outcome: "restored",
+      sourceIssueStatus: "todo",
+      executionReconciliation: { runId: failed.id, providerStopped: true,
+        actionOutcome: "not_performed",
+        outcomeEvidence: "The fixture process was the `false` command; it exited before any provider or deliverable action. Its process and group have stopped, and the exact original run is recorded above." },
+    });
+    assert.equal(typedReconciliation.issue.status, "todo");
+    assert.equal(typedReconciliation.recoveryAction.id, settled.id);
+    assert.equal(typedReconciliation.recoveryAction.status, "resolved");
+    const cleared = await board(`/issues/${issueId}`);
+    assert.equal(cleared.executionBlocker ?? null, null,
+      "the exact board-authorized typed recovery must clear the effective no-replay hold before terminalization");
+  }
   await board(`/issues/${issueId}/work-products`, "POST", { type: "pull_request", provider: "github",
     title: "Disposable externally completed PR", url: "https://github.com/paperclip-contract/fixture/pull/7",
     externalId: "https://github.com/paperclip-contract/fixture/pull/7", status: "merged", isPrimary: true,
@@ -104,6 +121,7 @@ try {
   terminalSafe = blocker === null;
   const summary = { version: "2026.916.0", terminalIssueId: issueId, failedRunId: failed.id,
     automaticReplay: settled.evidence.automaticRecovery.replay,
+    typedReconciliation: typedReconciliation?.recoveryAction.id ?? null,
     terminalBlockerCause: blocker?.cause ?? null, safe: terminalSafe };
   console.log("TERMINAL_AUTOMATIC_BLOCKER", JSON.stringify(summary));
 } finally {

@@ -40,7 +40,7 @@ if (!scenario) {
   if (results.some((result) => result.result !== "observed")) process.exitCode = 1;
   else if (process.argv.includes("--require-safe") && !integrationAllowed) process.exitCode = 2;
 } else {
-  assert.ok([...scenarios, "stable_child", "stable_child_ladder", "stable_child_reject", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_jules_v4_revise_message_lost", "stable_child_chain_abc_complete", "stable_child_chain_abc_lost_b_create", "stable_child_chain_abc_lost_b_approval", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused", "stable_child_gemini", "stable_child_gemini_retry"].includes(scenario), `Unknown scenario ${scenario}`);
+  assert.ok([...scenarios, "stable_child", "stable_child_ladder", "stable_child_reject", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_jules_v4_revise_message_lost", "stable_child_chain_abc_complete", "stable_child_chain_abc_recover_auto_blocker", "stable_child_chain_abc_lost_b_create", "stable_child_chain_abc_lost_b_approval", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused", "stable_child_gemini", "stable_child_gemini_retry"].includes(scenario), `Unknown scenario ${scenario}`);
   await runScenario();
 }
 
@@ -97,7 +97,7 @@ async function runScenario() {
     const { actorMiddleware } = await load("@paperclipai/server/dist/middleware/auth.js");
     const { errorHandler } = await load("@paperclipai/server/dist/middleware/index.js");
     const { heartbeatService } = await load("@paperclipai/server/dist/services/heartbeat.js");
-    const { deliverReconciledExecutions } = await load("@paperclipai/server/dist/services/execution-recovery-resolution.js");
+    const { deliverReconciledExecutions, settleUnrecoverableExecutions } = await load("@paperclipai/server/dist/services/execution-recovery-resolution.js");
     pg = await schema.startEmbeddedPostgresTestDatabase("plan-reconciliation-contract-");
     db = schema.createDb(pg.connectionString);
     heartbeat = heartbeatService(db);
@@ -106,7 +106,7 @@ async function runScenario() {
     let chainGitHub = null;
     config.stageId = nativePlanReviewStageId(config.issueId, config.revisionId, "luna");
     config.checkpointPath = path.join(home, "child-review-checkpoint.json");
-    config.childReviewLadder = ["stable_child_ladder", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_jules_v4_revise_message_lost", "stable_child_chain_abc_complete", "stable_child_chain_abc_lost_b_create", "stable_child_chain_abc_lost_b_approval", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused"].includes(scenario);
+    config.childReviewLadder = ["stable_child_ladder", "stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict", "stable_child_jules_v4", "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_jules_v4_revise_message_lost", "stable_child_chain_abc_complete", "stable_child_chain_abc_recover_auto_blocker", "stable_child_chain_abc_lost_b_create", "stable_child_chain_abc_lost_b_approval", "stable_child_jules_v4_create_lost", "stable_child_jules_v4_paused"].includes(scenario);
     config.realJulesExecutor = ["stable_child_executor", "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_producer_conflict"].includes(scenario);
     config.producerConflictProbe = scenario === "stable_child_executor_pr_producer_conflict";
     config.prMigrationProbe = ["stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board"].includes(scenario);
@@ -118,7 +118,8 @@ async function runScenario() {
     config.prStrongFirstTurnFailure = scenario === "stable_child_executor_pr_failed";
     config.prStrongRetryMarker = path.join(home, "strong-reviewer-first-turn-failed");
     config.chainBlockedProbe = ["stable_child_chain_abc_complete", "stable_child_chain_abc_lost_b_create",
-      "stable_child_chain_abc_lost_b_approval"].includes(scenario);
+      "stable_child_chain_abc_lost_b_approval", "stable_child_chain_abc_recover_auto_blocker"].includes(scenario);
+    config.chainAutoSettledPrFailure = scenario === "stable_child_chain_abc_recover_auto_blocker";
     config.chainLostBCreateResponse = scenario === "stable_child_chain_abc_lost_b_create";
     config.chainLostBApprovalResponse = scenario === "stable_child_chain_abc_lost_b_approval";
     if (config.chainBlockedProbe) {
@@ -591,6 +592,55 @@ async function runScenario() {
           assert.equal(products[0].status, "ready_for_review");
           assert.equal((await issueRow()).assigneeAgentId, config.julesId);
           if (config.chainBlockedProbe) {
+            if (config.chainAutoSettledPrFailure) {
+              await wake(config.julesId, config.issueId, { contractFailAfterRegisteredPr: true });
+              await settle();
+              const [failed] = (await runRows()).filter((run) => run.agentId === config.julesId &&
+                run.contextSnapshot?.issueId === config.issueId && run.status === "failed");
+              assert.ok(failed, "host must record exactly one failed A run after its prior PR was registered");
+              assert.ok(report.events.some((event) => event.name === "CHAIN_A_FAILED_RUN_BEFORE_NEW_PROVIDER_EFFECT" &&
+                event.runId === failed.id));
+              const beforeWrites = report.events.filter((event) => event.name === "PROVIDER_REQUEST" && event.method === "POST").length;
+              await settleUnrecoverableExecutions(db);
+              const [action] = await db.select().from(schema.issueRecoveryActions)
+                .where(eq(schema.issueRecoveryActions.sourceIssueId, config.issueId));
+              assert.equal(action?.status, "resolved");
+              assert.equal(action?.outcome, "blocked");
+              assert.equal(action?.evidence?.automaticRecovery?.replay, "blocked");
+              assert.equal(action?.evidence?.runId, failed.id);
+              const blocked = await fetch(`${process.env.PAPERCLIP_API_URL}/api/issues/${config.issueId}`)
+                .then((response) => response.json());
+              assert.equal(blocked.status, "blocked");
+              assert.equal(blocked.assigneeAgentId, config.julesId);
+              assert.equal(blocked.executionBlocker?.runId, failed.id);
+              await wake(config.orchestratorId, config.maintenanceIssueId, { contractChainReconcile: true });
+              await settle();
+              const stillHeld = await fetch(`${process.env.PAPERCLIP_API_URL}/api/issues/${config.issueId}`)
+                .then((response) => response.json());
+              assert.equal(stillHeld.status, "blocked", "auto-settled failure must not hand Jules's PR to reviewers");
+              assert.equal(stillHeld.assigneeAgentId, config.julesId,
+                "preserve original owner until exact board-authorized typed failed-run reconciliation");
+              assert.equal((await db.select().from(issues).where(eq(issues.parentId, config.issueId)))
+                .filter((child) => child.description?.startsWith("<!-- paperclip-pr-review-child:")).length, 0);
+              assert.equal(report.events.filter((event) => event.name === "PROVIDER_REQUEST" && event.method === "POST").length,
+                beforeWrites, "no provider mutation may be replayed while automatic no-replay hold is active");
+              record("CHAIN_A_AUTO_SETTLED_HOLD_VERIFIED", { failedRunId: failed.id, actionId: action.id,
+                headSha: config.prHeadSha });
+              const resolution = await fetch(`${process.env.PAPERCLIP_API_URL}/api/issues/${config.issueId}/recovery-actions/resolve`, {
+                method: "POST", headers: { "content-type": "application/json" },
+                body: JSON.stringify({ actionId: action.id, outcome: "restored", sourceIssueStatus: "todo",
+                  executionReconciliation: { runId: failed.id, providerStopped: true, actionOutcome: "not_performed",
+                    outcomeEvidence: `The exact failed fixture run ${failed.id} exited before any new provider action; the previous session and PR ${config.prUrl} at ${config.prHeadSha} were already registered and remain intact.` } }),
+                signal: AbortSignal.timeout(20_000),
+              });
+              assert.equal(resolution.status, 200, `native typed auto-settled recovery failed (${resolution.status}): ${await resolution.text()}`);
+              const unblocked = await fetch(`${process.env.PAPERCLIP_API_URL}/api/issues/${config.issueId}`)
+                .then((response) => response.json());
+              assert.equal(unblocked.executionBlocker ?? null, null);
+              await deliverReconciledExecutions(db, (agentId, options) => heartbeat.wakeup(agentId, options));
+              await settle();
+              record("CHAIN_A_TYPED_FAILED_RUN_RECONCILED", { failedRunId: failed.id, actionId: action.id });
+            }
             const dependentRuns = (await runRows()).filter((run) =>
               [config.bIssueId, config.cIssueId].includes(run.contextSnapshot?.issueId) && run.startedAt);
             assert.equal(dependentRuns.length, 0, "B/C cannot execute before A has a verified merge");
@@ -959,7 +1009,24 @@ async function runScenario() {
                 lost.sequence < activityRead.sequence && activityRead.sequence < bPr.sequence,
               "the accepted B approval must be verified from same-session activity after its reply was lost, not posted twice");
             }
-            report.outcome = "shared_host_a_b_c_provider_native_reviews_external_merges_and_terminal_reconciliation";
+            if (config.chainAutoSettledPrFailure) {
+              const hold = report.events.find((event) => event.name === "CHAIN_A_AUTO_SETTLED_HOLD_VERIFIED");
+              const recovered = report.events.find((event) => event.name === "CHAIN_A_TYPED_FAILED_RUN_RECONCILED");
+              const merge = report.events.find((event) => event.name === "CHAIN_A_EXTERNAL_MERGE");
+              assert.ok(hold && recovered && merge && hold.actionId === recovered.actionId &&
+                hold.failedRunId === recovered.failedRunId && hold.sequence < recovered.sequence &&
+                recovered.sequence < merge.sequence,
+              "native typed recovery must clear the exact auto-settled failed Jules run before A PR review or merge");
+              const [action] = await db.select().from(schema.issueRecoveryActions)
+                .where(eq(schema.issueRecoveryActions.id, hold.actionId));
+              assert.equal(action?.status, "resolved");
+              assert.equal(action?.evidence?.executionReconciliation?.runId, hold.failedRunId);
+              assert.equal(action?.evidence?.executionReconciliation?.actionOutcome, "not_performed");
+              assert.equal(action?.evidence?.automaticRecovery, undefined);
+            }
+            report.outcome = config.chainAutoSettledPrFailure
+              ? "shared_host_abc_auto_settled_jules_run_typed_recovery_then_external_merges"
+              : "shared_host_a_b_c_provider_native_reviews_external_merges_and_terminal_reconciliation";
             record("CHAIN_B_RELEASED_C_HELD", { aMergeSha: merged.mergeSha,
               bIssueId: config.bIssueId, cIssueId: config.cIssueId,
               bStatus: bDetail.status,

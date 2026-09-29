@@ -162,7 +162,7 @@ describe("orchestrator native PR completion", () => {
     else process.env["PAPERCLIP_API_KEY"] = originalKey;
   });
 
-  it.each(["without a parent card", "from company timer without a maintenance issue", "with a pending parent card", "with unavailable GitHub PR discovery", "while Jules provider PR is not registered", "with a newer GitHub head than the registered product", "from todo with a cleared Jules monitor", "from compact unassigned todo projection"] as const)(
+  it.each(["without a parent card", "from company timer without a maintenance issue", "with a pending parent card", "with unavailable GitHub PR discovery", "while Jules provider PR is not registered", "with a newer GitHub head than the registered product", "from todo with a cleared Jules monitor", "from compact unassigned todo projection", "with a Jules execution blocker requiring typed recovery"] as const)(
     "routes a Jules PR %s without another parent Luna verdict or wake", async (parentCardState) => {
     if (parentCardState === "with unavailable GitHub PR discovery") vi.mocked(fetchGitHubPullRequests).mockResolvedValue({
       openPrs: [], mergedPrs: [], openPrFiles: new Set(), error: "provider unavailable",
@@ -176,6 +176,12 @@ describe("orchestrator native PR completion", () => {
       ...(["from todo with a cleared Jules monitor", "from compact unassigned todo projection"].includes(parentCardState) ? { status: "todo",
         executionState: { status: "idle", monitor: { serviceName: "jules", externalRef: "[redacted]",
           status: "cleared", clearReason: "invalid_status" } } } : {}),
+      ...(parentCardState === "with a Jules execution blocker requiring typed recovery" ? {
+        status: "blocked", assigneeAgentId: "jules-1",
+        executionBlocker: { recoveryActionId: "550e8400-e29b-41d4-a716-446655440000",
+          runId: "550e8400-e29b-41d4-a716-446655440001", agentId: "jules-1",
+          cause: "legacy_execution_requires_reconciliation" },
+      } : {}),
       ...(parentCardState === "while Jules provider PR is not registered" ? { executionState: {
         status: "idle", monitor: { serviceName: "jules", externalRef: "[redacted]", status: "cleared" },
       } } : {}),
@@ -233,7 +239,10 @@ describe("orchestrator native PR completion", () => {
       if (href.includes("/heartbeat-runs")) return new Response(JSON.stringify([]));
       if (method === "GET" && href.includes("/issues")) return new Response(JSON.stringify([
         parentCardState === "from compact unassigned todo projection"
-          ? { ...persistedIssue, workProducts: undefined } : persistedIssue,
+          ? { ...persistedIssue, workProducts: undefined }
+          : parentCardState === "with a Jules execution blocker requiring typed recovery"
+            ? { ...persistedIssue, executionBlocker: undefined }
+            : persistedIssue,
       ]));
       if (href.includes("/approvals")) return new Response(JSON.stringify([]));
       return new Response(JSON.stringify([]));
@@ -259,6 +268,12 @@ describe("orchestrator native PR completion", () => {
     }
     expect(parentCardPosts).toEqual([]);
     expect(issuePatches.some((patch) => patch["status"] === "todo")).toBe(false);
+    if (parentCardState === "with a Jules execution blocker requiring typed recovery") {
+      expect(issuePatches.some((patch) => patch["status"] === "in_review" || patch["status"] === "done")).toBe(false);
+      expect(persistedIssue.status).toBe("blocked");
+      expect(persistedIssue.assigneeAgentId).toBe("jules-1");
+      expect(logs.join("\n")).toMatch(/typed.*reconcil|execution.*hold/i);
+    }
     if (parentCardState === "with a newer GitHub head than the registered product") {
       expect(logs.join("\n")).toContain("registered PR head differs from GitHub");
     }
@@ -807,6 +822,67 @@ describe("orchestrator native PR completion", () => {
     expect(fetchMock.mock.calls.some(([url, init]) =>
       String(url).includes("/interactions") && (init?.method || "GET").toUpperCase() === "POST",
     )).toBe(false);
+  });
+
+  it("holds an externally merged Jules issue for typed recovery instead of completing it with an auto-settled execution blocker", async () => {
+    const logs: string[] = [];
+    const blocked = { ...issue(), status: "blocked", assigneeAgentId: "jules-1",
+      executionBlocker: { recoveryActionId: "550e8400-e29b-41d4-a716-446655440000",
+        runId: "550e8400-e29b-41d4-a716-446655440001", agentId: "jules-1",
+        cause: "legacy_execution_requires_reconciliation",
+        nextAction: "Automatic recovery stopped; reconcile external effects before another run." },
+      workProducts: [{ ...issue().workProducts[0], id: "blocked-merged-product",
+        status: "ready_for_review", metadata: { source: "jules", producer: "paperclip-jules-adapter", headSha } }] };
+    let persisted = blocked;
+    const patches: Array<Record<string, unknown>> = [];
+    vi.mocked(fetchGitHubPullRequests).mockResolvedValue({ openPrs: [], mergedPrs: [{
+      number: 3, title: "MAZ-1519 Jules PR", state: "MERGED", headRefName: "jules/1519",
+      headRefOid: headSha, baseRefName: "main", mergedAt: "2026-09-29T01:00:00Z", url: prUrl, files: [],
+    }], openPrFiles: new Set() });
+    globalThis.fetch = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      const method = (init?.method || "GET").toUpperCase();
+      if (href.includes("/agents")) return new Response(JSON.stringify(managedAgents(true)));
+      if (href.includes("/projects")) return new Response(JSON.stringify([
+        { id: "project-1519", name: "fixture", primaryWorkspace: { cwd: process.cwd() } },
+      ]));
+      if (method === "GET" && href.endsWith(`/api/issues/${issueId}`)) return new Response(JSON.stringify(persisted));
+      if (method === "PATCH" && href.endsWith(`/api/issues/${issueId}`)) {
+        const patch = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+        patches.push(patch);
+        persisted = { ...persisted, ...patch };
+        return new Response(JSON.stringify(persisted));
+      }
+      if (href.includes(`/api/issues/${issueId}/recovery-actions`)) return new Response(JSON.stringify({ active: null }));
+      if (method === "GET" && href.includes(`/api/heartbeat-runs/`)) return new Response(JSON.stringify({
+        id: blocked.executionBlocker.runId, agentId: "jules-1", status: "failed",
+        errorCode: "paperclip_completion_interaction_failed", finishedAt: "2026-09-29T00:59:00Z",
+        contextSnapshot: { issueId },
+      }));
+      if (href.includes("/heartbeat-runs") || href.includes("/comments") || href.includes("/interactions") ||
+          href.includes("/children") || href.includes("/approvals")) return new Response(JSON.stringify([]));
+      if (method === "GET" && href.includes("/issues")) return new Response(JSON.stringify([
+        { ...persisted, executionBlocker: undefined },
+      ]));
+      return new Response(JSON.stringify([]));
+    }) as typeof fetch;
+
+    await expect(execute({ ...context(), onLog: async (_stream, line) => { logs.push(line); } }))
+      .resolves.toMatchObject({ exitCode: 0 });
+    expect(patches.some((patch) => patch["status"] === "done" || patch["status"] === "in_review")).toBe(false);
+    expect(persisted.status).toBe("blocked");
+    expect(persisted.assigneeAgentId).toBe("jules-1");
+    expect(logs.join("\n")).toMatch(/typed.*reconcil|execution.*hold/i);
+
+    // Simulate the authoritative host projection after the exact failed run
+    // has been resolved through its typed board recovery route (covered by
+    // terminal-auto-blocker.mjs), not a retry of the terminal run.
+    persisted = { ...persisted, status: "todo", executionBlocker: null };
+    await expect(execute({ ...context(), onLog: async (_stream, line) => { logs.push(line); } }))
+      .resolves.toMatchObject({ exitCode: 0 });
+    expect(patches).toContainEqual({ status: "done", assigneeAgentId: null,
+      executionPolicy: null, executionState: null });
+    expect(persisted.status).toBe("done");
   });
 
   it("retries failed stale-approval invalidation without reviving a merged task", async () => {

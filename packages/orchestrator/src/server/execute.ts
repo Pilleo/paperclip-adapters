@@ -1217,6 +1217,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
   // 7. PHASE 1: Reconcile board status with merged GitHub PRs & Archive files
   const statusOverrides = new Map<string, IssueState>();
   const mergedIssueIds = new Set<string>();
+  const mergedExecutionHoldIssueIds = new Set<string>();
   let mergedAutoCompleted = 0;
   if (!ghStatus.error || mergedPrs.length > 0) {
     for (const issue of parsedIssues) {
@@ -1241,6 +1242,19 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
         } catch (err: unknown) {
           await log(`[ORCHESTRATOR] Warning: Failed to invalidate stale final merge approval ${pendingMergeApproval.id} for merged PR ${mergedPr.url}: ${err instanceof Error ? err.message : String(err)}. The task will remain terminal and cleanup will retry.`);
         }
+      }
+      try {
+        const authoritativeIssue = await pc.getIssue<Record<string, unknown>>(issue.id);
+        if (authoritativeIssue["id"] !== issue.id) throw new Error("merged issue detail identity changed");
+        if (authoritativeIssue["executionBlocker"] != null || issue.rawIssue["executionBlocker"] != null) {
+          mergedExecutionHoldIssueIds.add(issue.id);
+          await log(`[ORCHESTRATOR] Holding merged PR terminalization for [${issue.identifier || issue.id}]: Paperclip retains an execution hold. Reconcile the exact failed run through the native typed recovery path before completing the issue; the historical audit and GitHub merge remain intact.`);
+          continue;
+        }
+      } catch (error: unknown) {
+        mergedExecutionHoldIssueIds.add(issue.id);
+        await log(`[ORCHESTRATOR] Holding merged PR terminalization for [${issue.identifier || issue.id}]: authoritative execution-blocker state unavailable (${error instanceof Error ? error.message : String(error)}).`);
+        continue;
       }
       const mergeKey = `merge:${issue.id}:pr-${mergedPr.number}:${mergedPr.mergedAt || "unknown"}`;
       await mergeConvergenceGuard.runOnce(mergeKey, async () => {
@@ -1319,6 +1333,8 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
   // GitHub confirms its checks are green; the normal native review pipeline
   // then owns reviewer dispatch. This replaces the old external timer bridge.
   const openPrRecoveryIds = new Set<string>();
+  const openPrExecutionHoldIssueIds = new Set<string>();
+  const authoritativeOpenPrExecutionBlockers = new Map<string, unknown>();
   const rejectedPrChildIssueIds = new Set<string>();
   // Same-heartbeat ownership fence: after a rejected/red head is routed back
   // to Jules, board reconciliation must not immediately reinterpret the stale
@@ -1354,6 +1370,13 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       try {
         const detail = await pc.getIssue<Record<string, unknown>>(issue.id);
         authoritativeIssue = detail;
+        if (detail["executionBlocker"] != null || issue.rawIssue["executionBlocker"] != null) {
+          openPrExecutionHoldIssueIds.add(issue.id);
+          authoritativeOpenPrExecutionBlockers.set(issue.id,
+            detail["executionBlocker"] ?? issue.rawIssue["executionBlocker"]);
+          await log(`[ORCHESTRATOR] Holding Jules PR review handoff for [${issue.identifier || issue.id}]: the original failed execution requires native typed reconciliation while Jules still owns the source. Preserving the registered PR and failed-run audit without assigning a reviewer.`);
+          continue;
+        }
         const policy = detail["executionPolicy"];
         const policyRecord = policy && typeof policy === "object" && !Array.isArray(policy) ? policy as Record<string, unknown> : null;
         authoritativeExecutionPolicy = policyRecord;
@@ -1385,6 +1408,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
           }
         }
       } catch (err: unknown) {
+        openPrExecutionHoldIssueIds.add(issue.id);
         await log(`[ORCHESTRATOR] Deferring open Jules PR recovery for [${issue.identifier || issue.id}]: could not verify monitor/review state (${String(err)}).`);
         continue;
       }
@@ -1556,6 +1580,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
   // only that explicit structured case; provider completion/questions remain
   // the Jules adapter's responsibility.
   for (const issue of lifecycleIssues) {
+    if (mergedExecutionHoldIssueIds.has(issue.id)) continue;
     const executionState = issue.rawIssue["executionState"];
     const state = executionState && typeof executionState === "object" && !Array.isArray(executionState)
       ? executionState as Record<string, unknown>
@@ -1592,7 +1617,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       }
     }
     const providerSessionId = resolveJulesMonitorSessionId({ monitorExternalRef: externalRef, sessionHandleBody });
-    const executionBlocker = issue.rawIssue["executionBlocker"];
+    const executionBlocker = issue.rawIssue["executionBlocker"] ?? authoritativeOpenPrExecutionBlockers.get(issue.id);
     // Paperclip's execution blocker is a stronger no-replay boundary than a
     // detached provider monitor. Never overwrite it with an `in_progress`
     // monitor patch. A narrow compatibility bridge can instead submit the
@@ -1850,7 +1875,8 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       nativeReviewInteraction,
       registeredOpenPullRequest,
       ciRemediationInProgress: ciRemediationIssueIds.has(issue.id),
-      executionReconciliationRequired: issue.rawIssue["executionBlocker"] != null,
+      executionReconciliationRequired: issue.rawIssue["executionBlocker"] != null ||
+        mergedExecutionHoldIssueIds.has(issue.id) || openPrExecutionHoldIssueIds.has(issue.id),
       // A durable registered Jules work product is enough to preserve review
       // ownership while GitHub discovery is unavailable or its PR title lacks
       // the issue identifier. Remote verification still gates *advancement*;
@@ -2291,7 +2317,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
   // pending native card. This is deliberately before the older open-PR
   // fallback below: a generic ready PR cannot tell us which card is current.
   for (const issue of overlayedIssues.filter((candidate) =>
-    candidate.orchestratorManaged && !mergedIssueIds.has(candidate.id),
+    candidate.orchestratorManaged && !mergedIssueIds.has(candidate.id) && !openPrExecutionHoldIssueIds.has(candidate.id),
   )) {
     const matchingPr = ghStatus.error
       ? registeredPullRequestFromIssue(issue)
@@ -2483,7 +2509,8 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
   // worker; this broader repair must not immediately steal it into review.
   const reviewRecoveryIssues: ParsedIssueMetadata[] = [];
   for (const issue of overlayedIssues) {
-    const isRecoveryCandidate = !nativeReviewRecoveryIds.has(issue.id) && !rejectedPrChildIssueIds.has(issue.id) && shouldRecoverNativePrReview({
+    const isRecoveryCandidate = !openPrExecutionHoldIssueIds.has(issue.id) &&
+      !nativeReviewRecoveryIds.has(issue.id) && !rejectedPrChildIssueIds.has(issue.id) && shouldRecoverNativePrReview({
       status: issue.status,
       orchestratorManaged: issue.orchestratorManaged,
       merged: mergedIssueIds.has(issue.id),

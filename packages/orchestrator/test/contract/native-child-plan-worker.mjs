@@ -45,6 +45,11 @@ const run = await request(`/heartbeat-runs/${env.PAPERCLIP_RUN_ID}`);
 assert.equal(run.status, "running");
 assert.equal(run.agentId, env.PAPERCLIP_AGENT_ID);
 const issueId = run.contextSnapshot.issueId;
+if (config.chainAutoSettledPrFailure && env.PAPERCLIP_AGENT_ID === config.julesId &&
+    issueId === config.issueId && run.contextSnapshot.contractFailAfterRegisteredPr) {
+  await event("CHAIN_A_FAILED_RUN_BEFORE_NEW_PROVIDER_EFFECT", { issueId, runId: env.PAPERCLIP_RUN_ID });
+  throw new Error("fixture_failed_after_existing_pr_registration_before_any_new_provider_mutation");
+}
 if (config.chainBlockedProbe && env.PAPERCLIP_AGENT_ID === config.julesId &&
     run.contextSnapshot.wakeReason === "missing_issue_comment") {
   await request(`/issues/${issueId}/comments`, "POST", {
