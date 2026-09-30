@@ -9,10 +9,24 @@ import { createChainGitHubFixture } from "../../packages/orchestrator/test/contr
 
 const run = promisify(execFile);
 
+test("configured GitHub remote is served by a real isolated bare Git transport", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "paperclip-chain-remote-"));
+  try {
+    const fixture = await createChainGitHubFixture(root, { remote: true });
+    assert.equal(fixture.repoUrl, "https://github.com/paperclip-contract/fixture.git");
+    const remote = (await run("git", ["ls-remote", fixture.repoUrl, "main"], { cwd: fixture.repository })).stdout.trim();
+    assert.equal(remote.split(/\s+/)[0], fixture.initialSha);
+    await run("git", ["fetch", "origin", "main"], { cwd: fixture.repository });
+    assert.equal((await run("git", ["rev-parse", "origin/main"], { cwd: fixture.repository })).stdout.trim(), fixture.initialSha);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("external actor merges A then B then C into real two-parent commits with final files", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "paperclip-chain-git-"));
   try {
-    const fixture = await createChainGitHubFixture(root);
+    const fixture = await createChainGitHubFixture(root, { remote: true });
     let previousMerge;
     for (const [label, text] of [["A", "alpha"], ["B", "beta"], ["C", "gamma"]]) {
       const pr = await fixture.openPullRequest(label, `${label}.txt`, text);
@@ -38,6 +52,8 @@ test("external actor merges A then B then C into real two-parent commits with fi
       const merged = await fixture.externalMerge(pr.url, evidence);
       const parents = (await run("git", ["rev-list", "--parents", "-n", "1", merged.mergeSha], { cwd: fixture.repository })).stdout.trim().split(" ");
       assert.deepEqual(parents, [merged.mergeSha, pr.baseSha, pr.headSha]);
+      const remote = (await run("git", ["ls-remote", fixture.repoUrl, "main"], { cwd: fixture.repository })).stdout.trim();
+      assert.equal(remote.split(/\s+/)[0], merged.mergeSha, "external merge actor must publish the verified merge to the real remote");
       const after = JSON.parse((await run(fixture.ghPath, ["pr", "view", pr.url, "--json", "state,headRefOid,mergeCommit"])).stdout);
       assert.deepEqual(after, { state: "MERGED", headRefOid: pr.headSha, mergeCommit: { oid: merged.mergeSha } });
       previousMerge = merged.mergeSha;

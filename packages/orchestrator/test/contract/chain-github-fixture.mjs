@@ -7,7 +7,7 @@ const exec = promisify(execFile);
 const repositoryName = "paperclip-contract/fixture";
 
 /** A stateful local Git repository and read-only gh boundary; only the test actor can merge. */
-export async function createChainGitHubFixture(root) {
+export async function createChainGitHubFixture(root, { remote = false } = {}) {
   const repository = path.join(root, "repository");
   const statePath = path.join(root, "github-state.json");
   const ghPath = path.join(root, "gh");
@@ -18,6 +18,17 @@ export async function createChainGitHubFixture(root) {
   await git("config", "user.email", "merger@example.test");
   await git("commit", "--allow-empty", "-m", "Initial canary repository");
   const initialSha = await git("rev-parse", "HEAD");
+  const repoUrl = `https://github.com/${repositoryName}.git`;
+  if (remote) {
+    const remotePath = path.join(root, "remote.git");
+    await git("clone", "--bare", repository, remotePath);
+    // Keep canonical repository identity while Git transports the exact URI
+    // exclusively to a local bare repository owned by this fixture.
+    await git("config", `url.file://${remotePath}.insteadOf`, repoUrl);
+    await git("remote", "add", "origin", repoUrl);
+    await git("fetch", "origin", "main");
+    await git("branch", "--set-upstream-to=origin/main", "main");
+  }
   const persist = async (state) => {
     const temporary = `${statePath}.pending`;
     await writeFile(temporary, JSON.stringify(state), { mode: 0o600 });
@@ -70,7 +81,7 @@ if (args[0] === 'pr' && args[1] === 'view' && row && args[3] === '--json') {
   await chmod(ghPath, 0o700);
 
   return {
-    repository, initialSha, ghPath,
+    repository, initialSha, ghPath, ...(remote ? { repoUrl } : {}),
     async openPullRequest(label, file, text) {
       const state = JSON.parse(await readFile(statePath, "utf8"));
       const baseSha = await git("rev-parse", "HEAD");
@@ -114,6 +125,7 @@ if (args[0] === 'pr' && args[1] === 'view' && row && args[3] === '--json') {
       pr.state = "MERGED";
       pr.mergeSha = mergeSha;
       pr.mergedAt = new Date().toISOString();
+      if (remote) await git("push", "origin", "main");
       await persist(state);
       return { mergeSha, headSha: pr.headSha };
     },
