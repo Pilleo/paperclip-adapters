@@ -31,6 +31,9 @@ export interface HeartbeatRunSummary {
   readonly julesState: string | null;
   /** Jules terminal reason, used to distinguish a completed handoff from a retry. */
   readonly stopReason: string | null;
+  readonly handoffPending?: boolean;
+  readonly prUrl?: string | null;
+  readonly headSha?: string | null;
   /** Native Paperclip review binding, when the heartbeat was launched by a card. */
   readonly interactionId: string | null;
   readonly interactionKind: string | null;
@@ -82,6 +85,9 @@ export function parseHeartbeatRun(raw: Record<string, unknown>): HeartbeatRunSum
     providerSessionId: nonEmpty(resultRecord["julesSessionId"]) ?? nonEmpty(resultRecord["sessionId"]),
     julesState: nonEmpty(resultRecord["julesState"]),
     stopReason: nonEmpty(resultRecord["stopReason"]),
+    handoffPending: resultRecord["handoffPending"] === true,
+    prUrl: nonEmpty(resultRecord["prUrl"]),
+    headSha: nonEmpty(resultRecord["headSha"]),
     interactionId: nonEmpty(contextRecord["interactionId"]) ?? nonEmpty(resultRecord["interactionId"]),
     interactionKind: nonEmpty(contextRecord["interactionKind"]) ?? nonEmpty(resultRecord["interactionKind"]),
     reviewStage: nonEmpty(contextRecord["reviewStage"]) ?? nonEmpty(resultRecord["reviewStage"]),

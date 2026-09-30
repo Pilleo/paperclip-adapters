@@ -539,9 +539,16 @@ async function runScenario() {
       for (const event of report.events.filter((event) =>
         ["REAL_JULES_PARENT_RESULT", "REAL_JULES_EXECUTOR_RESULT"].includes(event.name) && event.data?.adapterResult)) {
         const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, event.runId));
-        if (run?.status === "succeeded") await db.update(heartbeatRuns).set({
-          resultJson: { ...run.resultJson, ...event.data.adapterResult, stopReason: "completed" },
-        }).where(eq(heartbeatRuns.id, run.id));
+        if (run?.status === "succeeded") {
+          const returned = { ...run.resultJson, ...event.data.adapterResult, stopReason: "completed" };
+          if (run.id === config.legacyProducerRunId) {
+            // Model the old result schema on a genuinely completed producer;
+            // later actual runs retain their full new head-bound evidence.
+            delete returned.julesState;
+            delete returned.handoffPending;
+          }
+          await db.update(heartbeatRuns).set({ resultJson: returned }).where(eq(heartbeatRuns.id, run.id));
+        }
       }
     }
     const handbacks = () => report.mutations.filter((mutation) => mutation.actorId === config.orchestratorId);
@@ -638,6 +645,15 @@ async function runScenario() {
           assert.equal(products[0].metadata.headSha, config.prHeadSha);
           assert.equal(products[0].status, "ready_for_review");
           assert.equal((await issueRow()).assigneeAgentId, config.julesId);
+          if (config.chainLaterJulesRunProbe && process.env.PAPERCLIP_TEST_LEGACY_PRODUCER === "1") {
+            config.legacyProducerRunId = products[0].createdByRunId;
+            assert.ok(config.legacyProducerRunId);
+            const [producer] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, config.legacyProducerRunId));
+            const historical = { ...producer.resultJson };
+            delete historical.julesState;
+            delete historical.handoffPending;
+            await db.update(heartbeatRuns).set({ resultJson: historical }).where(eq(heartbeatRuns.id, producer.id));
+          }
           if (config.chainLaterJulesRunProbe) {
             holdLaterJulesProviderGet = true;
             const laterWake = await wake(config.julesId, config.issueId, { contractLaterJulesMonitor: true });

@@ -61,6 +61,25 @@ describe("deriveJulesPrHandoffEvidence", () => {
     stopReason: "completed",
   } as const;
 
+  it("uses a hydrated later exact-head same-session handoff when the original producer is legacy", () => {
+    const legacy = { ...completedProducerRun, julesState: null };
+    const latest = { ...completedProducerRun, id: "later-terminal", finishedAt: "2026-09-21T09:20:00Z",
+      handoffPending: true, prUrl: "https://github.com/acme/repo/pull/6", headSha: "a".repeat(40) };
+    const input = { executionPolicy: { monitor: { serviceName: "jules", externalRef: "[redacted]" } },
+      issueId: "issue-1551", producerRunId: legacy.id, producerRun: legacy,
+      handoffRun: latest, prUrl: latest.prUrl, headSha: latest.headSha,
+      heartbeatRuns: [latest] };
+    expect(deriveJulesPrHandoffEvidence(input)).toEqual({ kind: "terminal_pr_handoff" });
+    for (const change of [{ headSha: "b".repeat(40) }, { providerSessionId: "other" },
+      { agentId: "other-worker" }, { handoffPending: false }, { issueId: "other-issue" }]) {
+      expect(deriveJulesPrHandoffEvidence({ ...input, handoffRun: { ...latest, ...change } }))
+        .toEqual({ kind: "active_or_unverified_monitor" });
+    }
+    expect(deriveJulesPrHandoffEvidence({ ...input,
+      heartbeatRuns: [{ ...latest, id: "live", status: "running" }] }))
+      .toEqual({ kind: "active_or_unverified_monitor" });
+  });
+
   it.each([
     ["the matching completed producer", [completedProducerRun], { kind: "terminal_pr_handoff" }],
     ["a later live provider run", [completedProducerRun, { ...completedProducerRun, id: "run-live", startedAt: "2026-09-21T09:17:00.000Z", finishedAt: "2026-09-21T09:17:01.000Z", julesState: "IN_PROGRESS", stopReason: null }], { kind: "active_or_unverified_monitor" }],

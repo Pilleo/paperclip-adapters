@@ -1459,14 +1459,49 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
           await log(`[ORCHESTRATOR] Deferring open Jules PR recovery for [${issue.identifier || issue.id}]: could not hydrate its PR producer run (${String(error)}).`);
         }
       }
+      let handoffRun: HeartbeatRunSummary | null = null;
+      let handoffHistory = heartbeatRuns;
+      if (producerRun?.julesState === null && producerRun.providerSessionId) {
+        try {
+          handoffHistory = (await pc.listHeartbeatRuns(companyId, producerRun.agentId, 50)).map(parseHeartbeatRun);
+        } catch (error) {
+          await log(`[ORCHESTRATOR] Could not read later legacy-producer history for ${issue.id}: ${String(error)}`);
+        }
+        const candidates = handoffHistory.filter((run) => run.issueId === issue.id &&
+          run.agentId === producerRun!.agentId).sort((a, b) =>
+          Date.parse(b.finishedAt ?? b.startedAt ?? "") - Date.parse(a.finishedAt ?? a.startedAt ?? ""));
+        const latest = candidates[0];
+        if (latest?.status === "succeeded" && latest.id !== producerRunId) {
+          try {
+            const raw = await pc.getHeartbeatRun<Record<string, unknown>>(latest.id);
+            if (raw["companyId"] !== companyId || raw["id"] !== latest.id) throw new Error("Later handoff run identity does not match");
+            handoffRun = parseHeartbeatRun(raw);
+          } catch (error) {
+            await log(`[ORCHESTRATOR] Could not verify later legacy-producer handoff for ${issue.id}: ${String(error)}`);
+          }
+        }
+      }
       const handoff = deriveJulesPrHandoffEvidence({
         executionPolicy: authoritativeExecutionPolicy,
         executionState: (authoritativeIssue ?? issue.rawIssue)["executionState"],
         issueId: issue.id,
         producerRunId,
         producerRun,
-        heartbeatRuns,
+        handoffRun,
+        prUrl: matchingPr.url,
+        ...(matchingPr.headRefOid ? { headSha: matchingPr.headRefOid } : {}),
+        heartbeatRuns: [...heartbeatRuns, ...handoffHistory],
       });
+      if (producerRun?.julesState === null && handoff.kind === "active_or_unverified_monitor") {
+        await log(`[ORCHESTRATOR] Legacy handoff evidence: ${JSON.stringify({
+          issueId: issue.id, producerStatus: producerRun.status, producerScope: producerRun.issueId === issue.id,
+          laterRunId: handoffRun?.id ?? null, laterState: handoffRun?.julesState ?? null,
+          sameSession: Boolean(handoffRun && handoffRun.providerSessionId === producerRun.providerSessionId),
+          samePr: handoffRun?.prUrl === matchingPr.url, sameHead: handoffRun?.headSha === matchingPr.headRefOid,
+          pending: handoffRun?.handoffPending ?? false,
+          producerSessionPresent: Boolean(producerRun.providerSessionId),
+        })}`);
+      }
       const reviewDisposition = classifyJulesPrReviewDisposition({
         currentHeadRejected,
         executionPolicy: authoritativeExecutionPolicy,

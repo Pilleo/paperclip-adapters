@@ -58,6 +58,10 @@ export interface JulesPrHandoffHeartbeatRun {
   readonly providerSessionId: string | null;
   readonly julesState: string | null;
   readonly stopReason: string | null;
+  readonly agentId?: string;
+  readonly handoffPending?: boolean;
+  readonly prUrl?: string | null;
+  readonly headSha?: string | null;
 }
 
 function monitorSessionId(executionPolicy: unknown): string | null {
@@ -104,6 +108,9 @@ export function deriveJulesPrHandoffEvidence(input: {
    * completed provider handoff by itself.
    */
   readonly producerRun?: JulesPrHandoffHeartbeatRun | null;
+  readonly handoffRun?: JulesPrHandoffHeartbeatRun | null;
+  readonly prUrl?: string;
+  readonly headSha?: string;
   readonly heartbeatRuns: readonly JulesPrHandoffHeartbeatRun[];
 }): JulesPrHandoffEvidence {
   const sessionId = monitorSessionId(input.executionPolicy) ?? monitorSessionId(input.executionState);
@@ -122,6 +129,20 @@ export function deriveJulesPrHandoffEvidence(input: {
     // hydrated run's terminal Jules result remains sufficient proof when the
     // only unavailable value is the secret session reference.
     const observableSessionId = sessionId === "[redacted]" ? null : sessionId;
+    const original = input.producerRun;
+    const later = input.handoffRun;
+    if (original.julesState === null && original.status === "succeeded" && original.provider === "jules" &&
+        original.issueId === input.issueId && original.providerSessionId && original.agentId &&
+        later && later.id !== original.id && later.agentId === original.agentId &&
+        later.issueId === input.issueId && isCompletedJulesProducer(later, original.providerSessionId) &&
+        (observableSessionId === null || observableSessionId === original.providerSessionId) &&
+        later.handoffPending === true && input.prUrl && input.headSha &&
+        later.prUrl === input.prUrl && later.headSha === input.headSha &&
+        completedAt(later) !== null && completedAt(original) !== null && completedAt(later)! > completedAt(original)!) {
+      const newer = input.heartbeatRuns.some((run) => run.issueId === input.issueId &&
+        run.id !== later.id && (completedAt(run) === null || completedAt(run)! >= completedAt(later)!));
+      if (!newer) return { kind: "terminal_pr_handoff" };
+    }
     return isCompletedJulesProducer(input.producerRun, observableSessionId)
       ? { kind: "terminal_pr_handoff" }
       : { kind: "active_or_unverified_monitor" };

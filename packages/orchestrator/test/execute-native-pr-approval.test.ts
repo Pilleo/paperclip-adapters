@@ -588,11 +588,11 @@ describe("orchestrator native PR completion", () => {
     expect(wakes).toHaveLength(1);
   });
 
-  it("hands a completed Jules PR producer to native review instead of retaining its stale monitor", async () => {
+  it.each([false, true])("hands a completed Jules PR producer to native review (legacy producer=%s)", async (legacy) => {
     const terminalProducerRunId = "jules-pr-producer";
     const terminalIssue = {
       ...issue(),
-      status: "in_progress",
+      status: legacy ? "blocked" : "in_progress",
       assigneeAgentId: "jules-1",
       executionPolicy: {
         mode: "normal",
@@ -635,6 +635,12 @@ describe("orchestrator native PR completion", () => {
       if (href.includes(`/api/issues/${issueId}/interactions`)) return new Response(JSON.stringify([]));
       if (href.includes(`/api/issues/${issueId}/children`)) return new Response(JSON.stringify([]));
       if (href.includes(`/api/issues/${issueId}/recovery-actions`)) return new Response(JSON.stringify({ active: null }));
+      if (legacy && method === "GET" && href.endsWith("/api/heartbeat-runs/later-head-bound-handoff")) return new Response(JSON.stringify({
+        id: "later-head-bound-handoff", companyId, agentId: "jules-1", status: "succeeded",
+        startedAt: "2026-09-21T09:17:30Z", finishedAt: "2026-09-21T09:17:46Z", contextSnapshot: { issueId },
+        resultJson: { provider: "jules", julesSessionId: "session-pr-11", julesState: "COMPLETED",
+          stopReason: "completed", handoffPending: true, prUrl, headSha },
+      }));
       if (method === "GET" && href.endsWith(`/api/heartbeat-runs/${terminalProducerRunId}`)) return new Response(JSON.stringify({
         id: terminalProducerRunId,
         agentId: "jules-1",
@@ -645,7 +651,7 @@ describe("orchestrator native PR completion", () => {
         resultJson: {
           provider: "jules",
           julesSessionId: "session-pr-11",
-          julesState: "COMPLETED",
+          ...(legacy ? {} : { julesState: "COMPLETED" }),
           stopReason: "completed",
           pending: true,
           retryNotBefore: "2099-09-21T09:31:46.000Z",
@@ -661,7 +667,8 @@ describe("orchestrator native PR completion", () => {
         startedAt: "2026-09-21T09:16:30.000Z",
         finishedAt: "2026-09-21T09:16:46.000Z",
         resultJson: null,
-      }]));
+      }, ...(legacy ? [{ id: "later-head-bound-handoff", agentId: "jules-1", status: "succeeded",
+        startedAt: "2026-09-21T09:17:30Z", finishedAt: "2026-09-21T09:17:46Z", contextSnapshot: { issueId }, resultJson: null }] : [])]));
       if (method === "GET" && href.includes("/issues")) return new Response(JSON.stringify([persistedIssue]));
       if (method === "GET" && href.includes("/approvals")) return new Response(JSON.stringify([]));
       return new Response(JSON.stringify([]));
