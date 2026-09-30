@@ -83,6 +83,24 @@ describe("deriveJulesPrHandoffEvidence", () => {
       .toEqual({ kind: "active_or_unverified_monitor" });
   });
 
+  it.each(["IN_PROGRESS", "UNKNOWN"])("does not let an older completed producer override a later %s observation", (julesState) => {
+    const later = { ...completedProducerRun, id: "later-provider-poll", startedAt: "2026-09-21T09:20:00Z",
+      finishedAt: "2026-09-21T09:20:10Z", julesState, stopReason: null };
+    expect(deriveJulesPrHandoffEvidence({ ...prIdentity, executionPolicy: scheduledJulesMonitor,
+      issueId: completedProducerRun.issueId, producerRunId: completedProducerRun.id,
+      producerRun: completedProducerRun, handoffRun: later, heartbeatRuns: [completedProducerRun, later] }))
+      .toEqual({ kind: "active_or_unverified_monitor" });
+  });
+
+  it("carries the later exact-head completion proof even when the original producer was already completed", () => {
+    const later = { ...completedProducerRun, id: "later-terminal", finishedAt: "2026-09-21T09:20:10Z",
+      ...prIdentity, handoffPending: true };
+    expect(deriveJulesPrHandoffEvidence({ ...prIdentity, executionPolicy: scheduledJulesMonitor,
+      issueId: completedProducerRun.issueId, producerRunId: completedProducerRun.id,
+      producerRun: completedProducerRun, handoffRun: later, heartbeatRuns: [completedProducerRun, later] }))
+      .toMatchObject({ kind: "terminal_pr_handoff", evidence: { completionRunId: "later-terminal" } });
+  });
+
   it("uses a hydrated later exact-head same-session handoff when the original producer is legacy", () => {
     const legacy = { ...completedProducerRun, julesState: null };
     const latest = { ...completedProducerRun, id: "later-terminal", finishedAt: "2026-09-21T09:20:00Z",

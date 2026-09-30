@@ -1464,7 +1464,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       }
       let handoffRun: HeartbeatRunSummary | null = null;
       let handoffHistory = heartbeatRuns;
-      if (producerRun?.julesState === null && producerRun.providerSessionId) {
+      if (producerRun && (producerRun.julesState === null || producerRun.julesState === "COMPLETED") && producerRun.providerSessionId) {
         try {
           handoffHistory = (await pc.listHeartbeatRuns(companyId, producerRun.agentId, 50)).map(parseHeartbeatRun);
         } catch (error) {

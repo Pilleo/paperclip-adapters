@@ -153,7 +153,7 @@ export function deriveJulesPrHandoffEvidence(input: {
     const observableSessionId = sessionId === "[redacted]" ? null : sessionId;
     const original = input.producerRun;
     const later = input.handoffRun;
-    if (original.julesState === null && original.status === "succeeded" && original.provider === "jules" &&
+    if ((original.julesState === null || original.julesState === "COMPLETED") && original.status === "succeeded" && original.provider === "jules" &&
         original.issueId === input.issueId && original.providerSessionId && original.agentId &&
         later && later.id !== original.id && later.agentId === original.agentId &&
         later.issueId === input.issueId && isCompletedJulesProducer(later, original.providerSessionId) &&
@@ -164,6 +164,10 @@ export function deriveJulesPrHandoffEvidence(input: {
       const newer = input.heartbeatRuns.some((run) => run.issueId === input.issueId &&
         run.id !== later.id && (completedAt(run) === null || completedAt(run)! >= completedAt(later)!));
       if (!newer) return proved(later);
+    }
+    if (later || input.heartbeatRuns.some((run) => run.id !== original.id && run.issueId === input.issueId &&
+        (completedAt(run) === null || completedAt(original) === null || completedAt(run)! > completedAt(original)!))) {
+      return { kind: "active_or_unverified_monitor" };
     }
     return isCompletedJulesProducer(input.producerRun, observableSessionId)
       ? proved(input.producerRun)
