@@ -126,6 +126,7 @@ if (env.PAPERCLIP_AGENT_ID === config.julesId) {
     }
     await event("REAL_JULES_PARENT_RESULT", { issueId, exitCode: result.exitCode,
       errorCode: result.errorCode ?? null, stage: saved?.childPlanReview?.identity.stage ?? null,
+      adapterResult: result.resultJson ?? null,
       storedSessionId: saved?.julesSessionId ?? null, phase: saved?.phase ?? null,
       summary: typeof result.summary === "string" ? result.summary.slice(0, 160) : null });
     if (config.dropProviderCreateResponse && result.errorCode === "jules_create_outcome_unverified") {
@@ -159,7 +160,13 @@ if (env.PAPERCLIP_AGENT_ID === config.julesId) {
   const boardPrFeedbackDue = config.prBoardReject && !run.contextSnapshot.contractJulesExecute &&
     (await request(`/companies/${config.companyId}/issues?limit=1000&parentId=${issueId}`))
       .some((child) => child.description?.startsWith("<!-- paperclip-pr-review-child:v2\n"));
-  if ((run.contextSnapshot.contractJulesExecute || boardPrFeedbackDue) && config.realJulesExecutor) {
+  let terminalHandoffDue = false;
+  if (config.terminalWaitProbe && run.contextSnapshot.wakeReason === "issue_monitor_due") {
+    const { loadStoredSession } = await import("../../../jules/src/server/session-store.ts");
+    terminalHandoffDue = Boolean((await loadStoredSession(issueId,
+      "sources/github/paperclip-contract/fixture", "main"))?.currentPrUrl);
+  }
+  if ((run.contextSnapshot.contractJulesExecute || boardPrFeedbackDue || terminalHandoffDue) && config.realJulesExecutor) {
     const { execute } = await import("../../../jules/src/server/execute.ts");
     const { sessionCodec } = await import("../../../jules/src/server/session.ts");
     const stale = JSON.parse(await readFile(config.staleSessionPath, "utf8"));
@@ -175,7 +182,9 @@ if (env.PAPERCLIP_AGENT_ID === config.julesId) {
       onLog: async (stream, chunk) => (stream === "stderr" ? process.stderr : process.stdout).write(chunk),
     });
     await event("REAL_JULES_EXECUTOR_RESULT", { exitCode: result.exitCode, errorCode: result.errorCode ?? null,
-      issueStatus: result.resultJson?.issueStatus ?? null, clearSession: result.clearSession ?? false });
+      issueStatus: result.resultJson?.issueStatus ?? null, clearSession: result.clearSession ?? false,
+      julesState: result.resultJson?.julesState ?? null, handoffPending: result.resultJson?.handoffPending ?? false,
+      adapterResult: result.resultJson ?? null });
     assert.equal(result.exitCode, 0, JSON.stringify({ errorCode: result.errorCode, errorMessage: result.errorMessage }));
     process.exit(0);
   }

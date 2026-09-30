@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { getPaperclipInteraction, getPaperclipIssue, listPaperclipInteractions, moveIssueToDone, moveIssueToReview, registerPullRequestWorkProduct, withdrawPaperclipInteraction } from '../src/server/paperclip-client';
+import { getPaperclipInteraction, getPaperclipIssue, listPaperclipInteractions, moveIssueToDone, moveIssueToReview, registerPullRequestWorkProduct, withdrawPaperclipInteraction, scheduleJulesSessionMonitor, PaperclipClientError } from '../src/server/paperclip-client';
 import { getPullRequestCiStatus, getPullRequestDetails } from '../src/server/ci-status';
 
 vi.mock('../src/server/jules-client', async (importOriginal) => {
@@ -249,7 +249,8 @@ beforeAll(() => {
     expect(res.exitCode).toBe(0);
     expect(res.clearSession).toBe(false);
     expect(res.resultJson?.prUrl).toBe('http://pr/1');
-    expect(res.resultJson?.issueStatus).toBe('in_review');
+    expect(res.resultJson).toMatchObject({ issueStatus: 'in_progress', julesState: 'COMPLETED', handoffPending: true });
+    expect(res.summary).toContain('awaits native review handoff');
     expect(getPullRequestDetails).toHaveBeenCalledWith(
       'http://pr/1',
       expect.objectContaining({
@@ -296,7 +297,7 @@ beforeAll(() => {
       }),
     );
     expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toBeUndefined();
-    expect(result.resultJson).toMatchObject({ prUrl: 'https://github.com/pilleo/test/pull/1549', issueStatus: 'in_review' });
+    expect(result.resultJson).toMatchObject({ prUrl: 'https://github.com/pilleo/test/pull/1549', issueStatus: 'in_progress', handoffPending: true });
   });
 
   it('delivers the completed provider PR after an approved plan checkpoint restart without another approval', async () => {
@@ -324,7 +325,7 @@ beforeAll(() => {
     expect(JulesClient.prototype.approvePlan).not.toHaveBeenCalled();
     expect(registerPullRequestWorkProduct).toHaveBeenCalledWith('task-1',
       'https://github.com/pilleo/test/pull/1549', 'jwt-token', 'run-1', expect.objectContaining({ headSha: 'a'.repeat(40) }));
-    expect(result.resultJson).toMatchObject({ prUrl: 'https://github.com/pilleo/test/pull/1549', issueStatus: 'in_review' });
+    expect(result.resultJson).toMatchObject({ prUrl: 'https://github.com/pilleo/test/pull/1549', issueStatus: 'in_progress', handoffPending: true });
   });
 
   it('registers a verified merged PR before completing and clearing the Jules task', async () => {
@@ -461,7 +462,7 @@ beforeAll(() => {
       authToken: 'jwt-token',
     } as any);
 
-    expect(res.resultJson?.issueStatus).toBe('in_review');
+    expect(res.resultJson?.handoffPending).toBe(true);
     expect(moveIssueToReview).toHaveBeenCalledWith(
       'task-1',
       'https://github.com/Pilleo/paperclip-adapters/pull/8',
@@ -469,6 +470,23 @@ beforeAll(() => {
       'run-1',
     );
     expect(getPullRequestCiStatus).not.toHaveBeenCalled();
+  });
+
+  it('fails visibly when a terminal PR has no verified durable handoff wait', async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: 'COMPLETED',
+      rawOutputs: [{ pullRequest: { url: 'https://github.com/Pilleo/paperclip-adapters/pull/8' } }] } as never);
+    vi.mocked(scheduleJulesSessionMonitor).mockRejectedValue(new PaperclipClientError(503, 'Monitor unavailable'));
+    try {
+      const result = await execute({ ...baseCtx, runtime: { ...baseCtx.runtime,
+        sessionParams: sessionCodec.encode({ version: 1, paperclipIssueId: 'task-1', promptHash: 'stable-hash',
+          promptHashVersion: 2, repository: 'pilleo/test', source: 'sources/github/pilleo/test', baseBranch: 'master',
+          phase: 'RUNNING', sessionId: '123', julesSessionId: '123', attempt: 1, failedSessions: [],
+          createdAt: new Date().toISOString() } as never) }, authToken: 'jwt-token' } as any);
+      expect(result.exitCode).toBe(1);
+      expect(result.clearSession).toBe(false);
+      expect(result.resultJson?.handoffPending).not.toBe(true);
+      expect(JulesClient.prototype.createSession).not.toHaveBeenCalled();
+    } finally { vi.mocked(scheduleJulesSessionMonitor).mockResolvedValue(undefined); }
   });
 
   it('keeps an unresolved provider question ahead of PR handoff', async () => {
@@ -609,7 +627,7 @@ beforeAll(() => {
       authToken: 'jwt-token',
     } as any);
 
-    expect(res.resultJson?.issueStatus).toBe('in_review');
+    expect(res.resultJson?.handoffPending).toBe(true);
     expect(moveIssueToReview).toHaveBeenCalledWith(
       'task-1',
       'https://github.com/Pilleo/paperclip-adapters/pull/3',
@@ -678,7 +696,7 @@ beforeAll(() => {
       authToken: 'jwt-token',
     } as any);
 
-    expect(res.resultJson?.issueStatus).toBe('in_review');
+    expect(res.resultJson?.handoffPending).toBe(true);
     expect(moveIssueToReview).toHaveBeenCalled();
     expect(getPaperclipIssue).not.toHaveBeenCalledWith('plan-review-1', expect.anything(), expect.anything());
   });
@@ -733,7 +751,7 @@ beforeAll(() => {
       authToken: 'jwt-token',
     } as any);
 
-    expect(res.resultJson?.issueStatus).toBe('in_review');
+    expect(res.resultJson?.handoffPending).toBe(true);
     expect(moveIssueToReview).toHaveBeenCalledWith(
       'task-1',
       'https://github.com/Pilleo/paperclip-adapters/pull/10',
@@ -782,7 +800,7 @@ beforeAll(() => {
       authToken: 'jwt-token',
     } as any);
 
-    expect(res.resultJson?.issueStatus).toBe('in_review');
+    expect(res.resultJson?.handoffPending).toBe(true);
     expect(moveIssueToReview).toHaveBeenCalledWith(
       'task-1', 'https://github.com/Pilleo/paperclip-adapters/pull/10', 'jwt-token', 'run-1',
     );

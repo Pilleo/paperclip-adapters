@@ -153,9 +153,9 @@ describe("E2E host-plan scope conformity on Jules PRs", () => {
     expect(result.exitCode).toBe(0);
     expect(result.clearSession).toBe(false);
     expect(result.resultJson?.scopeConformant).toBe(false);
-    expect(result.summary).toMatch(/created a PR/);
+    expect(result.summary).toMatch(/awaits native review handoff/);
     expect(result.resultJson).toMatchObject({
-      issueStatus: "in_review",
+      issueStatus: "in_progress", handoffPending: true,
       scopeConformant: false,
       providerMessageSent: false,
     });
@@ -296,14 +296,14 @@ describe("E2E host-plan scope conformity on Jules PRs", () => {
       } as never);
 
     const first = await execute(ctx());
-    expect(first.resultJson).toMatchObject({ issueStatus: "in_review" });
-    // A completed PR is handed to the normal review pipeline immediately;
-    // it no longer burns a Jules monitor heartbeat while waiting for a host.
-    expect(scheduleJulesSessionMonitor).toHaveBeenCalledTimes(0);
+    expect(first.resultJson).toMatchObject({ issueStatus: "in_progress", handoffPending: true });
+    // The completed PR keeps one bounded durable wait until orchestrator
+    // routing; later provider feedback must still be observed.
+    expect(scheduleJulesSessionMonitor).toHaveBeenCalledTimes(1);
 
     const second = await execute(ctx(sessionCodec.decode(first.sessionParams)!));
     expect(createJulesQuestionAdjudication).toHaveBeenCalled();
-    expect(scheduleJulesSessionMonitor).toHaveBeenCalledTimes(1);
+    expect(scheduleJulesSessionMonitor).toHaveBeenCalledTimes(2);
     expect(second.resultJson).toMatchObject({ pending: true });
   });
 

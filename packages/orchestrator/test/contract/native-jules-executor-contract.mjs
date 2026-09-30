@@ -3,7 +3,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { saveStoredSession, loadStoredSession } from "../../../jules/src/server/session-store.ts";
 
 /** Run the real Jules executor twice against isolated, authenticated Paperclip and PostgreSQL. */
-export async function runJulesExecutorRecoveryContract({ config, report, db, schema, eq, wake, settle, runRows, issueRow }) {
+export async function runJulesExecutorRecoveryContract({ config, report, db, schema, eq, wake, settle, runRows, issueRow, heartbeat }) {
   const oldStore = process.env.PAPERCLIP_JULES_SESSION_STORE_DIR;
   process.env.PAPERCLIP_JULES_SESSION_STORE_DIR = config.sessionStoreDir;
   try {
@@ -48,6 +48,13 @@ export async function runJulesExecutorRecoveryContract({ config, report, db, sch
     const resumed = (await runRows()).filter((row) => row.agentId === config.julesId).slice(priorRuns);
     assert.equal(resumed.length, 2);
     assert.equal(resumed[1].status, "succeeded", JSON.stringify(resumed[1].resultJson));
+    // The process fixture invokes the real external executor but its host
+    // wrapper otherwise stores only process stdout, not AdapterExecutionResult.
+    // Preserve exactly the actual returned evidence for producer hydration.
+    const actualResult = report.events.filter((event) => event.name === "REAL_JULES_EXECUTOR_RESULT").at(-1)?.data.adapterResult;
+    assert.ok(actualResult?.handoffPending && actualResult.julesState === "COMPLETED");
+    await db.update(schema.heartbeatRuns).set({ resultJson: { ...resumed[1].resultJson, ...actualResult,
+      stopReason: "completed" } }).where(eq(schema.heartbeatRuns.id, resumed[1].id));
     const products = await db.select().from(schema.issueWorkProducts)
       .where(eq(schema.issueWorkProducts.issueId, config.issueId));
     assert.equal(products.length, 1, "real Jules executor registers one PR work product");
@@ -57,6 +64,28 @@ export async function runJulesExecutorRecoveryContract({ config, report, db, sch
       summary: products[0].summary, runResult: resumed[1].resultJson });
     assert.equal(products[0].metadata.headSha, config.prHeadSha);
     assert.equal((await issueRow()).status, "in_progress", "orchestrator owns the later typed PR-review transition");
+    if (process.env.PAPERCLIP_TEST_TERMINAL_HANDOFF_WAIT === "1") {
+      assert.ok((await issueRow()).monitorNextCheckAt,
+        "terminal PR must keep a durable handoff wait until orchestrator routing");
+      const before = await runRows();
+      for (let sweep = 0; sweep < 3; sweep++) await heartbeat.reconcileStrandedAssignedIssues();
+      await settle();
+      assert.equal((await runRows()).filter((run) => !before.some((old) => old.id === run.id) &&
+        run.contextSnapshot?.issueId === config.issueId &&
+        run.contextSnapshot?.wakeReason === "issue_continuation_needed").length, 0,
+      "normal host recovery sweeps must not enqueue terminal PR continuation churn");
+      const terminalResult = report.events.filter((event) => event.name === "REAL_JULES_EXECUTOR_RESULT").at(-1);
+      assert.equal(terminalResult.data.julesState, "COMPLETED");
+      assert.equal(terminalResult.data.handoffPending, true);
+      const monitor = await issueRow();
+      await heartbeat.tickTimers(new Date(new Date(monitor.monitorNextCheckAt).getTime() + 1));
+      await settle();
+      assert.ok((await issueRow()).monitorNextCheckAt,
+        "delayed orchestrator handoff must renew a bounded monitor after one original-session poll");
+      assert.equal((await db.select().from(schema.issueWorkProducts)
+        .where(eq(schema.issueWorkProducts.issueId, config.issueId))).length, 1);
+      assert.equal(report.events.filter((event) => event.name === "PROVIDER_REQUEST" && event.method !== "GET").length, 0);
+    }
     const providerRequests = report.events.filter((event) => event.name === "PROVIDER_REQUEST");
     assert.ok(providerRequests.length > 0, "both runs must inspect the provider state");
     assert.ok(providerRequests.every((event) => event.method === "GET"), "never repeat a provider mutation");

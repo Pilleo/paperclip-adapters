@@ -114,6 +114,7 @@ async function runScenario() {
     config.prMigrationProbe = ["stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw", "stable_child_executor_pr_reject", "stable_child_executor_pr_paused", "stable_child_executor_pr_failed", "stable_child_executor_pr_gemini", "stable_child_executor_pr_board", "stable_child_executor_pr_board_reject"].includes(scenario);
     config.prBoardProbe = scenario === "stable_child_executor_pr_board" || scenario === "stable_child_executor_pr_board_reject";
     config.prBoardReject = scenario === "stable_child_executor_pr_board_reject";
+    config.terminalWaitProbe = process.env.PAPERCLIP_TEST_TERMINAL_HANDOFF_WAIT === "1";
     config.parentCardWithdrawalProbe = scenario === "stable_child_executor_pr_withdraw";
     config.prStrongReject = scenario === "stable_child_executor_pr_reject" || config.prBoardReject;
     config.prStrongPausedAfterCard = scenario === "stable_child_executor_pr_paused";
@@ -533,6 +534,15 @@ async function runScenario() {
       await until("all run executions and PATCH handlers settled", async () => activeMutations === 0 && (await runRows()).every((run) => !live(run)), timeoutMs);
       await heartbeat.drainActiveRunExecutions();
       await until("late host runs settled", async () => activeMutations === 0 && (await runRows()).every((run) => !live(run)), timeoutMs);
+      // Process workers call the actual external executors; map their returned
+      // result into terminal host rows just as the external adapter host does.
+      for (const event of report.events.filter((event) =>
+        ["REAL_JULES_PARENT_RESULT", "REAL_JULES_EXECUTOR_RESULT"].includes(event.name) && event.data?.adapterResult)) {
+        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, event.runId));
+        if (run?.status === "succeeded") await db.update(heartbeatRuns).set({
+          resultJson: { ...run.resultJson, ...event.data.adapterResult, stopReason: "completed" },
+        }).where(eq(heartbeatRuns.id, run.id));
+      }
     }
     const handbacks = () => report.mutations.filter((mutation) => mutation.actorId === config.orchestratorId);
     if (config.chainBlockedProbe) {
@@ -1110,7 +1120,7 @@ async function runScenario() {
       }
       if (config.realJulesExecutor) {
         const { runJulesExecutorRecoveryContract } = await import("./native-jules-executor-contract.mjs");
-        await runJulesExecutorRecoveryContract({ config, report, db, schema, eq, wake, settle, runRows, issueRow });
+        await runJulesExecutorRecoveryContract({ config, report, db, schema, eq, wake, settle, runRows, issueRow, heartbeat });
         if (config.producerConflictProbe) {
           const { saveStoredSession } = await import("../../../jules/src/server/session-store.ts");
           const previousStore = process.env.PAPERCLIP_JULES_SESSION_STORE_DIR;
@@ -1142,7 +1152,9 @@ async function runScenario() {
           report.outcome = "jules_executor_refused_to_graft_original_pr_onto_accidental_provider_session";
         }
         if (config.prBoardProbe) {
-          await db.update(issues).set({ status: "in_review", assigneeAgentId: null }).where(eq(issues.id, config.issueId));
+          await db.update(issues).set({ status: "in_review", assigneeAgentId: null,
+            executionPolicy: null, executionState: null, monitorNextCheckAt: null })
+            .where(eq(issues.id, config.issueId));
           const { ensurePrReviewChild, activatePrReviewChild } = await import("../../src/core/pr-review-child.ts");
           const boardApi = {
             get: async (path) => {

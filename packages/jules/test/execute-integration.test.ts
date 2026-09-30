@@ -139,16 +139,16 @@ beforeAll(() => {
         res = await execute(ctx3);
 
         expect(res.exitCode).toBe(0);
-        expect(res.summary || "").toContain('moved the Paperclip issue to review');
+        expect(res.summary || "").toContain('awaits native review handoff');
         expect(res.clearSession).toBe(false);
         expect(createdCount).toBe(1);
 
-        const monitorClears = fetchMock.mock.calls.filter(([, init]) => {
+        const handoffWaits = fetchMock.mock.calls.filter(([, init]) => {
             if (!init || typeof init !== 'object' || (init as RequestInit).method !== 'PATCH') return false;
             const body = JSON.parse(String((init as RequestInit).body ?? '{}')) as { executionPolicy?: { monitor?: unknown } | null };
-            return body.executionPolicy === null || !body.executionPolicy?.monitor;
+            return Boolean(body.executionPolicy?.monitor);
         });
-        expect(monitorClears.length).toBeGreaterThan(0);
+        expect(handoffWaits.length).toBeGreaterThan(0);
     }, 15000);
 
 });

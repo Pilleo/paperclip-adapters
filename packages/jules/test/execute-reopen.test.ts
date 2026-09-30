@@ -68,8 +68,9 @@ describe("terminal Jules sessions", () => {
       state: "COMPLETED",
       rawOutputs: [{ pullRequest: { url: "https://github.com/example/repository/pull/1" } }],
     } as never);
-    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input).endsWith("/work-products")) return new Response("[]", { status: 200 });
+      if (init?.method === "PATCH") return new Response(String(init.body), { status: 200 });
       return new Response("{}", { status: 200 });
     });
 

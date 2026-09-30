@@ -5213,24 +5213,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                  }
              }
 
-             // A terminal PR handoff is no longer provider polling work. Clear
-             // only Jules' native monitor before returning; the orchestrator
-             // still owns the independent Paperclip review workflow. Without
-             // this boundary, a monitor left in `triggered` with no
-             // `nextCheckAt` re-runs the completed session on every scheduler
-             // tick and can create/cancel review cards indefinitely.
-             await clearJulesSessionMonitor(taskId, ctx.authToken, ctx.runId).catch(async (error) => {
-               await ctx.onLog?.("stderr", `[jules] Could not clear terminal session monitor: ${sanitizeError(error)}\n`);
-             });
-             await runCheckpointedMutation({
+              // Registration is not a host review transition: the orchestrator
+              // still has to release producer ownership and install native
+              // review. Keep a future durable wait across that scheduling gap.
+              await runCheckpointedMutation({
                session: session!,
                key: `jules:review:${taskId}:${session!.currentPrUrl}`,
                operation: "register_pull_request_review",
                issueId: taskId,
                sessionId: session!.julesSessionId,
                persist: () => persistSessionBestEffort(session!, ctx.onLog),
-               run: () => moveIssueToReview(taskId, session!.currentPrUrl!, ctx.authToken, ctx.runId),
-             });
+                run: () => moveIssueToReview(taskId, session!.currentPrUrl!, ctx.authToken, ctx.runId),
+              });
+              // The host issue is still provider-owned until the orchestrator
+              // installs native review. A durable wait prevents recovery from
+              // treating this gap as abandoned work and starting another run.
+              await scheduleJulesSessionMonitor(taskId, session.julesSessionId!,
+                new Date(Date.now() + reattachDelayMs).toISOString(),
+                new Date(Date.now() + config.sessionDeadlineMinutes * 60_000).toISOString(),
+                ctx.authToken, ctx.runId);
               await persistSessionBestEffort(session, ctx.onLog);
              if (ctx.onLog) {
                  await ctx.onLog(
@@ -5246,12 +5247,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                  sessionDisplayId: session.julesSessionId || null,
                  summary: scopeDriftSummary && !scopeDriftIsNew
                    ? null
-                   : `Jules session ${session.julesSessionId} completed, created a PR, and moved the Paperclip issue to review: ${session.currentPrUrl}`,
+                    : `Jules session ${session.julesSessionId} completed and awaits native review handoff: ${session.currentPrUrl}`,
                  resultJson: {
                    provider: "jules",
                    julesSessionId: session.julesSessionId,
                    prUrl: session.currentPrUrl,
-                   issueStatus: "in_review",
+                    issueStatus: "in_progress",
+                    julesState: "COMPLETED",
+                    headSha: session.currentPrHeadSha,
+                    handoffPending: true,
                    ...(scopeDriftSummary
                      ? { scopeConformant: false, scopeDriftSummary, providerMessageSent: false }
                      : {}),
