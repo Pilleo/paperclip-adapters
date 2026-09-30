@@ -43,3 +43,42 @@ release, realistic shared-file conflict recovery, or behavioural source mutation
 Captured successful run: `~/.local/state/agent-output/run-bzlcc02b/`.
 The 900-second approval observation budget applies only to this fully automated
 fixture. It is not a deadline for a human decision or live merge.
+
+## Accelerated configuration qualification
+
+The same autonomous restart case passed in **178.680 seconds** with the disposable
+Paperclip scheduler set to 10 seconds, Jules provider polling at 30 seconds, and
+`continuationCadenceSeconds: 10`. The earlier baseline was 620.766 seconds:
+approximately **3.5× faster**, with the same real-daemon restart, exact-card and
+same-session assertions and zero post-start driver mutations.
+
+Captured accelerated run: `~/.local/state/agent-output/run-mkelb6qg/`.
+Cadence validation, terminal monitor scheduling and surrounding heartbeat tests:
+**55 passed**. Normal continuation configuration defaults to 60 seconds.
+
+## Real orchestrator and ACP PR gate
+
+The `--autonomous-merge` variant adds the actual built orchestrator and Antigravity
+adapters. A local ACP provider simulator reads and submits verdicts through the
+adapter-owned authenticated native-review MCP bridge. The GitHub fixture serves
+its canonical repository URL through a real isolated bare Git remote, so normal
+workspace synchronization remains active.
+
+The first real runs found two protocol/fixture gaps (ACP model configuration and
+the absent remote), then a real producer contract defect: the Jules terminal PR
+result lacked `stopReason: "completed"`, required by the strict handoff proof.
+Commit `4ea2905` fixes that defect with a failing-then-passing executor test and a
+real native persisted producer check. Short-cadence runs also showed a newer
+active Jules monitor fencing the completed producer. The terminal wait now
+respects a continuation-sized scheduling window; live/newer-run fences remain
+strict.
+
+With the accelerated profile, the extended run passed in **237.569 seconds**:
+one provider create/approval, two typed plan reviews, real server restart,
+immutable terminal producer proof, two independently attributed native PR reviews,
+and exactly one **pending** human merge gate. No user merge was performed.
+Post-start driver mutation count remained zero.
+
+Captured successful extended run: `~/.local/state/agent-output/run-7hjwdrw9/`.
+Delayed human merge persistence and autonomous dependency release are subsequent
+qualifications, not claims of this case.

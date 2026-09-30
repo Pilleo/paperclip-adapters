@@ -10,8 +10,10 @@ import { fileURLToPath } from "node:url";
 import { createDisposableHost } from "./disposable-host.mjs";
 import { createChainGitHubFixture } from "./chain-github-fixture.mjs";
 import { createAutonomousObserver } from "./autonomous-observer.mjs";
+import { createNativeAcpFixture } from "./native-acp-fixture.mjs";
 
-const autonomous = process.argv.includes("--autonomous");
+const autonomousMerge = process.argv.includes("--autonomous-merge");
+const autonomous = autonomousMerge || process.argv.includes("--autonomous");
 
 const root = await mkdtemp(path.join(tmpdir(), "paperclip-jules-server-restart-"));
 const reviewerScript = path.join(root, "native-plan-reviewer.mjs");
@@ -38,7 +40,7 @@ const response = await fetch(base + '/api/issues/' + issueId + '/interactions/' 
 if (!response.ok) throw new Error('Native typed verdict rejected (' + response.status + '): ' + await response.text());
 `);
 await chmod(reviewerScript, 0o700);
-const chainGitHub = await createChainGitHubFixture(root);
+const chainGitHub = await createChainGitHubFixture(root, { remote: autonomousMerge });
 const pr = await chainGitHub.openPullRequest("A", "A.txt", "alpha");
 const sessionId = randomUUID();
 let creates = 0;
@@ -90,6 +92,7 @@ const host = createDisposableHost({ root, command: "paperclipai", args: ["onboar
   "--config", path.join(root, "home", "config.json"), "--data-dir", path.join(root, "home"),
   "--bind", "loopback", "--yes", "--no-install-service"], port,
 environment: { PAPERCLIP_ADAPTER_E2E: "1", PAPERCLIP_API_URL: `http://127.0.0.1:${port}`,
+  HEARTBEAT_SCHEDULER_INTERVAL_MS: "10000",
   PAPERCLIP_JULES_SESSION_STORE_DIR: path.join(root, "sessions"),
   PAPERCLIP_GH_PATH: chainGitHub.ghPath, PATH: `${root}:${process.env.PATH}` },
 readinessTimeoutMs: 60_000 });
@@ -107,6 +110,7 @@ const waitUntil = async (label, probe, timeoutMs = 45_000) => {
 };
 let companyId = null;
 let issueId = null;
+let orchestratorId = null;
 const reviewerIds = [];
 try {
   await host.start();
@@ -118,26 +122,54 @@ try {
     return response.json();
   };
   await post("/adapters/install", { packageName: path.join(workspaceRoot, "packages/jules"), isLocalPath: true });
+  if (autonomousMerge) for (const packageName of ["orchestrator", "antigravity"]) {
+    await post("/adapters/install", { packageName: path.join(workspaceRoot, "packages", packageName), isLocalPath: true });
+  }
   const company = await post("/companies", { name: "Disposable Jules process restart" });
   companyId = company.id;
-  const reviewerConfig = { command: process.execPath, args: [reviewerScript], cwd: root };
+  const acp = autonomousMerge ? await createNativeAcpFixture(root) : null;
+  const reviewerConfig = autonomousMerge ? { serverPath: acp.serverPath, model: "gemini-3.8-flash-low",
+    nativeReview: true, cwd: chainGitHub.repository, permissionMode: "read-only", timeoutSec: 90,
+    reviewMcpArgs: [path.join(workspaceRoot, "packages/orchestrator/dist/server/native-review-mcp-stdio.js")] }
+    : { command: process.execPath, args: [reviewerScript], cwd: root };
+  const managedMetadata = (workerKey) => ({ managedBy: "paperclip-orchestrator", workerKey,
+    structuredDecisionCapability: { version: 1, transports: ["mcp_tool"], decisionKinds: ["plan_review", "pull_request_review"] } });
   const reviewer = await post(`/companies/${company.id}/agents`, { name: "Paused plan reviewer", role: "qa",
-    adapterType: "process", adapterConfig: reviewerConfig, status: autonomous ? "idle" : "paused",
+    adapterType: autonomousMerge ? "antigravity" : "process", adapterConfig: reviewerConfig, status: autonomous ? "idle" : "paused",
+    ...(autonomousMerge ? { metadata: managedMetadata("luna_reviewer") } : {}),
     runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1 } } });
   const strong = await post(`/companies/${company.id}/agents`, { name: "Paused strong plan reviewer", role: "qa",
-    adapterType: "process", adapterConfig: reviewerConfig, status: autonomous ? "idle" : "paused",
+    adapterType: autonomousMerge ? "antigravity" : "process", adapterConfig: reviewerConfig, status: autonomous ? "idle" : "paused",
+    ...(autonomousMerge ? { metadata: managedMetadata("antigravity") } : {}),
     runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1 } } });
   reviewerIds.push(reviewer.id, strong.id);
   const jules = await post(`/companies/${company.id}/agents`, { name: "Jules restart contract", role: "general",
+    ...(autonomousMerge ? { metadata: { managedBy: "paperclip-orchestrator", workerKey: "jules" } } : {}),
     adapterType: "jules", adapterConfig: { apiUrl: host.url, repository: "paperclip-contract/fixture",
       source: "sources/github/paperclip-contract/fixture", baseBranch: "main", planApprovalPolicy: "required",
       planReviewerAgentId: reviewer.id, planStrongReviewerAgentId: strong.id,
       planReviewBootstrapMode: "jules_v4", e2eProviderBaseUrl: providerUrl, pollCadenceSeconds: 30,
+      continuationCadenceSeconds: 10,
       env: { JULES_API_KEY: "disposable-provider-fixture-token", PATH: `${root}:${process.env.PATH}` } },
     runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1 } } });
+  let projectId;
+  if (autonomousMerge) {
+    const project = await post(`/companies/${company.id}/projects`, { name: "Autonomous PR merge fixture" });
+    projectId = project.id;
+    await post(`/projects/${project.id}/workspaces`, { name: "Local Git fixture", cwd: chainGitHub.repository,
+      repoUrl: chainGitHub.repoUrl, defaultRef: "main", isPrimary: true });
+    const orchestrator = await post(`/companies/${company.id}/agents`, { name: "Task Orchestrator", role: "pm", adapterType: "orchestrator",
+      adapterConfig: { apiUrl: host.url, workspacePath: chainGitHub.repository, backlogDirectory: ".paperclip-contract-empty",
+        reconcileFleet: false, julesAgentId: jules.id, lunaReviewerAgentId: reviewer.id,
+        julesPlanApprovalPolicy: "required", maxConcurrentJules: 1, maxConcurrentVibe: 0 },
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 10, wakeOnDemand: true, maxConcurrentRuns: 1 } } });
+    orchestratorId = orchestrator.id;
+    assert.match(await readFile(path.join(root, "server.log"), "utf8"), /packages\/orchestrator\/dist\/index\.js/,
+      "the autonomous merge lane must load the real built orchestrator adapter");
+  }
   const issue = await (autonomous ? observer.startIssue : post)(`/companies/${company.id}/issues`, { title: "Create one Jules session before server restart",
     description: "---\norchestrator_managed: true\n---\n\nPersist the original Jules provider session across a real control-plane restart.",
-    status: "in_progress", assigneeAgentId: jules.id });
+    status: "in_progress", assigneeAgentId: jules.id, ...(projectId ? { projectId } : {}) });
   issueId = issue.id;
   const initialSession = await waitUntil("one actual Jules provider session", () => creates === 1 && sessionId);
   assert.equal(initialSession, sessionId);
@@ -159,7 +191,14 @@ try {
   const monitorWakeKeys = new Set();
   await waitUntil("one confirmed provider plan approval from typed reviewer runs", async () => {
     if (approvals === 1) return true;
-    if (autonomous) return false;
+    if (autonomous) {
+      if (autonomousMerge) {
+        const runs = await observer.get(`/companies/${company.id}/heartbeat-runs?limit=100`);
+        const failed = runs.find((run) => ["failed", "timed_out"].includes(run.status));
+        assert.equal(failed, undefined, `Autonomous run failed: ${failed?.errorCode}: ${failed?.error}`);
+      }
+      return false;
+    }
     const children = await fetch(`${host.url}/api/companies/${company.id}/issues?parentId=${issue.id}&limit=20`)
       .then((response) => response.json());
     for (const child of children) {
@@ -200,13 +239,13 @@ try {
     assert.equal(cards.length, 2);
     assert.ok(cards.every((card) => card.status === "answered" && card.result?.items?.[0]?.verdict === "approve" &&
       card.sourceRunId && card.resolvedByRunId && card.sourceRunId !== card.resolvedByRunId));
-    assert.deepEqual(cards.map((card) => card.resolvedByAgentId).sort(), [reviewer.id, strong.id].sort());
+    assert.deepEqual(cards.map((card) => autonomousMerge ? card.addresseeAgentId : card.resolvedByAgentId).sort(), [reviewer.id, strong.id].sort());
     for (const card of cards) {
       const source = await fetch(`${host.url}/api/heartbeat-runs/${card.sourceRunId}`).then((response) => response.json());
       const resolved = await fetch(`${host.url}/api/heartbeat-runs/${card.resolvedByRunId}`).then((response) => response.json());
       assert.equal(source.agentId, jules.id);
       assert.equal(source.status, "succeeded");
-      assert.equal(resolved.agentId, card.resolvedByAgentId);
+      assert.equal(resolved.agentId, autonomousMerge ? card.addresseeAgentId : card.resolvedByAgentId);
       assert.equal(resolved.status, "succeeded");
     }
     return cards.map((card) => card.id).sort();
@@ -243,13 +282,67 @@ try {
   assert.equal(delivered.url, pr.url);
   assert.equal(delivered.metadata?.headSha, pr.headSha);
   assert.equal(delivered.status, "ready_for_review");
+  if (autonomousMerge) {
+    const producer = await waitUntil("native persistence of the immutable terminal PR producer", async () => {
+      const run = await observer.get(`/heartbeat-runs/${delivered.createdByRunId}`);
+      return run.status === "succeeded" && run;
+    });
+    assert.equal(producer.resultJson?.provider, "jules");
+    assert.equal(producer.resultJson?.julesSessionId, sessionId);
+    assert.equal(producer.resultJson?.julesState, "COMPLETED");
+    assert.equal(producer.resultJson?.stopReason, "completed");
+    assert.equal(producer.resultJson?.handoffPending, true);
+    assert.equal(producer.resultJson?.headSha, pr.headSha);
+    console.log("AUTONOMOUS_PR_PRODUCER_CONFIRMED", JSON.stringify({ runId: producer.id,
+      providerSessionId: sessionId, headSha: pr.headSha }));
+  }
   assert.deepEqual(await readReviewEvidence(), originalPlanCardIds,
     "restart must retain the exact two addressed native plan cards without a second reviewer verdict");
   assert.equal(approvals, 1, "a restarted executor must never approve the already-confirmed plan again");
   assert.equal(creates, 1, "a restarted executor must retain the original provider session");
+  if (autonomousMerge) {
+    const { parsePrReviewChildDescription } = await import("../../dist/core/pr-review-child.js");
+    const gate = await waitUntil("autonomous native PR reviews and pending human merge gate", async () => {
+      const children = await observer.get(`/companies/${company.id}/issues?parentId=${issue.id}&limit=20`);
+      const reviews = children.map((child) => ({ child, identity: parsePrReviewChildDescription(child.description) }))
+        .filter(({ identity }) => identity?.prUrl === pr.url && identity.headSha === pr.headSha);
+      if (reviews.length !== 2) return false;
+      const evidence = [];
+      for (const { child, identity } of reviews) {
+        const cards = await observer.get(`/issues/${child.id}/interactions`);
+        if (cards.length !== 1 || cards[0].status !== "answered") return false;
+        const card = cards[0];
+        assert.equal(card.result?.items?.[0]?.verdict, "approve");
+        assert.equal(card.addresseeAgentId, identity.reviewerAgentId);
+        assert.notEqual(card.sourceRunId, card.resolvedByRunId);
+        const source = await observer.get(`/heartbeat-runs/${card.sourceRunId}`);
+        const resolved = await observer.get(`/heartbeat-runs/${card.resolvedByRunId}`);
+        if (source.status !== "succeeded" || resolved.status !== "succeeded") return false;
+        assert.equal(source.agentId, identity.bootstrapAgentId);
+        assert.equal(source.agentId, orchestratorId);
+        assert.equal(source.contextSnapshot.issueId, child.id);
+        assert.equal(resolved.agentId, identity.reviewerAgentId);
+        assert.equal(resolved.contextSnapshot.issueId, child.id);
+        evidence.push({ stage: identity.stage, cardId: card.id, sourceRunId: source.id, resolvedByRunId: resolved.id });
+      }
+      const approvals = await observer.get(`/companies/${company.id}/approvals`);
+      const gates = approvals.filter((approval) => approval.payload?.action === "task_merge" && approval.payload.issueId === issue.id);
+      if (gates.length === 0) return false;
+      assert.equal(gates.length, 1, "normal scheduling must create exactly one native human merge gate");
+      assert.equal(gates[0].status, "pending");
+      assert.equal(gates[0].payload.prUrl, pr.url);
+      assert.equal((await observer.get(`/issues/${issue.id}`)).status, "in_review");
+      return { approvalId: gates[0].id, reviews: evidence };
+    }, 360_000);
+    console.log("AUTONOMOUS_PR_MERGE_GATE_CONFIRMED", JSON.stringify(gate));
+  }
   const log = await readFile(path.join(root, "server.log"), "utf8");
   assert.ok([...log.matchAll(/packages\/jules\/dist\/index\.js/g)].length >= 2,
     "both Paperclip processes must load the built Jules dist/index.js adapter");
+  if (autonomousMerge) for (const packageName of ["orchestrator", "antigravity"]) {
+    assert.ok(log.split(`packages/${packageName}/dist/index.js`).length >= 3,
+      `both daemon processes must load the built ${packageName} adapter`);
+  }
   if (autonomous) {
     assert.equal(observer.trace.filter((entry) => entry.phase === "observing" && entry.method !== "GET").length, 0,
       "the driver must not rescue-wake, reassign or repair state after source start");

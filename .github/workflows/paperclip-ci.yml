@@ -173,6 +173,8 @@ jobs:
         run: node packages/orchestrator/test/contract/jules-server-restart.mjs
       - name: Verify autonomous native plan reviews and same-session PR delivery after daemon restart
         run: node packages/orchestrator/test/contract/jules-server-restart.mjs --autonomous
+      - name: Verify scheduled orchestrator and ACP workers reach a pending native human merge gate
+        run: node packages/orchestrator/test/contract/jules-server-restart.mjs --autonomous-merge
       - name: Verify exact recovery and reload regressions on installed host
         run: |
           export PAPERCLIP_CONTRACT_NODE_MODULES="$(npm root --global)/paperclipai/node_modules"
