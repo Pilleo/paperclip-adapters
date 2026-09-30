@@ -7,6 +7,13 @@ import {
   retryStartedEffect,
   type LifecycleEffectJournal,
 } from "../src/server/lifecycle-effect-journal.js";
+import { reconcileNativePlanEffect } from "../src/server/native-plan-effect-reconciler.js";
+
+function nativeRetryAuthorization(revisionId = "rev-1") {
+  const result = reconcileNativePlanEffect({ kind: "create_card", reviewer: "terra", revisionId }, { card: { kind: "absent" } });
+  if (result.kind !== "retry_safe") throw new Error("Fixture did not prove native-card absence");
+  return result.authorization;
+}
 
 describe("durable lifecycle effect journal", () => {
   it.each<readonly [string, LifecycleEffectJournal, "execute" | "reconcile" | "observe"]>([
@@ -67,11 +74,11 @@ describe("durable lifecycle effect journal", () => {
       }],
     };
 
-    const retried = retryStartedEffect(started, "card:terra:rev-1", "2026-09-20T00:01:00.000Z");
+    const retried = retryStartedEffect(started, "card:terra:rev-1", "2026-09-20T00:01:00.000Z", nativeRetryAuthorization());
     expect(retried.effects[0]?.attempt).toEqual({
       kind: "started", startedAt: "2026-09-20T00:01:00.000Z", attempts: 2,
     });
-    expect(() => retryStartedEffect(retried, "card:terra:rev-1", "2026-09-20T00:02:00.000Z")).toThrow(
+    expect(() => retryStartedEffect(retried, "card:terra:rev-1", "2026-09-20T00:02:00.000Z", nativeRetryAuthorization())).toThrow(
       "retry limit",
     );
   });
@@ -79,11 +86,19 @@ describe("durable lifecycle effect journal", () => {
   it.each(["send_provider_message", "approve_plan", "request_plan_revision", "legacy_unknown"] as const)(
     "refuses generic replay of an uncertain %s effect", (kind) => {
       const journal = beginEffect({ version: 1, effects: [] }, {
-        effectId: "uncertain-effect", kind, startedAt: "2026-09-20T00:00:00.000Z",
+        effectId: "card:terra:rev-1", kind, startedAt: "2026-09-20T00:00:00.000Z",
       });
-      expect(() => retryStartedEffect(journal, "uncertain-effect", "2026-09-20T00:01:00.000Z"))
+      expect(() => retryStartedEffect(journal, "card:terra:rev-1", "2026-09-20T00:01:00.000Z", nativeRetryAuthorization()))
         .toThrow("not replayable");
       expect(journal.effects[0]?.attempt).toMatchObject({ kind: "started", attempts: 1 });
     },
   );
+
+  it("rejects a forged retry authorization at the runtime boundary", () => {
+    const journal = beginEffect({ version: 1, effects: [] }, {
+      effectId: "card:terra:rev-1", kind: "create_card", startedAt: "2026-09-20T00:00:00Z",
+    });
+    expect(() => retryStartedEffect(journal, "card:terra:rev-1", "2026-09-20T00:01:00Z",
+      { effectId: "card:terra:rev-1" } as never)).toThrow("retry authorization");
+  });
 });

@@ -4,9 +4,18 @@ export type NativePlanEffect = Extract<JulesLifecycleEffect, {
   readonly kind: "create_card" | "approve_plan" | "request_plan_revision";
 }>;
 
+const nativeCardRetry = Symbol("verified-native-card-retry");
+export type NativeCardRetryAuthorization = Readonly<{ effectId: string; [nativeCardRetry]: true }>;
+
+export function assertNativeCardRetryAuthorization(value: NativeCardRetryAuthorization, effectId: string): void {
+  if (!value || value[nativeCardRetry] !== true || value.effectId !== effectId) {
+    throw new Error(`Invalid native-card retry authorization for ${effectId}`);
+  }
+}
+
 export type NativePlanEffectReconciliation =
   | { readonly kind: "confirmed"; readonly receipt: string }
-  | { readonly kind: "retry_safe" }
+  | { readonly kind: "retry_safe"; readonly authorization: NativeCardRetryAuthorization }
   | { readonly kind: "await_observation" }
   | { readonly kind: "inconsistent"; readonly reason: string };
 
@@ -41,7 +50,9 @@ export function reconcileNativePlanEffect(
         case "exact":
           return { kind: "confirmed", receipt: evidence.card.cardId };
         case "absent":
-          return { kind: "retry_safe" };
+          return { kind: "retry_safe", authorization: Object.freeze({
+            effectId: `card:${effect.reviewer}:${effect.revisionId}`, [nativeCardRetry]: true as const,
+          }) };
         case "ambiguous":
         case undefined:
           return { kind: "await_observation" };

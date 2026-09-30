@@ -13,7 +13,7 @@ describe("reconcileNativePlanEffect", () => {
       "permits one card retry only after authoritative absence",
       { kind: "create_card", reviewer: "terra", revisionId: "rev-1" },
       { card: { kind: "absent" } },
-      { kind: "retry_safe" },
+      expect.objectContaining({ kind: "retry_safe", authorization: expect.objectContaining({ effectId: "card:terra:rev-1" }) }),
     ],
     [
       "awaits provider observation when an interrupted approval leaves the exact plan pending",

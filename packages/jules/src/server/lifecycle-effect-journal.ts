@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { assertNativeCardRetryAuthorization, type NativeCardRetryAuthorization } from "./native-plan-effect-reconciler.js";
 
 export const LifecycleEffectKindSchema = z.enum([
   "deliver_verdict",
@@ -104,7 +105,9 @@ export function retryStartedEffect(
   journal: LifecycleEffectJournal,
   effectId: string,
   startedAt: string,
+  authorization: NativeCardRetryAuthorization,
 ): LifecycleEffectJournal {
+  assertNativeCardRetryAuthorization(authorization, effectId);
   let found = false;
   const effects = journal.effects.map((effect): LifecycleEffectEntry => {
     if (effect.effectId !== effectId) return effect;

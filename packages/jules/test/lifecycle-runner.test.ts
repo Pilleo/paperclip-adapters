@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { reconcileNativePlanEffect as observeNativePlanEffect } from "../src/server/native-plan-effect-reconciler.js";
 import type { JulesLifecycleState } from "@pilleo/paperclip-adapter-common";
 import { runJulesLifecycle } from "../src/server/lifecycle-runner.js";
 
@@ -129,7 +130,9 @@ describe("runJulesLifecycle", () => {
   it("replays a started card creation only after reconciliation proves retry safety", async () => {
     const persistJournal = vi.fn().mockResolvedValue(undefined);
     const createCard = vi.fn().mockResolvedValue({ receipt: "terra-card-2" });
-    const reconcileNativePlanEffect = vi.fn().mockResolvedValue({ kind: "retry_safe" } as const);
+    const reconcileNativePlanEffect = vi.fn().mockResolvedValue(observeNativePlanEffect(
+      { kind: "create_card", reviewer: "terra", revisionId: "revision-1" }, { card: { kind: "absent" } },
+    ));
 
     const result = await runJulesLifecycle({
       state: { ...lunaApproved, effect: { kind: "started", effectId: "card:terra:revision-1", startedAt: "2026-09-20T00:00:00.000Z" } },

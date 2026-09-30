@@ -185,7 +185,7 @@ async function reconcileNativePlanEffect(
     }
     case "retry_safe":
       {
-        const retried = retryStartedEffect(journal, identity.effectId, now);
+        const retried = retryStartedEffect(journal, identity.effectId, now, reconciliation.authorization);
         await dependencies.persistJournal(retried);
         const receipt = await performNativePlanEffect(effect, dependencies);
         const confirmed = confirmEffect(retried, identity.effectId, receipt);
