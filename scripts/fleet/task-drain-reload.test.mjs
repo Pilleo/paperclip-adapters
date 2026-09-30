@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { drainAndRestart } from "./task-drain-reload.mjs";
+import { drainAndRestart, reloadAndVerify } from "./task-drain-reload.mjs";
 
 function fixture({ existingDrain = false, queued = false, changeEpoch = false, expire = false } = {}) {
   let time = Date.parse("2026-09-30T12:00:00Z"), polls = 0, restarted = false;
@@ -25,7 +25,7 @@ function fixture({ existingDrain = false, queued = false, changeEpoch = false, e
   };
   return { events, request, now: () => time, sleep: async () => { time += 10; },
     restart: async () => { assert.equal(draining, true, "admission must remain held through restart");
-      events.push("restart"); restarted = true; draining = false; },
+      events.push("restart"); restarted = true; draining = false; startedAt = null; },
     restarted: () => restarted, draining: () => draining };
 }
 
@@ -82,4 +82,34 @@ test("does not act on a drain-start receipt with an invalid expiry", async () =>
     },
   }), /receipt is unverified/);
   assert.equal(f.restarted(), false);
+});
+
+test("reports reload ready only after fresh-process drain reset, loaded packages and reconciliation", async () => {
+  const f = fixture();
+  const result = await reloadAndVerify({ ...f, waitMs: 100, pollMs: 10,
+    verifyLoaded: async () => { f.events.push("loaded"); },
+    waitReconciled: async () => { f.events.push("reconciled"); return { runId: "post-reload-heartbeat" }; },
+  });
+  assert.equal(result.reconciliation.runId, "post-reload-heartbeat");
+  assert.ok(f.events.indexOf("restart") < f.events.indexOf("loaded"));
+  assert.ok(f.events.indexOf("loaded") < f.events.indexOf("reconciled"));
+});
+
+test("does not claim readiness if the original API still has the old process drain", async () => {
+  const f = fixture();
+  await assert.rejects(reloadAndVerify({ ...f, waitMs: 100, pollMs: 10,
+    restart: async () => {},
+    verifyLoaded: async () => { throw Error("must not check packages for wrong process"); },
+    waitReconciled: async () => { throw Error("must not accept old heartbeat"); },
+  }), /did not reset/);
+});
+
+test("does not accept reconciliation when package load verification failed", async () => {
+  const f = fixture();
+  let checkedReconciliation = false;
+  await assert.rejects(reloadAndVerify({ ...f, waitMs: 100, pollMs: 10,
+    verifyLoaded: async () => { throw Error("adapter dist was not loaded"); },
+    waitReconciled: async () => { checkedReconciliation = true; },
+  }), /dist was not loaded/);
+  assert.equal(checkedReconciliation, false);
 });

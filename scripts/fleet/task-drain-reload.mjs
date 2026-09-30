@@ -73,3 +73,19 @@ export async function drainAndRestart({ request, restart, waitMs = 900_000, poll
     throw error;
   }
 }
+
+export async function reloadAndVerify(input) {
+  const result = await drainAndRestart(input);
+  await input.waitReady?.();
+  const reset = await input.request("GET", "/api/instance/task-drain");
+  if (reset.draining !== false || reset.startedAt !== null) {
+    throw new Error("Task-drain state did not reset after process replacement; reload is not verified");
+  }
+  await input.verifyLoaded();
+  const reconciliation = await input.waitReconciled();
+  if (!reconciliation || typeof reconciliation.runId !== "string" || !reconciliation.runId) {
+    throw new Error("Post-reload reconciliation is not verified");
+  }
+  await input.record?.({ event: "reload_verified", epoch: result.epoch, reconciliationRunId: reconciliation.runId });
+  return { ...result, reconciliation };
+}

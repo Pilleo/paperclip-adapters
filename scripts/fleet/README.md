@@ -18,6 +18,7 @@ A suite of modular, zero-dependency bash scripts for operating, triaging, and in
 | [`list_agents.sh`](list_agents.sh) | Lists all fleet agents, roles, error reasons, and chain of command health. | `./scripts/fleet/list_agents.sh` |
 | [`run_telegram_companion.sh`](run_telegram_companion.sh) | Starts the interactive Telegram bot companion for live cards and push alerts. | `./scripts/fleet/run_telegram_companion.sh` |
 | [`diagnostics.sh`](diagnostics.sh) | Read-only service, Jules heartbeat, marked-child, and capability-incident summary. | `./scripts/fleet/diagnostics.sh` |
+| [`reload_adapters.mjs`](reload_adapters.mjs) | Journaled native task-drain barrier, idle restart, dist load and fresh heartbeat verification. | See reload workflow below. |
 | [`reconcile_stale_children.sh`](reconcile_stale_children.sh) | Finds stale Jules supervisor/adjudication children; dry-run by default. | `./scripts/fleet/reconcile_stale_children.sh --apply` |
 | [`reconcile_jules_prs.mjs`](reconcile_jules_prs.mjs) | Manual emergency convergence of verified ready Jules PRs into review; closes false productivity blockers. | `node scripts/fleet/reconcile_jules_prs.mjs --dry-run --json` |
 | [`install_jules_pr_reconciler_timer.sh`](install_jules_pr_reconciler_timer.sh) | Installs the deprecated compatibility timer; normal recovery is now performed by the orchestrator heartbeat. | Use only for documented emergency rollback/recovery testing. |
@@ -67,12 +68,31 @@ Prefer the adapter's native recovery path and the isolated
 
 ### 5. Reloading an External Adapter Safely
 
-Paperclip loads external adapter packages only at server startup. For an
-adapter change: build the affected workspace, restart Paperclip, verify its
-startup log loaded the package's `dist/index.js`, then trigger or wait for one
-Orchestrator tick. The tick reconciles managed agent configuration. Do not
-wake a reviewer before that reconciliation finishes, otherwise a stale
-`networkScope` or prompt may be exercised.
+Paperclip loads external adapter packages only at server startup. Build the
+affected workspace, then use the verified native task-drain reload command:
+
+```bash
+mkdir -m 700 /tmp/paperclip-reload-unique
+node scripts/fleet/reload_adapters.mjs \
+  --journal /tmp/paperclip-reload-unique/receipts.jsonl \
+  --reconcile-company 8f4ef932-d769-43b2-981a-d273ed715162 \
+  --reconcile-agent f9bf7329-0649-4c0d-bfe0-680cfd9e8c9a
+```
+
+The command starts the host's admission hold **before** waiting for quiescence,
+checks every accessible company's authoritative live-run list, and keeps the
+hold through the old-process stop. It then confirms the replacement API reset
+the drain, startup loaded orchestrator/Jules `dist/index.js`, and a new managed
+orchestrator heartbeat succeeded. An ordinary idle read is not an admission
+barrier: the scheduler can start work between that read and a bare restart.
+
+Use a fresh owner-only journal directory/file per attempt. Existing drains,
+queued runs, changed drain epochs and expired holds fail closed. A pre-restart
+failure releases only the verified owned epoch; an uncertain restart outcome
+retains the bounded hold and must be inspected instead of retried. Other
+operator changes to the global drain are detected by epoch reads; this host
+does not expose a compare-and-set drain API. Do not wake a reviewer before
+reconciliation finishes.
 
 ### 6. Recovering One Failed Native Review Without Spam
 
