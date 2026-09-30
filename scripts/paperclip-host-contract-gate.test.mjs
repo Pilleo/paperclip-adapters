@@ -16,10 +16,11 @@ async function runGate(fixtureExit, fixtureSafetyGate, args = [], options = {}) 
 const fs = require('node:fs');
 const path = require('node:path');
 const scenario = process.argv.find((arg) => arg.startsWith('--scenario='))?.slice(11);
+console.log(JSON.stringify({fixtureScenario:scenario,legacy:process.env.PAPERCLIP_TEST_LEGACY_PRODUCER || '0',terminalWait:process.env.PAPERCLIP_TEST_TERMINAL_HANDOFF_WAIT || '0'}));
 fs.writeFileSync(process.env.FIXTURE_PID_FILE, String(process.pid));
 if (process.env.FIXTURE_DELAY) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.FIXTURE_DELAY));
 if (process.env.FIXTURE_WRITE !== 'no') {
-  const report = { scenario: process.env.FIXTURE_SCENARIO || scenario, version: process.env.FIXTURE_VERSION || '2026.916.0', result: 'observed', safetyGate: process.env.FIXTURE_SAFETY_GATE };
+  const report = { scenario: process.env.FIXTURE_SCENARIO || scenario, version: process.env.FIXTURE_VERSION || '2026.916.0', result: 'observed', safetyGate: scenario === process.env.FIXTURE_FAIL_SCENARIO ? 'fail' : process.env.FIXTURE_SAFETY_GATE };
   fs.writeFileSync(path.join(process.env.CONTRACT_REPORT_DIR, scenario + '.json'), process.env.FIXTURE_MALFORMED === 'yes' ? '{invalid-json' : JSON.stringify(report));
 }
 process.exit(Number(process.env.FIXTURE_EXIT));
@@ -40,6 +41,7 @@ process.exit(Number(process.env.FIXTURE_EXIT));
         FIXTURE_SCENARIO: options.reportScenario ?? "", FIXTURE_VERSION: options.reportVersion ?? "",
         FIXTURE_DELAY: String(options.delayMs ?? 0),
         FIXTURE_MALFORMED: options.malformedReport ? "yes" : "no",
+        FIXTURE_FAIL_SCENARIO: options.failScenario ?? "",
         FIXTURE_PID_FILE: path.join(home, "fixture.pid"),
         CONTRACT_SCENARIO_TIMEOUT_MS: String(options.timeoutMs ?? 120_000) },
     });
@@ -72,6 +74,33 @@ test("supported-host contract gate refuses a completed but unsafe scenario", asy
   const result = await runGate(0, "fail", ["--scenario=stable_child_jules_v4_executor"]);
   assert.notEqual(result.exit, 0);
   assert.equal(result.summary.scenarios[0].safetyGate, "fail");
+});
+
+test("default automated gate executes every declared regression and explicit fidelity variant", async () => {
+  const result = await runGate(0, "pass");
+  assert.equal(result.exit, 0, result.stderr);
+  assert.deepEqual(result.summary.scenarios.map((scenario) => scenario.scenario), [
+    "stable_child_jules_v4_executor", "stable_child_jules_v4_create", "stable_child_jules_v4_create_lost",
+    "stable_child_jules_v4_revise_message_lost", "stable_child_chain_abc_complete",
+    "stable_child_chain_abc_recover_auto_blocker", "stable_child_chain_abc_lost_b_create",
+    "stable_child_chain_abc_lost_b_approval", "stable_child_executor_pr_board",
+    "stable_child_executor_pr_probe", "stable_child_executor_pr_withdraw",
+    "stable_child_executor_pr_board_reject", "stable_child_chain_abc_later_jules_run",
+    "stable_child_chain_abc_later_jules_run_legacy",
+  ]);
+  const profiles = result.stdout.split("\n").flatMap((line) => {
+    try { const value = JSON.parse(line); return value.fixtureScenario ? [value] : []; } catch { return []; }
+  });
+  assert.equal(profiles.filter((profile) => profile.legacy === "1").length, 1);
+  assert.equal(profiles.filter((profile) => profile.terminalWait === "1").length, 1);
+});
+
+test("a failed member prevents an aggregate pass even when other regressions passed", async () => {
+  const result = await runGate(0, "pass", ["--scenario=stable_child_executor_pr_probe", "--scenario=stable_child_executor_pr_board"],
+    { failScenario: "stable_child_executor_pr_board" });
+  assert.notEqual(result.exit, 0);
+  assert.deepEqual(result.summary.scenarios.map((scenario) => scenario.safetyGate), ["pass", "fail"]);
+  assert.equal(result.summary.integrationAllowed, false);
 });
 
 test("supported-host contract gate refuses harness failures and preserves a summary", async () => {

@@ -14,6 +14,9 @@ const supported = [
   "stable_child_executor_pr_board",
   "stable_child_executor_pr_probe",
   "stable_child_executor_pr_withdraw",
+  "stable_child_executor_pr_board_reject",
+  "stable_child_chain_abc_later_jules_run",
+  "stable_child_chain_abc_later_jules_run_legacy",
 ];
 const requested = process.argv.filter((arg) => arg.startsWith("--scenario=")).map((arg) => arg.slice("--scenario=".length));
 if (requested.some((scenario) => !supported.includes(scenario))) {
@@ -23,7 +26,8 @@ const selected = requested.length ? requested : supported;
 const reportDir = process.env.CONTRACT_REPORT_DIR;
 if (!reportDir) throw new Error("CONTRACT_REPORT_DIR must name a disposable directory for sanitized reports");
 await mkdir(reportDir, { recursive: true });
-const timeoutMs = Number(process.env.CONTRACT_SCENARIO_TIMEOUT_MS ?? 300_000);
+// This bounds an automated test process, never the user's merge decision.
+const timeoutMs = Number(process.env.CONTRACT_SCENARIO_TIMEOUT_MS ?? 600_000);
 if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 900_000) {
   throw new Error("CONTRACT_SCENARIO_TIMEOUT_MS must be an integer between 1 and 900000");
 }
@@ -43,9 +47,13 @@ const scenarios = [];
 for (const scenario of selected) {
   if (interruptedSignal) break;
   const freshReportDir = await mkdtemp(path.join(reportDir, `${scenario}-`));
+  const hostScenario = scenario === "stable_child_chain_abc_later_jules_run_legacy"
+    ? "stable_child_chain_abc_later_jules_run" : scenario;
   const run = await new Promise((resolve) => {
-    const child = spawn("pnpm", ["test:contract:plan-handback", `--scenario=${scenario}`, "--require-safe"], {
-      env: { ...process.env, CONTRACT_REPORT_DIR: freshReportDir },
+    const child = spawn("pnpm", ["test:contract:plan-handback", `--scenario=${hostScenario}`, "--require-safe"], {
+      env: { ...process.env, CONTRACT_REPORT_DIR: freshReportDir,
+        PAPERCLIP_TEST_LEGACY_PRODUCER: scenario.endsWith("_legacy") ? "1" : "0",
+        PAPERCLIP_TEST_TERMINAL_HANDOFF_WAIT: scenario === "stable_child_executor_pr_board_reject" ? "1" : "0" },
       stdio: "inherit",
       detached: true,
     });
@@ -68,11 +76,11 @@ for (const scenario of selected) {
   });
   let report;
   try {
-    report = JSON.parse(await readFile(path.join(freshReportDir, `${scenario}.json`), "utf8"));
+    report = JSON.parse(await readFile(path.join(freshReportDir, `${hostScenario}.json`), "utf8"));
   } catch {
     report = { scenario, result: "missing_report", safetyGate: "not_established" };
   }
-  const validIdentity = report.scenario === scenario && report.version === "2026.916.0";
+  const validIdentity = report.scenario === hostScenario && report.version === "2026.916.0";
   scenarios.push({ scenario, result: interruptedSignal ? "interrupted" : run.timedOut ? "timeout" : run.error ? "launch_error" :
     !validIdentity && report.result !== "missing_report" ? "invalid_report" : report.result,
     safetyGate: validIdentity && !interruptedSignal && !run.timedOut && !run.error ? report.safetyGate : "not_established", exit: run.exit });
