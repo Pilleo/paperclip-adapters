@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { classifyJulesPrReviewDisposition, deriveJulesPrHandoffEvidence, openJulesPrRecoveryKey } from "../src/core/jules-monitor-state.js";
 
+const prIdentity = { prUrl: "https://github.com/acme/repo/pull/6", headSha: "a".repeat(40) };
+const completedProducerRun = {
+  id: "run-pr-11", agentId: "jules-agent", issueId: "issue-1551", status: "succeeded",
+  startedAt: "2026-09-21T09:16:30.000Z", finishedAt: "2026-09-21T09:16:46.000Z",
+  provider: "jules", providerSessionId: "3636402812288664406", julesState: "COMPLETED", stopReason: "completed",
+} as const;
+
 describe("openJulesPrRecoveryKey", () => {
   const recovery = {
     issueId: "issue-1549",
@@ -32,11 +39,20 @@ describe("classifyJulesPrReviewDisposition", () => {
   } as const;
 
   it("hands a completed PR producer to native review despite its stale scheduled monitor", () => {
+    const handoff = deriveJulesPrHandoffEvidence({ ...prIdentity, executionPolicy: scheduledJulesMonitor,
+      issueId: completedProducerRun.issueId, producerRunId: completedProducerRun.id,
+      producerRun: completedProducerRun, heartbeatRuns: [completedProducerRun] });
     expect(classifyJulesPrReviewDisposition({
       currentHeadRejected: false,
       executionPolicy: scheduledJulesMonitor,
-      handoff: { kind: "terminal_pr_handoff" },
+      handoff,
     })).toEqual({ kind: "eligible_for_review" });
+  });
+
+  it("does not accept a terminal handoff label forged at a runtime boundary", () => {
+    expect(classifyJulesPrReviewDisposition({ currentHeadRejected: false,
+      executionPolicy: scheduledJulesMonitor, handoff: { kind: "terminal_pr_handoff" } as never }))
+      .toEqual({ kind: "await_provider" });
   });
 });
 
@@ -48,18 +64,24 @@ describe("deriveJulesPrHandoffEvidence", () => {
     },
   } as const;
 
-  const completedProducerRun = {
-    id: "run-pr-11",
-    agentId: "jules-agent",
-    issueId: "issue-1551",
-    status: "succeeded",
-    startedAt: "2026-09-21T09:16:30.000Z",
-    finishedAt: "2026-09-21T09:16:46.000Z",
-    provider: "jules",
-    providerSessionId: "3636402812288664406",
-    julesState: "COMPLETED",
-    stopReason: "completed",
-  } as const;
+  it("binds terminal handoff to the exact issue, session, PR head and proving run", () => {
+    const input = { executionPolicy: scheduledJulesMonitor, issueId: "issue-1551",
+      producerRunId: completedProducerRun.id, producerRun: completedProducerRun,
+      prUrl: "https://github.com/acme/repo/pull/6", headSha: "a".repeat(40), heartbeatRuns: [completedProducerRun] };
+    expect(deriveJulesPrHandoffEvidence(input)).toMatchObject({ kind: "terminal_pr_handoff", evidence: {
+      issueId: "issue-1551", providerSessionId: "3636402812288664406", prUrl: input.prUrl,
+      headSha: input.headSha, producerRunId: "run-pr-11", completionRunId: "run-pr-11",
+    } });
+    const decision = deriveJulesPrHandoffEvidence(input);
+    if (decision.kind !== "terminal_pr_handoff") throw new Error("Fixture handoff not validated");
+    expect(classifyJulesPrReviewDisposition({ currentHeadRejected: false, executionPolicy: scheduledJulesMonitor,
+      handoff: { kind: "terminal_pr_handoff", evidence: { ...decision.evidence, headSha: "b".repeat(40) } } as never }))
+      .toEqual({ kind: "await_provider" });
+    expect(deriveJulesPrHandoffEvidence({ ...input, producerRun: { ...completedProducerRun, issueId: "another-issue" } }))
+      .toEqual({ kind: "active_or_unverified_monitor" });
+    expect(deriveJulesPrHandoffEvidence({ ...input, headSha: "" }))
+      .toEqual({ kind: "active_or_unverified_monitor" });
+  });
 
   it("uses a hydrated later exact-head same-session handoff when the original producer is legacy", () => {
     const legacy = { ...completedProducerRun, julesState: null };
@@ -69,7 +91,9 @@ describe("deriveJulesPrHandoffEvidence", () => {
       issueId: "issue-1551", producerRunId: legacy.id, producerRun: legacy,
       handoffRun: latest, prUrl: latest.prUrl, headSha: latest.headSha,
       heartbeatRuns: [latest] };
-    expect(deriveJulesPrHandoffEvidence(input)).toEqual({ kind: "terminal_pr_handoff" });
+    expect(deriveJulesPrHandoffEvidence(input)).toMatchObject({ kind: "terminal_pr_handoff", evidence: {
+      producerRunId: legacy.id, completionRunId: latest.id, headSha: latest.headSha,
+    } });
     for (const change of [{ headSha: "b".repeat(40) }, { providerSessionId: "other" },
       { agentId: "other-worker" }, { handoffPending: false }, { issueId: "other-issue" }]) {
       expect(deriveJulesPrHandoffEvidence({ ...input, handoffRun: { ...latest, ...change } }))
@@ -87,11 +111,12 @@ describe("deriveJulesPrHandoffEvidence", () => {
     ["a failed producer run", [{ ...completedProducerRun, status: "failed" }], { kind: "active_or_unverified_monitor" }],
   ])("returns %s", (_name, runs, expected) => {
     expect(deriveJulesPrHandoffEvidence({
+      ...prIdentity,
       executionPolicy: scheduledJulesMonitor,
       issueId: "issue-1551",
       producerRunId: "run-pr-11",
       heartbeatRuns: runs,
-    })).toEqual(expected);
+    })).toMatchObject(expected);
   });
 
   it("preserves the no-monitor legacy state", () => {
@@ -115,6 +140,7 @@ describe("deriveJulesPrHandoffEvidence", () => {
 
   it("hydrates the immutable PR producer when Paperclip retains its monitor only in executionState", () => {
     expect(deriveJulesPrHandoffEvidence({
+      ...prIdentity,
       executionPolicy: null,
       executionState: {
         status: "idle",
@@ -126,7 +152,7 @@ describe("deriveJulesPrHandoffEvidence", () => {
       producerRun: completedProducerRun,
       // The list endpoint deliberately strips resultJson from this record.
       heartbeatRuns: [{ ...completedProducerRun, provider: null, providerSessionId: null, julesState: null, stopReason: null }],
-    })).toEqual({ kind: "terminal_pr_handoff" });
+    })).toMatchObject({ kind: "terminal_pr_handoff", evidence: { completionRunId: completedProducerRun.id } });
   });
 
   it("does not hand off while a newer issue run is still active", () => {

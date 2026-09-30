@@ -43,8 +43,17 @@ export type JulesPrReviewDisposition =
  * intentionally retains that monitor for recovery, but the provider has
  * already handed the immutable PR to native review.
  */
+class TerminalPrHandoffProof {
+  private readonly verified = true;
+  constructor(readonly issueId: string, readonly providerSessionId: string, readonly prUrl: string,
+    readonly headSha: string, readonly producerRunId: string, readonly completionRunId: string) {}
+  isVerified(): boolean { return this.verified; }
+}
+const issuedHandoffs = new WeakSet<TerminalPrHandoffProof>();
+export type VerifiedTerminalPrHandoff = TerminalPrHandoffProof;
+
 export type JulesPrHandoffEvidence =
-  | { readonly kind: "terminal_pr_handoff" }
+  | { readonly kind: "terminal_pr_handoff"; readonly evidence: VerifiedTerminalPrHandoff }
   | { readonly kind: "active_or_unverified_monitor" }
   | { readonly kind: "no_authoritative_monitor" };
 
@@ -123,6 +132,19 @@ export function deriveJulesPrHandoffEvidence(input: {
     return { kind: "active_or_unverified_monitor" };
   }
 
+  const proved = (run: JulesPrHandoffHeartbeatRun): JulesPrHandoffEvidence => {
+    if (run.issueId !== input.issueId || !run.providerSessionId || !input.prUrl ||
+        !/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/[1-9]\d*$/.test(input.prUrl) ||
+        !input.headSha || !/^[a-f0-9]{40}$/i.test(input.headSha)) {
+      return { kind: "active_or_unverified_monitor" };
+    }
+    const evidence = new TerminalPrHandoffProof(input.issueId, run.providerSessionId, input.prUrl,
+      input.headSha, input.producerRunId!, run.id);
+    Object.freeze(evidence);
+    issuedHandoffs.add(evidence);
+    return { kind: "terminal_pr_handoff", evidence };
+  };
+
   if (input.producerRun?.id === input.producerRunId) {
     // Adapter-facing issue reads redact externalRef. The immutable
     // work-product already binds this exact run to the current PR, so the
@@ -141,10 +163,10 @@ export function deriveJulesPrHandoffEvidence(input: {
         completedAt(later) !== null && completedAt(original) !== null && completedAt(later)! > completedAt(original)!) {
       const newer = input.heartbeatRuns.some((run) => run.issueId === input.issueId &&
         run.id !== later.id && (completedAt(run) === null || completedAt(run)! >= completedAt(later)!));
-      if (!newer) return { kind: "terminal_pr_handoff" };
+      if (!newer) return proved(later);
     }
     return isCompletedJulesProducer(input.producerRun, observableSessionId)
-      ? { kind: "terminal_pr_handoff" }
+      ? proved(input.producerRun)
       : { kind: "active_or_unverified_monitor" };
   }
 
@@ -161,7 +183,7 @@ export function deriveJulesPrHandoffEvidence(input: {
 
   const latest = newestRuns[0]!;
   if (latest.id === input.producerRunId && isCompletedJulesProducer(latest, sessionId)) {
-    return { kind: "terminal_pr_handoff" };
+    return proved(latest);
   }
   return { kind: "active_or_unverified_monitor" };
 }
@@ -215,6 +237,7 @@ export function classifyJulesPrReviewDisposition(input: {
     case "active_or_unverified_monitor":
       return { kind: "await_provider" };
     case "terminal_pr_handoff": {
+      if (!issuedHandoffs.has(monitorState.evidence) || !monitorState.evidence.isVerified()) return { kind: "await_provider" };
       switch (input.currentHeadRejected) {
         case true:
           return { kind: "recover_provider" };
