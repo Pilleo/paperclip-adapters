@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, stat, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
 import process from "node:process";
 import { promisify } from "node:util";
 import { parseChildPlanReviewDescription } from "@pilleo/paperclip-adapter-common";
@@ -8,6 +9,7 @@ import { stressPilotTasks, stressTasks } from "../src/core/stress-campaign-manif
 import { evaluateStressProgress, type StressIssueEvidence, type StressReviewEvidence } from "../src/core/stress-campaign-progress.js";
 import { parsePrReviewChildDescription } from "../src/core/pr-review-child.js";
 import { parseJulesPrHandoffHandle } from "../src/core/pr-handoff-registration.js";
+import { evaluateRecoveredPilot, PilotRecoveryAuthorizationSchema, type PilotRecoveryAuthorization } from "../src/core/stress-pilot-recovery.js";
 
 const exec = promisify(execFile);
 const API = process.env["PAPERCLIP_TEST_API_URL"]?.replace(/\/+$/, "");
@@ -211,6 +213,19 @@ async function main(): Promise<void> {
   const projectId = option("--project-id");
   const minutes = option("--wait-minutes");
   const reportDir = option("--report-dir");
+  const recoveryReceipt = option("--recovered-pilot-receipt");
+  let authorization: PilotRecoveryAuthorization | undefined;
+  if (recoveryReceipt) {
+    if (CAMPAIGN_KIND !== "pilot") throw new Error("Recovery receipt is restricted to pilot mode");
+    const handle = await open(recoveryReceipt, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const info = await handle.stat();
+      if (!info.isFile() || info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0 || info.size > 16384) {
+        throw new Error("Recovery receipt must be a small owner-only regular file");
+      }
+      authorization = PilotRecoveryAuthorizationSchema.parse(JSON.parse(await handle.readFile("utf8")));
+    } finally { await handle.close(); }
+  }
   if (!runKey || !projectId || !/^[a-f0-9-]{36}$/i.test(projectId)) throw new Error("--run-key and an exact UUID --project-id are required");
   stressTasks(runKey);
   const wait = minutes === undefined ? 0 : Number(minutes);
@@ -225,9 +240,12 @@ async function main(): Promise<void> {
   let sequence = 0;
   while (true) {
     const issues = await snapshot(runKey, projectId);
-    const progress = evaluateStressProgress(tasksForRun(runKey), issues);
+    const strictProgress = evaluateStressProgress(tasksForRun(runKey), issues);
+    const progress = authorization ? evaluateRecoveredPilot({ tasks: tasksForRun(runKey), issues,
+      runKey, projectId, authorization }) : strictProgress;
     sequence += 1;
     const report = { sequence, observedAt: new Date().toISOString(), runKey, projectId, progress,
+      ...(authorization ? { strictProgress, recoveryAuthorization: authorization } : {}),
       issues: issues.map((issue) => ({ key: issue.key, id: issue.id, status: issue.status, blockedBy: issue.blockedBy,
         startApproval: issue.startApproval, mergeApproval: issue.mergeApproval, providerSessionId: issue.providerSessionId,
         product: issue.product, github: issue.github, executionBlocker: issue.executionBlocker,
@@ -235,7 +253,7 @@ async function main(): Promise<void> {
     console.log(JSON.stringify(report));
     if (reportDir) await writeFile(`${reportDir}/snapshot-${String(sequence).padStart(4, "0")}.json`, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600, flag: "wx" });
     if (progress.kind === "invalid" || progress.kind === "failed") throw new Error(`Campaign ${progress.kind}: ${progress.reason}`);
-    if (progress.kind === "passed" || wait === 0) return;
+    if (progress.kind === "passed" || progress.kind === "recovered" || wait === 0) return;
     if (Date.now() >= deadline) throw new Error(`Campaign did not complete within ${wait} minutes: ${progress.kind}`);
     await new Promise((resolve) => setTimeout(resolve, Math.min(30_000, deadline - Date.now())));
   }

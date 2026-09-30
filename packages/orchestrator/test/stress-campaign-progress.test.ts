@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { stressPilotTasks, stressTasks } from "../src/core/stress-campaign-manifest.js";
 import { evaluateStressProgress, type StressIssueEvidence } from "../src/core/stress-campaign-progress.js";
+import { evaluateRecoveredPilot } from "../src/core/stress-pilot-recovery.js";
 
 const tasks = stressTasks("stress-20260929-a");
 const sha = (key: string) => key.repeat(20);
@@ -20,6 +21,27 @@ const complete = (): StressIssueEvidence[] => issues().map((issue) => ({
 }));
 
 describe("read-only 20-task stress acceptance", () => {
+  it("records an authorized completed pilot overlap as recovered while keeping default and full-run checks strict", () => {
+    const pilot = stressPilotTasks("stress-20260929-a");
+    const finished = complete().filter((issue) => ["03", "04"].includes(issue.key)).map((issue) =>
+      issue.key === "04" ? { ...issue, startedAt: "2026-09-29T12:03:15Z" } : issue);
+    const authorization = { version: 1 as const, decision: "acknowledge_recovered_pilot" as const,
+      runKey: "stress-20260929-a", projectId: "project-a", reference: "User approved original-session shared-file recovery",
+      issues: finished.map((issue) => ({ key: issue.key, id: issue.id, providerSessionId: issue.providerSessionId!,
+        prUrl: issue.product!.url, headSha: issue.product!.headSha })) };
+    const input = { tasks: pilot, issues: finished, runKey: authorization.runKey,
+      projectId: authorization.projectId, authorization };
+    expect(evaluateStressProgress(pilot, finished)).toEqual({ kind: "invalid", reason: "shared_03_04_interval_overlap" });
+    expect(evaluateRecoveredPilot(input)).toMatchObject({ kind: "recovered", reason: "shared_03_04_interval_overlap" });
+    expect(evaluateRecoveredPilot({ ...input, tasks })).toEqual({ kind: "invalid", reason: "recovery_receipt_not_pilot_scoped" });
+    expect(evaluateRecoveredPilot({ ...input, runKey: "another-run" }).kind).toBe("invalid");
+    expect(evaluateRecoveredPilot({ ...input, authorization: { ...authorization,
+      issues: authorization.issues.map((issue) => ({ ...issue, headSha: "b".repeat(40) })) } }).kind).toBe("invalid");
+    expect(evaluateRecoveredPilot({ ...input, issues: finished.map((issue) => ({ ...issue, executionBlocker: "failed-run" })) }))
+      .toEqual({ kind: "invalid", reason: "03_execution_blocker" });
+    expect(evaluateRecoveredPilot({ ...input, issues: finished.map((issue) => ({ ...issue, executionRunId: "live" })) }).kind)
+      .toBe("invalid");
+  });
   it("accepts exactly two independently approved and merged pilot roots without weakening the full-run cardinality", () => {
     const pilot = stressPilotTasks("stress-20260929-a");
     const initial = issues().filter((issue) => issue.key === "03" || issue.key === "04");

@@ -45,6 +45,12 @@ describe("stress verifier transport", () => {
       expect(report.progress.kind).toBe("awaiting_user_start");
       expect(methods.length).toBeGreaterThan(40);
       expect(new Set(methods)).toEqual(new Set(["GET"]));
+      await expect(exec("pnpm", ["exec", "tsx", "scripts/stress-campaign-verify.ts", "--run-key", key,
+        "--project-id", projectId, "--recovered-pilot-receipt", "/tmp/unused-recovery-receipt.json"], {
+        cwd: process.cwd(), timeout: 30_000, env: { ...process.env,
+          PAPERCLIP_TEST_API_URL: `http://127.0.0.1:${address.port}`, PAPERCLIP_E2E_COMPANY_ID: "company",
+          PAPERCLIP_STRESS_KIND: "full" },
+      })).rejects.toThrow(/Recovery receipt is restricted to pilot mode/);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
