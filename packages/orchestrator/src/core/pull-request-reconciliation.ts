@@ -10,6 +10,11 @@ export type ReconciliationIssueStatus = "backlog" | "todo" | "in_progress" | "in
 export type ReconciliationPullRequestState = "OPEN" | "CLOSED" | "MERGED";
 export type ReconciliationApprovalStatus = "pending" | "approved" | "rejected" | "cancelled" | string;
 
+type ReconciliationPullRequest = Readonly<{ number: number; url: string }> & (
+  | { readonly state: "MERGED"; readonly mergedAt: string }
+  | { readonly state: "OPEN" | "CLOSED"; readonly mergedAt: null }
+);
+
 export interface PullRequestReconciliationInput {
   readonly issueId: string;
   readonly issueStatus: ReconciliationIssueStatus;
@@ -19,12 +24,7 @@ export interface PullRequestReconciliationInput {
     readonly reviewState?: string | null | undefined;
     readonly url: string;
   } | undefined;
-  readonly pullRequest?: {
-    readonly number: number;
-    readonly url: string;
-    readonly state: ReconciliationPullRequestState;
-    readonly mergedAt: string | null;
-  } | undefined;
+  readonly pullRequest?: ReconciliationPullRequest | undefined;
   readonly mergeApproval?: {
     readonly id: string;
     readonly status: ReconciliationApprovalStatus;
@@ -109,6 +109,10 @@ export function decidePullRequestReconciliation(
   }
 
   if (input.pullRequest.state === "MERGED") {
+    if (typeof input.pullRequest.mergedAt !== "string" || !input.pullRequest.mergedAt.trim() ||
+        !Number.isFinite(Date.parse(input.pullRequest.mergedAt))) {
+      return { action: "DEFER", reason: "GitHub merge timestamp is missing or invalid; completion is not authorized." };
+    }
     const metadataNeedsUpdate = needsMergedMetadata(input);
     const shouldPostAudit = !input.auditAlreadyRecorded;
     const cancelMergeApprovalId = pendingMergeApprovalId(input);

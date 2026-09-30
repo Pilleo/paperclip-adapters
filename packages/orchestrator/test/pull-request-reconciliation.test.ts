@@ -26,6 +26,11 @@ const baseInput = (overrides: Partial<PullRequestReconciliationInput> = {}): Pul
 });
 
 describe("pull-request reconciliation reducer", () => {
+  it.each([null, "", "not-a-date"])("cannot complete a task from a merged label with invalid timestamp %s", (mergedAt) => {
+    expect(decidePullRequestReconciliation(baseInput({ pullRequest: {
+      number: 3, url: "https://github.com/Pilleo/paperclip-adapters/pull/3", state: "MERGED", mergedAt,
+    } as never }))).toMatchObject({ action: "DEFER" });
+  });
   it.each([
     ["probes a blocked managed PR missing from bounded discovery", {
       registeredPrUrl: "https://github.com/Pilleo/repo/pull/10",
