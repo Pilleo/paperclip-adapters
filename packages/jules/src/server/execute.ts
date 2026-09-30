@@ -5253,8 +5253,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                    julesSessionId: session.julesSessionId,
                    prUrl: session.currentPrUrl,
                     issueStatus: "in_progress",
-                    julesState: "COMPLETED",
-                    headSha: session.currentPrHeadSha,
+                     julesState: "COMPLETED",
+                     stopReason: "completed",
+                     headSha: session.currentPrHeadSha,
                     handoffPending: true,
                    ...(scopeDriftSummary
                      ? { scopeConformant: false, scopeDriftSummary, providerMessageSent: false }

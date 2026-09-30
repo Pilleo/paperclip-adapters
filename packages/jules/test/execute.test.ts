@@ -249,7 +249,8 @@ beforeAll(() => {
     expect(res.exitCode).toBe(0);
     expect(res.clearSession).toBe(false);
     expect(res.resultJson?.prUrl).toBe('http://pr/1');
-    expect(res.resultJson).toMatchObject({ issueStatus: 'in_progress', julesState: 'COMPLETED', handoffPending: true });
+    expect(res.resultJson).toMatchObject({ issueStatus: 'in_progress', julesState: 'COMPLETED',
+      stopReason: 'completed', handoffPending: true });
     expect(res.summary).toContain('awaits native review handoff');
     expect(getPullRequestDetails).toHaveBeenCalledWith(
       'http://pr/1',
