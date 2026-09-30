@@ -38,6 +38,9 @@ test("ACP provider submits through the supplied authenticated native MCP transpo
     const session = await request(2, "session/new", { mcpServers: [{ type: "http", name: "paperclip_review",
       url: `http://127.0.0.1:${server.address().port}/mcp`, headers: [{ name: "Authorization", value: "Bearer fixture-bridge-token" }] }] });
     assert.equal(calls.length, 0, "opening an ACP session cannot resolve a card before a model turn");
+    const configured = await request(5, "session/set_config_option", { sessionId: session.result.sessionId,
+      configId: "model", value: "gemini-3.8-flash-low" });
+    assert.equal(configured.result?.configOptions?.[0]?.currentValue, "gemini-3.8-flash-low");
     assert.equal((await request(3, "session/prompt", { sessionId: session.result.sessionId })).result.stopReason, "end_turn");
     assert.deepEqual(calls, ["initialize", "get_current_native_review_assignment", "submit_native_review_verdict"]);
     assert.equal((await request(4, "unsupported/method")).error.code, -32601);

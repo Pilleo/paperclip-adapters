@@ -8,6 +8,8 @@ export async function createNativeAcpFixture(root) {
 const readline = require('node:readline');
 const { randomUUID } = require('node:crypto');
 const sessions = new Map();
+const configOptions = [{ id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: 'gemini-3.8-flash-low',
+  options: [{ value: 'gemini-3.8-flash-low', name: 'Local review fixture' }] }];
 let nextMcpId = 0;
 const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\\n');
 const mcp = async (server, method, params) => {
@@ -34,11 +36,14 @@ readline.createInterface({ input: process.stdin }).on('line', async (line) => {
         const server = message.params.mcpServers?.find((candidate) => /^paperclip[_-]review$/.test(candidate.name));
         if (!server || server.type !== 'http') throw new Error('Expected authenticated adapter-owned review MCP server');
         sessions.set(sessionId, server);
-        result = { sessionId, models: { currentModelId: 'gemini-3.8-flash-low',
+        result = { sessionId, configOptions, models: { currentModelId: 'gemini-3.8-flash-low',
           availableModels: [{ modelId: 'gemini-3.8-flash-low', name: 'Local review fixture' }] } };
         break;
       }
       case 'session/set_model': case 'session/set_mode': result = {}; break;
+      case 'session/set_config_option':
+        if (message.params.configId !== 'model' || message.params.value !== 'gemini-3.8-flash-low') throw new Error('Unsupported model configuration');
+        result = { configOptions }; break;
       case 'session/prompt': {
         const server = sessions.get(message.params.sessionId);
         if (!server) throw new Error('Unknown ACP session');
