@@ -109,6 +109,9 @@ export function retryStartedEffect(
   const effects = journal.effects.map((effect): LifecycleEffectEntry => {
     if (effect.effectId !== effectId) return effect;
     found = true;
+    if (effect.kind !== "create_card") {
+      throw new Error(`Lifecycle effect ${effectId} (${effect.kind}) is not replayable through native-card retry`);
+    }
     if (effect.attempt.kind !== "started") {
       throw new Error(`Cannot retry confirmed lifecycle effect ${effectId}`);
     }

@@ -75,4 +75,15 @@ describe("durable lifecycle effect journal", () => {
       "retry limit",
     );
   });
+
+  it.each(["send_provider_message", "approve_plan", "request_plan_revision", "legacy_unknown"] as const)(
+    "refuses generic replay of an uncertain %s effect", (kind) => {
+      const journal = beginEffect({ version: 1, effects: [] }, {
+        effectId: "uncertain-effect", kind, startedAt: "2026-09-20T00:00:00.000Z",
+      });
+      expect(() => retryStartedEffect(journal, "uncertain-effect", "2026-09-20T00:01:00.000Z"))
+        .toThrow("not replayable");
+      expect(journal.effects[0]?.attempt).toMatchObject({ kind: "started", attempts: 1 });
+    },
+  );
 });
