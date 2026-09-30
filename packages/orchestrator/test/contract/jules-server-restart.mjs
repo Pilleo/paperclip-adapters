@@ -9,6 +9,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createDisposableHost } from "./disposable-host.mjs";
 import { createChainGitHubFixture } from "./chain-github-fixture.mjs";
+import { createAutonomousObserver } from "./autonomous-observer.mjs";
+
+const autonomous = process.argv.includes("--autonomous");
 
 const root = await mkdtemp(path.join(tmpdir(), "paperclip-jules-server-restart-"));
 const reviewerScript = path.join(root, "native-plan-reviewer.mjs");
@@ -42,8 +45,10 @@ let creates = 0;
 let approvals = 0;
 let approvedAt = null;
 let releaseOutput = false;
+const providerRequests = [];
 const provider = createServer(async (request, response) => {
   const url = new URL(request.url, "http://127.0.0.1");
+  providerRequests.push(`${request.method} ${url.pathname}`);
   const json = (status, value) => { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(value)); };
   if (request.method === "GET" && url.pathname === "/v1alpha/sources") {
     return json(200, { sources: [{ name: "sources/github/paperclip-contract/fixture",
@@ -105,7 +110,8 @@ let issueId = null;
 const reviewerIds = [];
 try {
   await host.start();
-  const post = async (route, body) => {
+  const observer = createAutonomousObserver(host.url);
+  const post = autonomous ? observer.setup : async (route, body) => {
     const response = await fetch(`${host.url}/api${route}`, { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify(body), signal: AbortSignal.timeout(20_000) });
     if (!response.ok) throw new Error(`POST ${route} (${response.status}): ${await response.text()}`);
@@ -116,20 +122,20 @@ try {
   companyId = company.id;
   const reviewerConfig = { command: process.execPath, args: [reviewerScript], cwd: root };
   const reviewer = await post(`/companies/${company.id}/agents`, { name: "Paused plan reviewer", role: "qa",
-    adapterType: "process", adapterConfig: reviewerConfig, status: "paused",
+    adapterType: "process", adapterConfig: reviewerConfig, status: autonomous ? "idle" : "paused",
     runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1 } } });
   const strong = await post(`/companies/${company.id}/agents`, { name: "Paused strong plan reviewer", role: "qa",
-    adapterType: "process", adapterConfig: reviewerConfig, status: "paused",
+    adapterType: "process", adapterConfig: reviewerConfig, status: autonomous ? "idle" : "paused",
     runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1 } } });
   reviewerIds.push(reviewer.id, strong.id);
   const jules = await post(`/companies/${company.id}/agents`, { name: "Jules restart contract", role: "general",
     adapterType: "jules", adapterConfig: { apiUrl: host.url, repository: "paperclip-contract/fixture",
       source: "sources/github/paperclip-contract/fixture", baseBranch: "main", planApprovalPolicy: "required",
       planReviewerAgentId: reviewer.id, planStrongReviewerAgentId: strong.id,
-      planReviewBootstrapMode: "jules_v4", e2eProviderBaseUrl: providerUrl,
+      planReviewBootstrapMode: "jules_v4", e2eProviderBaseUrl: providerUrl, pollCadenceSeconds: 30,
       env: { JULES_API_KEY: "disposable-provider-fixture-token", PATH: `${root}:${process.env.PATH}` } },
     runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1 } } });
-  const issue = await post(`/companies/${company.id}/issues`, { title: "Create one Jules session before server restart",
+  const issue = await (autonomous ? observer.startIssue : post)(`/companies/${company.id}/issues`, { title: "Create one Jules session before server restart",
     description: "---\norchestrator_managed: true\n---\n\nPersist the original Jules provider session across a real control-plane restart.",
     status: "in_progress", assigneeAgentId: jules.id });
   issueId = issue.id;
@@ -144,15 +150,16 @@ try {
   const persisted = await loadStoredSession(issue.id, "sources/github/paperclip-contract/fixture", "main");
   assert.equal(persisted?.julesSessionId, sessionId,
     "actual Jules executor must checkpoint the original provider session before server restart");
-  for (const candidate of [reviewer, strong]) {
+  for (const candidate of autonomous ? [] : [reviewer, strong]) {
     const resumed = await post(`/agents/${candidate.id}/resume`, {});
     assert.equal(resumed.id, candidate.id);
   }
-  await post(`/agents/${jules.id}/wakeup`, { source: "automation", triggerDetail: "system",
+  if (!autonomous) await post(`/agents/${jules.id}/wakeup`, { source: "automation", triggerDetail: "system",
     reason: "contract_native_plan_capacity_restored", payload: { issueId: issue.id } });
   const monitorWakeKeys = new Set();
   await waitUntil("one confirmed provider plan approval from typed reviewer runs", async () => {
     if (approvals === 1) return true;
+    if (autonomous) return false;
     const children = await fetch(`${host.url}/api/companies/${company.id}/issues?parentId=${issue.id}&limit=20`)
       .then((response) => response.json());
     for (const child of children) {
@@ -170,7 +177,9 @@ try {
         reason: `contract_native_plan_monitor:${key}`, payload: { issueId: issue.id } });
     }
     return false;
-  }, 100_000);
+  // The autonomous ladder includes multiple persisted 60-second continuations,
+  // each observed by the daemon's real timer. This is only a test observation budget.
+  }, autonomous ? 900_000 : 100_000);
   assert.equal(approvals, 1, "one addressed Luna and strong plan ladder must approve the original provider session before restart");
   await waitUntil("company fleet idle after confirmed plan approval", async () => {
     const response = await fetch(`${host.url}/api/companies/${company.id}/live-runs?limit=50&minCount=0`);
@@ -224,7 +233,7 @@ try {
     if (products.length === 1) return products[0];
     const live = await fetch(`${host.url}/api/companies/${company.id}/live-runs?limit=50&minCount=0`)
       .then((response) => response.json());
-    if (!woken && live.length === 0) {
+    if (!autonomous && !woken && live.length === 0) {
       woken = true;
       await post(`/agents/${jules.id}/wakeup`, { source: "automation", triggerDetail: "system",
         reason: "contract_original_provider_pr_output_after_restart", payload: { issueId: issue.id } });
@@ -241,6 +250,13 @@ try {
   const log = await readFile(path.join(root, "server.log"), "utf8");
   assert.ok([...log.matchAll(/packages\/jules\/dist\/index\.js/g)].length >= 2,
     "both Paperclip processes must load the built Jules dist/index.js adapter");
+  if (autonomous) {
+    assert.equal(observer.trace.filter((entry) => entry.phase === "observing" && entry.method !== "GET").length, 0,
+      "the driver must not rescue-wake, reassign or repair state after source start");
+    console.log("AUTONOMOUS_JULES_RESTART_CONFIRMED", JSON.stringify({
+      providerCreates: creates, providerApprovals: approvals, driverMutationsAfterStart: 0,
+      nativePlanCards: originalPlanCardIds, issueId: issue.id, productId: delivered.id }));
+  }
   console.log("JULES_SERVER_RESTART_CONFIRMED", JSON.stringify({ issueId: issue.id,
     sessionId, providerCreates: creates, providerApprovals: approvals, typedPlanCards: originalPlanCardIds.length }));
 } catch (error) {
@@ -265,9 +281,10 @@ try {
     runs: (Array.isArray(runs) ? runs : []).map((run) => ({ status: run.status,
       agentId: run.agentId, issueId: run.contextSnapshot?.issueId,
       errorCode: run.errorCode, error: String(run.error ?? "").slice(0, 220),
+      summary: run.resultJson?.summary ?? null, resultJson: run.resultJson,
       wakeReason: run.contextSnapshot?.wakeReason ?? null,
       recoveryIntent: run.contextSnapshot?.recoveryIntent ?? null,
-      contextKeys: Object.keys(run.contextSnapshot ?? {}).sort() })) }));
+      contextKeys: Object.keys(run.contextSnapshot ?? {}).sort() })), providerRequests }));
   throw error;
 } finally {
   await host.dispose();
