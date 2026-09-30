@@ -188,8 +188,9 @@ describe("versioned issue-scoped PR review child identity", () => {
     expect(assignments).toBe(0);
   });
 
-  it.each([["in_review", "approve"], ["blocked", "reject"]] as const)(
-    "attributes a %s Luna child %s to the exact PR head even after native remediation handback", async (parentStatus, verdict) => {
+  it.each([["in_review", "approve", "valid"], ["blocked", "reject", "valid"],
+    ["in_review", "approve", "foreign-bootstrap-id"], ["in_review", "approve", "foreign-reviewer-id"]] as const)(
+    "attributes a %s Luna child %s with %s run identity", async (parentStatus, verdict, provenance) => {
     const api = { get: async (path: string) => {
       if (path === "/issues/parent") return { id: "parent", companyId: "company", status: parentStatus,
         assigneeAgentId: parentStatus === "blocked" ? "jules" : null };
@@ -202,13 +203,17 @@ describe("versioned issue-scoped PR review child identity", () => {
         sourceRunId: "bootstrap-run", resolvedByAgentId: "luna", resolvedByRunId: "reviewer-run",
         result: { outcome: "resolved", complete: true, items: [{ id: "pull_request", verdict,
           ...(verdict === "reject" ? { reason: "Fractional inputs must throw TypeError." } : {}) }] } }];
-      if (path === "/heartbeat-runs/bootstrap-run") return { id: "bootstrap-run", companyId: "company",
+      if (path === "/heartbeat-runs/bootstrap-run") return { id: provenance === "foreign-bootstrap-id" ? "another-run" : "bootstrap-run", companyId: "company",
         agentId: "orchestrator", status: "succeeded", contextSnapshot: { issueId: "child" } };
-      if (path === "/heartbeat-runs/reviewer-run") return { id: "reviewer-run", companyId: "company",
+      if (path === "/heartbeat-runs/reviewer-run") return { id: provenance === "foreign-reviewer-id" ? "another-run" : "reviewer-run", companyId: "company",
         agentId: "luna", status: "succeeded", contextSnapshot: { issueId: "child" } };
       throw new Error(`unexpected GET ${path}`);
     }, post: async () => { throw new Error("verdict observation must be read-only"); },
     patch: async () => { throw new Error("verdict observation must be read-only"); } };
+    if (provenance !== "valid") {
+      await expect(observePrReviewChild({ identity: luna, childId: "child", api })).rejects.toThrow("provenance");
+      return;
+    }
     expect(await observePrReviewChild({ identity: luna, childId: "child", api,
       allowRemediationStatus: parentStatus === "blocked" })).toMatchObject({
       kind: "answered", childId: "child", cardId: "card-1", reviewerRunId: "reviewer-run", verdict,

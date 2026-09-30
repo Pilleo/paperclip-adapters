@@ -322,7 +322,8 @@ export async function observePrReviewChild(input: {
     input.api.get(`/heartbeat-runs/${encodeURIComponent(card.sourceRunId)}`).then((item) => Run.parse(item)),
     input.api.get(`/heartbeat-runs/${encodeURIComponent(card.resolvedByRunId)}`).then((item) => Run.parse(item)),
   ]);
-  if (source.companyId !== identity.companyId || source.agentId !== identity.bootstrapAgentId ||
+  if (source.id !== card.sourceRunId || reviewer.id !== card.resolvedByRunId ||
+      source.companyId !== identity.companyId || source.agentId !== identity.bootstrapAgentId ||
       source.status !== "succeeded" || source.contextSnapshot.issueId !== input.childId ||
       reviewer.companyId !== identity.companyId || reviewer.agentId !== identity.reviewerAgentId ||
       reviewer.status !== "succeeded" || reviewer.contextSnapshot.issueId !== input.childId) {
