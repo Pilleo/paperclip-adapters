@@ -10,6 +10,7 @@ import { evaluateStressProgress, type StressIssueEvidence, type StressReviewEvid
 import { parsePrReviewChildDescription } from "../src/core/pr-review-child.js";
 import { parseJulesPrHandoffHandle } from "../src/core/pr-handoff-registration.js";
 import { evaluateRecoveredPilot, PilotRecoveryAuthorizationSchema, type PilotRecoveryAuthorization } from "../src/core/stress-pilot-recovery.js";
+import { decideObservationWindow } from "../src/core/stress-observation-budget.js";
 
 const exec = promisify(execFile);
 const API = process.env["PAPERCLIP_TEST_API_URL"]?.replace(/\/+$/, "");
@@ -212,6 +213,8 @@ async function main(): Promise<void> {
   const runKey = option("--run-key");
   const projectId = option("--project-id");
   const minutes = option("--wait-minutes");
+  const seconds = option("--wait-seconds");
+  if (minutes !== undefined && seconds !== undefined) throw new Error("Specify one observation window unit");
   const reportDir = option("--report-dir");
   const recoveryReceipt = option("--recovered-pilot-receipt");
   let authorization: PilotRecoveryAuthorization | undefined;
@@ -228,23 +231,24 @@ async function main(): Promise<void> {
   }
   if (!runKey || !projectId || !/^[a-f0-9-]{36}$/i.test(projectId)) throw new Error("--run-key and an exact UUID --project-id are required");
   stressTasks(runKey);
-  const wait = minutes === undefined ? 0 : Number(minutes);
-  if (!Number.isSafeInteger(wait) || wait < 0 || wait > 1440) throw new Error("--wait-minutes must be 1..1440 or omitted");
+  const wait = seconds !== undefined ? Number(seconds) : minutes === undefined ? 0 : Number(minutes) * 60;
+  if (!Number.isSafeInteger(wait) || wait < 0 || wait > 86_400) throw new Error("Observation window must be 0..86400 seconds");
   if (reportDir) {
     if (!reportDir.startsWith("/tmp/")) throw new Error("Report directory must be under /tmp/");
     await mkdir(reportDir, { mode: 0o700, recursive: true });
     const directory = await stat(reportDir);
     if (directory.uid !== process.getuid?.() || (directory.mode & 0o077) !== 0) throw new Error("Report directory must be owner-only");
   }
-  const deadline = Date.now() + wait * 60_000;
+  const deadline = Date.now() + wait * 1000;
   let sequence = 0;
   while (true) {
     const issues = await snapshot(runKey, projectId);
     const strictProgress = evaluateStressProgress(tasksForRun(runKey), issues);
     const progress = authorization ? evaluateRecoveredPilot({ tasks: tasksForRun(runKey), issues,
       runKey, projectId, authorization }) : strictProgress;
+    const observationWindow = decideObservationWindow(progress.kind, wait === 0 || Date.now() >= deadline);
     sequence += 1;
-    const report = { sequence, observedAt: new Date().toISOString(), runKey, projectId, progress,
+    const report = { sequence, observedAt: new Date().toISOString(), runKey, projectId, progress, observationWindow,
       ...(authorization ? { strictProgress, recoveryAuthorization: authorization } : {}),
       issues: issues.map((issue) => ({ key: issue.key, id: issue.id, status: issue.status, blockedBy: issue.blockedBy,
         startApproval: issue.startApproval, mergeApproval: issue.mergeApproval, providerSessionId: issue.providerSessionId,
@@ -253,8 +257,13 @@ async function main(): Promise<void> {
     console.log(JSON.stringify(report));
     if (reportDir) await writeFile(`${reportDir}/snapshot-${String(sequence).padStart(4, "0")}.json`, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600, flag: "wx" });
     if (progress.kind === "invalid" || progress.kind === "failed") throw new Error(`Campaign ${progress.kind}: ${progress.reason}`);
-    if (progress.kind === "passed" || progress.kind === "recovered" || wait === 0) return;
-    if (Date.now() >= deadline) throw new Error(`Campaign did not complete within ${wait} minutes: ${progress.kind}`);
+    if (observationWindow.action === "complete" || observationWindow.action === "stop_waiting_for_user" || wait === 0) return;
+    if (observationWindow.action === "automation_window_ended") {
+      // The observation budget is not an assertion that the workflow failed.
+      // Exit 2 means the requested automated progress was not observed yet.
+      process.exitCode = 2;
+      return;
+    }
     await new Promise((resolve) => setTimeout(resolve, Math.min(30_000, deadline - Date.now())));
   }
 }
