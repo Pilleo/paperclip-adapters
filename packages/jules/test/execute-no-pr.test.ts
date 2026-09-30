@@ -133,6 +133,7 @@ describe("Jules completion without a PR", () => {
       "https://jules.google.com/session/session-1",
       "jwt-token",
       "run-1",
+      undefined,
     );
     expect(moveIssueToBlocked).toHaveBeenCalledTimes(2);
     expect(first.question).toBeUndefined();
@@ -340,5 +341,45 @@ describe("Jules completion without a PR", () => {
     expect(result.retryNotBefore).toBeTruthy();
     expect(result.clearSession).toBe(false);
     expect(sessionCodec.decode(result.sessionParams!)?.sessionId).toBe("session-1");
+  });
+
+  it("creates a distinct confirmation after the original card was falsely cancelled without a newer provider message", async () => {
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([{
+      id: "cancelled-original-card", kind: "request_confirmation", status: "cancelled",
+      idempotencyKey: "jules:no-pr-completion:issue-1:session-1",
+      result: { reason: "Superseded by an unresolved Jules provider question" },
+      createdAt: "2026-08-07T00:10:00.000Z", resolvedAt: "2026-08-07T00:20:00.000Z",
+    }] as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [] } as never);
+    const result = await execute({
+      ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({ ...baseSession,
+        phase: "COMPLETED" as const, mutationCheckpoint: {
+          version: 1, key: "jules:no-pr-completion:issue-1:session-1",
+          operation: "create_no_pr_completion_interaction", issueId: "issue-1", sessionId: "session-1",
+          status: "failed", updatedAt: "2026-08-07T00:20:05.000Z",
+        },
+      } as never) },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(createNoPrCompletionInteraction).toHaveBeenCalledWith(
+      "issue-1", "session-1", "https://jules.google.com/session/session-1", "jwt-token", "run-1", "cancelled-original-card",
+    );
+    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
+      type: "completion_confirmation", paperclipInteractionId: "interaction-1",
+    });
+  });
+
+  it("refuses to reissue a no-PR card cancelled for an unrelated reason", async () => {
+    vi.mocked(listPaperclipInteractions).mockResolvedValue([{
+      id: "operator-cancelled-card", kind: "request_confirmation", status: "cancelled",
+      idempotencyKey: "jules:no-pr-completion:issue-1:session-1",
+      result: { reason: "Cancelled by an operator" },
+    }] as never);
+    const result = await execute(baseContext);
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("paperclip_completion_interaction_failed");
+    expect(createNoPrCompletionInteraction).not.toHaveBeenCalled();
   });
 });

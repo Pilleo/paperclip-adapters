@@ -1424,7 +1424,11 @@ export async function createNoPrCompletionInteraction(
   sessionUrl: string | undefined,
   authToken: string | undefined,
   runId?: string,
+  cancelledCardId?: string,
 ): Promise<PaperclipInteraction> {
+  if (cancelledCardId && !/^[A-Za-z0-9-]{1,128}$/.test(cancelledCardId)) {
+    throw new Error("Cannot reissue a no-PR confirmation without a valid cancelled card identity");
+  }
   const details = [
     `Jules session: \`${sessionId}\``,
     sessionUrl ? `[Open the Jules session](${sessionUrl})` : null,
@@ -1437,7 +1441,8 @@ export async function createNoPrCompletionInteraction(
       method: "POST",
       body: JSON.stringify({
         kind: "request_confirmation",
-        idempotencyKey: `jules:no-pr-completion:${issueId}:${sessionId}`,
+        idempotencyKey: `jules:no-pr-completion:${issueId}:${sessionId}` +
+          (cancelledCardId ? `:reissue:${cancelledCardId}` : ""),
         title: "Confirm Jules completion without a PR",
         summary: `Jules session ${sessionId} completed without creating a pull request.`,
         continuationPolicy: "wake_assignee",

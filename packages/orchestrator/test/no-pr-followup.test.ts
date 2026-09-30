@@ -17,12 +17,34 @@ const input: NoPrFollowupSnapshot = {
   targetFiles: [taskFile, "stress-stress-20260929-pilot-b-03.test.js"],
   siblings: [{ id: "2248bede-a343-42d5-84e7-6ca350cc3c7d", status: "in_review",
     targetFiles: [taskFile, "stress-stress-20260929-pilot-b-04.test.js"],
-    prProductStatus: "ready_for_review", githubPrState: "OPEN" }],
+    prProductStatus: "ready_for_review", githubPrState: "OPEN",
+    prUrl: "https://github.com/Pilleo/paperclip-adapters-e2e-20260923-vanilla-review/pull/6",
+    headSha: "7e1fb1412ae5f85892a36f738e93c356b2e7f137" }],
 };
 
 describe("one-shot PR-required Jules follow-up", () => {
   it("holds while an approved sibling has an open PR for the same declared file", () => {
     expect(planNoPrFollowup(input)).toEqual({ kind: "held", reason: "shared_file_not_merged" });
+  });
+
+  it("allows only the explicitly approved original-session follow-up while the exact sibling PR stays open", () => {
+    const approval = { siblingIssueId: "2248bede-a343-42d5-84e7-6ca350cc3c7d",
+      prUrl: "https://github.com/Pilleo/paperclip-adapters-e2e-20260923-vanilla-review/pull/6",
+      headSha: "7e1fb1412ae5f85892a36f738e93c356b2e7f137" };
+    const decision = planNoPrFollowup({ ...input, sharedFileOverride: approval,
+      siblings: [{ ...input.siblings[0]!, status: "in_progress" }] });
+    expect(decision.kind).toBe("ready");
+    if (decision.kind !== "ready") return;
+    expect(decision.prompt).toContain("open exactly one pull request");
+    expect(decision.prompt).toContain("pull/6");
+    expect(decision.prompt).toContain("separate branch");
+    expect(decision.prompt).toContain("Do not merge");
+    expect(planNoPrFollowup({ ...input, sharedFileOverride: { ...approval, headSha: "b".repeat(40) } })).toEqual({
+      kind: "held", reason: "shared_file_not_merged",
+    });
+    expect(planNoPrFollowup({ ...input, sharedFileOverride: approval,
+      siblings: [...input.siblings, { id: "second-conflict", status: "in_progress", targetFiles: [taskFile] }] }))
+      .toEqual({ kind: "held", reason: "shared_file_not_merged" });
   });
 
   it("permits one same-session commit/push/PR request after the sibling's standard merge is verified", () => {

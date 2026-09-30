@@ -403,6 +403,19 @@ describe("Paperclip issue completion", () => {
     );
   });
 
+  it("uses a distinct native key for a verified cancelled no-PR confirmation", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true, status: 201, json: async () => ({ id: "reissued-card", status: "pending" }),
+    });
+    await createNoPrCompletionInteraction("issue-1", "session-1", undefined, "jwt-token", "run-1", "cancelled-original-card");
+    expect(global.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:3100/api/issues/issue-1/interactions",
+      expect.objectContaining({ body: expect.stringContaining(
+        '"idempotencyKey":"jules:no-pr-completion:issue-1:session-1:reissue:cancelled-original-card"',
+      ) }),
+    );
+  });
+
   it("mirrors a Jules activity as an attributed Paperclip comment", async () => {
     global.fetch = vi.fn()
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => [] })

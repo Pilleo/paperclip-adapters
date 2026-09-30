@@ -442,6 +442,29 @@ describe("E2E Jules orchestration regression", { timeout: 30_000 }, () => {
     expect(result.resultJson).toMatchObject({ pending: true });
   });
 
+  it("preserves a no-PR confirmation when the last agent message predates the card", async () => {
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [
+      { id: "old-final-message", createTime: "2026-08-31T09:28:56.000Z",
+        agentMessaged: { agentMessage: "I finished the tests but have not published the required PR." } },
+      { id: "session-completed", createTime: "2026-08-31T09:42:00.000Z", sessionCompleted: {} },
+    ] } as never);
+    const result = await execute({
+      ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({
+        ...baseSession, phase: "COMPLETED" as const,
+        pendingInteraction: { type: "completion_confirmation", paperclipInteractionId: "original-no-pr-card",
+          question: "Jules completed without a PR. Is this task complete?", createdAt: "2026-08-31T09:43:58.000Z" },
+      }) },
+    } as AdapterExecutionContext);
+
+    expect(result.exitCode).toBe(0);
+    expect(withdrawPaperclipInteraction).not.toHaveBeenCalled();
+    expect(createNoPrCompletionInteraction).not.toHaveBeenCalled();
+    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
+      type: "completion_confirmation", paperclipInteractionId: "original-no-pr-card",
+    });
+  });
+
   it("reconciles an orphaned no-PR interaction after adapter session recovery", async () => {
     vi.mocked(listPaperclipInteractions).mockResolvedValue([{
       id: "orphan-completion-1",

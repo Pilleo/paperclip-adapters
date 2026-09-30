@@ -1663,7 +1663,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         session.currentPrUrl ? 1 : 5,
       );
       const latestProviderQuestion = [...currentActivities].reverse().find(
-        (activity) => Boolean(activity.agentMessaged?.agentMessage?.trim()),
+        (activity) => Boolean(activity.agentMessaged?.agentMessage?.trim()) &&
+          Number.isFinite(Date.parse(activity.createTime ?? "")) &&
+          Date.parse(activity.createTime ?? "") > Date.parse(pendingCompletion.createdAt),
       );
       if (latestProviderQuestion && session.deliveredFeedbackActivityId !== latestProviderQuestion.id) {
         await withdrawPaperclipInteraction(
@@ -5129,14 +5131,32 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
          if (session.phase === 'COMPLETED') {
              if (!stateMachineRes.isSuccess) {
                  try {
-                   let completion = session.pendingInteraction?.type === "completion_confirmation"
-                     ? session.pendingInteraction
-                     : null;
-                   if (!completion) {
-                     const question = `Jules session ${session.julesSessionId} completed without creating a PR. Is this task complete?`;
-                     const interaction = await runCheckpointedMutation({
-                       session: session!,
-                       key: `jules:no-pr-completion:${taskId}:${session!.julesSessionId}`,
+                    let completion = session.pendingInteraction?.type === "completion_confirmation"
+                      ? session.pendingInteraction
+                      : null;
+                    if (!completion) {
+                      const baseCompletionKey = `jules:no-pr-completion:${taskId}:${session.julesSessionId}`;
+                      const cards = await listPaperclipInteractions(taskId, ctx.authToken, ctx.runId, 5000);
+                      const originalCancellations = cards.filter((card) => card.kind === "request_confirmation" &&
+                        card.status === "cancelled" && card.idempotencyKey === baseCompletionKey);
+                      const cancelled = cards.filter((card) => card.kind === "request_confirmation" &&
+                        card.status === "cancelled" && card.idempotencyKey === baseCompletionKey &&
+                        card.result && typeof card.result === "object" &&
+                        (card.result as Record<string, unknown>)["reason"] === "Superseded by an unresolved Jules provider question");
+                      if (originalCancellations.length !== cancelled.length) {
+                        throw new Error("A cancelled native no-PR confirmation has no verified adapter supersession reason");
+                      }
+                      if (cancelled.length > 1) throw new Error("Ambiguous cancelled no-PR confirmation history");
+                      const cancelledCardId = cancelled[0]?.id;
+                      const completionKey = cancelledCardId
+                        ? `${baseCompletionKey}:reissue:${cancelledCardId}` : baseCompletionKey;
+                      const existing = cards.filter((card) => card.kind === "request_confirmation" &&
+                        card.idempotencyKey === completionKey && card.status === "pending");
+                      if (existing.length > 1) throw new Error("Ambiguous no-PR confirmation reissue");
+                      const question = `Jules session ${session.julesSessionId} completed without creating a PR. Is this task complete?`;
+                      const interaction = existing[0] ?? await runCheckpointedMutation({
+                        session: session!,
+                        key: completionKey,
                        operation: "create_no_pr_completion_interaction",
                        issueId: taskId,
                        sessionId: session!.julesSessionId,
@@ -5145,10 +5165,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                          taskId,
                          session!.julesSessionId!,
                          session!.julesSessionUrl,
-                         ctx.authToken,
-                         ctx.runId,
-                       ),
-                     });
+                          ctx.authToken,
+                          ctx.runId,
+                          cancelledCardId,
+                        ),
+                      });
                      completion = {
                        type: "completion_confirmation",
                        paperclipInteractionId: interaction.id,
