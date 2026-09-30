@@ -141,6 +141,10 @@ export function confirmEffect(
   const effects = journal.effects.map((effect): LifecycleEffectEntry => {
     if (effect.effectId !== effectId) return effect;
     found = true;
+    if (effect.attempt.kind === "confirmed") {
+      if (effect.attempt.receipt !== receipt) throw new Error(`Lifecycle effect receipt conflict for ${effectId}`);
+      return effect;
+    }
     return { ...effect, attempt: { kind: "confirmed", receipt } };
   });
   if (!found) throw new Error(`Cannot confirm unknown lifecycle effect ${effectId}`);

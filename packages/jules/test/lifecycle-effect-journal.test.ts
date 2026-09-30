@@ -49,6 +49,16 @@ describe("durable lifecycle effect journal", () => {
     });
   });
 
+  it("never replaces an already confirmed effect receipt", () => {
+    const started = beginEffect({ version: 1, effects: [] }, {
+      effectId: "card:terra:rev-1", kind: "create_card", startedAt: "2026-09-20T00:00:00Z",
+    });
+    const confirmed = confirmEffect(started, "card:terra:rev-1", "native-card-1");
+    expect(confirmEffect(confirmed, "card:terra:rev-1", "native-card-1")).toEqual(confirmed);
+    expect(() => confirmEffect(confirmed, "card:terra:rev-1", "different-card")).toThrow("receipt conflict");
+    expect(confirmed.effects[0]?.attempt).toEqual({ kind: "confirmed", receipt: "native-card-1" });
+  });
+
   it("accepts durable entries for each typed native-plan mutation", () => {
     const journal = LifecycleEffectJournalSchema.parse({
       version: 1,
