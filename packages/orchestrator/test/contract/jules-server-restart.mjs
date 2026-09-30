@@ -13,7 +13,8 @@ import { createAutonomousObserver } from "./autonomous-observer.mjs";
 import { createNativeAcpFixture } from "./native-acp-fixture.mjs";
 import { assertPendingMergeWait } from "./pending-merge-wait.mjs";
 
-const autonomousMerge = process.argv.includes("--autonomous-merge");
+const autonomousDependency = process.argv.includes("--autonomous-dependency");
+const autonomousMerge = autonomousDependency || process.argv.includes("--autonomous-merge");
 const autonomous = autonomousMerge || process.argv.includes("--autonomous");
 
 const root = await mkdtemp(path.join(tmpdir(), "paperclip-jules-server-restart-"));
@@ -42,8 +43,11 @@ if (!response.ok) throw new Error('Native typed verdict rejected (' + response.s
 `);
 await chmod(reviewerScript, 0o700);
 const chainGitHub = await createChainGitHubFixture(root, { remote: autonomousMerge });
-const pr = await chainGitHub.openPullRequest("A", "A.txt", "alpha");
+let pr = autonomousDependency ? null : await chainGitHub.openPullRequest("A", "A.txt", "alpha");
 const sessionId = randomUUID();
+const dependentSessionId = randomUUID();
+let dependentIssueId = null;
+let dependentCreated = false;
 let creates = 0;
 let approvals = 0;
 let approvedAt = null;
@@ -59,11 +63,27 @@ const provider = createServer(async (request, response) => {
   }
   if (request.method === "GET" && url.pathname === "/v1alpha/sessions") {
     return json(200, { sessions: creates ? [{ name: `sessions/${sessionId}`,
-      state: approvals ? releaseOutput ? "COMPLETED" : "IN_PROGRESS" : "AWAITING_PLAN_APPROVAL" }] : [] });
+      state: approvals ? releaseOutput ? "COMPLETED" : "IN_PROGRESS" : "AWAITING_PLAN_APPROVAL" },
+      ...(dependentCreated ? [{ name: `sessions/${dependentSessionId}`, state: "IN_PROGRESS" }] : [])] : [] });
   }
   if (request.method === "POST" && url.pathname === "/v1alpha/sessions") {
+    if (autonomousDependency && creates === 1) {
+      let body = "";
+      for await (const chunk of request) body += chunk;
+      if (dependentIssueId && body.includes(dependentIssueId)) {
+        creates++;
+        dependentCreated = true;
+        return json(200, { name: `sessions/${dependentSessionId}`, state: "IN_PROGRESS", outputs: [] });
+      }
+    }
     if (creates++) return json(409, { error: "duplicate provider create after restart" });
     return json(200, { name: `sessions/${sessionId}`, state: "AWAITING_PLAN_APPROVAL", outputs: [] });
+  }
+  if (request.method === "GET" && url.pathname === `/v1alpha/sessions/${dependentSessionId}`) {
+    return json(200, { name: `sessions/${dependentSessionId}`, state: "IN_PROGRESS", outputs: [] });
+  }
+  if (request.method === "GET" && url.pathname === `/v1alpha/sessions/${dependentSessionId}/activities`) {
+    return json(200, { activities: [] });
   }
   if (request.method === "GET" && url.pathname === `/v1alpha/sessions/${sessionId}`) {
     return json(200, { name: `sessions/${sessionId}`,
@@ -168,10 +188,41 @@ try {
     assert.match(await readFile(path.join(root, "server.log"), "utf8"), /packages\/orchestrator\/dist\/index\.js/,
       "the autonomous merge lane must load the real built orchestrator adapter");
   }
-  const issue = await (autonomous ? observer.startIssue : post)(`/companies/${company.id}/issues`, { title: "Create one Jules session before server restart",
-    description: "---\norchestrator_managed: true\n---\n\nPersist the original Jules provider session across a real control-plane restart.",
-    status: "in_progress", assigneeAgentId: jules.id, ...(projectId ? { projectId } : {}) });
+  const issue = await (autonomousDependency ? post : autonomous ? observer.startIssue : post)(`/companies/${company.id}/issues`, { title: "Create one Jules session before server restart",
+    description: autonomousDependency
+      ? "---\norchestrator_managed: true\nexecutor: jules\ntarget_files: [A.txt]\n---\n\nImplement canary A and preserve its provider session across restart."
+      : "---\norchestrator_managed: true\n---\n\nPersist the original Jules provider session across a real control-plane restart.",
+    status: autonomousDependency ? "todo" : "in_progress", assigneeAgentId: autonomousDependency ? null : jules.id,
+    ...(projectId ? { projectId } : {}) });
   issueId = issue.id;
+  const userStartApprovals = [];
+  const approveStartAsUser = async (targetId) => {
+    assert.ok([issue.id, dependentIssueId].includes(targetId));
+    const approval = await waitUntil("addressed native user task-start gate", async () => {
+      const cards = (await observer.get(`/companies/${company.id}/approvals`))
+        .filter((card) => card.payload?.action === "task_start" && card.payload.issueId === targetId);
+      if (!cards.length) return false;
+      assert.equal(cards.length, 1);
+      assert.equal(cards[0].status, "pending");
+      return cards[0];
+    }, 90_000);
+    // Explicit simulated user actor, never the observation driver's write helper.
+    const response = await fetch(`${host.url}/api/approvals/${approval.id}/approve`, { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ decisionNote: "Disposable user authorizes this exact task start." }),
+      signal: AbortSignal.timeout(20_000) });
+    assert.ok(response.ok, `Native user start approval failed (${response.status}): ${await response.text()}`);
+    userStartApprovals.push(approval.id);
+    return approval.id;
+  };
+  if (autonomousDependency) {
+    const dependent = await post(`/companies/${company.id}/issues`, { title: "Dependent task B",
+      description: "---\norchestrator_managed: true\nexecutor: jules\ntarget_files: [B.txt]\n---\n\nImplement B only after A merges and the user approves B.",
+      projectId, status: "todo", assigneeAgentId: null, blockedByIssueIds: [issue.id] });
+    dependentIssueId = dependent.id;
+    assert.deepEqual((await observer.get(`/issues/${dependent.id}`)).blockedBy.map((blocker) => blocker.id), [issue.id]);
+    observer.beginObservation();
+    await approveStartAsUser(issue.id);
+  }
   const initialSession = await waitUntil("one actual Jules provider session", () => creates === 1 && sessionId);
   assert.equal(initialSession, sessionId);
   await waitUntil("company fleet idle before Paperclip restart", async () => {
@@ -265,6 +316,7 @@ try {
   assert.equal(restored?.julesSessionId, sessionId,
     "restarted Paperclip must retain the original durable Jules provider checkpoint");
   assert.equal(creates, 1, "host restart cannot silently repeat the provider create mutation");
+  if (!pr) pr = await chainGitHub.openPullRequest("A", "A.txt", "alpha");
   releaseOutput = true;
   let woken = false;
   const delivered = await waitUntil("same-session PR product after host restart", async () => {
@@ -324,7 +376,8 @@ try {
         assert.equal(source.contextSnapshot.issueId, child.id);
         assert.equal(resolved.agentId, identity.reviewerAgentId);
         assert.equal(resolved.contextSnapshot.issueId, child.id);
-        evidence.push({ stage: identity.stage, cardId: card.id, sourceRunId: source.id, resolvedByRunId: resolved.id });
+        evidence.push({ stage: identity.stage, reviewerAgentId: identity.reviewerAgentId, verdict: "approve",
+          cardId: card.id, sourceRunId: source.id, resolvedByRunId: resolved.id });
       }
       const approvals = await observer.get(`/companies/${company.id}/approvals`);
       const gates = approvals.filter((approval) => approval.payload?.action === "task_merge" && approval.payload.issueId === issue.id);
@@ -374,6 +427,37 @@ try {
     assert.equal(approvals, 1);
     console.log("AUTONOMOUS_HUMAN_MERGE_WAIT_RESTART_CONFIRMED", JSON.stringify({ approvalId: gate.approvalId,
       retainedCardIds: expectedWait.cardIds, observationExpired: true }));
+    if (autonomousDependency) {
+      const before = await observer.get(`/issues/${dependentIssueId}`);
+      assert.equal(before.assigneeAgentId, null);
+      assert.deepEqual(before.blockedBy.map((blocker) => blocker.id), [issue.id]);
+      const beforeRuns = await observer.get(`/companies/${company.id}/heartbeat-runs?limit=100`);
+      assert.ok(!beforeRuns.some((run) => run.agentId === jules.id && run.contextSnapshot?.issueId === dependentIssueId));
+      const merged = await chainGitHub.externalMerge(pr.url, { headSha: pr.headSha,
+        reviews: [...gate.reviews].sort((left) => left.stage === "luna" ? -1 : 1) });
+      console.log("AUTONOMOUS_USER_MERGE_FIXTURE_PUBLISHED", JSON.stringify({ mergeSha: merged.mergeSha, headSha: pr.headSha }));
+      await waitUntil("normal heartbeat verifies user merge and releases native dependency", async () => {
+        const source = await observer.get(`/issues/${issue.id}`);
+        const products = await observer.get(`/issues/${issue.id}/work-products`);
+        return source.status === "done" && products.length === 1 && products[0].status === "merged";
+      }, 120_000);
+      const released = await observer.get(`/issues/${dependentIssueId}`);
+      assert.deepEqual(released.blockedBy.map((blocker) => [blocker.id, blocker.status]), [[issue.id, "done"]]);
+      assert.equal(released.assigneeAgentId, null, "merge alone cannot bypass B's user start gate");
+      assert.equal(creates, 1);
+      await approveStartAsUser(dependentIssueId);
+      await waitUntil("scheduled B dispatch after its native user start approval", async () => {
+        const current = await observer.get(`/issues/${dependentIssueId}`);
+        const checkpoint = await loadStoredSession(dependentIssueId, "sources/github/paperclip-contract/fixture", "main");
+        return dependentCreated && creates === 2 && checkpoint?.julesSessionId === dependentSessionId &&
+          current.status === "in_progress" && current.assigneeAgentId === jules.id;
+      }, 120_000);
+      const runs = await observer.get(`/companies/${company.id}/heartbeat-runs?limit=100`);
+      assert.ok(runs.some((run) => run.agentId === jules.id && run.contextSnapshot?.issueId === dependentIssueId && run.startedAt));
+      assert.equal((await observer.get(`/issues/${issue.id}`)).status, "done");
+      console.log("AUTONOMOUS_USER_MERGE_DEPENDENCY_RELEASE_CONFIRMED", JSON.stringify({ mergeSha: merged.mergeSha,
+        sourceIssueId: issue.id, dependentIssueId, userStartApprovals, providerCreates: creates }));
+    }
   }
   const log = await readFile(path.join(root, "server.log"), "utf8");
   assert.ok([...log.matchAll(/packages\/jules\/dist\/index\.js/g)].length >= 2,

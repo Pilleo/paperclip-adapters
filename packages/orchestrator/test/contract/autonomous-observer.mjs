@@ -16,6 +16,7 @@ export function createAutonomousObserver(baseUrl) {
   };
   return {
     get trace() { return structuredClone(trace); },
+    beginObservation() { requireSetup(); phase = "observing"; },
     async setup(route, body) {
       requireSetup();
       return request("POST", route, body);

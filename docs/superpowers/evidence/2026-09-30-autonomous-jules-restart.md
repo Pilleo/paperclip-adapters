@@ -95,3 +95,24 @@ This passed in **299.185 seconds**, with zero post-start driver mutations.
 Captured run: `~/.local/state/agent-output/run-oropx7tr/`.
 Three grading tests reject cancelled/replaced gates, duplicate review cards,
 premature completion and changed immutable PR heads.
+
+## User merge and autonomous native dependency release
+
+`--autonomous-dependency` seeds A and B through the native issue API, with B's
+`blockedByIssueIds` naming A. The observation driver is sealed before either task
+start. Explicit simulated user actors approve only the addressed native start
+cards. A's PR does not exist in the external Git fixture until provider output is
+released, so it cannot influence initial implementation admission.
+
+After the pending-merge/restart proof above, the simulated user publishes A's
+reviewed head as a standard two-parent merge to the real local bare remote.
+Scheduled orchestration alone completes A and its product and exposes A as a
+`done` blocker on B. B remains unassigned until its own user start approval, then
+normal scheduling dispatches B and the adapter persists its distinct provider
+session. There are two provider creates total, bound to distinct issue identities,
+one plan approval for A, and zero post-start observation-driver writes.
+
+Full case passed in **387.464 seconds**.
+Captured run: `~/.local/state/agent-output/run-y321_cbb/`.
+The graph-seal transport regression passed RED/GREEN; CI runs the encompassing
+dependency case in place of the earlier merge-gate-only case.

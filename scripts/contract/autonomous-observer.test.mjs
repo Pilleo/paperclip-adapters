@@ -47,3 +47,14 @@ test("start boundary cannot be used to dispatch an agent wake", async () => {
     assert.deepEqual(requests, []);
   });
 });
+
+test("sealing a precreated native dependency graph blocks driver writes before user approval", async () => {
+  await withHost(async (observer, requests) => {
+    await observer.setup("/companies/company-1/issues", { status: "todo" });
+    observer.beginObservation();
+    await assert.rejects(observer.setup("/agents/jules/wakeup", {}), /read-only/);
+    await assert.rejects(observer.startIssue("/companies/company-1/issues", {}), /read-only/);
+    assert.equal((await observer.get("/issues/source-issue")).id, "source-issue");
+    assert.deepEqual(requests, ["POST /api/companies/company-1/issues", "GET /api/issues/source-issue"]);
+  });
+});
