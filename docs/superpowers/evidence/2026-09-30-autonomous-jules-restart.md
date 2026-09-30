@@ -80,5 +80,18 @@ and exactly one **pending** human merge gate. No user merge was performed.
 Post-start driver mutation count remained zero.
 
 Captured successful extended run: `~/.local/state/agent-output/run-7hjwdrw9/`.
-Delayed human merge persistence and autonomous dependency release are subsequent
-qualifications, not claims of this case.
+Autonomous dependency release remains a subsequent qualification.
+
+## Pending human merge across another restart
+
+The extended case now holds its native merge gate through three successful
+scheduled orchestrator heartbeats, ends an observation window as
+`awaiting_user_merge`, and restarts the real daemon while the gate is pending.
+After a fresh scheduled reconciliation, the same gate remains pending, the source
+remains `in_review`, and the exact product/head and all four answered native review
+cards remain present. Provider create/approval counts remain one each.
+
+This passed in **299.185 seconds**, with zero post-start driver mutations.
+Captured run: `~/.local/state/agent-output/run-oropx7tr/`.
+Three grading tests reject cancelled/replaced gates, duplicate review cards,
+premature completion and changed immutable PR heads.

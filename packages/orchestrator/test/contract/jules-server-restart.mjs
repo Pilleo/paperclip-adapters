@@ -11,6 +11,7 @@ import { createDisposableHost } from "./disposable-host.mjs";
 import { createChainGitHubFixture } from "./chain-github-fixture.mjs";
 import { createAutonomousObserver } from "./autonomous-observer.mjs";
 import { createNativeAcpFixture } from "./native-acp-fixture.mjs";
+import { assertPendingMergeWait } from "./pending-merge-wait.mjs";
 
 const autonomousMerge = process.argv.includes("--autonomous-merge");
 const autonomous = autonomousMerge || process.argv.includes("--autonomous");
@@ -335,6 +336,44 @@ try {
       return { approvalId: gates[0].id, reviews: evidence };
     }, 360_000);
     console.log("AUTONOMOUS_PR_MERGE_GATE_CONFIRMED", JSON.stringify(gate));
+    const expectedWait = { issueId: issue.id, approvalId: gate.approvalId, prUrl: pr.url, headSha: pr.headSha,
+      productId: delivered.id, cardIds: [...originalPlanCardIds, ...gate.reviews.map((review) => review.cardId)] };
+    const readWait = async () => {
+      const children = await observer.get(`/companies/${company.id}/issues?parentId=${issue.id}&limit=20`);
+      const snapshot = { issue: await observer.get(`/issues/${issue.id}`),
+        approvals: await observer.get(`/companies/${company.id}/approvals`),
+        products: await observer.get(`/issues/${issue.id}/work-products`),
+        cards: (await Promise.all(children.map((child) => observer.get(`/issues/${child.id}/interactions`)))).flat() };
+      return assertPendingMergeWait(snapshot, expectedWait);
+    };
+    const beforeWait = await observer.get(`/companies/${company.id}/heartbeat-runs?limit=100`);
+    const oldRunIds = new Set(beforeWait.map((run) => run.id));
+    await waitUntil("three scheduled heartbeats while the human merge remains pending", async () => {
+      await readWait();
+      const runs = await observer.get(`/companies/${company.id}/heartbeat-runs?limit=100`);
+      return runs.filter((run) => run.agentId === orchestratorId && run.status === "succeeded" && !oldRunIds.has(run.id)).length >= 3;
+    }, 90_000);
+    const { decideObservationWindow } = await import("../../dist/core/stress-observation-budget.js");
+    assert.deepEqual(decideObservationWindow((await readWait()).kind, true),
+      { action: "stop_waiting_for_user", waitingFor: "awaiting_user_merge" });
+    await waitUntil("all addressed runs idle before restarting a human wait", async () =>
+      (await observer.get(`/companies/${company.id}/live-runs?limit=50&minCount=0`)).length === 0);
+    const waitingPid = host.pid;
+    const restartedWaitAt = Date.now();
+    await host.stop();
+    await host.start();
+    assert.notEqual(host.pid, waitingPid);
+    await readWait();
+    await waitUntil("scheduled reconciliation after human-wait restart", async () => {
+      await readWait();
+      const runs = await observer.get(`/companies/${company.id}/heartbeat-runs?limit=100`);
+      return runs.some((run) => run.agentId === orchestratorId && run.status === "succeeded" &&
+        !oldRunIds.has(run.id) && Date.parse(run.startedAt) > restartedWaitAt);
+    });
+    assert.equal(creates, 1);
+    assert.equal(approvals, 1);
+    console.log("AUTONOMOUS_HUMAN_MERGE_WAIT_RESTART_CONFIRMED", JSON.stringify({ approvalId: gate.approvalId,
+      retainedCardIds: expectedWait.cardIds, observationExpired: true }));
   }
   const log = await readFile(path.join(root, "server.log"), "utf8");
   assert.ok([...log.matchAll(/packages\/jules\/dist\/index\.js/g)].length >= 2,
