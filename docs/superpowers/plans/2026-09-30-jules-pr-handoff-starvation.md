@@ -2,7 +2,7 @@
 title: Fix Jules PR handoff starvation
 document_type: execution_plan
 base_revision: 09f6232
-status: in_progress
+status: completed
 date: 2026-09-30
 ---
 
@@ -124,3 +124,4 @@ The fix is complete when the isolated sweep/monitor/live-run contracts pass and 
 - The fixture process wrapper did not persist actual `AdapterExecutionResult.resultJson` into the host run; it stored only process output. The harness now copies the **actual returned executor result** into its succeeded fixture run before producer hydration. No fabricated completion decision or live host record is used.
 - Existing orchestrator terminal-producer logic already consumes the corrected `julesState: COMPLETED` result. No production orchestrator source change was needed. The actual-orchestrator `stable_child_chain_abc_later_jules_run --require-safe` passed through the later-live-run hold, release and A→B→C review chain.
 - Full workspace tests, build, invariant and strict stress-script typechecks, and the no-PR confirmation recovery host contract passed after implementation. Live reload and PR #7 native-review readback remain the final gate.
+- Fix committed as `1e9a9df`. Reload confirmed Jules/orchestrator `dist/index.js`; post-reload heartbeat `31747bf9-ae62-4350-bad7-b0ea1666a741` succeeded. PR #7 is unassigned `in_review`, with exact-head answered Luna and strong approvals and pending user merge gate `2fc471e1-2e17-4f73-9990-38b612f17ac1`. Those native approvals occurred **before** this reload: the old race eventually found a routing gap. They are live review evidence, not proof the new code caused that handoff. The deterministic no-churn/delayed-wait/race contracts qualify the deployed fix. No live PR was merged or provider feedback repeated.
