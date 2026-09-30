@@ -11,6 +11,11 @@ const luna = { version: 1 as const, companyId: "company", parentIssueId: "parent
   stage: "luna" as const, reviewerAgentId: "luna", bootstrapAgentId: "orchestrator" };
 
 describe("versioned issue-scoped PR review child identity", () => {
+  it("refuses an invented answered child verdict at the parent projection boundary", () => {
+    expect(() => projectPrChildVerdict(luna, {
+      kind: "answered", childId: "child", cardId: "card", reviewerRunId: "run", verdict: "approve",
+    } as never)).toThrow("verified native provenance");
+  });
   it("round-trips a PR/head/reviewer-bound child and separates the strong stage", () => {
     const description = prReviewChildDescription(luna);
     expect(parsePrReviewChildDescription(description)).toEqual(luna);
@@ -205,19 +210,43 @@ describe("versioned issue-scoped PR review child identity", () => {
     }, post: async () => { throw new Error("verdict observation must be read-only"); },
     patch: async () => { throw new Error("verdict observation must be read-only"); } };
     expect(await observePrReviewChild({ identity: luna, childId: "child", api,
-      allowRemediationStatus: parentStatus === "blocked" })).toEqual({
+      allowRemediationStatus: parentStatus === "blocked" })).toMatchObject({
       kind: "answered", childId: "child", cardId: "card-1", reviewerRunId: "reviewer-run", verdict,
       ...(verdict === "reject" ? { reason: "Fractional inputs must throw TypeError." } : {}),
     });
   });
 
-  it("makes only validated child verdicts readable by the existing parent-scoped native review reducer", () => {
-    const first = projectPrChildVerdict(luna, {
-      kind: "answered", childId: "luna-child", cardId: "luna-card", reviewerRunId: "luna-run", verdict: "approve",
-    });
-    const strong = projectPrChildVerdict({ ...luna, stage: "strong", reviewerAgentId: "gemini" }, {
-      kind: "answered", childId: "strong-child", cardId: "strong-card", reviewerRunId: "gemini-run", verdict: "approve",
-    });
+  it("makes only validated child verdicts readable by the existing parent-scoped native review reducer", async () => {
+    const verified = async (identity: typeof luna | (Omit<typeof luna, "stage"> & { stage: "strong" }),
+      childId: string, cardId: string, runId: string) => {
+      const api = { get: async (route: string) => {
+        if (route === "/issues/parent") return { id: "parent", companyId: "company", status: "in_review", assigneeAgentId: null };
+        if (route === "/issues/parent/work-products") return [{ url: identity.prUrl, type: "pull_request",
+          isPrimary: true, status: "ready_for_review", metadata: { headSha: identity.headSha } }];
+        if (route === `/issues/${childId}`) return { id: childId, companyId: "company", parentId: "parent",
+          createdByAgentId: "orchestrator", assigneeAgentId: identity.reviewerAgentId, status: "done",
+          description: prReviewChildDescription(identity) };
+        if (route === `/issues/${childId}/interactions`) return [{ id: cardId, kind: "request_item_verdicts", status: "answered",
+          idempotencyKey: `pr-review:v13:${childId}:${identity.prUrl}:${identity.headSha}:${identity.stage}`,
+          addresseeAgentId: identity.reviewerAgentId, sourceRunId: `bootstrap-${childId}`, resolvedByRunId: runId,
+          result: { outcome: "resolved", complete: true, items: [{ id: "pull_request", verdict: "approve" }] } }];
+        if (route === `/heartbeat-runs/bootstrap-${childId}`) return { id: `bootstrap-${childId}`, companyId: "company",
+          agentId: "orchestrator", status: "succeeded", contextSnapshot: { issueId: childId } };
+        if (route === `/heartbeat-runs/${runId}`) return { id: runId, companyId: "company", agentId: identity.reviewerAgentId,
+          status: "succeeded", contextSnapshot: { issueId: childId } };
+        throw new Error(`Unexpected native evidence GET ${route}`);
+      }, post: async () => { throw new Error("Observation must remain read-only"); },
+      patch: async () => { throw new Error("Observation must remain read-only"); } };
+      const result = await observePrReviewChild({ identity, childId, api });
+      if (result.kind !== "answered") throw new Error("Native review fixture did not resolve");
+      return result;
+    };
+    const lunaProof = await verified(luna, "luna-child", "luna-card", "luna-run");
+    const first = projectPrChildVerdict(luna, lunaProof);
+    const strongIdentity = { ...luna, stage: "strong" as const, reviewerAgentId: "gemini" };
+    const strong = projectPrChildVerdict(strongIdentity, await verified(strongIdentity, "strong-child", "strong-card", "gemini-run"));
+    expect(() => projectPrChildVerdict({ ...luna, headSha: "b".repeat(40) }, lunaProof)).toThrow("verified native provenance");
+    expect(() => projectPrChildVerdict(luna, { ...lunaProof } as never)).toThrow("verified native provenance");
     expect(reviewVerdictFromInteraction(first, "luna-card")).toEqual({ decision: "all_good" });
     expect(hasCompletedNativeApprovalLadderForHead([first, strong], "parent", luna.headSha, undefined, "strong", "gemini"))
       .toBe(true);

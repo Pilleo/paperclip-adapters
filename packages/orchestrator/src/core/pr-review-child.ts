@@ -275,6 +275,15 @@ export async function activatePrReviewChild(input: {
   return "activated";
 }
 
+class NativePrChildVerdictProof {
+  readonly kind = "answered" as const;
+  constructor(private readonly identityKey: string, readonly childId: string, readonly cardId: string,
+    readonly reviewerRunId: string, readonly verdict: "approve" | "reject", readonly reason?: string) {}
+  matchesIdentity(key: string): boolean { return this.identityKey === key; }
+}
+const verifiedVerdicts = new WeakSet<NativePrChildVerdictProof>();
+export type VerifiedPrChildVerdict = NativePrChildVerdictProof;
+
 /** Read one child-owned structured PR decision; free-text comments cannot satisfy this gate. */
 export async function observePrReviewChild(input: {
   readonly identity: PrReviewChildIdentity; readonly childId: string; readonly api: ChildReviewApi;
@@ -282,8 +291,7 @@ export async function observePrReviewChild(input: {
   readonly allowRemediationStatus?: boolean;
 }): Promise<
   | { readonly kind: "waiting"; readonly childId: string }
-  | { readonly kind: "answered"; readonly childId: string; readonly cardId: string; readonly reviewerRunId: string;
-      readonly verdict: "approve" | "reject"; readonly reason?: string }
+  | VerifiedPrChildVerdict
 > {
   const identity = PrReviewChildIdentitySchema.parse(input.identity);
   const root = `/issues/${encodeURIComponent(input.childId)}`;
@@ -320,16 +328,22 @@ export async function observePrReviewChild(input: {
       reviewer.status !== "succeeded" || reviewer.contextSnapshot.issueId !== input.childId) {
     throw new Error("PR child card source or reviewer run provenance failed");
   }
-  return { kind: "answered", childId: input.childId, cardId: card.id, reviewerRunId: reviewer.id,
-    verdict: verdict.verdict, ...(verdict.verdict === "reject" ? { reason: verdict.reason!.trim() } : {}) };
+  const observed = new NativePrChildVerdictProof(prReviewChildKey(identity), input.childId, card.id,
+    reviewer.id, verdict.verdict, verdict.verdict === "reject" ? verdict.reason!.trim() : undefined);
+  Object.freeze(observed);
+  verifiedVerdicts.add(observed);
+  return observed;
 }
 
 /** Adapter-only view of a verified child verdict for the existing parent PR-review reducer. */
 export function projectPrChildVerdict(
   identityInput: PrReviewChildIdentity,
-  observation: Extract<Awaited<ReturnType<typeof observePrReviewChild>>, { kind: "answered" }>,
+  observation: VerifiedPrChildVerdict,
 ): NativeReviewInteraction {
   const identity = PrReviewChildIdentitySchema.parse(identityInput);
+  if (!verifiedVerdicts.has(observation) || !observation.matchesIdentity(prReviewChildKey(identity))) {
+    throw new Error("PR child verdict has no verified native provenance for this identity");
+  }
   if (!observation.childId || !observation.cardId || !observation.reviewerRunId ||
       (observation.verdict === "reject" && !observation.reason?.trim())) {
     throw new Error("PR child verdict projection lacks its exact typed card/run identity");
