@@ -122,6 +122,7 @@ describe("Orchestrator Managed Fleet Manager", () => {
     expect(jules?.adapterConfig.planReviewerAgentId).toBe(result.lunaReviewerAgentId);
     expect(jules?.adapterConfig.planStrongReviewerAgentId).toBe(result.antigravityAgentId);
     expect(createdCalls.find((call) => call.name === "[Orchestrated] Antigravity Local Worker")?.adapterConfig.model).toBe("gemini-3.8-flash-low");
+    expect(createdCalls.find((call) => call.name === "[Orchestrated] Antigravity Local Worker")?.adapterConfig.timeoutSec).toBe(900);
     expect(createdCalls.find((call) => call.name === "[Orchestrated] Antigravity Local Worker")?.adapterConfig.serverPath)
       .toBe(resolveGeminiAcpServerPath() ?? undefined);
     expect(createdCalls.find((call) => call.name === "[Orchestrated] Antigravity Local Worker")?.role).toBe("qa");

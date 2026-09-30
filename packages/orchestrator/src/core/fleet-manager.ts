@@ -369,6 +369,9 @@ export const MANAGED_FLEET_DEFINITIONS: readonly ManagedWorkerDefinition[] = Obj
       permissionMode: "read-only",
       model: "gemini-3.8-flash-low",
       nativeReview: true,
+      // Native strong reviews include scoped checkout/tests and MCP verdict
+      // delivery; the ACP default five-minute budget can expire first.
+      timeoutSec: 900,
     },
   },
   {
