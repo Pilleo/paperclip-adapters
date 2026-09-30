@@ -1287,6 +1287,9 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
         const reconcilesMetadata = decision.action === "COMPLETE_MERGED_PR" || decision.action === "NORMALIZE_MERGED_METADATA";
         const terminalOwnershipCleanupNeeded = requiresMergedPrTerminalOwnershipCleanup(issue.rawIssue);
         if (!reconcilesMetadata && !terminalOwnershipCleanupNeeded) return;
+        if (!("authorization" in decision) || !decision.authorization) {
+          throw new Error("Merged-task cleanup has no verified issue-bound merge authorization");
+        }
 
         await log(`[ORCHESTRATOR] Reconciling [${issue.identifier || issue.id}] "${issue.title}" (${decision.reason}; terminal_ownership_cleanup=${terminalOwnershipCleanupNeeded})`);
         if (terminalOwnershipCleanupNeeded) {
@@ -1298,7 +1301,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
               await log(`[ORCHESTRATOR] Warning: Could not cancel run ${run.id} before merged-task terminalization (${cancelled.status}): ${cancelled.text}`);
             }
           }
-          const patch = await pc.patchIssue(issue.id, mergedPrTerminalPatch());
+          const patch = await pc.patchIssue(issue.id, mergedPrTerminalPatch(issue.id, decision.authorization));
           if (!patch.ok) {
             throw new Error(`Failed to terminalize merged issue (${patch.status}): ${patch.text}`);
           }

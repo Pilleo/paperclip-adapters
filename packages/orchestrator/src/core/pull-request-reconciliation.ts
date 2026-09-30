@@ -10,6 +10,20 @@ export type ReconciliationIssueStatus = "backlog" | "todo" | "in_progress" | "in
 export type ReconciliationPullRequestState = "OPEN" | "CLOSED" | "MERGED";
 export type ReconciliationApprovalStatus = "pending" | "approved" | "rejected" | "cancelled" | string;
 
+class MergedPrAuthorization {
+  private readonly verified = true;
+  constructor(readonly issueId: string, readonly prUrl: string, readonly mergedAt: string) {}
+  matchesIssue(issueId: string): boolean { return this.verified && this.issueId === issueId; }
+}
+const issuedMergeAuthorizations = new WeakSet<MergedPrAuthorization>();
+export type VerifiedMergedPrAuthorization = MergedPrAuthorization;
+
+export function assertMergedPrAuthorization(issueId: string, authorization: VerifiedMergedPrAuthorization): void {
+  if (!issuedMergeAuthorizations.has(authorization) || !authorization.matchesIssue(issueId)) {
+    throw new Error(`Invalid verified merge authorization for ${issueId}`);
+  }
+}
+
 type ReconciliationPullRequest = Readonly<{ number: number; url: string }> & (
   | { readonly state: "MERGED"; readonly mergedAt: string }
   | { readonly state: "OPEN" | "CLOSED"; readonly mergedAt: null }
@@ -68,6 +82,7 @@ export function selectRegisteredPullRequestObservation(input: {
 export type PullRequestReconciliationDecision =
   | {
       readonly action: "COMPLETE_MERGED_PR";
+      readonly authorization: VerifiedMergedPrAuthorization;
       readonly issueStatus: "done";
       readonly workProductStatus: "merged";
       readonly workProductReviewState: "approved";
@@ -77,6 +92,7 @@ export type PullRequestReconciliationDecision =
     }
   | {
       readonly action: "NORMALIZE_MERGED_METADATA";
+      readonly authorization: VerifiedMergedPrAuthorization;
       readonly issueStatus: "done";
       readonly workProductStatus: "merged";
       readonly workProductReviewState: "approved";
@@ -89,7 +105,7 @@ export type PullRequestReconciliationDecision =
       readonly issueStatus: "in_review";
       readonly reason: string;
     }
-  | { readonly action: "NOOP"; readonly reason: string }
+  | { readonly action: "NOOP"; readonly reason: string; readonly authorization?: VerifiedMergedPrAuthorization }
   | { readonly action: "DEFER"; readonly reason: string };
 
 function needsMergedMetadata(input: PullRequestReconciliationInput): boolean {
@@ -113,6 +129,14 @@ export function decidePullRequestReconciliation(
         !Number.isFinite(Date.parse(input.pullRequest.mergedAt))) {
       return { action: "DEFER", reason: "GitHub merge timestamp is missing or invalid; completion is not authorized." };
     }
+    if (!input.issueId.trim() || !Number.isSafeInteger(input.pullRequest.number) || input.pullRequest.number < 1 ||
+        !/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/[1-9]\d*\/?$/.test(input.pullRequest.url) ||
+        (input.workProduct && normalizedPullRequestUrl(input.workProduct.url) !== normalizedPullRequestUrl(input.pullRequest.url))) {
+      return { action: "DEFER", reason: "Merged PR identity does not match its registered issue scope." };
+    }
+    const authorization = new MergedPrAuthorization(input.issueId, input.pullRequest.url, input.pullRequest.mergedAt);
+    Object.freeze(authorization);
+    issuedMergeAuthorizations.add(authorization);
     const metadataNeedsUpdate = needsMergedMetadata(input);
     const shouldPostAudit = !input.auditAlreadyRecorded;
     const cancelMergeApprovalId = pendingMergeApprovalId(input);
@@ -120,12 +144,13 @@ export function decidePullRequestReconciliation(
     // task and work-product metadata is terminal. Keep this reconciliation
     // active until the caller invalidates that approval.
     if (input.issueStatus === "done" && !metadataNeedsUpdate && !shouldPostAudit && !cancelMergeApprovalId) {
-      return { action: "NOOP", reason: `PR #${input.pullRequest.number} is already fully reconciled.` };
+      return { action: "NOOP", authorization, reason: `PR #${input.pullRequest.number} is already fully reconciled.` };
     }
 
     const action = input.issueStatus === "done" ? "NORMALIZE_MERGED_METADATA" : "COMPLETE_MERGED_PR";
     return {
       action,
+      authorization,
       issueStatus: "done",
       workProductStatus: "merged",
       workProductReviewState: "approved",

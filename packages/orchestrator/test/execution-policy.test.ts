@@ -16,8 +16,14 @@ import {
   shouldTakeOverNativePrReview,
   shouldRecoverNativePrReview,
 } from "../src/core/execution-policy.js";
+import { decidePullRequestReconciliation } from "../src/core/pull-request-reconciliation.js";
 
 describe("mazewall execution policy builder", () => {
+  it("does not emit a done patch from forged merge evidence", () => {
+    expect(() => mergedPrTerminalPatch("issue-1", {
+      issueId: "issue-1", prUrl: "https://github.com/acme/repo/pull/6", mergedAt: "2026-09-30T05:04:29Z",
+    } as never)).toThrow("merge authorization");
+  });
   it("builds read-only Vibe then strong review stages without a fake merge type", () => {
     const policy = buildMazewallExecutionPolicy({
       vibeReviewerAgentId: "vibe-review-1",
@@ -77,12 +83,18 @@ describe("mazewall execution policy builder", () => {
   });
 
   it("clears every host-owned execution field when a registered PR is merged", () => {
-    expect(mergedPrTerminalPatch()).toEqual({
+    const decision = decidePullRequestReconciliation({ issueId: "issue-1", issueStatus: "in_review",
+      auditAlreadyRecorded: false, pullRequest: { number: 6, url: "https://github.com/acme/repo/pull/6",
+        state: "MERGED", mergedAt: "2026-09-30T05:04:29Z" } });
+    if (decision.action !== "COMPLETE_MERGED_PR") throw new Error("Merge fixture did not authorize completion");
+    expect(mergedPrTerminalPatch("issue-1", decision.authorization)).toEqual({
       status: "done",
       assigneeAgentId: null,
       executionPolicy: null,
       executionState: null,
     });
+    expect(() => mergedPrTerminalPatch("different-issue", decision.authorization)).toThrow("merge authorization");
+    expect(() => mergedPrTerminalPatch("issue-1", { ...decision.authorization } as never)).toThrow("merge authorization");
   });
 
   it("starts managed implementation without installing a host review policy", () => {

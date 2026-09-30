@@ -1,4 +1,5 @@
 import type { ReviewWaitState } from "./review-wait-state.js";
+import { assertMergedPrAuthorization, type VerifiedMergedPrAuthorization } from "./pull-request-reconciliation.js";
 
 export interface ExecutionPolicyParticipant {
   readonly type: "agent" | "user";
@@ -134,7 +135,8 @@ export function isNativePrReviewHandoffProjection(
  * This is an adapter compatibility boundary until Paperclip provides a
  * conditional terminal transition that clears execution ownership server-side.
  */
-export function mergedPrTerminalPatch(): Record<string, unknown> {
+export function mergedPrTerminalPatch(issueId: string, authorization: VerifiedMergedPrAuthorization): Record<string, unknown> {
+  assertMergedPrAuthorization(issueId, authorization);
   return {
     status: "done",
     assigneeAgentId: null,

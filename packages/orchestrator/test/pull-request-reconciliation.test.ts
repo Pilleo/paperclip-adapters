@@ -26,6 +26,14 @@ const baseInput = (overrides: Partial<PullRequestReconciliationInput> = {}): Pul
 });
 
 describe("pull-request reconciliation reducer", () => {
+  it.each([
+    { issueId: "" },
+    { workProduct: { id: "other-product", url: "https://github.com/acme/other/pull/3" } },
+    { pullRequest: { number: 0, url: "https://github.com/Pilleo/paperclip-adapters/pull/3", state: "MERGED" as const, mergedAt: "2026-09-02T14:52:16Z" } },
+    { pullRequest: { number: 3, url: "https://example.test/pull/3", state: "MERGED" as const, mergedAt: "2026-09-02T14:52:16Z" } },
+  ])("does not authorize a completion with unbound merged identity %#", (change) => {
+    expect(decidePullRequestReconciliation(baseInput(change))).toMatchObject({ action: "DEFER" });
+  });
   it.each([null, "", "not-a-date"])("cannot complete a task from a merged label with invalid timestamp %s", (mergedAt) => {
     expect(decidePullRequestReconciliation(baseInput({ pullRequest: {
       number: 3, url: "https://github.com/Pilleo/paperclip-adapters/pull/3", state: "MERGED", mergedAt,
