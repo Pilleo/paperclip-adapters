@@ -209,7 +209,11 @@ beforeAll(() => {
     }
   });
 
-  it('moves the issue to review on COMPLETED state with PR', async () => {
+  it.each([
+    { cadence: undefined, waitMs: 60_000 },
+    { cadence: 10, waitMs: 30_000 },
+  ])('moves the issue to review on COMPLETED state with PR (continuation=$cadence)', async ({ cadence, waitMs }) => {
+    const startedAt = Date.now();
     global.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
     (JulesClient.prototype.getSession as any).mockResolvedValue({
         state: 'COMPLETED',
@@ -220,7 +224,8 @@ beforeAll(() => {
       ...baseCtx,
       agent: {
         ...baseCtx.agent,
-        adapterConfig: { ...baseCtx.agent.adapterConfig, ciPolicy: "skip" }
+        adapterConfig: { ...baseCtx.agent.adapterConfig, ciPolicy: "skip", pollCadenceSeconds: 30,
+          continuationCadenceSeconds: cadence }
       },
       runtime: {
         ...baseCtx.runtime,
@@ -243,6 +248,8 @@ beforeAll(() => {
       authToken: 'jwt-token',
       config: {
         ...baseCtx.config,
+        pollCadenceSeconds: 30,
+        continuationCadenceSeconds: cadence,
         env: { JULES_API_KEY: 'test-key', PAPERCLIP_GITHUB_BROKER_TOKEN: 'run-scoped-token' },
       },
     } as any);
@@ -252,6 +259,9 @@ beforeAll(() => {
     expect(res.resultJson).toMatchObject({ issueStatus: 'in_progress', julesState: 'COMPLETED',
       stopReason: 'completed', handoffPending: true });
     expect(res.summary).toContain('awaits native review handoff');
+    const handoffCheckAt = vi.mocked(scheduleJulesSessionMonitor).mock.lastCall?.[2];
+    expect(Date.parse(handoffCheckAt!)).toBeGreaterThanOrEqual(startedAt + waitMs);
+    expect(Date.parse(handoffCheckAt!)).toBeLessThanOrEqual(Date.now() + waitMs);
     expect(getPullRequestDetails).toHaveBeenCalledWith(
       'http://pr/1',
       expect.objectContaining({

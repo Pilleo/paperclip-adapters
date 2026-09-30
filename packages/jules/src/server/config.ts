@@ -97,6 +97,7 @@ export const SettingsSchema = z.object({
   planApprovalPolicy: z.enum(["required", "trusted_opt_out"]).optional(),
   prPolicy: z.enum(["auto", "always", "never"]).optional(),
   pollCadenceSeconds: z.number().optional().transform(v => (v !== undefined && v > 0 ? Math.max(30, Math.min(3600, Math.round(v))) : JULES_PROVIDER_POLL_CADENCE_SECONDS)),
+  continuationCadenceSeconds: z.number().int().min(10).max(3600).optional(),
   requestTimeoutSeconds: z.number().optional().transform(v => (v !== undefined && v > 0 ? Math.max(5, Math.min(600, Math.round(v))) : 120)),
   retryBudget: z.number().int().min(0).max(10).optional(),
   sessionDeadlineMinutes: z.number().optional().transform(v => (v !== undefined && v > 0 ? Math.max(15, Math.min(10080, Math.round(v))) : 2880)),
@@ -146,6 +147,7 @@ export interface AdapterConfig {
   planApprovalPolicy: "required" | "trusted_opt_out";
   prPolicy: "auto" | "always" | "never";
   pollCadenceSeconds: number;
+  continuationCadenceSeconds: number;
   requestTimeoutSeconds: number;
   retryBudget: number;
   sessionDeadlineMinutes: number;
@@ -167,6 +169,7 @@ export const SAFE_DEFAULTS: Omit<AdapterConfig, "repository" | "source" | "baseB
   planApprovalPolicy: "required",
   prPolicy: "auto",
   pollCadenceSeconds: JULES_PROVIDER_POLL_CADENCE_SECONDS,
+  continuationCadenceSeconds: 60,
   requestTimeoutSeconds: 120,
   retryBudget: 3,
   sessionDeadlineMinutes: 2880,
@@ -287,6 +290,7 @@ export function validateConfig(config: unknown, context: ConfigResolutionContext
       planApprovalPolicy,
       prPolicy,
       pollCadenceSeconds: merged.pollCadenceSeconds ?? merged.pollIntervalSeconds ?? SAFE_DEFAULTS.pollCadenceSeconds,
+      continuationCadenceSeconds: merged.continuationCadenceSeconds ?? SAFE_DEFAULTS.continuationCadenceSeconds,
       requestTimeoutSeconds: merged.requestTimeoutSeconds ?? SAFE_DEFAULTS.requestTimeoutSeconds,
       retryBudget,
       sessionDeadlineMinutes: merged.sessionDeadlineMinutes ?? (merged.maxSessionAgeHours ? merged.maxSessionAgeHours * 60 : SAFE_DEFAULTS.sessionDeadlineMinutes),

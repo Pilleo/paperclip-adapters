@@ -3,6 +3,16 @@ import { validateConfig, requireJulesApiKey, AdapterConfigSchema, resolveJulesBa
 import { julesConfigSchema } from '../src/server/config-schema';
 
 describe('Config', () => {
+  it('resolves the normal continuation cadence and an explicit faster cadence', () => {
+    const settings = { repository: 'org/repo', baseBranch: 'main' };
+    expect(validateConfig(settings).continuationCadenceSeconds).toBe(60);
+    expect(validateConfig({ ...settings, continuationCadenceSeconds: 10 }).continuationCadenceSeconds).toBe(10);
+  });
+
+  it.each([0, 9, 10.5, 3601, NaN])('rejects invalid continuation cadence %s', (continuationCadenceSeconds) => {
+    expect(() => validateConfig({ repository: 'org/repo', baseBranch: 'main', continuationCadenceSeconds }))
+      .toThrow();
+  });
   it('validateConfig throws if source is missing', () => {
     expect(() => validateConfig({ repository: 'a' })).toThrow();
   });

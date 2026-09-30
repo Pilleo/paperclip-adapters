@@ -51,6 +51,28 @@ Paperclip waking the agent: either enable `runtimeConfig.heartbeat`
 wake, completed sessions are never observed — the issue silently stays blocked
 (observed live 2026-08-25, issue #9).
 
+### Continuation timing and faster disposable E2E
+
+Adapter JSON accepts `continuationCadenceSeconds` (integer, 10–3600 seconds;
+default **60**) for native plan-review and plan-revision continuation checks.
+Normal provider work uses `pollCadenceSeconds`, whose supported minimum is
+**30 seconds**. A terminal PR handoff waits at least the configured continuation
+cadence before polling again, so the settled producer can be observed.
+
+The disposable daemon test uses:
+
+```json
+{
+  "pollCadenceSeconds": 30,
+  "continuationCadenceSeconds": 10
+}
+```
+
+Its owned Paperclip process also sets `HEARTBEAT_SCHEDULER_INTERVAL_MS=10000`,
+and its test orchestrator uses `runtimeConfig.heartbeat.intervalSec: 10`.
+These are scheduling intervals, not deadlines for human approval or merge.
+Tests continue to use actual daemon timers rather than manually advancing them.
+
 ### Paperclip UI Registry Integration
 
 This adapter acts as an **External Adapter** using Paperclip's dynamic external configuration capabilities.
@@ -61,7 +83,7 @@ When correctly installed on your Paperclip server instance, the UI will dynamica
 - Jules source
 - Repository allowlist
 - Base branch
-- Automation and retry policy; Jules polling timing is intentionally fixed.
+- Automation and retry policy; advanced continuation timing is configured through adapter JSON.
 
 *Note:* You do **not** need to manually patch Paperclip UI or implement React `ConfigFields` yourself.
 

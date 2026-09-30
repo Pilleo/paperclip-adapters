@@ -369,11 +369,12 @@ function liveSessionPollDelayMs(
   initialActivityCheck: boolean,
   normalDelayMs: number,
   requirePlanApproval = false,
+  continuationDelayMs = JULES_CONTINUATION_DELAY_MS,
 ): number {
   if (initialActivityCheck) return JULES_INITIAL_ACTIVITY_CHECK_DELAY_MS;
   return session.childPlanReview !== undefined || session.planReviewOutcome === "revision_requested" ||
     (requirePlanApproval && session.phase === "RUNNING" && !session.planApprovedAt)
-    ? JULES_CONTINUATION_DELAY_MS
+    ? continuationDelayMs
     : normalDelayMs;
 }
 
@@ -920,6 +921,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // sessionDeadlineMinutes is the Jules cloud session TTL, not the Paperclip
   // heartbeat budget. Each execute() run polls once and yields.
   const reattachDelayMs = config.pollCadenceSeconds * 1000;
+  const continuationDelayMs = config.continuationCadenceSeconds * 1000;
 
   const abortSignal = parsedHostCtx.abortSignal || new AbortController().signal;
 
@@ -953,7 +955,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const nativePlanWait = current.pendingInteraction?.type === "plan_native_review" &&
       current.pendingInteraction.protocolVersion === 2;
     if (humanWait || nativePlanWait || !current.julesSessionId) return { ok: true };
-    const delayMs = liveSessionPollDelayMs(current, initialActivityCheck, reattachDelayMs, config.requirePlanApproval);
+    const delayMs = liveSessionPollDelayMs(current, initialActivityCheck, reattachDelayMs,
+      config.requirePlanApproval, continuationDelayMs);
     const timeoutAt = new Date(
       new Date(current.createdAt).getTime() + config.sessionDeadlineMinutes * 60_000,
     ).toISOString();
@@ -5228,8 +5231,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               // The host issue is still provider-owned until the orchestrator
               // installs native review. A durable wait prevents recovery from
               // treating this gap as abandoned work and starting another run.
+              // Provider work is complete. Leave a continuation-sized window
+              // for the orchestrator to consume the settled producer before a
+              // short cloud-poll cadence reacquires issue execution.
               await scheduleJulesSessionMonitor(taskId, session.julesSessionId!,
-                new Date(Date.now() + reattachDelayMs).toISOString(),
+                 new Date(Date.now() + Math.max(reattachDelayMs, continuationDelayMs)).toISOString(),
                 new Date(Date.now() + config.sessionDeadlineMinutes * 60_000).toISOString(),
                 ctx.authToken, ctx.runId);
               await persistSessionBestEffort(session, ctx.onLog);
