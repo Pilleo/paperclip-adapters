@@ -1,5 +1,5 @@
 import { retryStartedEffect, type LifecycleEffectJournal } from "../../src/server/lifecycle-effect-journal.js";
-import type { NativePlanEffectReconciliation, NativeCardRetryAuthorization } from "../../src/server/native-plan-effect-reconciler.js";
+import type { NativePlanEffectReconciliation, NativeCardRetryAuthorization, NativePlanEffectEvidence } from "../../src/server/native-plan-effect-reconciler.js";
 
 declare const journal: LifecycleEffectJournal;
 
@@ -14,3 +14,7 @@ declare const authorization: NativeCardRetryAuthorization;
 // @ts-expect-error Validated retry authorization cannot be copied to another effect identity.
 const copied: NativeCardRetryAuthorization = { ...authorization, effectId: "card:terra:another-revision" };
 void copied;
+
+// @ts-expect-error Unknown provider state is not evidence that plan approval progressed.
+const unknownProgress: NativePlanEffectEvidence = { approval: { kind: "same_session_progressed", state: "UNKNOWN" } };
+void unknownProgress;

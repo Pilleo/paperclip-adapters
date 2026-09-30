@@ -31,7 +31,7 @@ export type NativePlanEffectEvidence = {
     | { readonly kind: "ambiguous" };
   readonly approval?:
     | { readonly kind: "same_plan_pending" }
-    | { readonly kind: "same_session_progressed"; readonly state: string }
+    | { readonly kind: "same_session_progressed"; readonly state: "IN_PROGRESS" | "COMPLETED" }
     | { readonly kind: "provider_question" }
     | { readonly kind: "failed" }
     | { readonly kind: "unknown" };
@@ -76,7 +76,16 @@ export function reconcileNativePlanEffect(
           // is safe, so preserve the typed card and wait for provider state.
           return { kind: "await_observation" };
         case "same_session_progressed":
-          return { kind: "confirmed", receipt: `provider:${evidence.approval.state}` };
+          switch (evidence.approval.state) {
+            case "IN_PROGRESS":
+            case "COMPLETED":
+              return { kind: "confirmed", receipt: `provider:${evidence.approval.state}` };
+            default: {
+              const exhaustive: never = evidence.approval.state;
+              void exhaustive;
+              return { kind: "await_observation" };
+            }
+          }
         case "provider_question":
         case "unknown":
           return { kind: "await_observation" };

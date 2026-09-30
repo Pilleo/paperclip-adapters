@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import { reconcileNativePlanEffect } from "../src/server/native-plan-effect-reconciler.js";
 
 describe("reconcileNativePlanEffect", () => {
+  it.each(["UNKNOWN", "FAILED", "AWAITING_PLAN_APPROVAL"])("does not confirm an approval from unproven progressed state %s", (state) => {
+    expect(reconcileNativePlanEffect({ kind: "approve_plan", sessionId: "session-1", revisionId: "rev-1" },
+      { approval: { kind: "same_session_progressed", state } } as never)).toEqual({ kind: "await_observation" });
+  });
   it.each([
     [
       "confirms an exact parent-owned card",
