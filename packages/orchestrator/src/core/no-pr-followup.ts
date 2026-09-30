@@ -38,7 +38,8 @@ export type NoPrFollowupDecision =
  */
 export function planNoPrFollowup(input: NoPrFollowupSnapshot): NoPrFollowupDecision {
   if (!input.issueId || !input.sessionId || input.durableSessionId !== input.sessionId ||
-      input.assigneeAgentId !== input.julesAgentId || input.issueStatus !== "blocked") {
+      input.assigneeAgentId !== input.julesAgentId ||
+      !["blocked", "in_progress"].includes(input.issueStatus)) {
     return { kind: "held", reason: "source_or_original_session_changed" };
   }
   if (!input.prRequired || input.noPrConfirmation !== "pending") {

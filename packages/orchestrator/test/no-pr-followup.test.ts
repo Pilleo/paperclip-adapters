@@ -39,6 +39,8 @@ describe("one-shot PR-required Jules follow-up", () => {
     expect(decision.prompt).toContain("pull/6");
     expect(decision.prompt).toContain("separate branch");
     expect(decision.prompt).toContain("Do not merge");
+    expect(planNoPrFollowup({ ...input, issueStatus: "in_progress", sharedFileOverride: approval,
+      siblings: [{ ...input.siblings[0]!, status: "in_progress" }] }).kind).toBe("ready");
     expect(planNoPrFollowup({ ...input, sharedFileOverride: { ...approval, headSha: "b".repeat(40) } })).toEqual({
       kind: "held", reason: "shared_file_not_merged",
     });
