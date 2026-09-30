@@ -111,4 +111,12 @@ describe("durable lifecycle effect journal", () => {
     expect(() => retryStartedEffect(journal, "card:terra:rev-1", "2026-09-20T00:01:00Z",
       { effectId: "card:terra:rev-1" } as never)).toThrow("retry authorization");
   });
+
+  it("does not reuse a copied retry authorization for another card identity", () => {
+    const journal = beginEffect({ version: 1, effects: [] }, {
+      effectId: "card:terra:rev-2", kind: "create_card", startedAt: "2026-09-20T00:00:00Z",
+    });
+    expect(() => retryStartedEffect(journal, "card:terra:rev-2", "2026-09-20T00:01:00Z",
+      { ...nativeRetryAuthorization(), effectId: "card:terra:rev-2" } as never)).toThrow("retry authorization");
+  });
 });
