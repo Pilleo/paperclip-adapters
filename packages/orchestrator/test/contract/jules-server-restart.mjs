@@ -120,6 +120,9 @@ readinessTimeoutMs: 60_000 });
 const previousStore = process.env.PAPERCLIP_JULES_SESSION_STORE_DIR;
 process.env.PAPERCLIP_JULES_SESSION_STORE_DIR = path.join(root, "sessions");
 const workspaceRoot = fileURLToPath(new URL("../../../..", import.meta.url));
+const packageOverride = process.argv.find((argument) => argument.startsWith("--orchestrator-package="))?.split("=").slice(1).join("=");
+const orchestratorPackagePath = packageOverride ?? path.join(workspaceRoot, "packages/orchestrator");
+assert.ok(path.isAbsolute(orchestratorPackagePath), "orchestrator package override must be an absolute local path");
 const waitUntil = async (label, probe, timeoutMs = 45_000) => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -144,7 +147,8 @@ try {
   };
   await post("/adapters/install", { packageName: path.join(workspaceRoot, "packages/jules"), isLocalPath: true });
   if (autonomousMerge) for (const packageName of ["orchestrator", "antigravity"]) {
-    await post("/adapters/install", { packageName: path.join(workspaceRoot, "packages", packageName), isLocalPath: true });
+    await post("/adapters/install", { packageName: packageName === "orchestrator" ? orchestratorPackagePath
+      : path.join(workspaceRoot, "packages", packageName), isLocalPath: true });
   }
   const company = await post("/companies", { name: "Disposable Jules process restart" });
   companyId = company.id;
@@ -187,6 +191,8 @@ try {
     orchestratorId = orchestrator.id;
     assert.match(await readFile(path.join(root, "server.log"), "utf8"), /packages\/orchestrator\/dist\/index\.js/,
       "the autonomous merge lane must load the real built orchestrator adapter");
+    assert.ok((await readFile(path.join(root, "server.log"), "utf8")).includes(`${orchestratorPackagePath}/dist/index.js`),
+      "the daemon must load the exact configured orchestrator package, including private mutations");
   }
   const issue = await (autonomousDependency ? post : autonomous ? observer.startIssue : post)(`/companies/${company.id}/issues`, { title: "Create one Jules session before server restart",
     description: autonomousDependency
@@ -445,6 +451,8 @@ try {
       assert.deepEqual(released.blockedBy.map((blocker) => [blocker.id, blocker.status]), [[issue.id, "done"]]);
       assert.equal(released.assigneeAgentId, null, "merge alone cannot bypass B's user start gate");
       assert.equal(creates, 1);
+      console.log("AUTONOMOUS_USER_MERGE_NATIVE_RECONCILED", JSON.stringify({ sourceIssueId: issue.id,
+        dependentIssueId, blockerStatus: "done" }));
       await approveStartAsUser(dependentIssueId);
       await waitUntil("scheduled B dispatch after its native user start approval", async () => {
         const current = await observer.get(`/issues/${dependentIssueId}`);

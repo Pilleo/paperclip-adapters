@@ -116,3 +116,31 @@ Full case passed in **387.464 seconds**.
 Captured run: `~/.local/state/agent-output/run-y321_cbb/`.
 The graph-seal transport regression passed RED/GREEN; CI runs the encompassing
 dependency case in place of the earlier merge-gate-only case.
+
+## Compilable behavioural mutation qualification
+
+`scripts/contract/autonomous-merge-mutation.mjs` copies the real orchestrator source
+and package metadata into an owned private directory and compiles it using the
+workspace TypeScript compiler. The dependency-gate mutation incorrectly treats a
+`done` predecessor as unresolved. The daemon must load that exact private package.
+Production repository source and built adapters are never modified by the runner.
+
+The negative case must first prove provider/PR provenance, the pending human wait
+across restart, publication of the actual user merge, and native completion of A.
+Only failure at **B's scheduled dispatch after its native user approval** counts as
+mutation detection. Setup, transport, compilation or earlier lifecycle failures
+are rejected as unrelated evidence.
+
+The runner detected that exact stall, restored and recompiled the private package,
+then required the complete autonomous A→B case to pass. It also verified the
+repository dependency-gate source remained byte-for-byte unchanged. Full negative
+plus restored-positive qualification passed in **891.708 seconds**.
+Captured run: `~/.local/state/agent-output/run-suwkx_78/`.
+
+The first experiment disabled only the merge-reconciliation reducer. The complete
+workflow still passed, so that experiment was **not** counted as regression
+detection; another native path preserved the terminal outcome. Its compiled
+reducer-level test remains a narrow unit check. The decisive daemon-level negative
+control targets dependency admission and is required in CI, alongside its restored
+positive control. Two compilation/restoration tests validate both private mutations
+without database mocks or repository source writes.
