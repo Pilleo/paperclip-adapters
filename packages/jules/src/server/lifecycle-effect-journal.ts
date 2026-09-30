@@ -85,7 +85,10 @@ export function beginEffect(
   input: { readonly effectId: string; readonly kind: LifecycleEffectKind; readonly startedAt: string },
 ): LifecycleEffectJournal {
   const existing = journal.effects.find((effect) => effect.effectId === input.effectId);
-  if (existing) return journal;
+  if (existing) {
+    if (existing.kind !== input.kind) throw new Error(`Lifecycle effect identity conflict for ${input.effectId}`);
+    return journal;
+  }
   return {
     version: 1,
     effects: [...journal.effects, {

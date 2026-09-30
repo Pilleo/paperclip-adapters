@@ -16,6 +16,14 @@ function nativeRetryAuthorization(revisionId = "rev-1") {
 }
 
 describe("durable lifecycle effect journal", () => {
+  it("refuses to reuse a durable effect ID for another operation kind", () => {
+    const input = { effectId: "effect-1", kind: "create_card" as const, startedAt: "2026-09-20T00:00:00Z" };
+    const journal = beginEffect({ version: 1, effects: [] }, input);
+    expect(beginEffect(journal, input)).toBe(journal);
+    expect(() => beginEffect(journal, { ...input, kind: "send_provider_message" })).toThrow("identity conflict");
+    expect(journal.effects).toHaveLength(1);
+    expect(journal.effects[0]?.kind).toBe("create_card");
+  });
   it.each<readonly [string, LifecycleEffectJournal, "execute" | "reconcile" | "observe"]>([
     ["has no durable effect before a write", { version: 1, effects: [] }, "execute"],
     [
