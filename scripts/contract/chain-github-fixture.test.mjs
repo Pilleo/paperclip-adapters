@@ -13,6 +13,35 @@ const reviewEvidence = (headSha, label) => ({ headSha, reviews: [
   { stage: "strong", reviewerAgentId: "strong", cardId: `${label}-strong`, sourceRunId: `${label}-source-strong`, resolvedByRunId: `${label}-review-strong`, verdict: "approve" },
 ] });
 
+test("provider repair merges the advanced base, preserves all exports and requires fresh reviewed-head evidence", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "paperclip-chain-provider-repair-"));
+  try {
+    const seed = "module.exports = { increment: n => n + 1 };\n";
+    const fixture = await createChainGitHubFixture(root, { remote: true, initialFiles: { "shared.cjs": seed } });
+    assert.equal((await run("git", ["ls-tree", "--name-only", "HEAD"], { cwd: fixture.repository })).stdout.trim(), "shared.cjs");
+    const b = await fixture.openPullRequest("B", "shared.cjs", "module.exports = { increment: n => n + 1, decrement: n => n - 1 };\n");
+    const c = await fixture.openPullRequest("C", "shared.cjs", "module.exports = { increment: n => n + 1, double: n => n * 2 };\n");
+    const cMerge = await fixture.externalMerge(c.url, reviewEvidence(c.headSha, "C"));
+    const repaired = await fixture.repairPullRequest(b.url, { "shared.cjs": "module.exports = { increment: n => n + 1, decrement: n => n - 1, double: n => n * 2 };\n" });
+    assert.notEqual(repaired.headSha, b.headSha);
+    assert.equal(repaired.baseSha, cMerge.mergeSha);
+    const parents = (await run("git", ["show", "-s", "--format=%P", repaired.headSha], { cwd: fixture.repository })).stdout.trim().split(" ");
+    assert.deepEqual(parents, [b.headSha, cMerge.mergeSha]);
+    const code = (await run("git", ["show", `${repaired.headSha}:shared.cjs`], { cwd: fixture.repository })).stdout;
+    await run(process.execPath, ["-e", code + "\nconst a=require('node:assert/strict'); a.equal(module.exports.increment(8),9); a.equal(module.exports.decrement(8),7); a.equal(module.exports.double(8),16);"]);
+    const view = JSON.parse((await run(fixture.ghPath, ["pr", "view", b.url, "--json", "mergeable,headRefOid"])).stdout);
+    assert.deepEqual(view, { mergeable: "MERGEABLE", headRefOid: repaired.headSha });
+    const diff = (await run(fixture.ghPath, ["pr", "diff", b.url])).stdout;
+    assert.ok(diff.includes("diff --git a/shared.cjs b/shared.cjs"), "PR review must see a two-way diff against its advanced base");
+    assert.equal((await run("git", ["rev-parse", "HEAD"], { cwd: fixture.repository })).stdout.trim(), cMerge.mergeSha);
+    assert.equal((await run("git", ["status", "--porcelain"], { cwd: fixture.repository })).stdout, "");
+    await assert.rejects(fixture.externalMerge(b.url, reviewEvidence(b.headSha, "old-B")), /exact reviewed head/);
+    await fixture.externalMerge(b.url, reviewEvidence(repaired.headSha, "new-B"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("real overlapping export edits become conflicting after an external base merge without changing the checkout", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "paperclip-chain-conflict-"));
   try {

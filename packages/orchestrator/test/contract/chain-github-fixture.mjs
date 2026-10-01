@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { chmod, mkdir, readFile, writeFile, rename } from "node:fs/promises";
+import { chmod, mkdir, readFile, writeFile, rename, mkdtemp, rm } from "node:fs/promises";
 import { promisify } from "node:util";
 import path from "node:path";
 
@@ -7,7 +7,7 @@ const exec = promisify(execFile);
 const repositoryName = "paperclip-contract/fixture";
 
 /** A stateful local Git repository and read-only gh boundary; only the test actor can merge. */
-export async function createChainGitHubFixture(root, { remote = false } = {}) {
+export async function createChainGitHubFixture(root, { remote = false, initialFiles = {} } = {}) {
   const repository = path.join(root, "repository");
   const statePath = path.join(root, "github-state.json");
   const ghPath = path.join(root, "gh");
@@ -16,6 +16,11 @@ export async function createChainGitHubFixture(root, { remote = false } = {}) {
   await git("init", "--initial-branch=main");
   await git("config", "user.name", "External contract merger");
   await git("config", "user.email", "merger@example.test");
+  for (const [file, body] of Object.entries(initialFiles)) {
+    await mkdir(path.dirname(path.join(repository, file)), { recursive: true });
+    await writeFile(path.join(repository, file), body);
+  }
+  await git("add", "--all");
   await git("commit", "--allow-empty", "-m", "Initial canary repository");
   const initialSha = await git("rev-parse", "HEAD");
   const repoUrl = `https://github.com/${repositoryName}.git`;
@@ -83,7 +88,7 @@ if (args[0] === 'pr' && args[1] === 'view' && row && args[3] === '--json') {
 } else if (args[0] === 'pr' && args[1] === 'diff' && row && args.length === 4 && args[3] === '--name-only') {
   console.log(row.file);
 } else if (args[0] === 'pr' && args[1] === 'diff' && row && args.length === 3) {
-  process.stdout.write(execFileSync('git', ['show', '--format=', row.headSha, '--', row.file],
+  process.stdout.write(execFileSync('git', ['diff', 'main...' + row.headSha, '--', row.file],
     { cwd: state.repository, encoding: 'utf8' }));
 } else if (args[0] === 'api' && args[1]?.startsWith('repos/paperclip-contract/fixture/git/commits/') &&
   /^[0-9a-f]{40}$/.test(args[1].split('/').at(-1)) && args.length === 2) {
@@ -107,11 +112,44 @@ if (args[0] === 'pr' && args[1] === 'view' && row && args[3] === '--json') {
       await git("add", "--", file);
       await git("commit", "-m", `Implement ${label}`);
       const headSha = await git("rev-parse", "HEAD");
+      if (remote) await git("push", "origin", branch);
       await git("checkout", "main");
       const url = `https://github.com/${repositoryName}/pull/${number}`;
       state.prs.push({ number, title: `Canary ${label}`, branch, file, headSha, baseSha, url, state: "OPEN" });
       await persist(state);
       return { number, url, headSha, baseSha };
+    },
+    async repairPullRequest(url, resolutions) {
+      const state = JSON.parse(await readFile(statePath, "utf8"));
+      const pr = state.prs.find((candidate) => candidate.url === url && candidate.state === "OPEN");
+      if (!pr || await git("rev-parse", pr.branch) !== pr.headSha) throw new Error("Provider repair requires the original open PR head");
+      const oldHeadSha = pr.headSha;
+      const baseSha = await git("rev-parse", "main");
+      const worktree = await mkdtemp(path.join(root, "provider-repair-"));
+      const workerGit = async (...args) => (await exec("git", args, { cwd: worktree, timeout: 10_000 })).stdout.trim();
+      let added = false;
+      try {
+        await git("worktree", "add", worktree, pr.branch);
+        added = true;
+        try { await workerGit("merge", "--no-ff", "--no-commit", baseSha); }
+        catch (error) {
+          if (error.code !== 1 || !(await workerGit("diff", "--name-only", "--diff-filter=U"))) throw error;
+        }
+        for (const [file, body] of Object.entries(resolutions)) {
+          await writeFile(path.join(worktree, file), body);
+          await workerGit("add", "--", file);
+        }
+        if (await workerGit("diff", "--name-only", "--diff-filter=U")) throw new Error("Provider repair left unresolved conflicts");
+        await workerGit("commit", "-m", "Resolve shared-file base advancement");
+        pr.headSha = await workerGit("rev-parse", "HEAD");
+        pr.baseSha = baseSha;
+        if (remote) await workerGit("push", "origin", pr.branch);
+        await persist(state);
+        return { url, oldHeadSha, headSha: pr.headSha, baseSha };
+      } finally {
+        if (added) await git("worktree", "remove", "--force", worktree);
+        else await rm(worktree, { recursive: true, force: true });
+      }
     },
     async externalMerge(url, evidence) {
       const state = JSON.parse(await readFile(statePath, "utf8"));
