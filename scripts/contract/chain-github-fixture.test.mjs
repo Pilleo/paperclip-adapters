@@ -13,6 +13,22 @@ const reviewEvidence = (headSha, label) => ({ headSha, reviews: [
   { stage: "strong", reviewerAgentId: "strong", cardId: `${label}-strong`, sourceRunId: `${label}-source-strong`, resolvedByRunId: `${label}-review-strong`, verdict: "approve" },
 ] });
 
+test("an unmanaged contributor advances main with a standard merge while the managed PR head is retained", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "paperclip-external-base-contribution-"));
+  try {
+    const fixture = await createChainGitHubFixture(root, { remote: true,
+      initialFiles: { "shared.cjs": "module.exports = { increment: n => n + 1 };\n" } });
+    const b = await fixture.openPullRequest("B", "shared.cjs", "module.exports = { increment: n => n + 1, decrement: n => n - 1 };\n");
+    const external = await fixture.mergeExternalContribution("shared.cjs", "module.exports = { increment: n => n + 1, double: n => n * 2 };\n");
+    const parents = (await run("git", ["show", "-s", "--format=%P", external.mergeSha], { cwd: fixture.repository })).stdout.trim().split(" ");
+    assert.deepEqual(parents, [b.baseSha, external.headSha]);
+    const view = JSON.parse((await run(fixture.ghPath, ["pr", "view", b.url, "--json", "headRefOid,mergeable"])).stdout);
+    assert.deepEqual(view, { headRefOid: b.headSha, mergeable: "CONFLICTING" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("provider repair merges the advanced base, preserves all exports and requires fresh reviewed-head evidence", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "paperclip-chain-provider-repair-"));
   try {

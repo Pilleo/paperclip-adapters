@@ -151,6 +151,34 @@ if (args[0] === 'pr' && args[1] === 'view' && row && args[3] === '--json') {
         else await rm(worktree, { recursive: true, force: true });
       }
     },
+    async mergeExternalContribution(file, body) {
+      // An outside-fleet Git actor creates its own PR; this cannot merge a
+      // managed PR or substitute invented native verdicts for its review gate.
+      const state = JSON.parse(await readFile(statePath, "utf8"));
+      const baseSha = await git("rev-parse", "main");
+      const number = state.prs.length + 1;
+      const branch = `external/contribution-${number}`;
+      const worktree = await mkdtemp(path.join(root, "external-contribution-"));
+      await git("worktree", "add", "-b", branch, worktree, baseSha);
+      try {
+        await writeFile(path.join(worktree, file), body);
+        await exec("git", ["add", "--", file], { cwd: worktree, timeout: 10_000 });
+        await exec("git", ["commit", "-m", "External contributor shared export"], { cwd: worktree, timeout: 10_000 });
+        const headSha = (await exec("git", ["rev-parse", "HEAD"], { cwd: worktree, timeout: 10_000 })).stdout.trim();
+        await git("merge", "--no-ff", "-m", "External contributor standard merge", branch);
+        const mergeSha = await git("rev-parse", "HEAD");
+        const parents = (await git("show", "-s", "--format=%P", mergeSha)).split(" ");
+        if (parents.length !== 2 || parents[0] !== baseSha || parents[1] !== headSha) throw new Error("External base advance must be a standard merge");
+        if (remote) await git("push", "origin", "main");
+        const url = `https://github.com/${repositoryName}/pull/${number}`;
+        state.prs.push({ number, title: "External contributor shared export", branch, file, headSha, baseSha, url,
+          state: "MERGED", mergeSha, mergedAt: new Date().toISOString() });
+        await persist(state);
+        return { url, headSha, mergeSha, baseSha };
+      } finally {
+        await git("worktree", "remove", "--force", worktree);
+      }
+    },
     async externalMerge(url, evidence) {
       const state = JSON.parse(await readFile(statePath, "utf8"));
       const pr = state.prs.find((candidate) => candidate.url === url && candidate.state === "OPEN");

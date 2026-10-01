@@ -40,3 +40,17 @@ the forthcoming daemon case.
 PR diff observation now uses the real two-way `main...head` diff. A failing-first
 test caught the former combined merge-commit diff, which would have given native
 reviewers the wrong view of a repaired PR. All six Git-boundary tests pass.
+
+## Deterministic external actors
+
+An outside-fleet contribution actor creates a separate branch and publishes its
+own standard two-parent merge to main. It cannot merge an existing managed PR or
+invent native verdicts to bypass that PR's merge fence. The managed PR head remains
+unchanged while actual Git reports its new conflict.
+
+The local ACP provider can consult an explicit external review policy using the
+immutable assignment returned by the actual native-review MCP bridge. The policy
+returns an approve/reject decision; the worker submits it only through its
+authenticated native verdict tool. Before/after callbacks allow deterministic
+placement of the outside contribution between reviewer turns. Protocol tests
+prove both the default approval and a concrete conflict rejection.

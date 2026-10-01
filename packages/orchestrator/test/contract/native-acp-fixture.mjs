@@ -2,12 +2,21 @@ import { chmod, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 /** External ACP provider simulator; all verdict writes go through the real adapter-owned MCP bridge. */
-export async function createNativeAcpFixture(root) {
+export async function createNativeAcpFixture(root, { reviewDecisionUrl, reviewDecisionToken } = {}) {
   const serverPath = path.join(root, "agy_acp_server.par");
   await writeFile(serverPath, `#!/usr/bin/env node
 const readline = require('node:readline');
 const { randomUUID } = require('node:crypto');
 const sessions = new Map();
+const reviewDecisionUrl = ${JSON.stringify(reviewDecisionUrl ?? null)};
+const reviewDecisionToken = ${JSON.stringify(reviewDecisionToken ?? null)};
+const reviewPolicy = async (phase, assignment, verdict) => {
+  const response = await fetch(reviewDecisionUrl, { method: 'POST', headers: { 'Content-Type': 'application/json',
+    ...(reviewDecisionToken ? { Authorization: 'Bearer ' + reviewDecisionToken } : {}) },
+    body: JSON.stringify({ phase, assignment, verdict }), signal: AbortSignal.timeout(30000) });
+  if (!response.ok) throw new Error('External review policy failed (' + response.status + ')');
+  return response.json();
+};
 const configOptions = [{ id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: 'gemini-3.8-flash-low',
   options: [{ value: 'gemini-3.8-flash-low', name: 'Local review fixture' }] }];
 let nextMcpId = 0;
@@ -48,8 +57,12 @@ readline.createInterface({ input: process.stdin }).on('line', async (line) => {
         const server = sessions.get(message.params.sessionId);
         if (!server) throw new Error('Unknown ACP session');
         await mcp(server, 'initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'acp-fixture', version: '1.0.0' } });
-        await mcp(server, 'tools/call', { name: 'get_current_native_review_assignment', arguments: {} });
-        const receipt = await mcp(server, 'tools/call', { name: 'submit_native_review_verdict', arguments: { verdict: 'approve' } });
+        const assigned = await mcp(server, 'tools/call', { name: 'get_current_native_review_assignment', arguments: {} });
+        const assignment = assigned.structuredContent;
+        const controlled = reviewDecisionUrl && assignment?.kind === 'pull_request';
+        const decision = controlled ? await reviewPolicy('before', assignment) : { verdict: 'approve' };
+        const receipt = await mcp(server, 'tools/call', { name: 'submit_native_review_verdict', arguments: decision });
+        if (controlled) await reviewPolicy('after', assignment, decision.verdict);
         send({ method: 'session/update', params: { sessionId: message.params.sessionId,
           update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: JSON.stringify(receipt) } } } });
         result = { stopReason: 'end_turn' };
