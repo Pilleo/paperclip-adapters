@@ -12,9 +12,12 @@ import { createChainGitHubFixture } from "./chain-github-fixture.mjs";
 import { createAutonomousObserver } from "./autonomous-observer.mjs";
 import { createNativeAcpFixture } from "./native-acp-fixture.mjs";
 import { assertPendingMergeWait } from "./pending-merge-wait.mjs";
+import { createAcceptedResponseLoss } from "./accepted-response-loss.mjs";
 
 const autonomousDependency = process.argv.includes("--autonomous-dependency");
-const autonomousMerge = autonomousDependency || process.argv.includes("--autonomous-merge");
+const restartLostApproval = process.argv.includes("--autonomous-lost-approval-restart");
+const lostApproval = restartLostApproval || process.argv.includes("--autonomous-lost-approval");
+const autonomousMerge = autonomousDependency || lostApproval || process.argv.includes("--autonomous-merge");
 const autonomous = autonomousMerge || process.argv.includes("--autonomous");
 
 const root = await mkdtemp(path.join(tmpdir(), "paperclip-jules-server-restart-"));
@@ -43,7 +46,7 @@ if (!response.ok) throw new Error('Native typed verdict rejected (' + response.s
 `);
 await chmod(reviewerScript, 0o700);
 const chainGitHub = await createChainGitHubFixture(root, { remote: autonomousMerge });
-let pr = autonomousDependency ? null : await chainGitHub.openPullRequest("A", "A.txt", "alpha");
+let pr = autonomousDependency || lostApproval ? null : await chainGitHub.openPullRequest("A", "A.txt", "alpha");
 const sessionId = randomUUID();
 const dependentSessionId = randomUUID();
 let dependentIssueId = null;
@@ -53,10 +56,19 @@ let approvals = 0;
 let approvedAt = null;
 let releaseOutput = false;
 const providerRequests = [];
+const approvalResponseFault = createAcceptedResponseLoss(lostApproval);
+let successfulApprovalObservations = 0;
 const provider = createServer(async (request, response) => {
   const url = new URL(request.url, "http://127.0.0.1");
   providerRequests.push(`${request.method} ${url.pathname}`);
   const json = (status, value) => { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(value)); };
+  if (request.method === "GET" && url.pathname.startsWith("/v1alpha/sessions") && approvalResponseFault.observationsHeld) {
+    return json(503, { error: "deterministic approval evidence outage" });
+  }
+  if (request.method === "GET" && approvalResponseFault.responseLost &&
+      (url.pathname === `/v1alpha/sessions/${sessionId}` || url.pathname === `/v1alpha/sessions/${sessionId}/activities`)) {
+    successfulApprovalObservations++;
+  }
   if (request.method === "GET" && url.pathname === "/v1alpha/sources") {
     return json(200, { sources: [{ name: "sources/github/paperclip-contract/fixture",
       githubRepo: { owner: "paperclip-contract", repo: "fixture" } }] });
@@ -98,8 +110,7 @@ const provider = createServer(async (request, response) => {
   }
   if (request.method === "POST" && url.pathname === `/v1alpha/sessions/${sessionId}:approvePlan`) {
     if (approvals++) return json(409, { error: "duplicate Jules plan approval across server restart" });
-    approvedAt = new Date().toISOString();
-    return json(200, {});
+    return approvalResponseFault.respond(response, () => { approvedAt = new Date().toISOString(); });
   }
   json(404, { error: "unsupported provider request" });
 });
@@ -123,6 +134,9 @@ const workspaceRoot = fileURLToPath(new URL("../../../..", import.meta.url));
 const packageOverride = process.argv.find((argument) => argument.startsWith("--orchestrator-package="))?.split("=").slice(1).join("=");
 const orchestratorPackagePath = packageOverride ?? path.join(workspaceRoot, "packages/orchestrator");
 assert.ok(path.isAbsolute(orchestratorPackagePath), "orchestrator package override must be an absolute local path");
+const julesPackageOverride = process.argv.find((argument) => argument.startsWith("--jules-package="))?.split("=").slice(1).join("=");
+const julesPackagePath = julesPackageOverride ?? path.join(workspaceRoot, "packages/jules");
+assert.ok(path.isAbsolute(julesPackagePath), "Jules package override must be an absolute local path");
 const waitUntil = async (label, probe, timeoutMs = 45_000) => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -145,7 +159,9 @@ try {
     if (!response.ok) throw new Error(`POST ${route} (${response.status}): ${await response.text()}`);
     return response.json();
   };
-  await post("/adapters/install", { packageName: path.join(workspaceRoot, "packages/jules"), isLocalPath: true });
+  await post("/adapters/install", { packageName: julesPackagePath, isLocalPath: true });
+  await waitUntil("daemon startup log loads the exact configured Jules package", async () =>
+    (await readFile(path.join(root, "server.log"), "utf8")).includes(`${julesPackagePath}/dist/index.js`));
   if (autonomousMerge) for (const packageName of ["orchestrator", "antigravity"]) {
     await post("/adapters/install", { packageName: packageName === "orchestrator" ? orchestratorPackagePath
       : path.join(workspaceRoot, "packages", packageName), isLocalPath: true });
@@ -247,7 +263,9 @@ try {
   if (!autonomous) await post(`/agents/${jules.id}/wakeup`, { source: "automation", triggerDetail: "system",
     reason: "contract_native_plan_capacity_restored", payload: { issueId: issue.id } });
   const monitorWakeKeys = new Set();
+  let lostApprovalCardIds = null;
   await waitUntil("one confirmed provider plan approval from typed reviewer runs", async () => {
+    assert.ok(approvals <= 1, "provider plan approval POST must never be replayed after uncertain acceptance");
     if (approvals === 1) return true;
     if (autonomous) {
       if (autonomousMerge) {
@@ -278,6 +296,49 @@ try {
   // each observed by the daemon's real timer. This is only a test observation budget.
   }, autonomous ? 900_000 : 100_000);
   assert.equal(approvals, 1, "one addressed Luna and strong plan ladder must approve the original provider session before restart");
+  if (lostApproval) {
+    assert.equal(approvalResponseFault.responseLost, true);
+    assert.equal(approvalResponseFault.observationsHeld, true);
+    const uncertain = await waitUntil("durable started approval effect after remote acceptance", async () => {
+      const checkpoint = await loadStoredSession(issue.id, "sources/github/paperclip-contract/fixture", "main");
+      const effect = checkpoint?.lifecycleEffectJournal?.effects.find((candidate) => candidate.kind === "approve_plan");
+      return effect?.attempt.kind === "started" && { checkpoint, effect };
+    });
+    assert.equal(uncertain.checkpoint.julesSessionId, sessionId);
+    const effectId = uncertain.effect.effectId;
+    const children = await observer.get(`/companies/${company.id}/issues?parentId=${issue.id}&limit=20`);
+    const cards = (await Promise.all(children.map((child) => observer.get(`/issues/${child.id}/interactions`)))).flat();
+    assert.equal(cards.length, 2);
+    assert.ok(cards.every((card) => card.status === "answered"));
+    lostApprovalCardIds = cards.map((card) => card.id).sort();
+    await waitUntil("uncertain provider run settles while observation is held", async () =>
+      (await observer.get(`/companies/${company.id}/live-runs?limit=50&minCount=0`)).length === 0, 90_000);
+    const heldCheckpoint = await loadStoredSession(issue.id, "sources/github/paperclip-contract/fixture", "main");
+    assert.equal(heldCheckpoint?.lifecycleEffectJournal?.effects.find((effect) => effect.effectId === effectId)?.attempt.kind, "started",
+      "local acknowledgement cannot be fabricated while provider observation is unavailable");
+    console.log("AUTONOMOUS_LOST_APPROVAL_UNCERTAIN", JSON.stringify({ effectId, sessionId,
+      responseLost: true, providerApprovals: approvals, nativePlanCardIds: lostApprovalCardIds }));
+    if (restartLostApproval) {
+      const uncertainPid = host.pid;
+      await host.stop();
+      await host.start();
+      assert.notEqual(host.pid, uncertainPid);
+      const checkpoint = await loadStoredSession(issue.id, "sources/github/paperclip-contract/fixture", "main");
+      assert.equal(checkpoint?.julesSessionId, sessionId);
+      assert.equal(checkpoint?.lifecycleEffectJournal?.effects.find((effect) => effect.effectId === effectId)?.attempt.kind, "started");
+      console.log("AUTONOMOUS_UNCERTAIN_APPROVAL_RESTART_CONFIRMED", JSON.stringify({ effectId, sessionId }));
+    }
+    approvalResponseFault.releaseObservations();
+    await waitUntil("normal scheduling reconciles accepted approval from provider evidence", async () => {
+      assert.equal(approvals, 1, "uncertain approval recovery cannot issue another provider approval");
+      const checkpoint = await loadStoredSession(issue.id, "sources/github/paperclip-contract/fixture", "main");
+      return checkpoint?.lifecycleEffectJournal?.effects.find((effect) => effect.effectId === effectId)?.attempt.kind === "confirmed";
+    }, 180_000);
+    assert.ok(successfulApprovalObservations > 0, "confirmation must follow an actual successful provider observation");
+    assert.equal(creates, 1);
+    console.log("AUTONOMOUS_LOST_APPROVAL_RECONCILED", JSON.stringify({ effectId, restarted: restartLostApproval,
+      providerApprovals: approvals, providerCreates: creates, successfulProviderObservations: successfulApprovalObservations }));
+  }
   await waitUntil("company fleet idle after confirmed plan approval", async () => {
     const response = await fetch(`${host.url}/api/companies/${company.id}/live-runs?limit=50&minCount=0`);
     return response.ok && (await response.json()).length === 0;
@@ -309,6 +370,8 @@ try {
     return cards.map((card) => card.id).sort();
   };
   const originalPlanCardIds = await readReviewEvidence();
+  if (lostApprovalCardIds) assert.deepEqual(originalPlanCardIds, lostApprovalCardIds,
+    "uncertain-effect recovery must retain the original addressed native plan cards");
   const beforeProducts = await fetch(`${host.url}/api/issues/${issue.id}/work-products`)
     .then((response) => response.json());
   assert.equal(beforeProducts.length, 0, "restart must occur before Jules registers the PR");

@@ -144,3 +144,32 @@ reducer-level test remains a narrow unit check. The decisive daemon-level negati
 control targets dependency admission and is required in CI, alongside its restored
 positive control. Two compilation/restoration tests validate both private mutations
 without database mocks or repository source writes.
+
+## Accepted plan approval with lost acknowledgement
+
+`--autonomous-lost-approval` makes the stateful provider accept `approvePlan`, record
+its approval timestamp, and close the HTTP connection before sending a response.
+A controlled 503 outage holds subsequent session/activity observations long enough
+to inspect the actual adapter-written journal. The original approval effect must
+remain `started`, including after the interrupted run settles. The fixture then
+restores observation; normal scheduling must confirm that same effect from actual
+provider reads without issuing another approval POST.
+
+`--autonomous-lost-approval-restart` adds a real daemon stop/start before observation
+is restored. The original provider session, approval effect ID and two addressed
+native plan cards survive that boundary. Both variants continue through same-session
+PR delivery, native PR reviews, and the pending human merge/restart qualification.
+There are one create and one approval POST, successful provider observations before
+confirmation, and zero post-start driver writes. No journal repair or rescue wake
+is permitted. The external outage release is a protocol actor, not a control-plane
+mutation or fabricated receipt.
+
+- Normal recovery with final card-identity/held-journal assertions passed in
+  **345.642 seconds**: `~/.local/state/agent-output/run-d563lwwd/`.
+- Initial restarted recovery passed in **342.981 seconds**:
+  `~/.local/state/agent-output/run-iomxqskm/`.
+- The response-loss HTTP transport utility passed RED/GREEN for actual disconnect
+  after acceptance, observation outage/release, and the unfaulted response path.
+
+The fixture now waits for its exact Jules package-load log entry rather than
+sampling that asynchronous log immediately after installation.

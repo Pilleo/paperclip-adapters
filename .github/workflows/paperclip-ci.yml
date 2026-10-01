@@ -175,6 +175,8 @@ jobs:
         run: node packages/orchestrator/test/contract/jules-server-restart.mjs --autonomous
       - name: Verify native human waits survive restart and user merge releases approved dependent work
         run: node packages/orchestrator/test/contract/jules-server-restart.mjs --autonomous-dependency
+      - name: Verify remotely accepted plan approval recovers after its acknowledgement is lost
+        run: node packages/orchestrator/test/contract/jules-server-restart.mjs --autonomous-lost-approval
       - name: Prove autonomous dependency regression detection with a compiled private mutation and restoration
         run: node scripts/contract/autonomous-merge-mutation.mjs
       - name: Verify exact recovery and reload regressions on installed host
