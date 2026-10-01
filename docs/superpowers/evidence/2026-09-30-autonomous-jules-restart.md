@@ -173,3 +173,25 @@ mutation or fabricated receipt.
 
 The fixture now waits for its exact Jules package-load log entry rather than
 sampling that asynchronous log immediately after installation.
+
+### Lost-approval negative and restored-positive controls
+
+`scripts/contract/autonomous-approval-loss-mutation.mjs` compiles a private Jules
+copy that ignores successful same-session approval observations. The real daemon
+must load that exact package, accept the remote approval with a dropped response,
+and restart with the same unconfirmed effect. Only the subsequent timeout at
+**receipt reconciliation from provider evidence** counts as mutation detection.
+The runner rejects unrelated compilation, setup and transport failures.
+
+After detection it restores and recompiles the private package, then requires the
+complete restart/recovery, same-session PR, native review and pending human merge
+path to pass. The original plan card IDs are compared across the uncertain boundary
+and recovery. Repository production source remains byte-for-byte unchanged.
+
+The full negative/restored-positive pair passed in **654.750 seconds**:
+`~/.local/state/agent-output/run-l5m8odt2/`.
+A compiled reducer-level check also proves that the mutation rejects valid
+`IN_PROGRESS` approval evidence and restoration confirms it. CI requires normal
+lost-response recovery and the mutation/restored pair, whose positive control
+includes the uncertain-effect restart. No production adapter logic was changed
+for this qualification.

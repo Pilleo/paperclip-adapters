@@ -179,6 +179,8 @@ jobs:
         run: node packages/orchestrator/test/contract/jules-server-restart.mjs --autonomous-lost-approval
       - name: Prove autonomous dependency regression detection with a compiled private mutation and restoration
         run: node scripts/contract/autonomous-merge-mutation.mjs
+      - name: Prove uncertain approval recovery across restart with a compiled private mutation and restoration
+        run: node scripts/contract/autonomous-approval-loss-mutation.mjs
       - name: Verify exact recovery and reload regressions on installed host
         run: |
           export PAPERCLIP_CONTRACT_NODE_MODULES="$(npm root --global)/paperclipai/node_modules"

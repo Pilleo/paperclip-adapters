@@ -8,25 +8,31 @@ const exec = promisify(execFile);
 
 /** Compile the real package with one behavioural defect, exclusively in an owned private copy. */
 export async function createMergeReconciliationMutation(root, workspace) {
-  return createPrivateMutation(root, workspace, "pull-request-reconciliation.ts",
+  return createPrivateMutation(root, workspace, "core/pull-request-reconciliation.ts",
     'if (input.pullRequest.state === "MERGED") {',
     'if (input.pullRequest.state === "MERGED" && Number.isNaN(0)) {');
 }
 
 export async function createDependencyReleaseMutation(root, workspace) {
-  return createPrivateMutation(root, workspace, "dependency-gate.ts",
+  return createPrivateMutation(root, workspace, "core/dependency-gate.ts",
     'if (status !== "done" && status !== "cancelled") {', 'if (status !== "cancelled") {');
 }
 
-async function createPrivateMutation(root, workspace, file, guard, changed) {
+export async function createApprovalObservationMutation(root, workspace) {
+  return createPrivateMutation(root, workspace, "server/native-plan-effect-reconciler.ts",
+    'return { kind: "confirmed", receipt: `provider:${evidence.approval.state}` };',
+    'return { kind: "await_observation" };', "jules");
+}
+
+async function createPrivateMutation(root, workspace, file, guard, changed, packageName = "orchestrator") {
   assert.ok(path.isAbsolute(root) && path.isAbsolute(workspace));
-  const originalPackage = path.join(workspace, "packages/orchestrator");
-  const packagePath = path.join(root, "packages/orchestrator");
+  const originalPackage = path.join(workspace, "packages", packageName);
+  const packagePath = path.join(root, "packages", packageName);
   await mkdir(packagePath, { recursive: true });
   await cp(path.join(originalPackage, "src"), path.join(packagePath, "src"), { recursive: true });
   for (const name of ["package.json", "tsconfig.json"]) await cp(path.join(originalPackage, name), path.join(packagePath, name));
   await symlink(path.join(originalPackage, "node_modules"), path.join(packagePath, "node_modules"), "dir");
-  const sourcePath = path.join(packagePath, "src/core", file);
+  const sourcePath = path.join(packagePath, "src", file);
   const original = await readFile(sourcePath, "utf8");
   assert.equal(original.split(guard).length, 2, "mutation requires exactly one known guard");
   const compile = () => exec("pnpm", ["exec", "tsc", "-p", path.join(packagePath, "tsconfig.json"), "--noEmitOnError"],

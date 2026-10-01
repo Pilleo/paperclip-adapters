@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
-import { createMergeReconciliationMutation, createDependencyReleaseMutation } from "../../packages/orchestrator/test/contract/merge-reconciliation-mutation.mjs";
+import { createMergeReconciliationMutation, createDependencyReleaseMutation, createApprovalObservationMutation } from "../../packages/orchestrator/test/contract/merge-reconciliation-mutation.mjs";
 
 test("compiled private mutation disables merge completion and restoration leaves repository source intact", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "merge-reconciliation-mutation-test-"));
@@ -21,6 +21,27 @@ test("compiled private mutation disables merge completion and restoration leaves
     await mutation.restore();
     const restored = await import(`${modulePath.href}?restored`);
     assert.equal(restored.decidePullRequestReconciliation(input).action, "COMPLETE_MERGED_PR");
+    assert.equal(await readFile(sourcePath, "utf8"), original);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("compiled Jules mutation rejects approval observation and restoration confirms it", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "approval-observation-mutation-test-"));
+  const workspace = fileURLToPath(new URL("../..", import.meta.url));
+  const sourcePath = path.join(workspace, "packages/jules/src/server/native-plan-effect-reconciler.ts");
+  const original = await readFile(sourcePath, "utf8");
+  try {
+    const mutation = await createApprovalObservationMutation(root, workspace);
+    const modulePath = pathToFileURL(path.join(mutation.packagePath, "dist/server/native-plan-effect-reconciler.js"));
+    const effect = { kind: "approve_plan", sessionId: "session", revisionId: "revision" };
+    const evidence = { approval: { kind: "same_session_progressed", state: "IN_PROGRESS" } };
+    const broken = await import(`${modulePath.href}?mutated`);
+    assert.deepEqual(broken.reconcileNativePlanEffect(effect, evidence), { kind: "await_observation" });
+    await mutation.restore();
+    const restored = await import(`${modulePath.href}?restored`);
+    assert.deepEqual(restored.reconcileNativePlanEffect(effect, evidence), { kind: "confirmed", receipt: "provider:IN_PROGRESS" });
     assert.equal(await readFile(sourcePath, "utf8"), original);
   } finally {
     await rm(root, { recursive: true, force: true });
