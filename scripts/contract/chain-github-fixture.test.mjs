@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
@@ -8,6 +8,33 @@ import path from "node:path";
 import { createChainGitHubFixture } from "../../packages/orchestrator/test/contract/chain-github-fixture.mjs";
 
 const run = promisify(execFile);
+const reviewEvidence = (headSha, label) => ({ headSha, reviews: [
+  { stage: "luna", reviewerAgentId: "luna", cardId: `${label}-luna`, sourceRunId: `${label}-source-luna`, resolvedByRunId: `${label}-review-luna`, verdict: "approve" },
+  { stage: "strong", reviewerAgentId: "strong", cardId: `${label}-strong`, sourceRunId: `${label}-source-strong`, resolvedByRunId: `${label}-review-strong`, verdict: "approve" },
+] });
+
+test("real overlapping export edits become conflicting after an external base merge without changing the checkout", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "paperclip-chain-conflict-"));
+  try {
+    const fixture = await createChainGitHubFixture(root);
+    await writeFile(path.join(fixture.repository, "shared.cjs"), "module.exports = { increment: n => n + 1 };\n");
+    await run("git", ["add", "shared.cjs"], { cwd: fixture.repository });
+    await run("git", ["commit", "-m", "Seed shared exports"], { cwd: fixture.repository });
+    const b = await fixture.openPullRequest("B", "shared.cjs", "module.exports = { increment: n => n + 1, decrement: n => n - 1 };\n");
+    const c = await fixture.openPullRequest("C", "shared.cjs", "module.exports = { increment: n => n + 1, double: n => n * 2 };\n");
+    const merged = await fixture.externalMerge(c.url, reviewEvidence(c.headSha, "C"));
+    await assert.rejects(run("git", ["merge-tree", "--write-tree", "main", b.headSha], { cwd: fixture.repository }),
+      (error) => error.code === 1 && error.stdout.includes("CONFLICT"));
+    const view = JSON.parse((await run(fixture.ghPath, ["pr", "view", b.url, "--json", "mergeable,mergeStateStatus,headRefOid"])).stdout);
+    assert.deepEqual(view, { mergeable: "CONFLICTING", mergeStateStatus: "DIRTY", headRefOid: b.headSha });
+    const inventory = JSON.parse((await run(fixture.ghPath, ["pr", "list", "--repo", "paperclip-contract/fixture", "--state", "all", "--limit", "50", "--json", "number,mergeable,mergeStateStatus"])).stdout);
+    assert.equal(inventory.find((pr) => pr.number === b.number).mergeable, "CONFLICTING");
+    assert.equal((await run("git", ["status", "--porcelain"], { cwd: fixture.repository })).stdout, "");
+    assert.equal((await run("git", ["rev-parse", "HEAD"], { cwd: fixture.repository })).stdout.trim(), merged.mergeSha);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("configured GitHub remote is served by a real isolated bare Git transport", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "paperclip-chain-remote-"));
@@ -18,6 +45,21 @@ test("configured GitHub remote is served by a real isolated bare Git transport",
     assert.equal(remote.split(/\s+/)[0], fixture.initialSha);
     await run("git", ["fetch", "origin", "main"], { cwd: fixture.repository });
     assert.equal((await run("git", ["rev-parse", "origin/main"], { cwd: fixture.repository })).stdout.trim(), fixture.initialSha);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("unreadable Git revision fails observation instead of being reported as a merge conflict", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "paperclip-chain-invalid-revision-"));
+  try {
+    const fixture = await createChainGitHubFixture(root);
+    const pr = await fixture.openPullRequest("A", "A.txt", "alpha");
+    const statePath = path.join(root, "github-state.json");
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    state.prs[0].headSha = "f".repeat(40);
+    await writeFile(statePath, JSON.stringify(state));
+    await assert.rejects(run(fixture.ghPath, ["pr", "view", pr.url, "--json", "mergeable"]), /Git mergeability observation failed/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -78,6 +120,9 @@ test("a dependent PR prepared before its predecessor merge cannot be silently me
       { stage: "strong", reviewerAgentId: "strong", cardId: "card-2", sourceRunId: "bootstrap-2", resolvedByRunId: "review-2", verdict: "approve" },
     ] });
     await fixture.externalMerge(a.url, reviews(a.headSha));
+    const mergeability = JSON.parse((await run(fixture.ghPath, ["pr", "view", b.url, "--json", "mergeable,mergeStateStatus"])).stdout);
+    assert.deepEqual(mergeability, { mergeable: "MERGEABLE", mergeStateStatus: "CLEAN" },
+      "base advancement with disjoint edits must remain distinct from a genuine Git conflict");
     await assert.rejects(fixture.externalMerge(b.url, reviews(b.headSha)), /base changed/i);
     const bState = JSON.parse((await run(fixture.ghPath, ["pr", "view", b.url, "--json", "state"])).stdout);
     assert.equal(bState.state, "OPEN");

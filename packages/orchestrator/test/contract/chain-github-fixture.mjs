@@ -37,15 +37,30 @@ export async function createChainGitHubFixture(root, { remote = false } = {}) {
   await persist({ repository, prs: [] });
   await writeFile(ghPath, `#!/usr/bin/env node
 const fs = require('node:fs');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawnSync } = require('node:child_process');
 const state = JSON.parse(fs.readFileSync(${JSON.stringify(statePath)}, 'utf8'));
 const args = process.argv.slice(2);
 const fail = () => { console.error('forbidden or unsupported gh command'); process.exit(1); };
 const row = state.prs.find((pr) => pr.url === args[2] || String(pr.number) === args[2]);
+const observedMergeability = new Map();
+const mergeability = (pr) => {
+  if (pr.state !== 'OPEN') return { mergeable: 'UNKNOWN', mergeStateStatus: 'UNKNOWN' };
+  if (observedMergeability.has(pr.headSha)) return observedMergeability.get(pr.headSha);
+  const result = spawnSync('git', ['merge-tree', '--write-tree', 'main', pr.headSha],
+    { cwd: state.repository, encoding: 'utf8', timeout: 10000 });
+  if (result.error || ![0, 1].includes(result.status) || (result.status === 1 && !result.stdout.includes('CONFLICT'))) {
+    throw new Error('Git mergeability observation failed: ' + (result.error?.message || result.stderr));
+  }
+  const observed = result.status === 0
+    ? { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }
+    : { mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' };
+  observedMergeability.set(pr.headSha, observed);
+  return observed;
+};
 const view = (pr) => ({ number: pr.number, title: pr.title, state: pr.state,
   headRefName: pr.branch, headRefOid: pr.headSha, baseRefName: 'main',
   mergedAt: pr.mergedAt || null, url: pr.url, files: [pr.file],
-  mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN',
+  ...mergeability(pr),
   mergeCommit: pr.mergeSha ? { oid: pr.mergeSha } : null });
 if (args[0] === 'pr' && args[1] === 'view' && row && args[3] === '--json') {
   const fields = args[4]?.split(',') || [];
