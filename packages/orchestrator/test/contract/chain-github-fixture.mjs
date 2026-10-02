@@ -64,6 +64,7 @@ const mergeability = (pr) => {
 };
 const view = (pr) => ({ number: pr.number, title: pr.title, state: pr.state,
   headRefName: pr.branch, headRefOid: pr.headSha, baseRefName: 'main',
+  baseRefOid: execFileSync('git', ['rev-parse', 'main'], { cwd: state.repository, encoding: 'utf8' }).trim(),
   mergedAt: pr.mergedAt || null, url: pr.url, files: [pr.file],
   ...mergeability(pr),
   mergeCommit: pr.mergeSha ? { oid: pr.mergeSha } : null });

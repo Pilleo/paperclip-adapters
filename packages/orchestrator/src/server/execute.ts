@@ -496,7 +496,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     }
     try {
       const result = await reconcileConflictRecovery({ client: pc, policy: conflictRecoveryPolicy, companyId,
-        projectId, issueId: issue.id, productId: product["id"], prUrl, headSha, mergeability });
+        projectId, issueId: issue.id, productId: product["id"], prUrl, headSha, mergeability, workspacePath });
       await log(`[ORCHESTRATOR] Conflict recovery for ${issue.id}: ${result.kind === "waiting" ? result.reason : "clear"}.`);
     } catch (error) {
       await log(`[ORCHESTRATOR] Conflict recovery held for ${issue.id}: ${String(error)}`);

@@ -41,6 +41,8 @@ describe("native conflict recovery", () => {
       isPrimary: true, status: "ready_for_review", metadata: { source: "jules", headSha: head } };
     const children: Record<string, unknown>[] = [];
     const approvals: Record<string, unknown>[] = [];
+    const runs: Record<string, unknown>[] = [];
+    const repairProducts: Record<string, unknown>[] = [];
     const commands: Array<{ path: string; body: Record<string, unknown> }> = [];
     let loseCreateResponse = false;
     globalThis.fetch = async (url, init) => {
@@ -66,14 +68,23 @@ describe("native conflict recovery", () => {
         Object.assign(approvals[0]!, { status: "rejected" }); data = approvals[0];
       }
       else if (path === "/issues/repair") data = children[0];
-      else if (path === "/issues/repair/runs") data = [];
+      else if (path === "/issues/repair/runs") data = runs;
+      else if (path === "/issues/repair/work-products") data = repairProducts;
       else if (path === "/issues/source" && method === "PATCH") data = { id: "source", companyId: "company", ...body };
       else throw new Error(`Unexpected ${method} ${path}`);
       return new Response(JSON.stringify(data), { status: method === "POST" ? 201 : 200 });
     };
     const client = createPaperclipHttp({ apiUrl: "https://paperclip.test", authToken: "unit-token", runId: "orchestrator" });
     return { client, commands, children, approvals, get product() { return product; },
-      loseResponse() { loseCreateResponse = true; } };
+      loseResponse() { loseCreateResponse = true; },
+      finishRepair() {
+        Object.assign(children[0]!, { status: "done" });
+        runs.push({ id: "repair-run", companyId: "company", agentId: "chosen", status: "succeeded",
+          contextSnapshot: { issueId: "repair" }, resultJson: { provider: adapterType,
+            ...(adapterType === "jules" ? { julesState: "COMPLETED", stopReason: "completed" } : {}) } });
+        repairProducts.push({ id: "repair-output", type: "pull_request", url: prUrl,
+          createdByRunId: "repair-run", metadata: { headSha: "c".repeat(40) } });
+      } };
   }
 
   const input = (client: ReturnType<typeof createPaperclipHttp>, policy: recovery.ConflictRecoveryPolicy) => ({
@@ -110,5 +121,35 @@ describe("native conflict recovery", () => {
     await expect(reconcile(input(f.client, { mode: "agent", agentId: "chosen" }))).rejects.toThrow();
     await reconcile(input(f.client, { mode: "agent", agentId: "chosen" }));
     expect(f.children).toHaveLength(1);
+  });
+
+  it.each(["manual", "agent"] as const)("registers verified %s resolution separately from the original review head", async (mode) => {
+    const f = fixture();
+    const policy: recovery.ConflictRecoveryPolicy = mode === "agent" ? { mode, agentId: "chosen" } : { mode };
+    await recovery.reconcileConflictRecovery(input(f.client, policy));
+    if (mode === "agent") f.finishRepair();
+    const resolvedHead = "c".repeat(40);
+    const before = input(f.client, policy);
+    const result = await recovery.reconcileConflictRecovery({ ...before, headSha: resolvedHead,
+      mergeability: { ...before.mergeability, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", headRefOid: resolvedHead } });
+    expect(result.kind).toBe("clear");
+    expect(f.product["metadata"]).toMatchObject({ headSha: resolvedHead,
+      conflictRecovery: { phase: "resolved", previousHeadSha: head, reviewHeadSha: head,
+        resolvedHeadSha: resolvedHead, repairRunId: mode === "agent" ? "repair-run" : null } });
+    expect(f.commands.some((command) => command.path.includes("/interactions"))).toBe(false);
+    if (mode === "manual") expect(f.approvals[0]?.["status"]).toBe("rejected");
+  });
+
+  it("starts a new conflict epoch for an unrelated later revision without borrowing old reviews", async () => {
+    const f = fixture();
+    const policy = { mode: "manual" } as const;
+    const before = input(f.client, policy);
+    await recovery.reconcileConflictRecovery(before);
+    await recovery.reconcileConflictRecovery({ ...before, headSha: "c".repeat(40),
+      mergeability: { ...before.mergeability, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN" } });
+    await recovery.reconcileConflictRecovery({ ...before, headSha: "d".repeat(40) });
+    expect(f.product["metadata"]).toMatchObject({ conflictRecovery: {
+      previousHeadSha: "d".repeat(40), reviewHeadSha: "d".repeat(40), phase: "waiting" } });
+    expect(f.approvals).toHaveLength(2);
   });
 });

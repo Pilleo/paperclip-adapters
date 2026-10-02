@@ -2,6 +2,7 @@ import { z } from "zod";
 import { createHash } from "node:crypto";
 import { asArray, type PaperclipHttp } from "./paperclip-http.js";
 import { evaluatePrMergeability, type PrMergeabilityInfo } from "./git-safety.js";
+import { rebasePrBranchLocally } from "./local-rebase.js";
 
 export type ConflictRecoveryPolicy =
   | { readonly mode: "manual" }
@@ -52,6 +53,7 @@ export const ConflictRecoveryStateSchema = z.object({
   agentId: z.string().min(1).nullable(), repairTaskId: z.string().min(1).nullable(),
   repairRunId: z.string().min(1).nullable(), resolvedHeadSha: sha.nullable(),
   cardRequested: z.boolean(), cardId: z.string().min(1).nullable(),
+  candidateHeadSha: sha.nullable().default(null),
 });
 export type ConflictRecoveryState = z.infer<typeof ConflictRecoveryStateSchema>;
 export const CONFLICT_REPAIR_PREFIX = "<!-- paperclip-conflict-repair:v1\n";
@@ -61,7 +63,7 @@ export function conflictRepairDescription(state: ConflictRecoveryState): string 
     `Resolve conflicts on the existing PR ${state.prUrl}, branch ${state.headRef}, against ${state.baseRef}. ` +
     `Expected original head: ${state.previousHeadSha}. Preserve both sides' intended changes and run relevant verification. ` +
     "Use an isolated workspace for local Git operations. Publish the resolved head on this same PR branch. " +
-    "Do not create a replacement PR or merge the PR. Report the resulting immutable head. Existing PR reviews must be preserved.";
+    "Do not create a replacement PR or merge the PR. Register this existing PR and the resulting head as a pull_request work product on this repair task using your actual run credentials. Existing PR reviews must be preserved.";
 }
 
 export function parseConflictRepairDescription(description: unknown): ConflictRecoveryState | null {
@@ -87,6 +89,7 @@ export interface ConflictRecoveryInput {
   readonly prUrl: string;
   readonly headSha: string;
   readonly mergeability: PrMergeabilityInfo;
+  readonly workspacePath?: string;
 }
 export type ConflictRecoveryDisposition =
   | { readonly kind: "clear"; readonly state?: ConflictRecoveryState }
@@ -121,18 +124,78 @@ async function reconcileOwnedConflictRecovery(input: ConflictRecoveryInput): Pro
   }
   const safety = evaluatePrMergeability(input.mergeability);
   const needsRecovery = safety.isConflicting || input.mergeability.mergeStateStatus === "BEHIND";
-  if (!needsRecovery) return { kind: "clear", ...(state ? { state } : {}) };
-  if (!/^[0-9a-f]{40}$/i.test(input.headSha) || !input.mergeability.headRefName || !input.mergeability.baseRefName) {
-    return { kind: "waiting", reason: "Immutable PR head or branch identity unavailable" };
-  }
   const persist = async (next: ConflictRecoveryState): Promise<void> => {
     const response = await client.patchWorkProduct(input.productId, { metadata: { ...metadata, conflictRecovery: next } });
     if (!response.ok) throw new Error(`Could not persist conflict recovery (${response.status}): ${response.text}`);
     state = next;
     metadata["conflictRecovery"] = next;
   };
-  if (!state || (state.phase === "resolved" && state.resolvedHeadSha === input.headSha)) {
-    const reviewHeadSha = state?.reviewHeadSha ?? input.headSha;
+  const settleResolvedWait = async (resolved: ConflictRecoveryState): Promise<void> => {
+    if (!resolved.cardId) return;
+    const cards = asArray<Record<string, unknown>>(await client.listApprovals(input.companyId));
+    const card = cards.find((item) => item["id"] === resolved.cardId);
+    const payload = card?.["payload"] as Record<string, unknown> | undefined;
+    if (!card || payload?.["action"] !== "conflict_resolution" || payload["issueId"] !== input.issueId ||
+      payload["conflictAttemptId"] !== resolved.attemptId) throw new Error("Resolved conflict card identity changed");
+    if (card["status"] === "pending") {
+      const closed = await client.rejectApproval(resolved.cardId,
+        `Superseded: PR conflict verified resolved at ${resolved.resolvedHeadSha}. This is not an implementation rejection.`);
+      if (!closed.ok) throw new Error("Could not settle the obsolete conflict action card");
+    }
+  };
+  if (!needsRecovery) {
+    if (!state) return { kind: "clear" };
+    if (state.phase === "resolved") {
+      if (state.resolvedHeadSha === input.headSha && metadata["headSha"] !== input.headSha) {
+        const registered = await client.patchWorkProduct(input.productId, { metadata: { ...metadata, headSha: input.headSha } });
+        if (!registered.ok) throw new Error("Resolved product registration is still pending");
+      }
+      if (state.resolvedHeadSha === input.headSha) await settleResolvedWait(state);
+      return { kind: "clear", ...(state.resolvedHeadSha === input.headSha ? { state } : {}) };
+    }
+    if (!safety.canMerge || input.mergeability.mergeable !== "MERGEABLE") {
+      return { kind: "waiting", reason: "Resolution mergeability is not verified" };
+    }
+    let repairRunId: string | null = null;
+    if (state.repairTaskId) {
+      const child = await client.getIssue<Record<string, unknown>>(state.repairTaskId);
+      const runs = asArray<Record<string, unknown>>(await client.getJson(`/api/issues/${encodeURIComponent(state.repairTaskId)}/runs`));
+      const repairProducts = asArray<Record<string, unknown>>(await client.getJson(`/api/issues/${encodeURIComponent(state.repairTaskId)}/work-products`));
+      if (child["companyId"] !== input.companyId || child["parentId"] !== input.issueId || child["assigneeAgentId"] !== state.agentId) {
+        throw new Error("Settled repair task identity changed");
+      }
+      if (runs.length >= 100 || runs.some((run) => ["queued", "running", "claimed", "active"].includes(String(run["status"])))) {
+        return { kind: "waiting", reason: "Repair execution is still active or its inventory is incomplete" };
+      }
+      const evidence = repairProducts.filter((item) => item["type"] === "pull_request" && item["url"] === input.prUrl &&
+        (item["metadata"] as Record<string, unknown> | undefined)?.["headSha"] === input.headSha);
+      if (evidence.length !== 1) return { kind: "waiting", reason: "Configured agent has not registered the resolved PR head" };
+      const producer = runs.find((run) => run["id"] === evidence[0]!["createdByRunId"]);
+      const result = producer?.["resultJson"] as Record<string, unknown> | undefined;
+      if (!producer || producer["agentId"] !== state.agentId || producer["status"] !== "succeeded" ||
+        (producer["contextSnapshot"] as Record<string, unknown> | undefined)?.["issueId"] !== state.repairTaskId ||
+        (result?.["provider"] === "jules" && (result["julesState"] !== "COMPLETED" || result["stopReason"] !== "completed"))) {
+        return { kind: "waiting", reason: "Registered repair producer has not settled successfully" };
+      }
+      repairRunId = String(producer["id"]);
+    } else if (state.agentId || (state.candidateHeadSha && state.candidateHeadSha !== input.headSha)) {
+      return { kind: "waiting", reason: "Repair publication outcome is unresolved" };
+    }
+    if (state.previousHeadSha === input.headSha && state.phase !== "waiting") {
+      return { kind: "waiting", reason: "Repair has not published a changed PR head" };
+    }
+    await persist({ ...state, phase: "resolved", resolvedHeadSha: input.headSha, repairRunId,
+      baseSha: input.mergeability.baseRefOid ?? state.baseSha });
+    const updated = await client.patchWorkProduct(input.productId, { metadata: { ...metadata, headSha: input.headSha } });
+    if (!updated.ok) throw new Error(`Resolved product registration failed (${updated.status}): ${updated.text}`);
+    await settleResolvedWait(state!);
+    return { kind: "clear", state: state! };
+  }
+  if (!/^[0-9a-f]{40}$/i.test(input.headSha) || !input.mergeability.headRefName || !input.mergeability.baseRefName) {
+    return { kind: "waiting", reason: "Immutable PR head or branch identity unavailable" };
+  }
+  if (!state || state.phase === "resolved") {
+    const reviewHeadSha = state?.resolvedHeadSha === input.headSha ? state.reviewHeadSha : input.headSha;
     const attemptId = createHash("sha256").update(JSON.stringify([
       input.companyId, input.issueId, input.productId, input.prUrl, input.headSha,
       input.mergeability.baseRefOid ?? input.mergeability.baseRefName,
@@ -142,7 +205,7 @@ async function reconcileOwnedConflictRecovery(input: ConflictRecoveryInput): Pro
       headRef: input.mergeability.headRefName, baseRef: input.mergeability.baseRefName,
       previousHeadSha: input.headSha, reviewHeadSha, baseSha: input.mergeability.baseRefOid ?? null,
       phase: "waiting", agentId: null, repairTaskId: null, repairRunId: null,
-      resolvedHeadSha: null, cardRequested: false, cardId: null };
+      resolvedHeadSha: null, cardRequested: false, cardId: null, candidateHeadSha: null };
     await persist(state);
   }
 
@@ -170,7 +233,23 @@ async function reconcileOwnedConflictRecovery(input: ConflictRecoveryInput): Pro
     return { kind: "waiting", reason };
   };
   if (policy.mode === "manual") return waitForOperator("Manual conflict recovery");
-  if (policy.mode === "git_only") return waitForOperator("Clean integration requires an isolated recovery operation");
+  if (!sha.safeParse(input.mergeability.headRefOid).success || !sha.safeParse(input.mergeability.baseRefOid).success ||
+    input.mergeability.headRefOid !== input.headSha) {
+    return waitForOperator("Immutable recovery head/base observations unavailable or changed");
+  }
+  if (state.phase === "waiting" && state.baseSha === null) await persist({ ...state, baseSha: input.mergeability.baseRefOid! });
+  if (policy.mode === "git_only") {
+    if (!input.workspacePath) return waitForOperator("Project recovery workspace unavailable");
+    if (state.phase !== "waiting") return waitForOperator("Integration outcome must be observed before another attempt");
+    await persist({ ...state, phase: "integrating" });
+    const result = await rebasePrBranchLocally({ ...input.mergeability, headRefOid: input.headSha }, input.workspacePath,
+      undefined, async (candidateHeadSha, baseSha) => { await persist({ ...state!, candidateHeadSha, baseSha }); });
+    if (!result.ok) {
+      if (!result.uncertain) await persist({ ...state!, phase: "failed" });
+      return waitForOperator(result.message);
+    }
+    return { kind: "waiting", reason: "Integration published; awaiting independent PR observation" };
+  }
 
   const selected = z.object({ id: z.string(), companyId: z.string(), adapterType: z.string(), status: z.string() })
     .parse(await client.getJson(`/api/agents/${encodeURIComponent(policy.agentId)}`));

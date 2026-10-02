@@ -64,12 +64,14 @@ export function evaluatePrMergeability(info: PrMergeabilityInfo): MergeSafetyDec
  */
 export async function checkPrMergeability(
   prNumber: number,
-  cwd: string = process.cwd()
+  cwd: string = process.cwd(),
+  includeRecoveryRefs = false,
 ): Promise<PrMergeabilityInfo> {
   try {
     const { stdout } = await execFileAsync(
       "gh",
-      ["pr", "view", String(prNumber), "--json", "mergeable,mergeStateStatus,headRefName,baseRefName"],
+      ["pr", "view", String(prNumber), "--json", "mergeable,mergeStateStatus,headRefName,baseRefName" +
+        (includeRecoveryRefs ? ",headRefOid,baseRefOid" : "")],
       // gh may wait indefinitely for an expired device/login flow. Merge
       // safety is advisory for review dispatch, so bound it and treat a
       // timeout as UNKNOWN instead of wedging the orchestrator heartbeat.
@@ -83,6 +85,8 @@ export async function checkPrMergeability(
       mergeStateStatus: typeof parsed["mergeStateStatus"] === "string" ? parsed["mergeStateStatus"] : "UNKNOWN",
       headRefName: typeof parsed["headRefName"] === "string" ? parsed["headRefName"] : undefined,
       baseRefName: typeof parsed["baseRefName"] === "string" ? parsed["baseRefName"] : "master",
+      headRefOid: typeof parsed["headRefOid"] === "string" ? parsed["headRefOid"] : undefined,
+      baseRefOid: typeof parsed["baseRefOid"] === "string" ? parsed["baseRefOid"] : undefined,
     };
   } catch {
     return {
