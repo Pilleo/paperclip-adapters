@@ -21,14 +21,14 @@ PRs follow an automated, ascending-cost validation chain:
                             [ 4. Operator Merge Card in Paperclip ]
                                       │
                                       ▼
-                            [ Auto-Merge (--merge) & Done ]
+                            [ User Standard Merge & Reconciliation ]
 ```
 - **Stage 1 (CI Gate):** PRs with pending or failing checks are held at `AWAIT_CI` to prevent wasting review tokens.
 - **Stage 2 (Cheap Luna Review):** Read-only OpenAI Luna sanity and AST structure check. `REQUEST_CHANGES` immediately reassigns the issue back to the author worker, skipping expensive models.
 - **Stage 3 (Deep Terra Review):** Read-only OpenAI Terra kernel invariant, memory safety, and Landlock audit.
 - Review stages are native Paperclip verdict cards, keyed by immutable PR head and reviewer stage. Legacy Vibe/Strong cards cannot satisfy the Luna/Terra state machine. Missing reviewer identities fail closed instead of silently approving.
 - **Stage 4 (Human Operator Gate):** 1-click Paperclip Board Approval Card (`task_merge_approval`).
-- **Standard Merge Commit Strategy (`--merge`):** Approved PRs are merged via `gh pr merge --merge` (never squashed) to preserve exact git commit trees and eliminate downstream branch conflicts.
+- **User-controlled standard merge:** An approved card waits for the user's actual standard merge. The adapter never executes the merge; remote merge observation completes the task/product and releases dependencies.
 - **Iterative ACP Review Continuity:** Implementation workers retain their ACP session context; reviewers are separate read-only identities and inspect fresh branch diffs (`git diff origin/master...HEAD`).
 
 ### 2. Strict Anti-Hack, Test Protection & Zero-Bypass Standards
@@ -64,7 +64,7 @@ All reviewer prompts enforce explicit rejection criteria (`REQUEST_CHANGES`):
 - **Company-heartbeat managed-checkout compatibility (temporary):** Paperclip exposes a project’s managed checkout path immediately, but currently materializes it only while starting an issue-scoped host execution. This orchestrator schedules project state machines from a company heartbeat, so `project-managed-checkout.ts` atomically clones only the exact Paperclip-owned `instances/.../projects/<company>/<project>/<repo>` path before any local Git command. It rejects custom paths, never deletes an existing non-Git directory, and single-flights concurrent materialization. This is not a Jules worktree or a replacement workspace system; it is the missing host lifecycle call. Remove it when Paperclip provides an authorized project-checkout realization API for company-scoped adapters.
 - **Hot-restart native-review recovery (temporary):** Paperclip can interrupt a reviewer and transiently project its source issue as `backlog` or reassign it during dev-server restart. `native-review-recovery-state.ts` restores only an addressed pending PR card whose typed idempotency identity exactly matches the immutable PR URL and head SHA. It waits through native dispatch grace and live bound runs. A demonstrably lost dispatch receives one public, interaction-bound, idempotent wake on the same card; a terminal bound run receives the one deterministic `:attempt:1` replacement. Interaction history and deterministic keys are the crash journal because the host strips adapter-private execution state. No comment, prose verdict, or private host endpoint is used.
 - **Native PR-review ownership transfer (temporary):** Paperclip v831 may leave host `executionPolicy` review stages on an orchestrator-managed issue after Jules registers a ready PR. Those stages cannot consume the adapter's addressed `request_item_verdicts` cards, so they can re-enter review after Luna and Terra have already decided. For a managed ready PR with the native ladder configured, the orchestrator atomically projects `in_review`, clears the host policy/state, verifies that write, and then relies exclusively on the typed cards. Existing PR reviews deliberately bypass workspace-sync gating: synchronization protects new implementation dispatch, never a registered PR's review or merge lifecycle. Remove this handoff when Paperclip makes host execution-policy review stages consume the same typed verdict protocol.
-- **Idempotent managed wakes:** Every orchestrator wake carries a stable `Idempotency-Key` derived from agent, issue, and resume run. Transient 429/5xx responses use bounded exponential retry; authorization, validation, not-found, and conflict responses are surfaced immediately.
+- **Idempotent managed wakes:** Every orchestrator wake carries a stable `Idempotency-Key` derived from agent, issue, and resume run. Mutation responses are never blindly replayed after a network failure; the effect owner observes native receipts before continuing. Read-only requests retain bounded transient retry.
 - **Merged Feature Branch Pruner:** Discovers merged GitHub branches for safe pruning.
 
 ---
@@ -79,6 +79,30 @@ All reviewer prompts enforce explicit rejection criteria (`REQUEST_CHANGES`):
 | `vibeCapacity` | `number` | `2` | Concurrency ceiling for local Vibe/Antigravity lane |
 | `requireTaskApproval` | `boolean` | `true` | Enforce 1-click operator board approval before task start |
 | `dailyBudgetLimitUsd` | `number` | `10.0` | Daily spend ceiling for cloud sessions and strong model reviews |
+| `conflictRecoveryMode` | `manual \| git_only \| agent` | `manual` | Wait for external resolution, attempt isolated clean integration, or dispatch to the exact configured agent |
+| `conflictRecoveryAgentId` | `string` | unset | Required in agent mode; any company agent with any adapter can be selected |
+
+### Configurable conflict recovery
+
+Missing configuration defaults to **manual**, including installations that previously selected a worker through `vibeAgentId`. Storing a resolver ID does not enable automatic repair.
+
+```json
+{ "conflictRecoveryMode": "manual" }
+```
+
+```json
+{ "conflictRecoveryMode": "git_only" }
+```
+
+```json
+{ "conflictRecoveryMode": "agent", "conflictRecoveryAgentId": "your-selected-agent-id" }
+```
+
+Agent mode addresses that exact company agent through a native repair task. Independent agents and local/remote adapters are supported; no adapter, role, or managed-worker filtering selects a substitute. The chosen agent retains its normal model/provider configuration and repairs the existing PR. Busy/paused agents and failed admission remain visible waits.
+
+**Conflict resolution preserves existing native reviews.** The original card IDs, verdicts, reviewed head, and completed stages remain intact. A separate repair receipt links that review head to the resolved PR head; repair does not restart the review ladder or create additional reviews. Ordinary unrelated code revisions keep their normal review handling.
+
+Manual waits have no deadline. Attempts/task identities survive restart, and uncertain admission or publication is observed before retry. Deterministic Git integration uses an owned isolated clone and an explicit expected-head push lease, preserving the shared checkout and user work. The final merge remains the user's action.
 
 ---
 

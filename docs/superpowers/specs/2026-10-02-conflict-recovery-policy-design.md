@@ -2,7 +2,7 @@
 title: Adapter-neutral configurable conflict recovery
 document_type: design_spec
 base_revision: 927d5f5
-status: ready_for_implementation
+status: implemented_isolated_qualified
 date: 2026-10-02
 ---
 

@@ -17,6 +17,13 @@ import { assertPendingMergeWait } from "./pending-merge-wait.mjs";
 import { createAcceptedResponseLoss } from "./accepted-response-loss.mjs";
 import { createLocalAcpRepairFixture } from "./local-acp-repair-fixture.mjs";
 
+// Preserve the established CI entrypoint while qualifying the corrected,
+// adapter-neutral workflow and review continuity in its focused real host lane.
+if (process.argv.includes("--autonomous-conflict")) {
+  await import("./conflict-recovery-live.mjs");
+  process.exit(0);
+}
+
 const autonomousDependency = process.argv.includes("--autonomous-dependency");
 const autonomousConflict = process.argv.includes("--autonomous-conflict");
 const restartLostApproval = process.argv.includes("--autonomous-lost-approval-restart");

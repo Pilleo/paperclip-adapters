@@ -7,7 +7,7 @@ const exec = promisify(execFile);
 const repositoryName = "paperclip-contract/fixture";
 
 /** A stateful local Git repository and read-only gh boundary; only the test actor can merge. */
-export async function createChainGitHubFixture(root, { remote = false, initialFiles = {} } = {}) {
+export async function createChainGitHubFixture(root, { remote = false, initialFiles = {}, observePublishedHeads = false, enforceUpToDate = false } = {}) {
   const repository = path.join(root, "repository");
   const statePath = path.join(root, "github-state.json");
   const ghPath = path.join(root, "gh");
@@ -39,7 +39,7 @@ export async function createChainGitHubFixture(root, { remote = false, initialFi
     await writeFile(temporary, JSON.stringify(state), { mode: 0o600 });
     await rename(temporary, statePath);
   };
-  await persist({ repository, prs: [] });
+  await persist({ repository, prs: [], remotePath: remote ? path.join(root, "remote.git") : null, observePublishedHeads, enforceUpToDate });
   await writeFile(ghPath, `#!/usr/bin/env node
 const fs = require('node:fs');
 const { execFileSync, spawnSync } = require('node:child_process');
@@ -47,24 +47,40 @@ const state = JSON.parse(fs.readFileSync(${JSON.stringify(statePath)}, 'utf8'));
 const args = process.argv.slice(2);
 const fail = () => { console.error('forbidden or unsupported gh command'); process.exit(1); };
 const row = state.prs.find((pr) => pr.url === args[2] || String(pr.number) === args[2]);
+const gitPrefix = state.observePublishedHeads && state.remotePath ? ['--git-dir', state.remotePath] : [];
+const observedGit = (args) => execFileSync('git', [...gitPrefix, ...args], { cwd: state.repository, encoding: 'utf8', timeout: 10000 }).trim();
+const observedHead = (pr) => {
+  if (!state.observePublishedHeads || !pr.branch || pr.state !== 'OPEN') return pr.headSha;
+  const head = observedGit(['rev-parse', 'refs/heads/' + pr.branch]);
+  if (head !== pr.headSha) {
+    pr.previousHeadSha = pr.headSha; pr.headSha = head;
+    const base = observedGit(['rev-parse', 'refs/heads/main']);
+    const included = spawnSync('git', [...gitPrefix, 'merge-base', '--is-ancestor', base, head], { cwd: state.repository, timeout: 10000 });
+    if (included.error || ![0, 1].includes(included.status)) throw new Error('Base ancestry observation failed');
+    if (included.status === 0) pr.baseSha = base;
+    fs.writeFileSync(${JSON.stringify(statePath)}, JSON.stringify(state));
+  }
+  return head;
+};
 const observedMergeability = new Map();
 const mergeability = (pr) => {
   if (pr.state !== 'OPEN') return { mergeable: 'UNKNOWN', mergeStateStatus: 'UNKNOWN' };
   if (observedMergeability.has(pr.headSha)) return observedMergeability.get(pr.headSha);
-  const result = spawnSync('git', ['merge-tree', '--write-tree', 'main', pr.headSha],
+  const head = observedHead(pr);
+  const result = spawnSync('git', [...gitPrefix, 'merge-tree', '--write-tree', 'main', head],
     { cwd: state.repository, encoding: 'utf8', timeout: 10000 });
   if (result.error || ![0, 1].includes(result.status) || (result.status === 1 && !result.stdout.includes('CONFLICT'))) {
     throw new Error('Git mergeability observation failed: ' + (result.error?.message || result.stderr));
   }
   const observed = result.status === 0
-    ? { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }
+    ? { mergeable: 'MERGEABLE', mergeStateStatus: state.enforceUpToDate && pr.baseSha !== observedGit(['rev-parse', 'main']) ? 'BEHIND' : 'CLEAN' }
     : { mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' };
   observedMergeability.set(pr.headSha, observed);
   return observed;
 };
 const view = (pr) => ({ number: pr.number, title: pr.title, state: pr.state,
-  headRefName: pr.branch, headRefOid: pr.headSha, baseRefName: 'main',
-  baseRefOid: execFileSync('git', ['rev-parse', 'main'], { cwd: state.repository, encoding: 'utf8' }).trim(),
+  headRefName: pr.branch, headRefOid: observedHead(pr), baseRefName: 'main',
+  baseRefOid: observedGit(['rev-parse', 'main']),
   mergedAt: pr.mergedAt || null, url: pr.url, files: [pr.file],
   ...mergeability(pr),
   mergeCommit: pr.mergeSha ? { oid: pr.mergeSha } : null });
@@ -197,6 +213,9 @@ if (args[0] === 'pr' && args[1] === 'view' && row && args[3] === '--json') {
         throw new Error("External merge requires two distinct addressed native review evidence records");
       }
       if (await git("rev-parse", "HEAD") !== pr.baseSha) throw new Error("PR base changed before external merge");
+      if (state.observePublishedHeads && await git("rev-parse", pr.branch) !== pr.headSha) {
+        await git("fetch", "origin", `+refs/heads/${pr.branch}:refs/heads/${pr.branch}`);
+      }
       if (await git("rev-parse", pr.branch) !== pr.headSha) throw new Error("PR head changed before external merge");
       await git("merge", "--no-ff", "-m", `External merge PR #${pr.number}`, pr.branch);
       const mergeSha = await git("rev-parse", "HEAD");

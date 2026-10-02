@@ -24,7 +24,7 @@ export async function createApprovalObservationMutation(root, workspace) {
     'return { kind: "await_observation" };', "jules");
 }
 
-async function createPrivateMutation(root, workspace, file, guard, changed, packageName = "orchestrator") {
+export async function createPrivateMutation(root, workspace, file, guard, changed, packageName = "orchestrator") {
   assert.ok(path.isAbsolute(root) && path.isAbsolute(workspace));
   const originalPackage = path.join(workspace, "packages", packageName);
   const packagePath = path.join(root, "packages", packageName);

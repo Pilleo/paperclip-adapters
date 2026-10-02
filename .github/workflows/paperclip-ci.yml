@@ -177,8 +177,18 @@ jobs:
         run: node packages/orchestrator/test/contract/jules-server-restart.mjs --autonomous-dependency
       - name: Verify remotely accepted plan approval recovers after its acknowledgement is lost
         run: node packages/orchestrator/test/contract/jules-server-restart.mjs --autonomous-lost-approval
-      - name: Verify shared-file conflict repair and fresh-head native reviews
+      - name: Verify configured independent conflict repair preserves native reviews
         run: node packages/orchestrator/test/contract/jules-server-restart.mjs --autonomous-conflict
+      - name: Verify manual-default conflict wait and external resolution across restart
+        run: node packages/orchestrator/test/contract/conflict-recovery-live.mjs --conflict-recovery-mode=default
+      - name: Verify deterministic clean integration preserves reviews and releases dependencies
+        run: node packages/orchestrator/test/contract/conflict-recovery-live.mjs --conflict-recovery-mode=git_only --conflict-shape=disjoint
+      - name: Verify unresolved git-only conflict never delegates to AI
+        run: node packages/orchestrator/test/contract/conflict-recovery-live.mjs --conflict-recovery-mode=git_only --conflict-shape=overlap
+      - name: Verify configured remote agent repairs the original PR without re-review
+        run: node packages/orchestrator/test/contract/conflict-recovery-live.mjs --conflict-recovery-mode=agent --repair-agent-adapter=jules
+      - name: Prove manual-policy and no-re-review regression detection with restoration
+        run: node scripts/contract/autonomous-conflict-mutation.mjs
       - name: Prove autonomous dependency regression detection with a compiled private mutation and restoration
         run: node scripts/contract/autonomous-merge-mutation.mjs
       - name: Prove uncertain approval recovery across restart with a compiled private mutation and restoration

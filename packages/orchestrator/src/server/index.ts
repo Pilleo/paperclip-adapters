@@ -156,6 +156,7 @@ Executes an in-process, deterministic scheduling control plane on each heartbeat
 - **Lane-Scoped Failure Handling:** A paused worker disables only its own implementation lane. Vibe provider failures remain visible and actionable but cannot affect Jules dispatch or Luna/Terra reviews.
 - **Project-Owned Workspaces:** Each company project is processed independently; its configured workspace is the only checkout used for that project's tasks, PRs, locks, and backlog.
 - **Fail-Closed Scoping:** Issues without a valid project workspace are skipped and reported instead of falling back to the adapter process directory.
+- **Configurable Conflict Recovery:** Manual by default; opt into isolated clean Git integration or select any company agent by ID. Repair preserves existing native review decisions and records the resolved head separately. Final merge belongs to the user.
 `;
 
 export async function testEnvironment(

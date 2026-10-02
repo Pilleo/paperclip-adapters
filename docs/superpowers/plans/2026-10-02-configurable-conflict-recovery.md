@@ -2,7 +2,7 @@
 title: Implement adapter-neutral manual-default conflict recovery
 document_type: execution_plan
 base_revision: 927d5f5
-status: ready_for_implementation
+status: isolated_qualified_awaiting_authorized_rollout
 date: 2026-10-02
 ---
 
@@ -156,7 +156,7 @@ Record candidate SHA before push; observe remote refs after uncertain acknowledg
 
 **Files:** New `src/core/conflict-review-continuity.ts`, new `test/conflict-review-continuity.test.ts`, `src/core/review-pipeline.ts`, `src/core/review-epoch.ts`, `src/core/pr-review-child.ts`, `src/core/jules-monitor-state.ts`, `src/server/execute.ts`, existing review/handoff tests, under `packages/orchestrator`.
 
-**Interface:** `verifyConflictReviewContinuity` accepts the original review/progress head, the current remote head, and a verified `ConflictResolutionReceipt` from the spec. It returns verified continuity only for that exact PR and linked repair. Existing cards keep their original reviewed SHA; current publication/merge observation uses the resolved SHA.
+**Implemented interface:** `reviewHeadAfterConflictResolution(metadata, identity)` validates the recorded repair against company/issue/PR/current-head identity and returns the original review head only for that linked resolution. Existing cards keep their original reviewed SHA; current publication/merge observation uses the resolved SHA.
 
 - [ ] **Write failing tests** with existing answered review cards, a completed or partially completed review ladder, and a verified repair head. Assert original card IDs/verdicts/stage progress remain unchanged and no conflict-triggered review dispatch occurs:
 
@@ -191,3 +191,14 @@ Use the existing pipeline/child test fixtures to construct `before`, `after`, an
 ## Delivery order
 
 Start with configuration and adapter-neutral dispatch, then verify repair publication, preserve review continuity, and qualify the complete workflow. The acceptance criteria are the user's actual requirements: **manual by default; any configured agent; no re-review after conflict resolution**.
+
+## Execution checkpoint
+
+- [x] Task 1: configuration/schema/selector implemented, failing/passing tests and full hooks; commit `d82cdad`.
+- [x] Task 2: shared native dispatch/manual waits and non-replaying mutation transport implemented; commit `47718bf`. Independent process and remote Jules execution qualified on the installed host.
+- [x] Task 3: isolated real Git integration, explicit head lease, accepted-push observation and repair provenance implemented; commit `fec787f`, including absorbed verified follow-ups.
+- [x] Task 4: original native review continuity, actual user-merge wait, exact native producer hydration and original-branch remote repair implemented; commit `ed5c7be`, including absorbed verified follow-ups.
+- [x] Task 5 isolated qualification: missing configuration, explicit manual, git-only clean/conflicting, independent process and remote Jules repairs; pending gates/restarts/user merges/dependent release; compiled manual-bypass/re-review controls and restored full positives. CI and migration documentation updated.
+- [ ] Authorized live drain/reload and live-card qualification: requires authorization to start/reload the stopped main service and choose any live repair-agent opt-in. The staged campaign still belongs to the user's start/merge decisions.
+
+Detailed commands, timings, exact failure boundaries and receipts: `docs/superpowers/evidence/2026-10-02-configurable-conflict-recovery.md`. The earlier per-step list is the implementation recipe; this checkpoint records executed work and the remaining deployment boundary.
