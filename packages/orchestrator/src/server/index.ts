@@ -6,10 +6,12 @@ import type {
   AdapterConfigSchema,
 } from "@paperclipai/adapter-utils";
 import { execute } from "./execute.js";
+import { conflictRecoveryConfigFields, refineConflictRecoverySelection } from "../core/conflict-recovery.js";
 
 export { execute };
 
 export const OrchestratorConfigSchema = z.object({
+  ...conflictRecoveryConfigFields,
   reconciliationMode: z.enum(["normal", "freeze"]).default("normal"),
   maxConcurrentProjects: z.number().int().min(1).default(2),
   maxConcurrentJules: z.number().int().min(1).default(15),
@@ -22,10 +24,30 @@ export const OrchestratorConfigSchema = z.object({
   terraReviewerAgentId: z.string().optional(),
   julesPlanApprovalPolicy: z.enum(["required", "trusted_opt_out"]).default("required"),
   apiUrl: z.string().optional(),
-});
+}).superRefine(refineConflictRecoverySelection);
 
 export const orchestratorAdapterConfigSchema: AdapterConfigSchema = {
   fields: [
+    {
+      key: "conflictRecoveryMode",
+      label: "Conflict Recovery",
+      type: "select",
+      required: false,
+      default: "manual",
+      options: [
+        { label: "Manual", value: "manual" },
+        { label: "Clean Git integration only", value: "git_only" },
+        { label: "Configured agent", value: "agent" },
+      ],
+      hint: "Manual waits for external resolution. Agent mode uses exactly the configured agent. Conflict repair preserves existing review decisions.",
+    },
+    {
+      key: "conflictRecoveryAgentId",
+      label: "Conflict Recovery Agent ID",
+      type: "text",
+      required: false,
+      hint: "Required in agent mode. Select any agent in this company, with any adapter. Storing an ID does not enable automatic repair.",
+    },
     {
       key: "reconciliationMode",
       label: "Reconciliation Mode",

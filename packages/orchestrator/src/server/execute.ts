@@ -165,6 +165,8 @@ function registeredJulesPrProducerRunId(rawIssue: Readonly<Record<string, unknow
 }
 
 export interface OrchestratorAdapterConfig {
+  readonly conflictRecoveryMode?: "manual" | "git_only" | "agent" | undefined;
+  readonly conflictRecoveryAgentId?: string | undefined;
   readonly reconciliationMode?: "normal" | "freeze" | undefined;
   readonly maxConcurrentJules?: number | undefined;
   readonly maxConcurrentVibe?: number | undefined;
