@@ -65,6 +65,8 @@ import {
   shouldRecoverNativePrReview,
 } from "../core/execution-policy.js";
 import { rebasePrBranchLocally } from "../core/local-rebase.js";
+import { normalizeConflictRecoveryPolicy, reconcileConflictRecovery } from "../core/conflict-recovery.js";
+import type { PrMergeabilityInfo } from "../core/git-safety.js";
 import { evaluateAgentHealth, AgentHealthReport } from "../core/agent-health-monitor.js";
 import { mergeAuditMarker, synthesizeAuditDigest } from "../core/audit-digest.js";
 import { decidePullRequestReconciliation, selectRegisteredPullRequestObservation } from "../core/pull-request-reconciliation.js";
@@ -433,6 +435,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     await context.onLog?.("stdout", `[ORCHESTRATOR] ${summary}\n`).catch(() => {});
     return { exitCode: 0, signal: null, timedOut: false, summary };
   }
+  const conflictRecoveryPolicy = normalizeConflictRecoveryPolicy(config);
   const envMap = process.env;
   const apiUrl = config.apiUrl || envMap["PAPERCLIP_API_URL"] || "http://127.0.0.1:3100";
   const workspaceFromCtx =
@@ -479,6 +482,24 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
     console.log(msg);
     if (context.onLog) {
       await context.onLog("stdout", msg + "\n").catch(() => {});
+    }
+  };
+
+  const recoverPrConflict = async (issue: ParsedIssueMetadata, prUrl: string, headSha: string,
+    mergeability: PrMergeabilityInfo): Promise<void> => {
+    const products = asArray<Record<string, unknown>>(issue.rawIssue["workProducts"] ?? issue.rawIssue["work_products"]);
+    const product = products.find((item) => item["type"] === "pull_request" && item["url"] === prUrl && item["isPrimary"] === true);
+    const projectId = typeof issue.rawIssue["projectId"] === "string" ? issue.rawIssue["projectId"] : explicitProjectId;
+    if (typeof product?.["id"] !== "string" || !projectId) {
+      await log(`[ORCHESTRATOR] Holding conflict recovery for ${issue.id}: existing product/project identity unavailable.`);
+      return;
+    }
+    try {
+      const result = await reconcileConflictRecovery({ client: pc, policy: conflictRecoveryPolicy, companyId,
+        projectId, issueId: issue.id, productId: product["id"], prUrl, headSha, mergeability });
+      await log(`[ORCHESTRATOR] Conflict recovery for ${issue.id}: ${result.kind === "waiting" ? result.reason : "clear"}.`);
+    } catch (error) {
+      await log(`[ORCHESTRATOR] Conflict recovery held for ${issue.id}: ${String(error)}`);
     }
   };
 
@@ -2884,20 +2905,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
       const needsLocalRebase =
         mergeEval.isConflicting || mergeSafety.mergeStateStatus === "BEHIND";
       if (needsLocalRebase) {
-        await log(
-          `[ORCHESTRATOR] PR #${matchingPr.number} needs a local rebase (${mergeSafety.mergeable}/${mergeSafety.mergeStateStatus}). Jules will not be given a new session.`
-        );
-        const rebase = await rebasePrBranchLocally(mergeSafety, workspacePath);
-        await pc.comment(reviewTask.id, `[Orchestrator] Local conflict resolution: ${rebase.message}`);
-        if (!rebase.ok && vibeAgentId && managedIds.has(vibeAgentId)) {
-          await pc.patchIssue(reviewTask.id, issuePatch("in_progress", vibeAgentId));
-          statusOverrides.set(reviewTask.id, "in_progress");
-          await managedWakeup(
-            vibeAgentId,
-            `Resolve merge conflicts locally for PR #${matchingPr.number} (${mergeSafety.headRefName} onto ${mergeSafety.baseRefName}). Do not open a new Jules session. ${rebase.message}`,
-            reviewTask.id
-          );
-        }
+        await recoverPrConflict(reviewTask, matchingPr.url, reviewHeadSha, mergeSafety);
         continue;
       }
     }
@@ -3637,24 +3645,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
         if (!mergeEval.canMerge) {
           await log(`[ORCHESTRATOR] [Merge Blocked] ${mergeEval.reason}`);
           if (mergeEval.isConflicting) {
-            const rebase = await rebasePrBranchLocally(mergeSafety, workspacePath);
-            await pc.comment(reviewTask.id, `[Orchestrator] Local conflict resolution: ${rebase.message}`);
-            if (rebase.ok) {
-              await log(`[ORCHESTRATOR] Local rebase succeeded for PR #${prNum}. Merge deferred to the next tick.`);
-              continue;
-            }
-            if (vibeAgentId && managedIds.has(vibeAgentId)) {
-              await log(
-                `[ORCHESTRATOR] Local rebase failed; assigning managed Vibe to resolve conflicts on the host. A new Jules session cannot rebase this branch.`
-              );
-              await pc.patchIssue(reviewTask.id, issuePatch("in_progress", vibeAgentId));
-              statusOverrides.set(reviewTask.id, "in_progress");
-              await managedWakeup(
-                vibeAgentId,
-                `Resolve merge conflicts locally for PR #${prNum} (${mergeSafety.headRefName} onto ${mergeSafety.baseRefName}). Do not open a new Jules session. ${rebase.message}`,
-                reviewTask.id
-              );
-            }
+            if (matchingPr) await recoverPrConflict(reviewTask, matchingPr.url, reviewHeadSha, mergeSafety);
           }
           continue;
         }

@@ -17,6 +17,11 @@ vi.mock("../src/core/git-safety.js", async (importOriginal) => {
   return { ...actual, checkPrMergeability: vi.fn() };
 });
 
+vi.mock("../src/core/local-rebase.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/core/local-rebase.js")>();
+  return { ...actual, rebasePrBranchLocally: vi.fn().mockResolvedValue({ ok: false, message: "conflict" }) };
+});
+
 import { execute } from "../src/server/execute.js";
 import {
   checkPrCiIsGreen,
@@ -25,6 +30,7 @@ import {
   fetchPullRequestHeadSha,
 } from "../src/core/github-sync.js";
 import { checkPrMergeability } from "../src/core/git-safety.js";
+import { rebasePrBranchLocally } from "../src/core/local-rebase.js";
 import { prReviewChildDescription } from "../src/core/pr-review-child.js";
 
 const companyId = "company-1519";
@@ -87,6 +93,7 @@ describe("orchestrator native PR completion", () => {
   const originalKey = process.env["PAPERCLIP_API_KEY"];
 
   beforeEach(() => {
+    vi.mocked(rebasePrBranchLocally).mockResolvedValue({ ok: false, message: "conflict" });
     process.env["PAPERCLIP_API_KEY"] = "test-token";
     vi.mocked(fetchGitHubPullRequests).mockResolvedValue({
       openPrs: [{ number: 3, title: "MAZ-1519 Jules PR", state: "OPEN", headRefName: "jules/1519", headRefOid: headSha, baseRefName: "main", mergedAt: null, url: prUrl, files: [] }],
@@ -97,6 +104,54 @@ describe("orchestrator native PR completion", () => {
     vi.mocked(fetchPullRequestHeadSha).mockResolvedValue(headSha);
     vi.mocked(checkPrCiIsGreen).mockResolvedValue({ isGreen: true, status: "success" });
     vi.mocked(checkPrMergeability).mockResolvedValue({ prNumber: 3, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN" });
+  });
+
+  it.each([undefined, "manual", "agent", "agent_unknown_refs"] as const)("routes conflicts through policy %s without a Vibe fallback", async (mode) => {
+    let product: Record<string, unknown> = { ...issue().workProducts[0], id: "conflict-product", isPrimary: true,
+      metadata: { source: "jules", headSha } };
+    const parent: Record<string, unknown> = { ...issue(), workProducts: [product] };
+    const repairTasks: Record<string, unknown>[] = [];
+    const conflictCards: Record<string, unknown>[] = [];
+    vi.mocked(checkPrMergeability).mockImplementation(async (_number, _cwd, refs) =>
+      refs && mode === "agent_unknown_refs" ? { prNumber: 3, mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN" } :
+      { prNumber: 3, mergeable: "CONFLICTING", mergeStateStatus: "DIRTY", headRefName: "jules/1519", baseRefName: "main",
+        headRefOid: headSha, baseRefOid: "b".repeat(40) });
+    globalThis.fetch = async (url, init) => {
+      const href = String(url);
+      const method = init?.method ?? "GET";
+      const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
+      if (href.endsWith("/agents/resolver-any")) return Response.json({ id: "resolver-any", companyId, adapterType: "process", status: "idle" });
+      if (method === "PATCH" && href.endsWith("/work-products/conflict-product")) {
+        product = { ...product, ...body }; parent["workProducts"] = [product]; return Response.json(product);
+      }
+      if (method === "POST" && href.endsWith(`/issues/${issueId}/children`)) {
+        const child = { ...body, id: "repair-task", companyId, parentId: issueId };
+        repairTasks.push(child); return Response.json(child, { status: 201 });
+      }
+      if (method === "POST" && href.endsWith("/approvals")) {
+        const card = { ...body, id: "conflict-card", status: "pending" };
+        conflictCards.push(card); return Response.json(card, { status: 201 });
+      }
+      if (method === "PATCH" && href.endsWith(`/issues/${issueId}`)) {
+        Object.assign(parent, body); return Response.json(parent);
+      }
+      if (href.endsWith(`/issues/${issueId}/work-products`)) return Response.json([product]);
+      if (href.endsWith(`/issues/${issueId}`)) return Response.json(parent);
+      if (href.includes("parentId=")) return Response.json(repairTasks);
+      if (href.includes("/agents")) return Response.json(managedAgents(true));
+      if (href.includes("/projects")) return Response.json([{ id: "project-1519", name: "fixture", primaryWorkspace: { cwd: process.cwd() } }]);
+      if (href.includes("/approvals")) return Response.json(conflictCards);
+      if (method === "GET" && href.includes("/issues") && !href.includes("/interactions") && !href.includes("/documents") && !href.includes("/recovery-actions")) return Response.json([parent]);
+      return Response.json([]);
+    };
+    const ctx = context();
+    const result = await execute({ ...ctx, config: { ...ctx.config,
+      ...(mode ? { conflictRecoveryMode: mode === "agent_unknown_refs" ? "agent" : mode } : {}), conflictRecoveryAgentId: "resolver-any" } });
+    expect(result.exitCode).toBe(0);
+    expect(rebasePrBranchLocally).not.toHaveBeenCalled();
+    expect(repairTasks).toHaveLength(mode === "agent" ? 1 : 0);
+    if (mode === "agent") expect(repairTasks[0]).toMatchObject({ assigneeAgentId: "resolver-any" });
+    else expect(conflictCards).toHaveLength(1);
   });
 
   it("does not reopen a rejected Jules PR head after its addressed v2 Luna child verdict", async () => {

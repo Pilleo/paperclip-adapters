@@ -131,7 +131,10 @@ export function createPaperclipHttp(options: PaperclipHttpOptions) {
       ...(token && options.runId ? { "X-Paperclip-Run-Id": options.runId } : {}),
       ...((init.headers as Record<string, string> | undefined) || {}),
     };
-    const response = await resilientFetch(`${base}${path}`, { ...init, headers });
+    // A lost acknowledgement may follow remote acceptance. The native effect
+    // owner must inspect its receipt; retrying a mutation can duplicate work.
+    const response = await resilientFetch(`${base}${path}`, { ...init, headers },
+      isMutation ? { maxRetries: 0 } : {});
     return response;
   }
 

@@ -9,6 +9,8 @@ export interface PrMergeabilityInfo {
   readonly mergeStateStatus?: string | undefined; // "CLEAN" | "DIRTY" | "BLOCKED" | "BEHIND" | "UNKNOWN"
   readonly headRefName?: string | undefined;
   readonly baseRefName?: string | undefined;
+  readonly headRefOid?: string | undefined;
+  readonly baseRefOid?: string | undefined;
 }
 
 export interface MergeSafetyDecision {
