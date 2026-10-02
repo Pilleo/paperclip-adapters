@@ -29,3 +29,4 @@ export * from "./task-contract.js";
 export * from "./child-plan-review.js";
 export * from "./child-plan-review-bootstrap.js";
 export * from "./child-plan-review-parent.js";
+export * from "./conflict-repair-task.js";

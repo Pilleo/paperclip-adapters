@@ -117,10 +117,9 @@ export type ReviewPipelineDecision =
       readonly reason: string;
     }
   | {
-      readonly stage: "completed";
-      readonly action: "EXECUTE_MERGE";
-      readonly prNumber?: number | undefined;
-      readonly prUrl?: string | undefined;
+      readonly stage: "operator_approval";
+      readonly action: "AWAIT_USER_MERGE";
+      readonly approvalId: string;
       readonly reason: string;
     }
   | {
@@ -153,7 +152,7 @@ export function isReviewDispatchDecision(decision: ReviewPipelineDecision): deci
     case "RECONCILE_OPERATOR_GATE":
     case "CREATE_MERGE_APPROVAL":
     case "AWAIT_OPERATOR_APPROVAL":
-    case "EXECUTE_MERGE":
+    case "AWAIT_USER_MERGE":
       return false;
   }
 }
@@ -184,6 +183,7 @@ export function classifyReviewPipelineAction(action: ReviewPipelineDecision["act
     case "AWAIT_REVIEW":
     case "AWAIT_OPERATOR_RECOVERY":
     case "AWAIT_OPERATOR_APPROVAL":
+    case "AWAIT_USER_MERGE":
       return "wait";
     case "DISPATCH_VIBE_REVIEW":
     case "DISPATCH_STRONG_REVIEW":
@@ -194,7 +194,6 @@ export function classifyReviewPipelineAction(action: ReviewPipelineDecision["act
     case "REASSIGN_TO_WORKER":
     case "RECONCILE_OPERATOR_GATE":
     case "CREATE_MERGE_APPROVAL":
-    case "EXECUTE_MERGE":
       return "mutation";
   }
 }
@@ -444,7 +443,8 @@ export function evaluateReviewPipelineProgress(
       return { stage: "operator_approval", action: "CREATE_MERGE_APPROVAL", prNumber, prUrl, reason: `Luna and ${strongReviewerAgentId ? "Gemini" : "Terra"} approved [${issue.identifier || issue.id}]. Creating final operator merge approval card.` };
     }
     if (mergeApproval.status === "approved") {
-      return { stage: "completed", action: "EXECUTE_MERGE", prNumber, prUrl, reason: `Operator approved final merge for [${issue.identifier || issue.id}] (approval ${mergeApproval.id}). Ready for automated merge.` };
+      return { stage: "operator_approval", action: "AWAIT_USER_MERGE", approvalId: mergeApproval.id,
+        reason: `Merge gate ${mergeApproval.id} approved; awaiting the user's actual merge of [${issue.identifier || issue.id}].` };
     }
     if (mergeApproval.status === "rejected") {
       return {

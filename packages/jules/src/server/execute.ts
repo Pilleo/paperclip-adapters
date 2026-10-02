@@ -13,6 +13,7 @@ import {
 } from "./activity-formatter.js";
 import { evaluateSessionStartup, isInteractionWake, preferBranchBoundRecoveryHandle, recoverPrIdentityFromWorkProduct, restoreBranchBoundRemediationFromHandle, sessionMatchesConfig, shouldReadIssueSessionHandle, shouldReclaimBranchBoundRecovery } from "./session-lifecycle.js";
 import { isLiveJulesRemoteState } from "./jules-live-state.js";
+import { conflictRepairStartingBranch } from "./conflict-repair.js";
 import { evaluateSessionWatchdog } from "./watchdog.js";
 import { MAX_ACTIVITY_PAGES, activityScanPageLimit, listAllActivities, scanCompleteActivities, mirrorActivities, mirrorNewActivities, reduceTerminalActivityScan, terminalEvidenceActivity } from "./activity-mirror.js";
 import { reconcileProviderContinuation } from "./provider-continuation.js";
@@ -1007,6 +1008,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
   const taskTitle = parsedCtxContext.task.title;
   const taskDescription = parsedCtxContext.task.description;
+  const taskStartingBranch = conflictRepairStartingBranch(taskDescription, ctx.agent.id, ctx.agent.companyId,
+    config.repository, config.baseBranch);
 
   const startGateCompanyId = companyId || ctx.agent?.companyId;
   if (ctx.authToken && startGateCompanyId && !process.env["VITEST"]) {
@@ -2053,7 +2056,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         phase: "STARTING", attempt, failedSessions, createdAt: startedAt,
         providerCreateIntent: { requestId, runId: ctx.runId,
           promptSha256: createHash("sha256").update(prompt).digest("hex"), source,
-          baseBranch: remediation?.headRefName ?? config.baseBranch, startedAt },
+          baseBranch: remediation?.headRefName ?? taskStartingBranch, startedAt },
       };
       await saveStoredSession(session);
       return client.createSession({
@@ -2065,7 +2068,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                   // A terminal provider failure after a PR handoff is not a
                   // fresh task. Jules must resume the PR branch; starting at
                   // baseBranch can only produce an unrelated replacement PR.
-                  startingBranch: remediation?.headRefName ?? config.baseBranch
+                  startingBranch: remediation?.headRefName ?? taskStartingBranch
               }
           },
           requirePlanApproval: config.requirePlanApproval,
@@ -5701,7 +5704,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 sourceContext: {
                   source: config.source,
                   githubRepoContext: {
-                    startingBranch: config.baseBranch,
+                    startingBranch: taskStartingBranch,
                   },
                 },
                 requirePlanApproval: config.requirePlanApproval,

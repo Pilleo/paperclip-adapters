@@ -4,6 +4,7 @@ import type { ChildReviewApi } from "@pilleo/paperclip-adapter-common";
 import type { PaperclipHttp } from "./paperclip-http.js";
 import { buildReviewInteractionRequest, reviewInteractionIdempotencyKey } from "./review-interaction-state.js";
 import type { NativeReviewInteraction } from "./review-interaction-state.js";
+import { reviewHeadAfterConflictResolution } from "./conflict-review-continuity.js";
 
 export const PR_REVIEW_CHILD_PREFIX = "<!-- paperclip-pr-review-child:v1\n";
 export const BOARD_PR_REVIEW_CHILD_PREFIX = "<!-- paperclip-pr-review-child:v2\n";
@@ -84,7 +85,14 @@ const Issue = z.object({ id: z.string(), companyId: z.string(), parentId: z.stri
   status: z.string(), assigneeAgentId: z.string().nullish(), createdByAgentId: z.string().nullish(),
   description: z.string().nullish() });
 const WorkProduct = z.object({ url: z.string(), type: z.string(), isPrimary: z.boolean(), status: z.string(),
-  metadata: z.object({ headSha: z.string().optional() }).nullish() });
+  metadata: z.record(z.unknown()).nullish() });
+
+function productReviewHead(product: z.infer<typeof WorkProduct>, identity: PrReviewChildIdentity): string | null {
+  const head = product.metadata?.["headSha"];
+  if (typeof head !== "string") return null;
+  return reviewHeadAfterConflictResolution(product.metadata, { companyId: identity.companyId,
+    issueId: identity.parentIssueId, prUrl: identity.prUrl, currentHeadSha: head });
+}
 const ParentCard = z.object({ kind: z.string(), status: z.string(), idempotencyKey: z.string().nullish() });
 
 /** Authoritatively locate or create one PR/head-bound reviewer child from a scoped orchestrator run. */
@@ -105,7 +113,7 @@ export async function ensurePrReviewChild(input: {
     throw new Error("PR review parent is not unassigned in_review under the expected company");
   }
   if (rawProducts.filter((product) => product.type === "pull_request" && product.url === identity.prUrl &&
-      product.metadata?.headSha === identity.headSha && product.isPrimary && product.status === "ready_for_review").length !== 1) {
+      productReviewHead(product, identity) === identity.headSha && product.isPrimary && product.status === "ready_for_review").length !== 1) {
     throw new Error("PR review parent has no unique primary work product at the expected immutable head");
   }
   if (parentCards.some((card) => card.kind === "request_item_verdicts" &&
@@ -166,7 +174,7 @@ async function assertRegisteredParent(identity: PrReviewChildIdentity, api: Chil
   if (parent.id !== identity.parentIssueId || parent.companyId !== identity.companyId ||
       (!reviewOwnership && !remediationOwnership) ||
       products.filter((product) => product.type === "pull_request" && product.isPrimary &&
-        product.url === identity.prUrl && product.metadata?.headSha === identity.headSha &&
+        product.url === identity.prUrl && productReviewHead(product, identity) === identity.headSha &&
         product.status === "ready_for_review").length !== 1) {
     throw new Error("PR review parent or immutable primary work product changed");
   }

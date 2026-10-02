@@ -64,8 +64,8 @@ import {
   shouldTakeOverNativePrReview,
   shouldRecoverNativePrReview,
 } from "../core/execution-policy.js";
-import { rebasePrBranchLocally } from "../core/local-rebase.js";
-import { normalizeConflictRecoveryPolicy, reconcileConflictRecovery } from "../core/conflict-recovery.js";
+import { normalizeConflictRecoveryPolicy, reconcileConflictRecovery, type ConflictRecoveryDisposition } from "../core/conflict-recovery.js";
+import { reviewHeadAfterConflictResolution } from "../core/conflict-review-continuity.js";
 import type { PrMergeabilityInfo } from "../core/git-safety.js";
 import { evaluateAgentHealth, AgentHealthReport } from "../core/agent-health-monitor.js";
 import { mergeAuditMarker, synthesizeAuditDigest } from "../core/audit-digest.js";
@@ -486,20 +486,27 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
   };
 
   const recoverPrConflict = async (issue: ParsedIssueMetadata, prUrl: string, headSha: string,
-    mergeability: PrMergeabilityInfo): Promise<void> => {
+    mergeability: PrMergeabilityInfo): Promise<ConflictRecoveryDisposition | null> => {
     const products = asArray<Record<string, unknown>>(issue.rawIssue["workProducts"] ?? issue.rawIssue["work_products"]);
     const product = products.find((item) => item["type"] === "pull_request" && item["url"] === prUrl && item["isPrimary"] === true);
     const projectId = typeof issue.rawIssue["projectId"] === "string" ? issue.rawIssue["projectId"] : explicitProjectId;
     if (typeof product?.["id"] !== "string" || !projectId) {
       await log(`[ORCHESTRATOR] Holding conflict recovery for ${issue.id}: existing product/project identity unavailable.`);
-      return;
+      return null;
     }
     try {
+      const immutableObservation = await checkPrMergeability(mergeability.prNumber, workspacePath, true);
+      const recoveryObservation = immutableObservation.mergeable === "UNKNOWN"
+        ? { ...mergeability, headRefOid: undefined, baseRefOid: undefined }
+        : { ...mergeability, ...immutableObservation };
       const result = await reconcileConflictRecovery({ client: pc, policy: conflictRecoveryPolicy, companyId,
-        projectId, issueId: issue.id, productId: product["id"], prUrl, headSha, mergeability, workspacePath });
+        projectId, issueId: issue.id, productId: product["id"], prUrl, headSha,
+        mergeability: recoveryObservation, workspacePath });
       await log(`[ORCHESTRATOR] Conflict recovery for ${issue.id}: ${result.kind === "waiting" ? result.reason : "clear"}.`);
+      return result;
     } catch (error) {
       await log(`[ORCHESTRATOR] Conflict recovery held for ${issue.id}: ${String(error)}`);
+      return null;
     }
   };
 
@@ -1395,9 +1402,16 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       let rejectedPrChildNeedsFeedback = false;
       let authoritativeExecutionPolicy: Record<string, unknown> | null = null;
       let authoritativeIssue: Record<string, unknown> | null = null;
+      let recoveryReviewHeadSha = matchingPr.headRefOid;
       try {
         const detail = await pc.getIssue<Record<string, unknown>>(issue.id);
         authoritativeIssue = detail;
+        if (matchingPr.headRefOid) {
+          const product = asArray<Record<string, unknown>>(detail["workProducts"] ?? detail["work_products"])
+            .find((item) => item["url"] === matchingPr.url && item["isPrimary"] === true);
+          recoveryReviewHeadSha = reviewHeadAfterConflictResolution(product?.["metadata"] as Record<string, unknown> | undefined,
+            { companyId, issueId: issue.id, prUrl: matchingPr.url, currentHeadSha: matchingPr.headRefOid });
+        }
         if (detail["executionBlocker"] != null || issue.rawIssue["executionBlocker"] != null) {
           openPrExecutionHoldIssueIds.add(issue.id);
           authoritativeOpenPrExecutionBlockers.set(issue.id,
@@ -1416,20 +1430,20 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
             status: typeof interaction["status"] === "string" ? interaction["status"] : undefined,
             idempotencyKey: typeof interaction["idempotencyKey"] === "string" ? interaction["idempotencyKey"] : undefined,
             result: interaction["result"],
-          })), issue.id, matchingPr.headRefOid, issue.description || undefined);
+          })), issue.id, recoveryReviewHeadSha!, issue.description || undefined);
           currentHeadReviewComplete = hasCompletedNativeApprovalLadderForHead(rawInteractions.map((interaction) => ({
             id: String(interaction["id"] ?? ""), kind: typeof interaction["kind"] === "string" ? interaction["kind"] : undefined,
             status: typeof interaction["status"] === "string" ? interaction["status"] : undefined,
             idempotencyKey: typeof interaction["idempotencyKey"] === "string" ? interaction["idempotencyKey"] : undefined,
             result: interaction["result"],
-          })), issue.id, matchingPr.headRefOid, issue.description || undefined);
+          })), issue.id, recoveryReviewHeadSha!, issue.description || undefined);
           // The v2 child ladder uses managed Gemini when available, otherwise
           // Terra is its strong reviewer. Omitting that fallback here loses an
           // answered Luna child rejection and re-promotes its old PR head.
           const prStrongAgentId = strongReviewerAgentId ?? terraReviewerAgentId;
           if (lunaReviewerAgentId && prStrongAgentId) {
             const childInspection = await inspectPrReviewChildren({ companyId, parentIssueId: issue.id,
-              prUrl: matchingPr.url, headSha: matchingPr.headRefOid,
+              prUrl: matchingPr.url, headSha: recoveryReviewHeadSha!,
               bootstrapAgentId: orchestratorId, lunaAgentId: lunaReviewerAgentId,
               strongAgentId: prStrongAgentId, protocolVersion: 2,
               allowRemediationStatus: true, api: prReviewChildApi(pc) });
@@ -1515,7 +1529,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
         producerRun,
         handoffRun,
         prUrl: matchingPr.url,
-        ...(matchingPr.headRefOid ? { headSha: matchingPr.headRefOid } : {}),
+        ...(recoveryReviewHeadSha ? { headSha: recoveryReviewHeadSha } : {}),
         heartbeatRuns: [...heartbeatRuns, ...handoffHistory],
       });
       if (producerRun?.julesState === null && handoff.kind === "active_or_unverified_monitor") {
@@ -2894,8 +2908,8 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
     // machine. Retire only explicitly marked Jules artifacts before the
     // native card is reused; generic task children remain untouched.
     await retireStaleJulesChildren(reviewTask.id, reviewTask.identifier || reviewTask.id);
-    const reviewHeadSha = matchingPr.headRefOid || await fetchPullRequestHeadSha(matchingPr.url);
-    if (!reviewHeadSha) {
+    const currentHeadSha = matchingPr.headRefOid || await fetchPullRequestHeadSha(matchingPr.url);
+    if (!currentHeadSha) {
       await log(`[ORCHESTRATOR] Deferring review for [${reviewTask.identifier || reviewTask.id}]: immutable PR head SHA is unavailable.`);
       continue;
     }
@@ -2904,10 +2918,26 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
       const mergeEval = evaluatePrMergeability(mergeSafety);
       const needsLocalRebase =
         mergeEval.isConflicting || mergeSafety.mergeStateStatus === "BEHIND";
-      if (needsLocalRebase) {
-        await recoverPrConflict(reviewTask, matchingPr.url, reviewHeadSha, mergeSafety);
-        continue;
+      const existingProducts = asArray<Record<string, unknown>>(reviewTask.rawIssue["workProducts"] ?? reviewTask.rawIssue["work_products"]);
+      const recoveryProduct = existingProducts.find((product) => product["url"] === matchingPr.url && product["isPrimary"] === true);
+      const hasRecovery = (recoveryProduct?.["metadata"] as Record<string, unknown> | undefined)?.["conflictRecovery"] != null;
+      if (needsLocalRebase || hasRecovery) {
+        const recovery = await recoverPrConflict(reviewTask, matchingPr.url, currentHeadSha, mergeSafety);
+        if (!recovery || recovery.kind === "waiting") continue;
+        const updated = await pc.getIssue<Record<string, unknown>>(reviewTask.id);
+        reviewTask = extractIssueMetadata({ ...updated, id: reviewTask.id, title: reviewTask.title,
+          status: String(updated["status"] ?? reviewTask.status), description: String(updated["description"] ?? reviewTask.description) });
       }
+    }
+    const continuityProduct = asArray<Record<string, unknown>>(reviewTask.rawIssue["workProducts"] ?? reviewTask.rawIssue["work_products"])
+      .find((product) => product["url"] === matchingPr.url && product["isPrimary"] === true);
+    let reviewHeadSha: string;
+    try {
+      reviewHeadSha = reviewHeadAfterConflictResolution(continuityProduct?.["metadata"] as Record<string, unknown> | undefined,
+        { companyId, issueId: reviewTask.id, prUrl: matchingPr.url, currentHeadSha });
+    } catch (error) {
+      await log(`[ORCHESTRATOR] Holding review continuity for ${reviewTask.id}: ${String(error)}`);
+      continue;
     }
     const ciCheck = resolvePrCiGate(
       managedJulesCiPolicy,
@@ -2961,7 +2991,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
     if (julesProductForUrl && reviewTask.status === "in_review" &&
         reviewTask.rawIssue["assigneeAgentId"] == null &&
         typeof registeredMetadata?.["headSha"] === "string" && /^[0-9a-f]{40}$/i.test(registeredMetadata["headSha"]) &&
-        registeredMetadata["headSha"] !== reviewHeadSha) {
+        registeredMetadata["headSha"] !== currentHeadSha) {
       await log(`[ORCHESTRATOR] Holding Jules PR review for [${reviewTask.identifier || reviewTask.id}]: registered PR head differs from GitHub; verify and register the new immutable head before any native reviewer card.`);
       continue;
     }
@@ -2970,7 +3000,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
         ? product["metadata"] as Record<string, unknown> : {};
       return product["type"] === "pull_request" && product["isPrimary"] === true &&
         product["status"] === "ready_for_review" && product["url"] === matchingPr.url &&
-        metadata["headSha"] === reviewHeadSha &&
+        metadata["headSha"] === currentHeadSha &&
         (metadata["source"] === "jules" || metadata["producer"] === "paperclip-jules-adapter");
     });
     const usePrChildLane = Boolean(julesProduct && reviewTask.status === "in_review" &&
@@ -3278,6 +3308,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
       case "AWAIT_REVIEW_CONFIGURATION":
       case "AWAIT_REVIEW":
       case "AWAIT_OPERATOR_RECOVERY":
+      case "AWAIT_USER_MERGE":
         await log(`[ORCHESTRATOR] ⏳ [${pipelineDecision.stage}] ${pipelineDecision.reason}`);
         continue;
       case "DISPATCH_VIBE_REVIEW":
@@ -3289,7 +3320,6 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
       case "RECONCILE_OPERATOR_GATE":
       case "CREATE_MERGE_APPROVAL":
       case "AWAIT_OPERATOR_APPROVAL":
-      case "EXECUTE_MERGE":
         break;
     }
 
@@ -3635,33 +3665,6 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
           await log(`[ORCHESTRATOR] Warning: Failed to create merge approval: ${msg}`);
-        }
-      }
-    } else if (pipelineDecision.action === "EXECUTE_MERGE") {
-      const prNum = matchingPr?.number || pipelineDecision.prNumber;
-      if (prNum) {
-        const mergeSafety = await checkPrMergeability(prNum, workspacePath);
-        const mergeEval = evaluatePrMergeability(mergeSafety);
-        if (!mergeEval.canMerge) {
-          await log(`[ORCHESTRATOR] [Merge Blocked] ${mergeEval.reason}`);
-          if (mergeEval.isConflicting) {
-            if (matchingPr) await recoverPrConflict(reviewTask, matchingPr.url, reviewHeadSha, mergeSafety);
-          }
-          continue;
-        }
-
-        await log(
-          `[ORCHESTRATOR] [Stage 4 Operator Approval] Operator approved merge for PR #${prNum}. Executing merge...`
-        );
-        try {
-          await execFileAsync("gh", ["pr", "merge", String(prNum), "--merge", "--delete-branch"], {
-            cwd: workspacePath,
-          });
-          await pc.patchIssue(reviewTask.id, { status: "done" });
-          statusOverrides.set(reviewTask.id, "done");
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : String(err);
-          await log(`[ORCHESTRATOR] Warning: Failed to execute automated merge: ${msg}`);
         }
       }
     }

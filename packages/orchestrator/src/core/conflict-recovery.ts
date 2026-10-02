@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { asArray, type PaperclipHttp } from "./paperclip-http.js";
 import { evaluatePrMergeability, type PrMergeabilityInfo } from "./git-safety.js";
 import { rebasePrBranchLocally } from "./local-rebase.js";
+import { CONFLICT_REPAIR_TASK_PREFIX } from "@pilleo/paperclip-adapter-common";
 
 export type ConflictRecoveryPolicy =
   | { readonly mode: "manual" }
@@ -56,7 +57,7 @@ export const ConflictRecoveryStateSchema = z.object({
   candidateHeadSha: sha.nullable().default(null),
 });
 export type ConflictRecoveryState = z.infer<typeof ConflictRecoveryStateSchema>;
-export const CONFLICT_REPAIR_PREFIX = "<!-- paperclip-conflict-repair:v1\n";
+export const CONFLICT_REPAIR_PREFIX = CONFLICT_REPAIR_TASK_PREFIX;
 
 export function conflictRepairDescription(state: ConflictRecoveryState): string {
   return `${CONFLICT_REPAIR_PREFIX}${JSON.stringify(state)}\n-->\n\n` +
@@ -170,9 +171,13 @@ async function reconcileOwnedConflictRecovery(input: ConflictRecoveryInput): Pro
       const evidence = repairProducts.filter((item) => item["type"] === "pull_request" && item["url"] === input.prUrl &&
         (item["metadata"] as Record<string, unknown> | undefined)?.["headSha"] === input.headSha);
       if (evidence.length !== 1) return { kind: "waiting", reason: "Configured agent has not registered the resolved PR head" };
-      const producer = runs.find((run) => run["id"] === evidence[0]!["createdByRunId"]);
+      const summary = runs.find((run) => (run["runId"] ?? run["id"]) === evidence[0]!["createdByRunId"]);
+      // The issue-run endpoint returns runId/contextIssueId and summarized
+      // resultJson. Hydrate the immutable producer before accepting completion.
+      const producer = summary ? await client.getHeartbeatRun<Record<string, unknown>>(String(evidence[0]!["createdByRunId"])) : null;
       const result = producer?.["resultJson"] as Record<string, unknown> | undefined;
-      if (!producer || producer["agentId"] !== state.agentId || producer["status"] !== "succeeded" ||
+      if (!producer || producer["id"] !== evidence[0]!["createdByRunId"] || producer["companyId"] !== input.companyId ||
+        producer["agentId"] !== state.agentId || producer["status"] !== "succeeded" ||
         (producer["contextSnapshot"] as Record<string, unknown> | undefined)?.["issueId"] !== state.repairTaskId ||
         (result?.["provider"] === "jules" && (result["julesState"] !== "COMPLETED" || result["stopReason"] !== "completed"))) {
         return { kind: "waiting", reason: "Registered repair producer has not settled successfully" };

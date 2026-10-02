@@ -12,7 +12,7 @@ describe("native multi-tier review pipeline", () => {
     ["RECOVER_REVIEW", "dispatch"],
     ["REASSIGN_TO_WORKER", "mutation"],
     ["CREATE_MERGE_APPROVAL", "mutation"],
-    ["EXECUTE_MERGE", "mutation"],
+    ["AWAIT_USER_MERGE", "wait"],
   ] as const)("classifies pipeline action %s exhaustively", (action, group) => {
     expect(classifyReviewPipelineAction(action)).toBe(group);
   });
@@ -135,7 +135,7 @@ describe("native multi-tier review pipeline", () => {
     }).action).toBe("CREATE_MERGE_APPROVAL");
   });
 
-  it("waits for an existing merge approval after both native reviewers approve", () => {
+  it.each(["pending", "approved"] as const)("waits with an existing %s merge card after both native reviewers approve", (status) => {
     const p = base([]);
     const headSha = "9d1b229fa0a9102c25b619b1bc5252f1b4851201";
     const card = (stage: "luna" | "terra") => ({
@@ -156,12 +156,12 @@ describe("native multi-tier review pipeline", () => {
       existingApprovals: [{
         id: "merge-approval",
         type: "request_board_approval",
-        status: "pending",
+        status,
         issueIds: [],
         payload: { action: "task_merge", issueId: issue.id },
       }],
     });
-    expect(decision).toMatchObject({ action: "AWAIT_OPERATOR_APPROVAL", approvalId: "merge-approval" });
+    expect(decision).toMatchObject({ action: status === "approved" ? "AWAIT_USER_MERGE" : "AWAIT_OPERATOR_APPROVAL", approvalId: "merge-approval" });
   });
 
   it("requests operator-gate reconciliation only when reviewer ownership is stale", () => {

@@ -68,7 +68,10 @@ describe("native conflict recovery", () => {
         Object.assign(approvals[0]!, { status: "rejected" }); data = approvals[0];
       }
       else if (path === "/issues/repair") data = children[0];
-      else if (path === "/issues/repair/runs") data = runs;
+      else if (path === "/issues/repair/runs") data = runs.map(({ id, contextSnapshot, companyId: _company, resultJson: _result, ...run }) => ({
+        ...run, runId: id, contextIssueId: (contextSnapshot as Record<string, unknown>)["issueId"], resultJson: { summary: "completed" },
+      }));
+      else if (path === "/heartbeat-runs/repair-run") data = runs.find((run) => run["id"] === "repair-run");
       else if (path === "/issues/repair/work-products") data = repairProducts;
       else if (path === "/issues/source" && method === "PATCH") data = { id: "source", companyId: "company", ...body };
       else throw new Error(`Unexpected ${method} ${path}`);
@@ -123,11 +126,11 @@ describe("native conflict recovery", () => {
     expect(f.children).toHaveLength(1);
   });
 
-  it.each(["manual", "agent"] as const)("registers verified %s resolution separately from the original review head", async (mode) => {
-    const f = fixture();
-    const policy: recovery.ConflictRecoveryPolicy = mode === "agent" ? { mode, agentId: "chosen" } : { mode };
+  it.each(["manual", "process", "jules"] as const)("registers verified %s resolution separately from the original review head", async (mode) => {
+    const f = fixture(mode === "manual" ? "process" : mode);
+    const policy: recovery.ConflictRecoveryPolicy = mode !== "manual" ? { mode: "agent", agentId: "chosen" } : { mode };
     await recovery.reconcileConflictRecovery(input(f.client, policy));
-    if (mode === "agent") f.finishRepair();
+    if (mode !== "manual") f.finishRepair();
     const resolvedHead = "c".repeat(40);
     const before = input(f.client, policy);
     const result = await recovery.reconcileConflictRecovery({ ...before, headSha: resolvedHead,
@@ -135,7 +138,7 @@ describe("native conflict recovery", () => {
     expect(result.kind).toBe("clear");
     expect(f.product["metadata"]).toMatchObject({ headSha: resolvedHead,
       conflictRecovery: { phase: "resolved", previousHeadSha: head, reviewHeadSha: head,
-        resolvedHeadSha: resolvedHead, repairRunId: mode === "agent" ? "repair-run" : null } });
+        resolvedHeadSha: resolvedHead, repairRunId: mode !== "manual" ? "repair-run" : null } });
     expect(f.commands.some((command) => command.path.includes("/interactions"))).toBe(false);
     if (mode === "manual") expect(f.approvals[0]?.["status"]).toBe("rejected");
   });
