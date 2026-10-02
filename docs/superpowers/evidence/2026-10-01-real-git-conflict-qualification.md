@@ -41,6 +41,35 @@ PR diff observation now uses the real two-way `main...head` diff. A failing-firs
 test caught the former combined merge-commit diff, which would have given native
 reviewers the wrong view of a repaired PR. All six Git-boundary tests pass.
 
+## Autonomous conflict remediation on the real daemon
+
+The `--autonomous-conflict` lane seeds shared `shared.cjs`, publishes the managed
+PR, then has an outside-fleet actor merge an overlapping export change into main
+as a standard two-parent commit. The managed PR head is unchanged while real Git
+reports `CONFLICTING/DIRTY` through the fixture boundary.
+
+Normal orchestration detects the conflict, fails its local rebase, and delegates
+exactly once to the managed Vibe local worker. The local ACP worker verifies its
+owned run identity, requires a clean unrelated checkout state, invokes the
+provider-side Git repair operation, publishes the existing work product at the
+new head, posts a normal comment, and hands the source back to its original
+Jules publisher. The reviewer simulator completes only its own review child
+after its exact addressed verdict is recorded, so host handoff follow-ups cannot
+attempt a second verdict on an answered card.
+
+The repaired commit preserves `increment`, `decrement`, and the external
+contributor's `double`; its parents are the old PR head and the advanced base.
+Fresh native Luna/strong reviews approve the repaired immutable head with exact
+card/run attribution. Old-head review evidence is excluded from merge
+authorization. The lane continues through pending human merge retention and
+restart. The driver remains GET-only after setup: zero post-start mutations, no
+rescue wakes, no database repairs.
+
+Three consecutive full runs passed: **385.986s**
+(`~/.local/state/agent-output/run-ofmcovi0/`), **381.607s**
+(`~/.local/state/agent-output/run-jzje5m46/`), **388.781s**
+(`~/.local/state/agent-output/run-y339rl9d/`).
+
 ## Deterministic external actors
 
 An outside-fleet contribution actor creates a separate branch and publishes its

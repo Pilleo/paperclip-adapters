@@ -1,26 +1,35 @@
 /** Opt-in real-server Jules session restart probe; owns its host, provider fixture, home and database. */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
 import { mkdtemp, readFile, writeFile, chmod } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createServer as createProbe } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { createDisposableHost } from "./disposable-host.mjs";
 import { createChainGitHubFixture } from "./chain-github-fixture.mjs";
 import { createAutonomousObserver } from "./autonomous-observer.mjs";
 import { createNativeAcpFixture } from "./native-acp-fixture.mjs";
 import { assertPendingMergeWait } from "./pending-merge-wait.mjs";
 import { createAcceptedResponseLoss } from "./accepted-response-loss.mjs";
+import { createLocalAcpRepairFixture } from "./local-acp-repair-fixture.mjs";
 
 const autonomousDependency = process.argv.includes("--autonomous-dependency");
+const autonomousConflict = process.argv.includes("--autonomous-conflict");
 const restartLostApproval = process.argv.includes("--autonomous-lost-approval-restart");
 const lostApproval = restartLostApproval || process.argv.includes("--autonomous-lost-approval");
-const autonomousMerge = autonomousDependency || lostApproval || process.argv.includes("--autonomous-merge");
+const autonomousMerge = autonomousDependency || autonomousConflict || lostApproval || process.argv.includes("--autonomous-merge");
 const autonomous = autonomousMerge || process.argv.includes("--autonomous");
 
 const root = await mkdtemp(path.join(tmpdir(), "paperclip-jules-server-restart-"));
+const runExternal = promisify(execFile);
+const sharedSeed = "module.exports = { increment: n => n + 1 };\n";
+const sharedTask = "module.exports = { increment: n => n + 1, decrement: n => n - 1 };\n";
+const sharedExternal = "module.exports = { increment: n => n + 1, double: n => n * 2 };\n";
+const sharedRepair = "module.exports = { increment: n => n + 1, decrement: n => n - 1, double: n => n * 2 };\n";
 const reviewerScript = path.join(root, "native-plan-reviewer.mjs");
 await writeFile(reviewerScript, `const env = process.env;
 const base = env.PAPERCLIP_API_URL;
@@ -45,8 +54,22 @@ const response = await fetch(base + '/api/issues/' + issueId + '/interactions/' 
 if (!response.ok) throw new Error('Native typed verdict rejected (' + response.status + '): ' + await response.text());
 `);
 await chmod(reviewerScript, 0o700);
-const chainGitHub = await createChainGitHubFixture(root, { remote: autonomousMerge });
-let pr = autonomousDependency || lostApproval ? null : await chainGitHub.openPullRequest("A", "A.txt", "alpha");
+const chainGitHub = await createChainGitHubFixture(root, { remote: autonomousMerge,
+  ...(autonomousConflict ? { initialFiles: { "shared.cjs": sharedSeed, ".gitignore": ".paperclip/\n" } } : {}) });
+let pr = autonomousDependency || autonomousConflict || lostApproval ? null : await chainGitHub.openPullRequest("A", "A.txt", "alpha");
+const reviewControlToken = randomUUID();
+let conflictObserver = null;
+let originalConflictHead = null;
+let externalBaseAdvance = null;
+let repairedPr = null;
+let publisherAgentId = null;
+let localRepairAgentId = null;
+let localRepairs = 0;
+let repairPolls = 0;
+const oldHeadReviews = new Map();
+const feedbackMessages = [];
+let releaseBaseBarrier;
+const baseBarrier = new Promise((resolve) => { releaseBaseBarrier = resolve; });
 const sessionId = randomUUID();
 const dependentSessionId = randomUUID();
 let dependentIssueId = null;
@@ -62,6 +85,86 @@ const provider = createServer(async (request, response) => {
   const url = new URL(request.url, "http://127.0.0.1");
   providerRequests.push(`${request.method} ${url.pathname}`);
   const json = (status, value) => { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(value)); };
+  if (autonomousConflict && request.method === "POST" && url.pathname === "/v1alpha/fixture/local-repair") {
+    try {
+      assert.equal(request.headers.authorization, `Bearer ${reviewControlToken}`);
+      let body = "";
+      for await (const chunk of request) body += chunk;
+      const operation = JSON.parse(body);
+      assert.equal(operation.issueId, issueId);
+      assert.equal(operation.agentId, localRepairAgentId);
+      assert.equal((await conflictObserver.get(`/issues/${issueId}`)).assigneeAgentId, localRepairAgentId);
+      assert.ok(externalBaseAdvance);
+      localRepairs++;
+      assert.equal(localRepairs, 1, "local conflict repair must execute once");
+      const status = (await runExternal("git", ["status", "--porcelain"], { cwd: chainGitHub.repository })).stdout.trim();
+      assert.equal(status, "", "local worker cannot overwrite unrelated dirty changes");
+      await runExternal("git", ["checkout", "main"], { cwd: chainGitHub.repository, timeout: 10_000 });
+      repairedPr = await chainGitHub.repairPullRequest(pr.url, { "shared.cjs": sharedRepair });
+      pr = { ...pr, ...repairedPr };
+      const products = await conflictObserver.get(`/issues/${issueId}/work-products`);
+      assert.equal(products.length, 1);
+      console.log("AUTONOMOUS_CONFLICT_LOCAL_VIBE_REPAIRED", JSON.stringify(repairedPr));
+      return json(200, { productId: products[0].id, metadata: { ...products[0].metadata, headSha: repairedPr.headSha },
+        publisherAgentId, prUrl: pr.url });
+    } catch (error) {
+      console.error("CONFLICT_LOCAL_WORKER_FAILED", error.message);
+      return json(500, { error: error.message });
+    }
+  }
+  if (autonomousConflict && request.method === "POST" && url.pathname === "/v1alpha/fixture/review") {
+    try {
+      assert.equal(request.headers.authorization, `Bearer ${reviewControlToken}`);
+      let body = "";
+      for await (const chunk of request) body += chunk;
+      const event = JSON.parse(body);
+      assert.equal(event.assignment.prUrl, pr.url);
+      const children = await conflictObserver.get(`/companies/${companyId}/issues?parentId=${issueId}&limit=20`);
+      const cards = (await Promise.all(children.map((child) => conflictObserver.get(`/issues/${child.id}/interactions`)))).flat();
+      const card = cards.find((candidate) => candidate.id === event.assignment.interactionId);
+      assert.ok(card, "external model policy must use an actual native assignment");
+      if (event.phase === "after") {
+        assert.equal(card.status, "answered");
+        assert.equal(card.result.items[0].verdict, event.verdict);
+        if (event.assignment.headSha === originalConflictHead) oldHeadReviews.set(card.id, event.verdict);
+        if (card.addresseeAgentId === reviewerIds[0] && event.assignment.headSha === originalConflictHead && !externalBaseAdvance) {
+          assert.equal(event.verdict, "approve");
+          const branch = (await runExternal("git", ["branch", "--show-current"], { cwd: chainGitHub.repository, timeout: 10_000 })).stdout.trim();
+          assert.equal(branch, "main", "outside contribution must advance the canonical main checkout, not a reviewer branch");
+          externalBaseAdvance = await chainGitHub.mergeExternalContribution("shared.cjs", sharedExternal);
+          releaseBaseBarrier();
+          console.log("AUTONOMOUS_CONFLICT_BASE_ADVANCED", JSON.stringify(externalBaseAdvance));
+        }
+        return json(200, { recorded: true });
+      }
+      assert.equal(event.phase, "before");
+      if (card.addresseeAgentId === reviewerIds[1] && event.assignment.headSha === originalConflictHead) await baseBarrier;
+      const view = JSON.parse((await runExternal(chainGitHub.ghPath, ["pr", "view", pr.url, "--json", "headRefOid,mergeable"], { timeout: 10_000 })).stdout);
+      if (view.mergeable === "CONFLICTING") return json(200, { verdict: "reject", reason: "Real Git reports an overlapping shared export conflict after the base advanced; preserve increment, decrement and double." });
+      assert.equal(view.headRefOid, event.assignment.headSha);
+      return json(200, { verdict: "approve" });
+    } catch (error) {
+      console.error("CONFLICT_REVIEW_ACTOR_FAILED", error.message);
+      return json(500, { error: error.message });
+    }
+  }
+  if (autonomousConflict && request.method === "POST" && url.pathname === `/v1alpha/sessions/${sessionId}:sendMessage`) {
+    try {
+      let body = "";
+      for await (const chunk of request) body += chunk;
+      const { prompt } = JSON.parse(body);
+      assert.ok(externalBaseAdvance && typeof prompt === "string" && prompt.includes(pr.url));
+      feedbackMessages.push({ prompt, at: new Date().toISOString() });
+      assert.equal(feedbackMessages.length, 1, "typed conflict rejection must be delivered exactly once");
+      repairedPr = await chainGitHub.repairPullRequest(pr.url, { "shared.cjs": sharedRepair });
+      pr = { ...pr, ...repairedPr };
+      console.log("AUTONOMOUS_CONFLICT_PROVIDER_REPAIRED", JSON.stringify(repairedPr));
+      return json(200, {});
+    } catch (error) {
+      console.error("CONFLICT_PROVIDER_ACTOR_FAILED", error.message);
+      return json(500, { error: error.message });
+    }
+  }
   if (request.method === "GET" && url.pathname.startsWith("/v1alpha/sessions") && approvalResponseFault.observationsHeld) {
     return json(503, { error: "deterministic approval evidence outage" });
   }
@@ -99,14 +202,17 @@ const provider = createServer(async (request, response) => {
   }
   if (request.method === "GET" && url.pathname === `/v1alpha/sessions/${sessionId}`) {
     return json(200, { name: `sessions/${sessionId}`,
-      state: approvals ? releaseOutput ? "COMPLETED" : "IN_PROGRESS" : "AWAITING_PLAN_APPROVAL",
+      state: repairedPr ? repairPolls++ === 0 ? "IN_PROGRESS" : "COMPLETED"
+        : approvals ? releaseOutput ? "COMPLETED" : "IN_PROGRESS" : "AWAITING_PLAN_APPROVAL",
       outputs: releaseOutput ? [{ pullRequest: { url: pr.url } }] : [] });
   }
   if (request.method === "GET" && url.pathname === `/v1alpha/sessions/${sessionId}/activities`) {
     return json(200, { activities: [{ id: "restart-plan-activity", createTime: "2026-09-29T00:00:00.000Z",
       planGenerated: { plan: { id: "restart-plan", steps: [{ index: 0, title: "Restart contract" }] } } },
       ...(approvedAt ? [{ id: "restart-plan-approved", createTime: approvedAt,
-        planApproved: { planId: "restart-plan" } }] : [])] });
+        planApproved: { planId: "restart-plan" } }] : []),
+      ...feedbackMessages.map((message, index) => ({ id: `conflict-feedback-${index}`, createTime: message.at,
+        userMessaged: { userMessage: message.prompt } }))] });
   }
   if (request.method === "POST" && url.pathname === `/v1alpha/sessions/${sessionId}:approvePlan`) {
     if (approvals++) return json(409, { error: "duplicate Jules plan approval across server restart" });
@@ -153,6 +259,7 @@ const reviewerIds = [];
 try {
   await host.start();
   const observer = createAutonomousObserver(host.url);
+  conflictObserver = observer;
   const post = autonomous ? observer.setup : async (route, body) => {
     const response = await fetch(`${host.url}/api${route}`, { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify(body), signal: AbortSignal.timeout(20_000) });
@@ -162,13 +269,14 @@ try {
   await post("/adapters/install", { packageName: julesPackagePath, isLocalPath: true });
   await waitUntil("daemon startup log loads the exact configured Jules package", async () =>
     (await readFile(path.join(root, "server.log"), "utf8")).includes(`${julesPackagePath}/dist/index.js`));
-  if (autonomousMerge) for (const packageName of ["orchestrator", "antigravity"]) {
+  if (autonomousMerge) for (const packageName of ["orchestrator", "antigravity", ...(autonomousConflict ? ["vibe"] : [])]) {
     await post("/adapters/install", { packageName: packageName === "orchestrator" ? orchestratorPackagePath
       : path.join(workspaceRoot, "packages", packageName), isLocalPath: true });
   }
   const company = await post("/companies", { name: "Disposable Jules process restart" });
   companyId = company.id;
-  const acp = autonomousMerge ? await createNativeAcpFixture(root) : null;
+  const acp = autonomousMerge ? await createNativeAcpFixture(root, autonomousConflict
+    ? { reviewDecisionUrl: `${providerUrl}/fixture/review`, reviewDecisionToken: reviewControlToken, finishPrReview: true } : {}) : null;
   const reviewerConfig = autonomousMerge ? { serverPath: acp.serverPath, model: "gemini-3.8-flash-low",
     nativeReview: true, cwd: chainGitHub.repository, permissionMode: "read-only", timeoutSec: 90,
     reviewMcpArgs: [path.join(workspaceRoot, "packages/orchestrator/dist/server/native-review-mcp-stdio.js")] }
@@ -193,6 +301,16 @@ try {
       continuationCadenceSeconds: 10,
       env: { JULES_API_KEY: "disposable-provider-fixture-token", PATH: `${root}:${process.env.PATH}` } },
     runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1 } } });
+  publisherAgentId = jules.id;
+  if (autonomousConflict) {
+    const worker = await createLocalAcpRepairFixture(root, `${providerUrl}/fixture/local-repair`, reviewControlToken);
+    const vibe = await post(`/companies/${company.id}/agents`, { name: "[Orchestrated] Vibe Local Worker", role: "engineer",
+      adapterType: "vibe", adapterConfig: { serverCommand: worker.serverPath, model: "mistral-medium-3.5",
+        cwd: chainGitHub.repository, permissionMode: "approve-all", timeoutSec: 90 },
+      metadata: { managedBy: "paperclip-orchestrator", workerKey: "vibe" },
+      runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1 } } });
+    localRepairAgentId = vibe.id;
+  }
   let projectId;
   if (autonomousMerge) {
     const project = await post(`/companies/${company.id}/projects`, { name: "Autonomous PR merge fixture" });
@@ -202,7 +320,8 @@ try {
     const orchestrator = await post(`/companies/${company.id}/agents`, { name: "Task Orchestrator", role: "pm", adapterType: "orchestrator",
       adapterConfig: { apiUrl: host.url, workspacePath: chainGitHub.repository, backlogDirectory: ".paperclip-contract-empty",
         reconcileFleet: false, julesAgentId: jules.id, lunaReviewerAgentId: reviewer.id,
-        julesPlanApprovalPolicy: "required", maxConcurrentJules: 1, maxConcurrentVibe: 0 },
+        ...(localRepairAgentId ? { vibeAgentId: localRepairAgentId } : {}),
+        julesPlanApprovalPolicy: "required", maxConcurrentJules: 1, maxConcurrentVibe: localRepairAgentId ? 1 : 0 },
       runtimeConfig: { heartbeat: { enabled: true, intervalSec: 10, wakeOnDemand: true, maxConcurrentRuns: 1 } } });
     orchestratorId = orchestrator.id;
     assert.match(await readFile(path.join(root, "server.log"), "utf8"), /packages\/orchestrator\/dist\/index\.js/,
@@ -385,7 +504,8 @@ try {
   assert.equal(restored?.julesSessionId, sessionId,
     "restarted Paperclip must retain the original durable Jules provider checkpoint");
   assert.equal(creates, 1, "host restart cannot silently repeat the provider create mutation");
-  if (!pr) pr = await chainGitHub.openPullRequest("A", "A.txt", "alpha");
+  if (!pr) pr = await chainGitHub.openPullRequest("A", autonomousConflict ? "shared.cjs" : "A.txt", autonomousConflict ? sharedTask : "alpha");
+  if (autonomousConflict) originalConflictHead = pr.headSha;
   releaseOutput = true;
   let woken = false;
   const delivered = await waitUntil("same-session PR product after host restart", async () => {
@@ -425,6 +545,11 @@ try {
   if (autonomousMerge) {
     const { parsePrReviewChildDescription } = await import("../../dist/core/pr-review-child.js");
     const gate = await waitUntil("autonomous native PR reviews and pending human merge gate", async () => {
+      if (autonomousConflict) for (const reviewerId of reviewerIds) {
+        const agent = await observer.get(`/agents/${reviewerId}`);
+        assert.notEqual(agent.status, "error", "native conflict reviewer entered an unrecovered error state");
+      }
+      if (autonomousConflict && !repairedPr) return false;
       const children = await observer.get(`/companies/${company.id}/issues?parentId=${issue.id}&limit=20`);
       const reviews = children.map((child) => ({ child, identity: parsePrReviewChildDescription(child.description) }))
         .filter(({ identity }) => identity?.prUrl === pr.url && identity.headSha === pr.headSha);
@@ -458,8 +583,18 @@ try {
       return { approvalId: gates[0].id, reviews: evidence };
     }, 360_000);
     console.log("AUTONOMOUS_PR_MERGE_GATE_CONFIRMED", JSON.stringify(gate));
+    if (autonomousConflict) {
+      assert.ok(repairedPr && repairedPr.headSha !== originalConflictHead);
+      assert.deepEqual([...oldHeadReviews.values()], ["approve"]);
+      assert.ok(gate.reviews.every((review) => !oldHeadReviews.has(review.cardId)));
+      assert.equal(localRepairs, 1);
+      const code = (await runExternal("git", ["show", `${pr.headSha}:shared.cjs`], { cwd: chainGitHub.repository, timeout: 10_000 })).stdout;
+      await runExternal(process.execPath, ["-e", code + "\nconst a=require('node:assert/strict'); a.equal(module.exports.increment(8),9); a.equal(module.exports.decrement(8),7); a.equal(module.exports.double(8),16);"], { timeout: 10_000 });
+      console.log("AUTONOMOUS_CONFLICT_NEW_HEAD_REVIEWS_CONFIRMED", JSON.stringify({ oldHeadSha: originalConflictHead,
+        newHeadSha: pr.headSha, oldCardIds: [...oldHeadReviews.keys()], freshCardIds: gate.reviews.map((review) => review.cardId) }));
+    }
     const expectedWait = { issueId: issue.id, approvalId: gate.approvalId, prUrl: pr.url, headSha: pr.headSha,
-      productId: delivered.id, cardIds: [...originalPlanCardIds, ...gate.reviews.map((review) => review.cardId)] };
+      productId: delivered.id, cardIds: [...originalPlanCardIds, ...oldHeadReviews.keys(), ...gate.reviews.map((review) => review.cardId)] };
     const readWait = async () => {
       const children = await observer.get(`/companies/${company.id}/issues?parentId=${issue.id}&limit=20`);
       const snapshot = { issue: await observer.get(`/issues/${issue.id}`),
@@ -554,14 +689,28 @@ try {
   const children = issueId && companyId ? await fetch(`${host.url}/api/companies/${companyId}/issues?parentId=${issueId}&limit=20`)
     .then((response) => response.ok ? response.json() : [], () => []) : [];
   const review = await Promise.all((Array.isArray(children) ? children : []).map(async (child) => ({
-    id: child.id, status: child.status, owner: child.assigneeAgentId,
+    id: child.id, status: child.status, owner: child.assigneeAgentId, projectId: child.projectId,
+    executionWorkspaceId: child.executionWorkspaceId,
     cards: await fetch(`${host.url}/api/issues/${child.id}/interactions`)
       .then((response) => response.ok ? response.json() : [], () => []),
   })));
+  if (autonomousConflict) {
+    console.error("CONFLICT_CHECKOUT_DIAGNOSTIC", JSON.stringify({
+      branch: (await runExternal("git", ["branch", "--show-current"], { cwd: chainGitHub.repository })).stdout.trim(),
+      status: (await runExternal("git", ["status", "--porcelain"], { cwd: chainGitHub.repository })).stdout.trim() }));
+    for (const child of review) for (const card of child.cards) {
+      if (card.payload?.items?.[0]?.id !== "pull_request" || !card.resolvedByRunId) continue;
+      const original = await fetch(`${host.url}/api/heartbeat-runs/${card.resolvedByRunId}`).then((response) => response.json());
+      const log = await fetch(`${host.url}/api/heartbeat-runs/${card.resolvedByRunId}/log?offset=0&limitBytes=65536`).then((response) => response.json());
+      console.error("CONFLICT_REVIEW_SOURCE_DIAGNOSTIC", JSON.stringify({ runId: original.id, status: original.status,
+        executionWorkspace: original.contextSnapshot?.executionWorkspace, contextKeys: Object.keys(original.contextSnapshot ?? {}), log }));
+    }
+  }
   console.error("JULES_SERVER_RESTART_DIAGNOSTIC", JSON.stringify({ providerCreates: creates,
     issue: issue && { status: issue.status, assigneeAgentId: issue.assigneeAgentId,
       executionBlocker: issue.executionBlocker?.cause ?? null },
-    children: review.map((child) => ({ id: child.id, status: child.status, owner: child.owner,
+    children: review.map((child) => ({ id: child.id, status: child.status, owner: child.owner, projectId: child.projectId,
+      executionWorkspaceId: child.executionWorkspaceId,
       cards: child.cards.map((card) => ({ id: card.id, status: card.status, addressee: card.addresseeAgentId })) })),
     reviewerAgents: await Promise.all(reviewerIds.map(async (id) => ({ id,
       status: await fetch(`${host.url}/api/agents/${id}`).then((response) => response.json()).then((agent) => agent.status, () => null) }))),

@@ -12,6 +12,7 @@ for (const controlled of [false, true]) test(`ACP provider submits an authentica
   const root = await mkdtemp(path.join(tmpdir(), "native-acp-fixture-test-"));
   const calls = [];
   const phases = [];
+  const dispositions = [];
   let submitted;
   const assignment = { kind: "pull_request", interactionId: "native-card", prUrl: "https://github.com/fixture/repo/pull/1", headSha: "a".repeat(40) };
   const policy = createServer(async (request, response) => {
@@ -25,6 +26,26 @@ for (const controlled of [false, true]) test(`ACP provider submits an authentica
   });
   await new Promise((resolve) => policy.listen(0, "127.0.0.1", resolve));
   const server = createServer(async (request, response) => {
+    if (request.url.startsWith("/api/")) {
+      assert.equal(request.headers.authorization, "Bearer runtime-token");
+      assert.equal(request.headers["x-paperclip-run-id"], "review-run");
+      let result;
+      if (request.url === "/api/heartbeat-runs/review-run") result = { agentId: "reviewer", contextSnapshot: { issueId: "review-child" } };
+      else if (request.url === "/api/issues/review-child/interactions") result = [{ id: "native-card", status: "answered", addresseeAgentId: "reviewer", resolvedByRunId: "review-run" }];
+      else {
+        assert.equal(request.url, "/api/issues/review-child");
+        assert.equal(request.method, "PATCH");
+        let body = "";
+        for await (const chunk of request) body += chunk;
+        const patch = JSON.parse(body);
+        assert.deepEqual(patch, { status: "done" });
+        dispositions.push(patch);
+        result = { id: "review-child", status: "done" };
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(result));
+      return;
+    }
     assert.equal(request.headers.authorization, "Bearer fixture-bridge-token");
     let body = "";
     for await (const chunk of request) body += chunk;
@@ -38,8 +59,10 @@ for (const controlled of [false, true]) test(`ACP provider submits an authentica
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   let child;
   try {
-    const fixture = await createNativeAcpFixture(root, controlled ? { reviewDecisionUrl: `http://127.0.0.1:${policy.address().port}` } : {});
-    child = spawn(process.execPath, [fixture.serverPath, "--uid="], { stdio: ["pipe", "pipe", "pipe"] });
+    const fixture = await createNativeAcpFixture(root, controlled ? { reviewDecisionUrl: `http://127.0.0.1:${policy.address().port}`, finishPrReview: true } : {});
+    child = spawn(process.execPath, [fixture.serverPath, "--uid="], { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env,
+      PAPERCLIP_API_URL: `http://127.0.0.1:${server.address().port}`, PAPERCLIP_API_KEY: "runtime-token",
+      PAPERCLIP_RUN_ID: "review-run", PAPERCLIP_AGENT_ID: "reviewer" } });
     const lines = readline.createInterface({ input: child.stdout });
     const responses = new Map();
     lines.on("line", (line) => { const message = JSON.parse(line); if (message.id) responses.get(message.id)?.(message); });
@@ -59,6 +82,7 @@ for (const controlled of [false, true]) test(`ACP provider submits an authentica
     assert.deepEqual(calls, ["initialize", "get_current_native_review_assignment", "submit_native_review_verdict"]);
     assert.deepEqual(submitted, controlled ? { verdict: "reject", reason: "Real Git conflict" } : { verdict: "approve" });
     assert.deepEqual(phases, controlled ? ["before", "after"] : []);
+    assert.deepEqual(dispositions, controlled ? [{ status: "done" }] : []);
     assert.equal((await request(4, "unsupported/method")).error.code, -32601);
     lines.close();
   } finally {
