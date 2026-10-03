@@ -100,3 +100,12 @@ assignments and similar-looking literals still fail without printing values.
 All three guard tests, the tracked-file secret scan and Actions-aware workflow
 validation pass locally. These admission failures do not count as upgrade-test
 results; the replacement remote runs must execute the actual matrix.
+
+Replacement workflows admitted both native host jobs. Main CI then reproduced
+an existing remediation unit-fixture race: its 50 ms abort sometimes allowed
+another poll of the deliberately FAILED provider fixture, entering unrelated
+adjudication HTTP calls. The fixture now cancels at acknowledged recovery-session
+creation, explicitly counts that one create and retains the existing branch,
+checkpoint and unexpected-network assertions. The full Jules suite with CI
+coverage policy passes locally (`run-34f3eed2611e`). No production retry behavior
+or coverage threshold was changed.

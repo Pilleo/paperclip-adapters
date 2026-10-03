@@ -232,8 +232,15 @@ beforeAll(() => {
 
   it('creates a single remediation session on the existing PR branch after terminal failure', async () => {
       let createRequest: any;
+      let creates = 0;
+      const abortCtrl = new AbortController();
       (JulesClient.prototype.createSession as any).mockImplementationOnce((request: unknown) => {
+        creates++;
         createRequest = request;
+        // This contract ends at acknowledged recovery creation. A wall-clock
+        // abort can let faster CI workers poll the deliberately FAILED fixture
+        // again and enter an unrelated question/adjudication workflow.
+        abortCtrl.abort();
         return Promise.resolve({ id: 'recovery-124', name: 'sessions/recovery-124' });
       });
       (JulesClient.prototype.getSession as any).mockResolvedValue({ state: 'FAILED', source: 'github' });
@@ -261,9 +268,6 @@ beforeAll(() => {
           },
           createdAt: new Date().toISOString(),
       } as any);
-      const abortCtrl = new AbortController();
-      setTimeout(() => abortCtrl.abort(), 50);
-
       const result = await execute({
         ...baseCtx,
         runtime: { ...baseCtx.runtime, sessionParams },
@@ -271,6 +275,7 @@ beforeAll(() => {
       } as any);
 
       expect((baseCtx.onLog as any).mock.calls.flat().join("\n")).toContain("Created session recovery-124");
+      expect(creates).toBe(1);
       expect(createRequest).toMatchObject({
         sourceContext: { githubRepoContext: { startingBranch: 'jules-18036993849073318863-b259ffba' } },
       });
