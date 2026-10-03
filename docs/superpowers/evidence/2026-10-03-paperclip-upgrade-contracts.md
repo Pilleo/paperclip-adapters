@@ -81,3 +81,22 @@ or compatibility after changing the adapter SDK version. The new CI matrix must
 pass before using it as full automated release approval. The production permission
 fix is built and isolated-host tested; loading it into the live process still
 requires the normal journaled reload.
+
+## First remote CI admission and correction
+
+The exact tested tree was published on `qualify/paperclip-2026-1001` in draft
+adapter PR #13. It includes the existing 170 unpublished commits needed for the
+current stack. Initial run `37135515655` was rejected before job creation because
+`runner.temp` is unavailable in job-level `env`; `actionlint` reproduced the exact
+context failure. Report-directory configuration now uses `$RUNNER_TEMP` through
+`GITHUB_ENV` in the install step. Workflow validation uses pinned actionlint
+1.7.12 in the main CI job.
+
+Initial main CI run `37135537720` failed its tracked-file secret guard on
+`PAPERCLIP_API_KEY: ctx.authToken`, a runtime reference rather than a literal
+credential. A real temporary-Git-repository regression reproduced the false
+positive; the narrow runtime-reference exemption passes while literal credential
+assignments and similar-looking literals still fail without printing values.
+All three guard tests, the tracked-file secret scan and Actions-aware workflow
+validation pass locally. These admission failures do not count as upgrade-test
+results; the replacement remote runs must execute the actual matrix.

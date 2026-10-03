@@ -153,7 +153,6 @@ jobs:
         paperclip-version: ['2026.916.0', '2026.1001.0']
     env:
       PAPERCLIP_CONTRACT_VERSION: ${{ matrix.paperclip-version }}
-      CONTRACT_REPORT_DIR: ${{ runner.temp }}/paperclip-native-contracts
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -176,6 +175,7 @@ jobs:
         run: |
           npm install --global paperclipai@${{ matrix.paperclip-version }}
           echo "PAPERCLIP_CONTRACT_NODE_MODULES=$(npm root --global)/paperclipai/node_modules" >> "$GITHUB_ENV"
+          echo "CONTRACT_REPORT_DIR=$RUNNER_TEMP/paperclip-native-contracts" >> "$GITHUB_ENV"
       - name: Verify actual external ACP read and write permissions
         run: node packages/orchestrator/test/contract/acp-permissions-live.mjs
       - name: Verify disposable host persists data across a real server restart

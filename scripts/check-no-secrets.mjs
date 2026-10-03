@@ -13,7 +13,7 @@ const files = execFileSync("git", allFiles ? ["ls-files"] : ["diff", "--cached",
 }).split("\n").filter(Boolean);
 const patterns = [
   { name: "Jules API key", expression: /\bJULES_API_KEY\s*[=:]\s*(?!\{|\$\{|\$[A-Z_]+\b|<[^>]+>|your[_ -]?token\b)[^\s"']+/i },
-  { name: "Paperclip token", expression: /\bPAPERCLIP_(?:AGENT_TOKEN|API_KEY)\s*[=:]\s*(?!\{|\$\{|\$[A-Z_]+\b|<[^>]+>|your[_ -]?token\b)[^\s"']+/i },
+  { name: "Paperclip token", expression: /\bPAPERCLIP_(?:AGENT_TOKEN|API_KEY)\s*[=:]\s*(?!\{|\$\{|\$[A-Z_]+\b|<[^>]+>|your[_ -]?token\b|ctx\.authToken\b)[^\s"']+/i },
   { name: "OpenAI-style secret", expression: /\bsk-(?:proj-)?[A-Za-z0-9_-]{16,}\b/ },
   { name: "GitHub token", expression: /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/ },
 ];

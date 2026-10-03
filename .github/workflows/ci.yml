@@ -13,6 +13,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Validate GitHub Actions workflow semantics
+        uses: docker://rhysd/actionlint:1.7.12
+        with:
+          args: -shellcheck= .github/workflows/ci.yml .github/workflows/paperclip-ci.yml
+
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
@@ -27,7 +32,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile=false
 
-      - name: Reject committed secrets
+      - name: Test committed-secret guard
+        run: node --test scripts/check-no-secrets.test.mjs
+
+      - name: Scan committed files for secrets
         run: pnpm check:secrets -- --all
 
       - name: Build all packages
