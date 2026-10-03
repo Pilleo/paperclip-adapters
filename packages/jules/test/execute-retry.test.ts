@@ -7,6 +7,13 @@ import { classifyFailure } from '../src/server/failure-classifier';
 import { shouldRetry } from '../src/server/retry-policy';
 
 vi.mock('../src/server/jules-client');
+// Unit recovery evidence must not depend on an ambient authenticated gh CLI.
+vi.mock('../src/server/ci-status', () => ({
+    getPullRequestDetails: vi.fn().mockResolvedValue({ headSha: 'abc123' }),
+    getPullRequestCiStatus: vi.fn(),
+    getPullRequestPatch: vi.fn(),
+    listPullRequestChangedFiles: vi.fn(),
+}));
 vi.mock('../src/server/failure-classifier', async (importOriginal) => {
     const mod = await importOriginal<typeof import('../src/server/failure-classifier')>();
     return {
@@ -90,7 +97,15 @@ beforeAll(() => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.stubGlobal('fetch', unexpectedFetch);
+    vi.stubGlobal('fetch', async (url: RequestInfo | URL, options?: RequestInit) => {
+      // Matching immutable PR evidence requires the pre-creation native child
+      // lookup. This unit fixture has no existing reviewer children.
+      if (String(url) === 'http://127.0.0.1:3100/api/companies/1/issues?limit=1000&parentId=task-1' &&
+          (!options?.method || options.method === 'GET')) {
+        return new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return unexpectedFetch(url);
+    });
     // clearAllMocks preserves one-shot implementations. Reset the provider
     // poll mock so a heartbeat-aborted test cannot leak its queued rejection
     // into the next retry scenario.
