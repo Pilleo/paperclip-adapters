@@ -19,6 +19,7 @@ const argument = (key) => process.argv.find((value) => value.startsWith(key + "=
 const mode = argument("--conflict-recovery-mode") ?? "agent";
 const adapter = argument("--repair-agent-adapter") ?? "process";
 const shape = argument("--conflict-shape") ?? "overlap";
+const initialNoPr = process.argv.includes("--initial-no-pr");
 assert.ok(["manual", "git_only", "agent", "default"].includes(mode));
 assert.ok(["process", "jules"].includes(adapter));
 assert.ok(["overlap", "disjoint"].includes(shape));
@@ -30,8 +31,11 @@ const run = promisify(execFile);
 const github = await createChainGitHubFixture(root, { remote: true, observePublishedHeads: shape === "disjoint",
   enforceUpToDate: shape === "disjoint", initialFiles: {
   "shared.cjs": "module.exports = { increment: n => n + 1 };\n", ".gitignore": ".paperclip/\n" } });
-let pr = await github.openPullRequest("source", "shared.cjs", "module.exports = { increment: n => n + 1, decrement: n => n - 1 };\n");
-const originalHead = pr.headSha;
+let pr = initialNoPr ? null : await github.openPullRequest("source", "shared.cjs", "module.exports = { increment: n => n + 1, decrement: n => n - 1 };\n");
+let originalHead = pr?.headSha;
+let requiredPrMessages = 0;
+let requiredPrMessage = null;
+let requiredPrEcho = null;
 let baseAdvanced = null;
 let repaired = null;
 let repairOperations = 0;
@@ -95,6 +99,19 @@ const provider = createServer(async (request, response) => {
       return reply(200, await repairAsActor(body.issueId, body.agentId, body.runId));
     }
     if (url.pathname === "/v1alpha/sources") return reply(200, { sources: [{ name: "sources/github/paperclip-contract/fixture", githubRepo: { owner: "paperclip-contract", repo: "fixture" } }] });
+    const continuation = url.pathname.match(/^\/v1alpha\/sessions\/([^/]+):sendMessage$/);
+    if (request.method === "POST" && continuation && initialNoPr) {
+      assert.ok(sessions.has(continuation[1]));
+      assert.equal(++requiredPrMessages, 1, "Adapter required-PR continuation must be sent once");
+      assert.ok(body.prompt.includes("[paperclip:required-pr:") && body.prompt.includes(sourceId));
+      assert.ok(body.prompt.includes("exactly one pull request"));
+      requiredPrMessage = body.prompt;
+      requiredPrEcho = { id: "required-pr-message-echo", createTime: new Date().toISOString(), userMessaged: { userMessage: body.prompt } };
+      pr = await github.openPullRequest("source", "shared.cjs", "module.exports = { increment: n => n + 1, decrement: n => n - 1 };\n");
+      originalHead = pr.headSha;
+      sessions.set(continuation[1], { name: `sessions/${continuation[1]}`, state: "COMPLETED", outputs: [{ pullRequest: { url: pr.url } }] });
+      return reply(200, {});
+    }
     if (request.method === "POST" && url.pathname === "/v1alpha/sessions") {
       createRequests.push(body);
       if (body.prompt.includes("<!-- paperclip-conflict-repair:v1\n")) {
@@ -110,12 +127,12 @@ const provider = createServer(async (request, response) => {
       const dependent = dependentId && body.prompt.includes(dependentId);
       if (dependent) dependentSessionId = id;
       sessions.set(id, { name: `sessions/${id}`, state: dependent ? "IN_PROGRESS" : "COMPLETED",
-        outputs: dependent ? [] : [{ pullRequest: { url: pr.url } }] });
+        outputs: dependent || (initialNoPr && !pr) ? [] : [{ pullRequest: { url: pr.url } }] });
       return reply(200, sessions.get(id));
     }
     if (url.pathname === "/v1alpha/sessions") return reply(200, { sessions: [...sessions.values()] });
     const match = url.pathname.match(/^\/v1alpha\/sessions\/([^/]+)(\/activities)?$/);
-    if (match && sessions.has(match[1])) return reply(200, match[2] ? { activities: [] } : sessions.get(match[1]));
+    if (match && sessions.has(match[1])) return reply(200, match[2] ? { activities: requiredPrEcho ? [requiredPrEcho] : [] } : sessions.get(match[1]));
     return reply(404, { error: "Unsupported provider operation" });
   } catch (error) { console.error("CONFLICT_ACTOR_ERROR", error); reply(500, { error: error.message }); }
 });
@@ -163,7 +180,7 @@ try {
       conflictRecoveryAgentId: resolver.id, ...(mode !== "default" ? { conflictRecoveryMode: mode } : {}), maxConcurrentJules: 1, maxConcurrentVibe: 0 },
     runtimeConfig: { heartbeat: { enabled: true, intervalSec: 10, wakeOnDemand: true, maxConcurrentRuns: 1 } } }); orchestratorId = orchestrator.id;
   const source = await observer.setup(`/companies/${companyId}/issues`, { title: "Implement shared exports",
-    description: "---\norchestrator_managed: true\n---\nImplement increment and decrement in the existing repository.", projectId: project.id, status: "todo" }); sourceId = source.id;
+    description: "---\norchestrator_managed: true\n---\nImplement increment and decrement in the existing repository. Create exactly one PR for this task.", projectId: project.id, status: "todo" }); sourceId = source.id;
   const dependent = await observer.setup(`/companies/${companyId}/issues`, { title: "Dependent task B",
     description: "---\norchestrator_managed: true\nexecutor: jules\ntarget_files: [B.txt]\n---\nImplement B only after the repaired predecessor merges and the user approves B.",
     projectId: project.id, status: "todo", assigneeAgentId: null, blockedByIssueIds: [sourceId] }); dependentId = dependent.id;
@@ -256,6 +273,11 @@ try {
   assert.equal(observer.trace.filter((item) => item.phase === "observing" && item.method !== "GET").length, 0);
   assert.equal((await readFile(path.join(root, "server.log"), "utf8")).includes(`${orchestratorPackage}/dist/index.js`), true);
   assert.equal(repairOperations, mode === "agent" ? 1 : 0);
+  if (initialNoPr) {
+    assert.equal(requiredPrMessages, 1);
+    assert.ok(requiredPrMessage.includes(sourceId));
+    console.log("ADAPTER_REQUIRED_PR_RECOVERY_CONFIRMED", JSON.stringify({ sourceId, originalSessionRetained: true, messages: requiredPrMessages }));
+  }
   console.log("CONFLICT_RECOVERY_CONFIRMED", JSON.stringify({ mode, adapter, shape, sourceId, resolverId, originalHead,
     resolvedHead: repaired.headSha, preservedReviewCardIds: originalCardIds, repairOperations, providerCreates: createRequests.length,
     mergeSha: merged.mergeSha, dependentId, dependentSessionId, retainedMergeGateId: gate.id, driverWrites: 0, root }));

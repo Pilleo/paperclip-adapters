@@ -10,6 +10,9 @@ import {
   listPaperclipInteractions,
   moveIssueToBlocked,
   moveIssueToDone,
+  moveIssueToInProgress,
+  withdrawPaperclipInteraction,
+  scheduleJulesSessionMonitor,
   PaperclipClientError,
 } from "../src/server/paperclip-client.js";
 import { deleteStoredSession, saveStoredSession } from "../src/server/session-store";
@@ -20,6 +23,7 @@ vi.mock("../src/server/jules-client", async (importOriginal) => {
   MockedJulesClient.prototype.getSession = vi.fn();
   MockedJulesClient.prototype.createSession = vi.fn();
   MockedJulesClient.prototype.getActivities = vi.fn().mockResolvedValue({ activities: [] });
+  MockedJulesClient.prototype.sendMessage = vi.fn().mockResolvedValue({});
   return { ...mod, JulesClient: MockedJulesClient };
 });
 
@@ -34,6 +38,9 @@ vi.mock("../src/server/paperclip-client.js", async (importOriginal) => {
     moveIssueToBlocked: vi.fn(),
     moveIssueToDone: vi.fn(),
     moveIssueToReview: vi.fn(),
+    moveIssueToInProgress: vi.fn().mockResolvedValue(undefined),
+    withdrawPaperclipInteraction: vi.fn().mockResolvedValue(undefined),
+    scheduleJulesSessionMonitor: vi.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -116,6 +123,40 @@ describe("Jules completion without a PR", () => {
     vi.mocked(moveIssueToDone).mockResolvedValue();
     vi.mocked(saveStoredSession).mockResolvedValue();
     vi.mocked(deleteStoredSession).mockResolvedValue();
+    vi.mocked(JulesClient.prototype.sendMessage).mockResolvedValue({} as never);
+  });
+
+  it("continues the original session automatically when its explicit task contract requires a PR", async () => {
+    const context = { ...baseContext,
+      agent: { ...baseContext.agent, adapterConfig: { ...baseContext.agent.adapterConfig, planApprovalPolicy: "trusted_opt_out" } },
+      context: { task: { id: "issue-1", title: "Required PR", description: "---\ntarget_files: [result.js, result.test.js]\n---\nCreate exactly one PR for this task against main." } },
+    } as AdapterExecutionContext;
+    const first = await execute(context);
+    expect(first.clearSession).toBe(false);
+    expect(sessionCodec.decode(first.sessionParams!)?.julesSessionId).toBe("session-1");
+    expect(JulesClient.prototype.createSession).not.toHaveBeenCalled();
+    expect(JulesClient.prototype.sendMessage).toHaveBeenCalledOnce();
+    expect(JulesClient.prototype.sendMessage).toHaveBeenCalledWith("session-1", {
+      prompt: expect.stringContaining("exactly one pull request"),
+    });
+    expect(createNoPrCompletionInteraction).not.toHaveBeenCalled();
+    expect(moveIssueToDone).not.toHaveBeenCalled();
+    expect(deleteStoredSession).not.toHaveBeenCalled();
+  });
+
+  it("recovers an existing pending no-PR card without discarding the original checkpoint", async () => {
+    const sessionParams = sessionCodec.encode({ ...baseSession, phase: "COMPLETED", planApprovedAt: "2026-08-07T00:01:00.000Z",
+      planReviewOutcome: "approved", pendingInteraction: { type: "completion_confirmation", paperclipInteractionId: "interaction-1",
+        question: "Complete?", createdAt: "2026-08-07T00:02:00.000Z" } } as never);
+    const result = await execute({ ...baseContext,
+      runtime: { ...baseContext.runtime, sessionParams },
+      context: { task: { id: "issue-1", title: "Required PR", description: "Create exactly one PR for this task." } },
+    });
+    expect(JulesClient.prototype.sendMessage).toHaveBeenCalledOnce();
+    expect(withdrawPaperclipInteraction).toHaveBeenCalledWith("issue-1", "interaction-1", expect.stringContaining("PR-required"), "jwt-token", "run-1");
+    expect(moveIssueToInProgress).toHaveBeenCalled();
+    expect(result.clearSession).toBe(false);
+    expect(deleteStoredSession).not.toHaveBeenCalled();
   });
 
   it("creates one confirmation, blocks explicitly, and persists its identity", async () => {

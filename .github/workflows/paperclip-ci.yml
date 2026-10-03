@@ -187,6 +187,8 @@ jobs:
         run: node packages/orchestrator/test/contract/conflict-recovery-live.mjs --conflict-recovery-mode=git_only --conflict-shape=overlap
       - name: Verify configured remote agent repairs the original PR without re-review
         run: node packages/orchestrator/test/contract/conflict-recovery-live.mjs --conflict-recovery-mode=agent --repair-agent-adapter=jules
+      - name: Verify the adapter recovers a missing required PR on its original session
+        run: node packages/orchestrator/test/contract/conflict-recovery-live.mjs --conflict-recovery-mode=agent --repair-agent-adapter=process --initial-no-pr
       - name: Prove manual-policy and no-re-review regression detection with restoration
         run: node scripts/contract/autonomous-conflict-mutation.mjs
       - name: Prove autonomous dependency regression detection with a compiled private mutation and restoration

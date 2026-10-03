@@ -14,6 +14,7 @@ import {
 import { evaluateSessionStartup, isInteractionWake, preferBranchBoundRecoveryHandle, recoverPrIdentityFromWorkProduct, restoreBranchBoundRemediationFromHandle, sessionMatchesConfig, shouldReadIssueSessionHandle, shouldReclaimBranchBoundRecovery } from "./session-lifecycle.js";
 import { isLiveJulesRemoteState } from "./jules-live-state.js";
 import { conflictRepairStartingBranch } from "./conflict-repair.js";
+import { recoverRequiredPullRequest, taskRequiresPullRequest } from "./required-pr-recovery.js";
 import { evaluateSessionWatchdog } from "./watchdog.js";
 import { MAX_ACTIVITY_PAGES, activityScanPageLimit, listAllActivities, scanCompleteActivities, mirrorActivities, mirrorNewActivities, reduceTerminalActivityScan, terminalEvidenceActivity } from "./activity-mirror.js";
 import { reconcileProviderContinuation } from "./provider-continuation.js";
@@ -945,6 +946,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const scheduleLiveSessionMonitor = async (
     current: JulesAdapterSessionV1,
     initialActivityCheck = false,
+    observeOwnedRecovery = false,
   ): Promise<{ readonly ok: true } | { readonly ok: false; readonly error: unknown }> => {
     // A resolved visible strong-review card also wakes the Jules assignee.
     // Human cards have their own wake continuation. During an owned native
@@ -955,7 +957,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       current.pendingInteraction?.type === "completion_confirmation";
     const nativePlanWait = current.pendingInteraction?.type === "plan_native_review" &&
       current.pendingInteraction.protocolVersion === 2;
-    if (humanWait || nativePlanWait || !current.julesSessionId) return { ok: true };
+    if ((humanWait && !observeOwnedRecovery) || nativePlanWait || !current.julesSessionId) return { ok: true };
     const delayMs = liveSessionPollDelayMs(current, initialActivityCheck, reattachDelayMs,
       config.requirePlanApproval, continuationDelayMs);
     const timeoutAt = new Date(
@@ -1612,6 +1614,39 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const pendingCompletion = session?.pendingInteraction?.type === "completion_confirmation"
     ? session.pendingInteraction
     : null;
+  const requiredPrTask = taskRequiresPullRequest(taskDescription ?? "");
+  const recoverMissingRequiredPr = async (): Promise<AdapterExecutionResult> => {
+    const original = session!;
+    if (config.requirePlanApproval && (!original.planApprovedAt || original.planReviewOutcome !== "approved")) {
+      throw new Error("Required-PR continuation cannot skip its native plan approval");
+    }
+    const recovery = await recoverRequiredPullRequest({ session: original, description: taskDescription ?? "", client,
+      persist: () => saveStoredSession(original) });
+    if (recovery === "exhausted") {
+      throw new Error("Original Jules session still has no required PR after its one adapter-owned continuation");
+    }
+    if (recovery === "requested") {
+      if (original.pendingInteraction?.type === "completion_confirmation") {
+        await withdrawPaperclipInteraction(taskId, original.pendingInteraction.paperclipInteractionId,
+          "Superseded by adapter PR-required continuation on the original Jules session", ctx.authToken, ctx.runId);
+      }
+      original.pendingInteraction = undefined;
+      original.phase = "RUNNING";
+      original.terminalActivityScan = undefined;
+      await saveStoredSession(original);
+      await moveIssueToInProgress(taskId, ctx.authToken,
+        "Adapter is continuing the original Jules session to deliver its explicitly required PR.", ctx.runId);
+    }
+    const monitor = await scheduleLiveSessionMonitor(original, false, recovery === "await_observation");
+    if (!monitor.ok) throw monitor.error;
+    return createPendingResult(original, false, reattachDelayMs, config.requirePlanApproval);
+  };
+  if (pendingCompletion && requiredPrTask && session?.julesSessionId && !session.currentPrUrl) {
+    const remote = await client.getSession(session.julesSessionId);
+    if (remote.state === "COMPLETED" && !extractPullRequestUrl(remote, config.repository)) {
+      return await recoverMissingRequiredPr();
+    }
+  }
   const pendingProviderInteraction = session?.pendingInteraction &&
     (session.pendingInteraction.type === "user_feedback" || session.pendingInteraction.type === "plan_approval")
     ? session.pendingInteraction
@@ -5134,8 +5169,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                throw new Error(`Invalid terminal PR lifecycle action: ${terminalPrDecision.action}`);
            }
          }
-         if (session.phase === 'COMPLETED') {
-             if (!stateMachineRes.isSuccess) {
+          if (session.phase === 'COMPLETED') {
+              if (!stateMachineRes.isSuccess) {
+                  if (requiredPrTask && (!config.requirePlanApproval || (session.planApprovedAt && session.planReviewOutcome === "approved"))) {
+                    return await recoverMissingRequiredPr();
+                  }
                  try {
                     let completion = session.pendingInteraction?.type === "completion_confirmation"
                       ? session.pendingInteraction
