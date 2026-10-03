@@ -1,5 +1,57 @@
 # Vanilla native-plan handback concurrency contract
 
+## Host upgrade qualification
+
+Positive native contracts now run in CI against both **2026.916.0** (baseline)
+and **2026.1001.0** (candidate). `PAPERCLIP_CONTRACT_VERSION` selects an exact
+target; the default remains `2026.916.0`. A target in this list is eligible for
+testing, not automatically certified compatible. Reports from another version,
+stale reports, harness errors, and interrupted runs cannot establish a pass.
+
+Daemon contracts resolve both the CLI and server from the same
+`PAPERCLIP_CONTRACT_NODE_MODULES` installation; ambient `paperclipai` on `PATH`
+cannot accidentally run the baseline during candidate qualification.
+
+```sh
+PAPERCLIP_CONTRACT_VERSION=2026.1001.0 \
+PAPERCLIP_CONTRACT_NODE_MODULES=/absolute/private/candidate/node_modules \
+CONTRACT_REPORT_DIR=/tmp/fresh-candidate-contract-reports \
+node scripts/paperclip-host-contract-gate.mjs
+```
+
+The complete existing CI lanes, including compiled negative controls and
+restored positives, run for both versions. Additional upgrade boundaries are:
+
+- `disposable-host-live.mjs --upgrade-from=/absolute/baseline/node_modules`:
+  creates acknowledged company/issue/agent/native-card state on the baseline,
+  stops that daemon, then starts the candidate against the **same real PostgreSQL
+  storage**. The exact pending card, identity and issue state must survive.
+- `queued-response-live.mjs --kind=confirmation` and `--kind=question`:
+  holds an authenticated source worker active while the user resolves its native
+  card. The exact immutable response must appear in the queue, reject editing,
+  and reach exactly one continuation only after the source run finishes. A
+  process launch alone does not prove overlap. These are candidate-only positive
+  gates; the baseline lacks the immutable queued-response projection.
+- `acp-permissions-live.mjs`: loads the built external Antigravity adapter into
+  the actual daemon and asks the ACP engine to authorize read and write calls.
+  Restrictive modes must allow reads and reject writes; explicit full auto must
+  allow both. Authenticated native run receipts and succeeded worker runs prove
+  the decisions came from actual execution, not a mocked config assertion.
+
+Run these with the same explicit host environment as above. Daemon contracts
+must run sequentially because embedded PostgreSQL can contend for its default
+port. The provider/GitHub actors are owned deterministic fixtures; the database,
+host HTTP routes, JWTs, scheduler and built external adapters are real. These
+tests qualify the host upgrade with the adapters' existing pinned SDK dependency;
+upgrading `@paperclipai/adapter-utils` itself requires separate qualification.
+
+Sanitized artifacts have version-specific CI names. Do not upload raw daemon
+logs or home directories containing ephemeral credentials. See
+`docs/superpowers/evidence/2026-10-03-paperclip-upgrade-contracts.md` for local
+baseline/candidate results and qualification scope.
+
+## Historical pinned-host experiments
+
 For the implemented stable-parent alternative, see [STABLE-CHILD-RESULTS.md](./STABLE-CHILD-RESULTS.md)
 and run `pnpm test:contract:child-plan-review --require-safe`. The original
 negative handback experiment below is retained independently.

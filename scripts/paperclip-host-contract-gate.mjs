@@ -1,6 +1,9 @@
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { expectedContractVersion } from "../packages/orchestrator/test/contract/host-installation.mjs";
+
+const version = expectedContractVersion();
 
 const supported = [
   "stable_child_jules_v4_executor",
@@ -80,14 +83,14 @@ for (const scenario of selected) {
   } catch {
     report = { scenario, result: "missing_report", safetyGate: "not_established" };
   }
-  const validIdentity = report.scenario === hostScenario && report.version === "2026.916.0";
+  const validIdentity = report.scenario === hostScenario && report.version === version;
   scenarios.push({ scenario, result: interruptedSignal ? "interrupted" : run.timedOut ? "timeout" : run.error ? "launch_error" :
     !validIdentity && report.result !== "missing_report" ? "invalid_report" : report.result,
     safetyGate: validIdentity && !interruptedSignal && !run.timedOut && !run.error ? report.safetyGate : "not_established", exit: run.exit });
 }
 const integrationAllowed = !interruptedSignal && scenarios.length === selected.length &&
   scenarios.every((scenario) => scenario.exit === 0 && scenario.result === "observed" && scenario.safetyGate === "pass");
-const summary = { version: "2026.916.0", integrationAllowed, scenarios,
+const summary = { version, integrationAllowed, scenarios,
   ...(interruptedSignal ? { interruptedSignal } : {}) };
 await writeFile(path.join(reportDir, "summary.json"), JSON.stringify(summary, null, 2));
 console.log("SUPPORTED_HOST_CONTRACT_SUMMARY", JSON.stringify(summary));

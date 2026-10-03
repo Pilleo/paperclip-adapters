@@ -145,8 +145,15 @@ jobs:
           rm -rf "${RUNNER_TEMP}/paperclip-canary-home" "${RUNNER_TEMP}/paperclip-canary-user-home"
 
   native_contracts:
-    name: Positive native contracts on Paperclip 2026.916.0
+    name: Native upgrade contracts on Paperclip ${{ matrix.paperclip-version }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        paperclip-version: ['2026.916.0', '2026.1001.0']
+    env:
+      PAPERCLIP_CONTRACT_VERSION: ${{ matrix.paperclip-version }}
+      CONTRACT_REPORT_DIR: ${{ runner.temp }}/paperclip-native-contracts
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -164,11 +171,26 @@ jobs:
       - name: Build workspace packages
         run: pnpm -r build
       - name: Test native gate and disposable host lifecycle
-        run: node --test scripts/paperclip-host-contract-gate.test.mjs scripts/contract/disposable-host.test.mjs scripts/contract/chain-github-fixture.test.mjs scripts/contract/autonomous-observer.test.mjs scripts/contract/native-acp-fixture.test.mjs scripts/contract/local-acp-repair-fixture.test.mjs scripts/contract/accepted-response-loss.test.mjs scripts/contract/pending-merge-wait.test.mjs scripts/contract/merge-reconciliation-mutation.test.mjs scripts/fleet/task-drain-reload.test.mjs scripts/fleet/reload_adapters_cli.test.mjs
+        run: node --test scripts/paperclip-host-contract-gate.test.mjs scripts/contract/host-installation.test.mjs scripts/contract/disposable-host.test.mjs scripts/contract/chain-github-fixture.test.mjs scripts/contract/autonomous-observer.test.mjs scripts/contract/native-acp-fixture.test.mjs scripts/contract/local-acp-repair-fixture.test.mjs scripts/contract/accepted-response-loss.test.mjs scripts/contract/pending-merge-wait.test.mjs scripts/contract/merge-reconciliation-mutation.test.mjs scripts/fleet/task-drain-reload.test.mjs scripts/fleet/reload_adapters_cli.test.mjs
       - name: Install pinned Paperclip control plane
-        run: npm install --global paperclipai@2026.916.0
+        run: |
+          npm install --global paperclipai@${{ matrix.paperclip-version }}
+          echo "PAPERCLIP_CONTRACT_NODE_MODULES=$(npm root --global)/paperclipai/node_modules" >> "$GITHUB_ENV"
+      - name: Verify actual external ACP read and write permissions
+        run: node packages/orchestrator/test/contract/acp-permissions-live.mjs
       - name: Verify disposable host persists data across a real server restart
         run: node packages/orchestrator/test/contract/disposable-host-live.mjs
+      - name: Verify baseline database and pending native card survive candidate migration
+        if: matrix.paperclip-version == '2026.1001.0'
+        run: |
+          npm install --prefix "$RUNNER_TEMP/paperclip-upgrade-baseline" --no-audit --no-fund paperclipai@2026.916.0
+          node packages/orchestrator/test/contract/disposable-host-live.mjs --upgrade-from="$RUNNER_TEMP/paperclip-upgrade-baseline/node_modules"
+      - name: Verify immutable approval response queues during an active run
+        if: matrix.paperclip-version == '2026.1001.0'
+        run: node packages/orchestrator/test/contract/queued-response-live.mjs --kind=confirmation
+      - name: Verify exact native answer queues during an active run
+        if: matrix.paperclip-version == '2026.1001.0'
+        run: node packages/orchestrator/test/contract/queued-response-live.mjs --kind=question
       - name: Verify Jules approval and typed plan reviews survive Paperclip restart before PR delivery
         run: node packages/orchestrator/test/contract/jules-server-restart.mjs
       - name: Verify autonomous native plan reviews and same-session PR delivery after daemon restart
@@ -211,7 +233,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: paperclip-native-contracts-node-24.x
+          name: paperclip-native-contracts-${{ matrix.paperclip-version }}-node-24.x
           path: ${{ runner.temp }}/paperclip-native-contracts/**/*.json
           if-no-files-found: ignore
           retention-days: 7

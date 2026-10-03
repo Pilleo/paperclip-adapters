@@ -8,6 +8,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFileSync, spawn } from "node:child_process";
 import { nativePlanReviewStageId } from "@pilleo/paperclip-adapter-common";
+import { assertContractVersion, expectedContractVersion } from "./host-installation.mjs";
 
 const require = createRequire(import.meta.url);
 const scenarios = ["baseline", "active_before_read", "queued_before_read", "starts_after_read", "queued_after_read", "overlapping", "lost_response"];
@@ -32,7 +33,7 @@ if (!scenario) {
     if (code !== 0) process.exitCode = 1;
   }
   const integrationAllowed = results.every((result) => result.result === "observed" && result.safetyGate === "pass");
-  const summary = { version: "2026.916.0", integrationAllowed,
+  const summary = { version: expectedContractVersion(), integrationAllowed,
     scenarios: results.map(({ scenario, result, outcome, error, safetyGate }) => ({ scenario, result, outcome, error, safetyGate })) };
   await writeFile(path.join(output, "summary.json"), JSON.stringify(summary, null, 2));
   console.log("CONTRACT_SUMMARY", JSON.stringify(summary));
@@ -84,7 +85,7 @@ async function runScenario() {
     const hostRequire = createRequire(path.join(install, "@paperclipai/server/package.json"));
     const version = hostRequire("./package.json").version;
     report.version = version;
-    assert.equal(version, "2026.916.0", "This is a version-pinned contract; qualify other host versions separately");
+    assertContractVersion(version);
     const load = (name) => import(pathToFileURL(path.join(install, name)).href);
     const express = hostRequire("express");
     const { eq } = await load("drizzle-orm/index.js");

@@ -6,7 +6,7 @@ import { createAcpRuntime } from "acpx/runtime";
 import { diagnoseAcpSessionError } from "./acp-session-diagnostic.js";
 import { normalizeAcpMcpNames } from "./acp-mcp-names.js";
 import { reviewMcpEnv, withNativeReviewMcp } from "./review-mcp.js";
-import { AntigravityConfigSchema, antigravityAdapterConfigSchema, DEFAULT_AGY_SERVER_PATH } from "./config.js";
+import { AntigravityConfigSchema, antigravityAdapterConfigSchema, DEFAULT_AGY_SERVER_PATH, normalizeAntigravityPermissionMode } from "./config.js";
 import { testEnvironment } from "./test-environment.js";
 import { ANTIGRAVITY_MODELS } from "../ui/models.js";
 import { fetchDynamicAntigravityModels } from "./discover-models.js";
@@ -70,6 +70,7 @@ function normalizeAntigravityModel(rawModel?: string): string {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const permissionMode = normalizeAntigravityPermissionMode(ctx.config?.["permissionMode"]);
   const parsed = AntigravityConfigSchema.safeParse(ctx.config ?? {});
   const config = parsed.success ? parsed.data : AntigravityConfigSchema.parse({});
 
@@ -102,7 +103,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     agent: "antigravity",
     agentCommand,
     env: { ...configuredEnv, PATH: runtimePath },
-    permissionMode: config.permissionMode || "approve-all",
+    permissionMode,
     model: normalizedModel,
     timeoutSec: config.timeoutSec,
   };

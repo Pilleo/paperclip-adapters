@@ -16,6 +16,7 @@ import { createNativeAcpFixture } from "./native-acp-fixture.mjs";
 import { assertPendingMergeWait } from "./pending-merge-wait.mjs";
 import { createAcceptedResponseLoss } from "./accepted-response-loss.mjs";
 import { createLocalAcpRepairFixture } from "./local-acp-repair-fixture.mjs";
+import { resolveContractHost } from "./host-installation.mjs";
 
 // Preserve the established CI entrypoint while qualifying the corrected,
 // adapter-neutral workflow and review continuity in its focused real host lane.
@@ -25,6 +26,7 @@ if (process.argv.includes("--autonomous-conflict")) {
 }
 
 const autonomousDependency = process.argv.includes("--autonomous-dependency");
+const installation = resolveContractHost();
 const autonomousConflict = process.argv.includes("--autonomous-conflict");
 const restartLostApproval = process.argv.includes("--autonomous-lost-approval-restart");
 const lostApproval = restartLostApproval || process.argv.includes("--autonomous-lost-approval");
@@ -233,7 +235,7 @@ const portProbe = createProbe();
 await new Promise((resolve) => portProbe.listen(0, "127.0.0.1", resolve));
 const port = portProbe.address().port;
 await new Promise((resolve) => portProbe.close(resolve));
-const host = createDisposableHost({ root, command: "paperclipai", args: ["onboard",
+const host = createDisposableHost({ root, command: installation.command, args: [...installation.args, "onboard",
   "--config", path.join(root, "home", "config.json"), "--data-dir", path.join(root, "home"),
   "--bind", "loopback", "--yes", "--no-install-service"], port,
 environment: { PAPERCLIP_ADAPTER_E2E: "1", PAPERCLIP_API_URL: `http://127.0.0.1:${port}`,

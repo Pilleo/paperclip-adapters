@@ -1,23 +1,26 @@
 /** Opt-in, installed-host restart contract. Never connects to an implicit Paperclip board. */
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
-import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import { createDisposableHost } from "./disposable-host.mjs";
+import { resolveContractHost } from "./host-installation.mjs";
 
-const { stdout: installedVersion } = await promisify(execFile)("paperclipai", ["--version"], { timeout: 10_000 });
-assert.match(installedVersion, /^2026\.916\.0\b/, "qualify another host version separately");
+const installation = resolveContractHost();
+const upgradeFrom = process.argv.find((arg) => arg.startsWith("--upgrade-from="))?.slice("--upgrade-from=".length);
+const originalInstallation = upgradeFrom ? resolveContractHost({ ...process.env,
+  PAPERCLIP_CONTRACT_VERSION: "2026.916.0", PAPERCLIP_CONTRACT_NODE_MODULES: upgradeFrom }) : installation;
+if (upgradeFrom) assert.equal(installation.version, "2026.1001.0", "Migration qualification must target the candidate");
 const root = await mkdtemp(path.join(tmpdir(), "paperclip-real-restart-contract-"));
 const probe = createServer();
 await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
 const port = probe.address().port;
 await new Promise((resolve) => probe.close(resolve));
-const host = createDisposableHost({ root, command: "paperclipai", args: ["onboard", "--config", path.join(root, "home", "config.json"),
+const makeHost = (selected) => createDisposableHost({ root, command: selected.command, args: [...selected.args, "onboard", "--config", path.join(root, "home", "config.json"),
   "--data-dir", path.join(root, "home"), "--bind", "loopback", "--yes", "--no-install-service"],
 port, readinessTimeoutMs: 60_000 });
+let host = makeHost(originalInstallation);
 try {
   await host.start();
   const firstPid = host.pid;
@@ -58,6 +61,7 @@ try {
   assert.equal((await liveBeforeRestart.json()).length, 0,
     "restart a pending native review only after every addressed run has settled");
   await host.stop();
+  if (upgradeFrom) host = makeHost(installation);
   await host.start();
   assert.notEqual(host.pid, firstPid, "a second executor call in one process is not a host restart");
   const companies = await fetch(`${host.url}/api/companies`);
@@ -72,8 +76,15 @@ try {
   assert.equal(cards[0].status, "pending");
   assert.equal(cards[0].addresseeAgentId, reviewer.id);
   assert.equal(cards[0].idempotencyKey, cardKey);
-  console.log("DISPOSABLE_HOST_RESTART_CONFIRMED", JSON.stringify({ companyId: id,
-    issueId: issue.id, pendingCardId, controlPlaneVersion: installedVersion.trim() }));
+  const report = { companyId: id,
+    issueId: issue.id, pendingCardId, originalVersion: originalInstallation.version,
+    controlPlaneVersion: installation.version, migration: Boolean(upgradeFrom), safe: true };
+  if (process.env.CONTRACT_REPORT_DIR) {
+    await mkdir(process.env.CONTRACT_REPORT_DIR, { recursive: true });
+    await writeFile(path.join(process.env.CONTRACT_REPORT_DIR, upgradeFrom ? "host-upgrade.json" : "host-restart.json"),
+      JSON.stringify(report, null, 2), { mode: 0o600, flag: "wx" });
+  }
+  console.log("DISPOSABLE_HOST_RESTART_CONFIRMED", JSON.stringify(report));
 } finally {
   await host.dispose();
 }

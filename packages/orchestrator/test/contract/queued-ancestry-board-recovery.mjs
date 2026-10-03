@@ -6,6 +6,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { assertContractVersion } from "./host-installation.mjs";
 
 const home = await mkdtemp(path.join(tmpdir(), "paperclip-queued-ancestry-"));
 const install = path.resolve(process.env.PAPERCLIP_CONTRACT_NODE_MODULES ??
@@ -16,7 +17,7 @@ process.env.PAPERCLIP_AGENT_JWT_SECRET = randomBytes(32).toString("hex");
 process.env.PAPERCLIP_AGENT_JWT_DISABLE_LEGACY_FALLBACK = "true";
 delete process.env.DATABASE_URL;
 const require = createRequire(path.join(install, "@paperclipai/server/package.json"));
-assert.equal(require("./package.json").version, "2026.916.0");
+const version = assertContractVersion(require("./package.json").version);
 const load = (file) => import(pathToFileURL(path.join(install, file)).href);
 const schema = await load("@paperclipai/db/dist/index.js");
 const { eq } = await load("drizzle-orm/index.js");
@@ -128,7 +129,7 @@ try {
   const [source] = await db.select().from(schema.issues).where(eq(schema.issues.id, issueId));
   assert.equal(source.assigneeAgentId, agentId);
   assert.equal(source.status, "in_progress");
-  console.log("QUEUED_ANCESTRY_RECOVERY", JSON.stringify({ version: "2026.916.0", safe: true,
+  console.log("QUEUED_ANCESTRY_RECOVERY", JSON.stringify({ version, safe: true,
     ancestryLength: 65, retiredUnstartedRunId: prior.id, continuedRunId: next.id,
     runCount: after.length, cancelledRuns: 1, sameIssueAndOwner: true }));
 } finally {

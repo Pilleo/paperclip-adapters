@@ -6,6 +6,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { assertContractVersion } from "../../../orchestrator/test/contract/host-installation.mjs";
 
 const home = await mkdtemp(path.join(tmpdir(), "paperclip-no-pr-recovery-"));
 const install = path.resolve(process.env.PAPERCLIP_CONTRACT_NODE_MODULES ??
@@ -16,7 +17,7 @@ process.env.PAPERCLIP_AGENT_JWT_SECRET = randomBytes(32).toString("hex");
 process.env.PAPERCLIP_AGENT_JWT_DISABLE_LEGACY_FALLBACK = "true";
 delete process.env.DATABASE_URL;
 const hostRequire = createRequire(path.join(install, "@paperclipai/server/package.json"));
-assert.equal(hostRequire("./package.json").version, "2026.916.0");
+const version = assertContractVersion(hostRequire("./package.json").version);
 const load = (name) => import(pathToFileURL(path.join(install, name)).href);
 const schema = await load("@paperclipai/db/dist/index.js");
 const { eq } = await load("drizzle-orm/index.js");
@@ -126,7 +127,7 @@ try {
   assert.equal(issue.executionBlocker, null);
   assert.equal(cards.find((card) => card.id === reissued.id)?.status, "pending");
   safe = true;
-  console.log("NO_PR_RECOVERY_CONTRACT", JSON.stringify({ version: "2026.916.0", safe,
+  console.log("NO_PR_RECOVERY_CONTRACT", JSON.stringify({ version, safe,
     oldCardStatus: "cancelled", newCardStatus: "pending", actionId: action.id,
     failedRunId: failed.run.id, issueStatus: issue.status }));
 } finally {

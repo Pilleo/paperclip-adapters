@@ -14,12 +14,14 @@ import { createChainGitHubFixture } from "./chain-github-fixture.mjs";
 import { createAutonomousObserver } from "./autonomous-observer.mjs";
 import { createNativeAcpFixture } from "./native-acp-fixture.mjs";
 import { createConflictRepairAgent } from "./conflict-repair-agent.mjs";
+import { resolveContractHost } from "./host-installation.mjs";
 
 const argument = (key) => process.argv.find((value) => value.startsWith(key + "="))?.slice(key.length + 1);
 const mode = argument("--conflict-recovery-mode") ?? "agent";
 const adapter = argument("--repair-agent-adapter") ?? "process";
 const shape = argument("--conflict-shape") ?? "overlap";
 const initialNoPr = process.argv.includes("--initial-no-pr");
+const installation = resolveContractHost();
 assert.ok(["manual", "git_only", "agent", "default"].includes(mode));
 assert.ok(["process", "jules"].includes(adapter));
 assert.ok(["overlap", "disjoint"].includes(shape));
@@ -140,7 +142,7 @@ await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
 const providerOrigin = `http://127.0.0.1:${provider.address().port}`;
 const probe = createProbe(); await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
 const port = probe.address().port; await new Promise((resolve) => probe.close(resolve));
-host = createDisposableHost({ root, command: "paperclipai", args: ["onboard", "--config", path.join(root, "home/config.json"),
+host = createDisposableHost({ root, command: installation.command, args: [...installation.args, "onboard", "--config", path.join(root, "home/config.json"),
   "--data-dir", path.join(root, "home"), "--bind", "loopback", "--yes", "--no-install-service"], port,
   environment: { PAPERCLIP_ADAPTER_E2E: "1", HEARTBEAT_SCHEDULER_INTERVAL_MS: "10000",
     PAPERCLIP_API_URL: `http://127.0.0.1:${port}`, PAPERCLIP_JULES_SESSION_STORE_DIR: path.join(root, "sessions"),
@@ -278,7 +280,7 @@ try {
     assert.ok(requiredPrMessage.includes(sourceId));
     console.log("ADAPTER_REQUIRED_PR_RECOVERY_CONFIRMED", JSON.stringify({ sourceId, originalSessionRetained: true, messages: requiredPrMessages }));
   }
-  console.log("CONFLICT_RECOVERY_CONFIRMED", JSON.stringify({ mode, adapter, shape, sourceId, resolverId, originalHead,
+  console.log("CONFLICT_RECOVERY_CONFIRMED", JSON.stringify({ version: installation.version, mode, adapter, shape, sourceId, resolverId, originalHead,
     resolvedHead: repaired.headSha, preservedReviewCardIds: originalCardIds, repairOperations, providerCreates: createRequests.length,
     mergeSha: merged.mergeSha, dependentId, dependentSessionId, retainedMergeGateId: gate.id, driverWrites: 0, root }));
 } catch (error) {

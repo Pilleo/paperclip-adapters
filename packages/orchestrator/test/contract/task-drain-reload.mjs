@@ -7,6 +7,7 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { drainAndRestart } from "../../../../scripts/fleet/task-drain-reload.mjs";
+import { assertContractVersion } from "./host-installation.mjs";
 
 const home = await mkdtemp(path.join(tmpdir(), "paperclip-drain-reload-"));
 const install = path.resolve(process.env.PAPERCLIP_CONTRACT_NODE_MODULES ??
@@ -17,7 +18,7 @@ process.env.PAPERCLIP_AGENT_JWT_SECRET = randomBytes(32).toString("hex");
 process.env.PAPERCLIP_AGENT_JWT_DISABLE_LEGACY_FALLBACK = "true";
 delete process.env.DATABASE_URL;
 const require = createRequire(path.join(install, "@paperclipai/server/package.json"));
-assert.equal(require("./package.json").version, "2026.916.0");
+const version = assertContractVersion(require("./package.json").version);
 const load = (name) => import(pathToFileURL(path.join(install, name)).href);
 const schema = await load("@paperclipai/db/dist/index.js");
 const { eq } = await load("drizzle-orm/index.js");
@@ -84,7 +85,7 @@ try {
   const after = await runRows();
   assert.ok(after.length > stoppedRunCount, "scheduler must resume after replacement-process drain reset");
   assert.equal(after.filter((run) => run.errorCode === "process_lost" || run.status === "cancelled").length, 0);
-  console.log("TASK_DRAIN_RELOAD_CONTRACT", JSON.stringify({ version: "2026.916.0", safe: true,
+  console.log("TASK_DRAIN_RELOAD_CONTRACT", JSON.stringify({ version, safe: true,
     originalRunId: original.id, admissionBlockedBeforeRestart: true, resumedAfterReset: true }));
 } finally {
   heartbeat.stopTaskDrain();

@@ -43,6 +43,7 @@ process.exit(Number(process.env.FIXTURE_EXIT));
         FIXTURE_MALFORMED: options.malformedReport ? "yes" : "no",
         FIXTURE_FAIL_SCENARIO: options.failScenario ?? "",
         FIXTURE_PID_FILE: path.join(home, "fixture.pid"),
+        PAPERCLIP_CONTRACT_VERSION: options.expectedVersion ?? "2026.916.0",
         CONTRACT_SCENARIO_TIMEOUT_MS: String(options.timeoutMs ?? 120_000) },
     });
     let stdout = "";
@@ -177,6 +178,22 @@ test("a report for a different scenario is not evidence of this scenario", async
 test("a report from a different host version is not a supported-host contract", async () => {
   const result = await runGate(0, "pass", ["--scenario=stable_child_executor_pr_board"], { reportVersion: "2026.831.1" });
   assert.notEqual(result.exit, 0);
+});
+
+test("candidate gate accepts only evidence from the explicitly selected candidate", async () => {
+  const result = await runGate(0, "pass", ["--scenario=stable_child_executor_pr_board"],
+    { expectedVersion: "2026.1001.0", reportVersion: "2026.1001.0" });
+  assert.equal(result.exit, 0, result.stderr);
+  assert.equal(result.summary.version, "2026.1001.0");
+  assert.equal(result.summary.integrationAllowed, true);
+});
+
+test("a passing baseline report cannot qualify the candidate upgrade", async () => {
+  const result = await runGate(0, "pass", ["--scenario=stable_child_executor_pr_board"],
+    { expectedVersion: "2026.1001.0", reportVersion: "2026.916.0" });
+  assert.notEqual(result.exit, 0);
+  assert.equal(result.summary.integrationAllowed, false);
+  assert.equal(result.summary.scenarios[0].result, "invalid_report");
 });
 
 test("a hung contract has a bounded failure and emits a summary", async () => {

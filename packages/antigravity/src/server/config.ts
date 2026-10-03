@@ -7,6 +7,13 @@ export function defaultAgyServerPath(): string {
 
 export const DEFAULT_AGY_SERVER_PATH = defaultAgyServerPath();
 
+export function normalizeAntigravityPermissionMode(value: unknown): "approve-all" | "approve-reads" | "deny-all" {
+  if (value === undefined) return "approve-all";
+  if (value === "read-only" || value === "prompt-on-write") return "approve-reads";
+  if (value === "approve-all" || value === "approve-reads" || value === "deny-all") return value;
+  throw new Error("Invalid Antigravity ACP permission mode");
+}
+
 export const AntigravityConfigSchema = z.object({
   serverPath: z.string().optional().default(DEFAULT_AGY_SERVER_PATH),
   uid: z.string().optional().default(""),
