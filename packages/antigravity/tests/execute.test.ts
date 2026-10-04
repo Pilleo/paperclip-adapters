@@ -80,7 +80,7 @@ describe("Antigravity local-agent tool budget", () => {
       authToken: "review-run-token",
       agent: { id: "agy-1", companyId: "c-1", name: "AGY", adapterType: "antigravity" },
       context: { issueId: "issue-1" },
-      config: { model: "gemini-3.8-flash-low", serverPath: "/opt/antigravity/agy_acp_server.par", nativeReview: true,
+      config: { model: "gemini-3.8-flash-low", serverPath: "/opt/antigravity/agy_acp_server.par", nativeReview: true, permissionMode: "read-only",
         reviewMcpCommand: process.execPath, reviewMcpArgs: ["-e", "process.stdin.resume()"] },
       runtimeMcp: { getServers: () => [hostMcp] },
     } as unknown as AdapterExecutionContext);
@@ -89,6 +89,22 @@ describe("Antigravity local-agent tool budget", () => {
     expect(servers.map((server) => server.name)).toContain("paperclip_projects");
     expect(hostMcp.name).toBe("Paperclip projects");
     expect(servers.find((server) => server.name === "paperclip_review")?.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
+    expect(captured.config?.["permissionMode"]).toBe("approve-reads");
+    captured.runtimeFactory?.({ permissionMode: "approve-reads" });
+    const permission = captured.runtimeOptions?.["onPermissionRequest"];
+    expect(permission).toBeTypeOf("function");
+    if (typeof permission !== "function") throw new Error("Native review permission callback missing");
+    expect(await permission({ sessionId: "session", raw: { options: [{ kind: "allow_once", optionId: "once", name: "Allow once" }], toolCall: {
+      title: "paperclip_review_get_current_native_review_assignment", kind: "other",
+    } } }, { signal: new AbortController().signal })).toEqual({ outcome: "allow_once" });
+    captured.runtimeFactory?.({ permissionMode: "approve-reads",
+      onPermissionRequest: async () => ({ outcome: "reject_once" }) });
+    const hostRestrictedPermission = captured.runtimeOptions?.["onPermissionRequest"];
+    if (typeof hostRestrictedPermission !== "function") throw new Error("Native review callback missing");
+    expect(await hostRestrictedPermission({ sessionId: "session", raw: {
+      options: [{ kind: "allow_once", optionId: "once", name: "Allow once" }],
+      toolCall: { title: "paperclip_review_get_current_native_review_assignment", kind: "other" },
+    } }, { signal: new AbortController().signal })).toEqual({ outcome: "reject_once" });
   });
 
   it("records only safe validation fields when the ACP server rejects session/new", async () => {

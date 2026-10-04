@@ -8,11 +8,15 @@ import readline from "node:readline";
 import test from "node:test";
 import { createNativeAcpFixture } from "../../packages/orchestrator/test/contract/native-acp-fixture.mjs";
 
-for (const controlled of [false, true]) test(`ACP provider submits an authenticated native verdict (controlled=${controlled})`, async () => {
+for (const { controlled, permissionsAllowed } of [
+  { controlled: false, permissionsAllowed: true }, { controlled: true, permissionsAllowed: true },
+  { controlled: false, permissionsAllowed: false },
+]) test(`ACP provider native verdict (controlled=${controlled}, permissions=${permissionsAllowed})`, async () => {
   const root = await mkdtemp(path.join(tmpdir(), "native-acp-fixture-test-"));
   const calls = [];
   const phases = [];
   const dispositions = [];
+  const permissions = [];
   let submitted;
   const assignment = { kind: "pull_request", interactionId: "native-card", prUrl: "https://github.com/fixture/repo/pull/1", headSha: "a".repeat(40) };
   const policy = createServer(async (request, response) => {
@@ -65,7 +69,15 @@ for (const controlled of [false, true]) test(`ACP provider submits an authentica
       PAPERCLIP_RUN_ID: "review-run", PAPERCLIP_AGENT_ID: "reviewer" } });
     const lines = readline.createInterface({ input: child.stdout });
     const responses = new Map();
-    lines.on("line", (line) => { const message = JSON.parse(line); if (message.id) responses.get(message.id)?.(message); });
+    lines.on("line", (line) => {
+      const message = JSON.parse(line);
+      if (message.method === "session/request_permission") {
+        assert.equal(message.params.toolCall.kind, "other");
+        permissions.push(message.params.toolCall.title);
+        child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: message.id,
+          result: { outcome: { outcome: "selected", optionId: permissionsAllowed ? "allow-once" : "reject-once" } } }) + "\n");
+      } else if (message.id) responses.get(message.id)?.(message);
+    });
     const request = (id, method, params = {}) => new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error(`ACP ${method} timed out`)), 5000);
       responses.set(id, (message) => { clearTimeout(timeout); resolve(message); });
@@ -78,9 +90,13 @@ for (const controlled of [false, true]) test(`ACP provider submits an authentica
     const configured = await request(5, "session/set_config_option", { sessionId: session.result.sessionId,
       configId: "model", value: "gemini-3.8-flash-low" });
     assert.equal(configured.result?.configOptions?.[0]?.currentValue, "gemini-3.8-flash-low");
-    assert.equal((await request(3, "session/prompt", { sessionId: session.result.sessionId })).result.stopReason, "end_turn");
-    assert.deepEqual(calls, ["initialize", "get_current_native_review_assignment", "submit_native_review_verdict"]);
-    assert.deepEqual(submitted, controlled ? { verdict: "reject", reason: "Real Git conflict" } : { verdict: "approve" });
+    const prompt = await request(3, "session/prompt", { sessionId: session.result.sessionId });
+    if (permissionsAllowed) assert.equal(prompt.result.stopReason, "end_turn");
+    else assert.match(prompt.error.message, /Native ACP permission denied/);
+    assert.deepEqual(calls, permissionsAllowed ? ["initialize", "get_current_native_review_assignment", "submit_native_review_verdict"] : ["initialize"]);
+    assert.deepEqual(permissions, permissionsAllowed ? ["paperclip_review_get_current_native_review_assignment",
+      "paperclip_review_submit_native_review_verdict"] : ["paperclip_review_get_current_native_review_assignment"]);
+    assert.deepEqual(submitted, !permissionsAllowed ? undefined : controlled ? { verdict: "reject", reason: "Real Git conflict" } : { verdict: "approve" });
     assert.deepEqual(phases, controlled ? ["before", "after"] : []);
     assert.deepEqual(dispositions, controlled ? [{ status: "done" }] : []);
     assert.equal((await request(4, "unsupported/method")).error.code, -32601);

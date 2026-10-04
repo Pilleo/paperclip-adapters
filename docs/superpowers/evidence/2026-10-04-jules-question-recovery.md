@@ -212,3 +212,52 @@ routing set passes 53 tests before the two additional receipt/duplicate cases
 (`run-7acbf7e58572`) and now pass alongside answer/status guards, twelve tests
 total (`run-095c8ed240f5`). The full workspace build passes
 (`run-d007dfeb8e22`). Live PR approval evidence is a separate post-reload gate.
+
+The `29df73e` journaled reload completed under
+`/tmp/paperclip-pr-quota-reload-h8n7es` (`run-aead203ce5fb`). MAZ-1736
+(`5d42baaf-85de-4954-b686-0c0e9bc7bd87`) is the standalone Luna PR reviewer.
+Card `8bb92e3e-a247-44ae-955d-a7334fe33fd7` was bootstrapped by its own scoped
+orchestrator run `a9a07d45-df13-4d5a-a803-31d6779f00c5`; Luna approved it in
+`ac2e049b-d4aa-4a1c-b28b-3562c3b3eab1`. Both runs succeeded with exact helper
+scope (`run-23b40a25bcdc`). The next strong-stage helper is
+`1af0429c-8d21-4233-8961-ddeabcf36df0`, card
+`56f82ba9-820c-4f75-840a-bba0b2f48040`. These are native review cards for the
+original PR #21 head, not replacements for prior decisions.
+
+## Native MCP calls under restrictive ACP permissions
+
+Strong review then exposed a separate permission boundary. Its successful
+Antigravity runs reported `denied by pre-tool hook: Denied by user (*)` for
+`paperclip_review.get_current_native_review_assignment`; no typed verdict was
+submitted (`run-4d762b650e57`). A bounded observation timed out while this card
+remained pending (`run-d91e2f8caf5b`), which is not a review qualification pass.
+Free-text blocked summaries do not satisfy the native gate.
+
+The ACP runtime now installs a per-invocation permission callback only after the
+run-bound native review MCP bridge exists. Under `approve-reads`, it permits
+only the three exact native control-plane tool titles, classified as `other`,
+and only when the provider offers an actual `allow_once` option. The MCP itself
+continues to verify the exact addressed card, issue, agent and run. Repository
+edits, unrelated tools, ordinary workers, explicit `deny-all`, and persistent
+always-allow requests retain their configured policy. Safe diagnostics record
+only the known tool title, kind and permission decision.
+An existing host permission callback has precedence; its explicit decision is
+never replaced by the native-tool allowance (red regression `run-27fe406a33fd`).
+
+The permission and executor wiring regressions first failed
+(`run-0b0c3f81ea91`, `run-27c4db4d16f1`); the always-allow fallback guard also
+first failed (`run-9f855f85b947`). All 32 Antigravity tests pass
+(`run-a1ca6597d7da`), and the affected package builds (`run-34c474bfb093`).
+The external native ACP fixture now requests permission before both assignment
+reads and verdict/question submission, so the real-host CI lanes exercise this
+boundary. Its two positive cases first failed without those requests
+(`run-2ee82c6ebfce`); both positives and the denied-before-MCP negative now pass
+(`run-62ead0b14241`).
+
+With actual permission requests enabled, the autonomous real PostgreSQL/daemon
+restart lane passes on baseline (`run-8e90ebc8e28d`, 179.797 s) and candidate
+(`run-7226e9069a7f`, 184.540 s): one provider create/approval, two native typed
+plan cards, and zero driver mutations after start. These runs precede the final
+additional once-option guard. The external ACP read/write contract also passes
+after that guard (`run-47c4fca730b8`): reads allowed and writes denied for all
+restrictive aliases, with explicit `approve-all` retained.

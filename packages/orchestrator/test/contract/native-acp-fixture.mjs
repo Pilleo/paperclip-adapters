@@ -35,7 +35,23 @@ const configOptions = [{ id: 'model', name: 'Model', category: 'model', type: 's
   options: [{ value: 'gemini-3.8-flash-low', name: 'Local review fixture' }] }];
 let nextMcpId = 0;
 const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\\n');
+let nextPermissionId = 10000;
+const permissionRequests = new Map();
+const nativePermission = (sessionId, name) => new Promise((resolve, reject) => {
+  const id = ++nextPermissionId;
+  const timer = setTimeout(() => { permissionRequests.delete(id); reject(new Error('Native ACP permission response missing')); }, 10000);
+  permissionRequests.set(id, message => {
+    clearTimeout(timer);
+    if (message.result?.outcome?.outcome === 'selected' && message.result.outcome.optionId === 'allow-once') resolve();
+    else reject(new Error('Native ACP permission denied for ' + name));
+  });
+  send({ id, method: 'session/request_permission', params: { sessionId,
+    toolCall: { toolCallId: 'native-' + id, title: 'paperclip_review_' + name, kind: 'other', status: 'pending' },
+    options: [{ optionId: 'allow-once', kind: 'allow_once', name: 'Allow once' },
+      { optionId: 'reject-once', kind: 'reject_once', name: 'Reject once' }] } });
+});
 const mcp = async (server, method, params) => {
+  if (method === 'tools/call') await nativePermission(server.sessionId, params.name);
   const response = await fetch(server.url, { method: 'POST',
     headers: { 'Content-Type': 'application/json', ...Object.fromEntries((server.headers || []).map((header) => [header.name, header.value])) },
     body: JSON.stringify({ jsonrpc: '2.0', id: ++nextMcpId, method, params }), signal: AbortSignal.timeout(15000) });
@@ -47,6 +63,7 @@ const mcp = async (server, method, params) => {
 readline.createInterface({ input: process.stdin }).on('line', async (line) => {
   const message = JSON.parse(line);
   if (message.id === undefined) return;
+  if (!message.method) { permissionRequests.get(message.id)?.(message); permissionRequests.delete(message.id); return; }
   try {
     let result;
     switch (message.method) {
@@ -58,6 +75,7 @@ readline.createInterface({ input: process.stdin }).on('line', async (line) => {
         const sessionId = randomUUID();
         const server = message.params.mcpServers?.find((candidate) => /^paperclip[_-]review$/.test(candidate.name));
         if (!server || server.type !== 'http') throw new Error('Expected authenticated adapter-owned review MCP server');
+        server.sessionId = sessionId;
         sessions.set(sessionId, server);
         result = { sessionId, configOptions, models: { currentModelId: 'gemini-3.8-flash-low',
           availableModels: [{ modelId: 'gemini-3.8-flash-low', name: 'Local review fixture' }] } };

@@ -6,6 +6,7 @@ import { createAcpRuntime } from "acpx/runtime";
 import { diagnoseAcpSessionError } from "./acp-session-diagnostic.js";
 import { normalizeAcpMcpNames } from "./acp-mcp-names.js";
 import { reviewMcpEnv, withNativeReviewMcp } from "./review-mcp.js";
+import { nativeReviewPermission, NATIVE_REVIEW_TOOL_NAMES } from "./native-review-permission.js";
 import { AntigravityConfigSchema, antigravityAdapterConfigSchema, DEFAULT_AGY_SERVER_PATH, normalizeAntigravityPermissionMode } from "./config.js";
 import { testEnvironment } from "./test-environment.js";
 import { ANTIGRAVITY_MODELS } from "../ui/models.js";
@@ -27,6 +28,7 @@ Runs **Google Antigravity** pair-programming agent sessions via the Agent Client
 - **Instructions Bundle:** Automatically materializes workspace rules, \`AGENTS.md\`, and custom instructions.
 - **Skills Studio:** Mounts custom MCP servers and materialized skills into the AGY subshell.
 - **ACP Integration:** Supports bidirectional tool calls, interactive approvals, and real-time streaming logs.
+- **Native review permissions:** Read-only reviewer sessions may invoke only the three run-bound native review MCP tools once per call. Repository writes retain the configured ACP policy; explicit deny-all remains deny-all.
 - **Token-efficient tools:** Prefer Codanna symbol outlines, git diff hunks, and named tests over dumping whole files.
 
 ---
@@ -41,23 +43,37 @@ Runs **Google Antigravity** pair-programming agent sessions via the Agent Client
 | **ACP launch flags** | The installed AGY ACP CLI is launched without legacy UID/debug flags | none |
 `;
 
-const rawAcpExecutor = createAcpxEngineExecutor({
-  adapterType: "antigravity",
-  createRuntime: (options) => {
-    const runtime = createAcpRuntime(options);
-    const ensureSession = runtime.ensureSession.bind(runtime);
-    runtime.ensureSession = async (input) => {
-      try {
-        return await ensureSession(input);
-      } catch (error) {
-        const diagnostic = diagnoseAcpSessionError(error);
-        if (diagnostic) console.warn(`[ANTIGRAVITY] ACP session/new rejected: ${JSON.stringify(diagnostic)}`);
-        throw error;
-      }
-    };
-    return runtime;
-  },
-});
+function createAntigravityExecutor(nativeReviewBound: boolean,
+  onLog?: AdapterExecutionContext["onLog"]): ReturnType<typeof createAcpxEngineExecutor> {
+  return createAcpxEngineExecutor({
+    adapterType: "antigravity",
+    createRuntime: (options) => {
+      const runtime = createAcpRuntime({ ...options, ...(nativeReviewBound ? {
+        onPermissionRequest: async (request, permissionContext) => {
+          if (permissionContext.signal.aborted) return { outcome: "cancel" };
+          const hostDecision = await options.onPermissionRequest?.(request, permissionContext);
+          if (hostDecision) return hostDecision;
+          const decision = nativeReviewPermission(request, options.permissionMode, nativeReviewBound);
+          if (NATIVE_REVIEW_TOOL_NAMES.some(name => name === request.raw.toolCall.title)) {
+            await onLog?.("stdout", `[ANTIGRAVITY] Native review permission: ${request.raw.toolCall.title}, kind=${request.raw.toolCall.kind ?? "unspecified"}, decision=${decision?.outcome ?? "normal-policy"}.\n`);
+          }
+          return decision;
+        },
+      } : {}) });
+      const ensureSession = runtime.ensureSession.bind(runtime);
+      runtime.ensureSession = async (input) => {
+        try {
+          return await ensureSession(input);
+        } catch (error) {
+          const diagnostic = diagnoseAcpSessionError(error);
+          if (diagnostic) console.warn(`[ANTIGRAVITY] ACP session/new rejected: ${JSON.stringify(diagnostic)}`);
+          throw error;
+        }
+      };
+      return runtime;
+    },
+  });
+}
 
 function normalizeAntigravityModel(rawModel?: string): string {
   if (!rawModel) return "gemini-pro-agent";
@@ -114,7 +130,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const executionCtx = review?.ctx ?? ctx;
   const runtimeMcp = executionCtx.runtimeMcp;
   try {
-  return await rawAcpExecutor({
+  return await createAntigravityExecutor(review !== null, ctx.onLog)({
     ...executionCtx,
     ...(runtimeMcp ? { runtimeMcp: { getServers: () => normalizeAcpMcpNames(runtimeMcp.getServers()) } } : {}),
     context: withLocalAgentToolBudget((ctx.context || {}) as Record<string, unknown>),
