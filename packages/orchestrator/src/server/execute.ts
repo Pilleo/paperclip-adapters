@@ -3138,7 +3138,7 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
                   if (reviewer["id"] !== inspection.identity.reviewerAgentId || reviewer["companyId"] !== companyId) {
                     throw new Error("Board-owned PR child reviewer changed before bootstrap recovery");
                   }
-                  if (reviewer["status"] === "paused" || reviewer["status"] === "error") {
+                  if (["paused", "terminated", "pending_approval"].includes(String(reviewer["status"]))) {
                     await log(`[ORCHESTRATOR] Waiting for reviewer ${inspection.identity.reviewerAgentId} before reactivating PR child ${inspection.childId}.`);
                     continue;
                   }

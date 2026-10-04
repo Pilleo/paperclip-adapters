@@ -6,7 +6,9 @@ const Issue = z.object({ id: z.string(), companyId: z.string(), parentId: z.stri
   createdByAgentId: z.string().nullable().optional(), status: z.string(), assigneeAgentId: z.string().nullable(),
   description: z.string().nullable().optional(), executionBlocker: z.unknown().optional() });
 const Run = z.object({ id: z.string(), companyId: z.string(), agentId: z.string(), status: z.string(),
-  contextSnapshot: z.object({ issueId: z.string().optional() }), resultJson: z.unknown().optional() });
+  contextSnapshot: z.object({ issueId: z.string().optional() }), startedAt: z.string().nullish(), resultJson: z.unknown().optional() });
+const IssueRun = z.object({ runId: z.string(), status: z.string(), agentId: z.string(), contextIssueId: z.string().nullable() });
+const activeRun = (status: string): boolean => ["queued", "running", "scheduled", "scheduled_retry"].includes(status);
 const Document = z.object({ id: z.string(), latestRevisionId: z.string(), latestRevisionNumber: z.number() });
 const Card = z.object({ id: z.string(), kind: z.literal("request_item_verdicts"), status: z.string(), idempotencyKey: z.string(),
   companyId: z.string(), issueId: z.string(), addresseeAgentId: z.string(), sourceRunId: z.string(),
@@ -77,15 +79,12 @@ export async function reconcileChildPlanReview(input: {
     }
   }
   if (child.assigneeAgentId === identity.bootstrapAgentId) {
-    if (!card) {
-      const reviewer = z.object({ id: z.string(), companyId: z.string(), status: z.string() })
-        .parse(await api.get(`/agents/${encodeURIComponent(identity.reviewerAgentId)}`));
-      if (reviewer.id !== identity.reviewerAgentId || reviewer.companyId !== identity.companyId) throw new Error("Child reviewer identity changed");
-      if (reviewer.status === "paused" || reviewer.status === "error") return { kind: "waiting", childId };
-    }
-    const IssueRun = z.object({ runId: z.string(), status: z.string(), agentId: z.string(), contextIssueId: z.string().nullable() });
+    const reviewer = z.object({ id: z.string(), companyId: z.string(), status: z.string() })
+      .parse(await api.get(`/agents/${encodeURIComponent(identity.reviewerAgentId)}`));
+    if (reviewer.id !== identity.reviewerAgentId || reviewer.companyId !== identity.companyId) throw new Error("Child reviewer identity changed");
+    if (["paused", "terminated", "pending_approval"].includes(reviewer.status)) return { kind: "waiting", childId };
     const runs = z.array(IssueRun).parse(await api.get(`${childRoot}/runs`));
-    if (runs.some((run) => run.contextIssueId === childId && run.agentId === identity.bootstrapAgentId && ["queued", "running", "scheduled"].includes(run.status))) return { kind: "waiting", childId };
+    if (runs.some((run) => run.contextIssueId === childId && activeRun(run.status))) return { kind: "waiting", childId };
     if (child.status !== "backlog") throw new Error("Settled child bootstrap did not park itself");
     if (card) {
       const source = Run.parse(await api.get(`/heartbeat-runs/${encodeURIComponent(card.sourceRunId)}`));
@@ -99,7 +98,34 @@ export async function reconcileChildPlanReview(input: {
     return { kind: "waiting", childId };
   }
   if (child.assigneeAgentId !== identity.reviewerAgentId || !card) throw new Error("Child reviewer ownership or card missing");
-  if (card.status === "pending") return { kind: "waiting", childId };
+  if (card.status === "pending") {
+    if (!["blocked", "backlog"].includes(child.status)) return { kind: "waiting", childId };
+    const runs = z.array(IssueRun).parse(await api.get(`${childRoot}/runs`));
+    const ownRuns = runs.filter(run => run.contextIssueId === childId);
+    if (ownRuns.some(run => activeRun(run.status))) return { kind: "waiting", childId };
+    const source = Run.parse(await api.get(`/heartbeat-runs/${encodeURIComponent(card.sourceRunId)}`));
+    if (source.id !== card.sourceRunId || source.companyId !== identity.companyId ||
+        source.agentId !== identity.bootstrapAgentId || source.contextSnapshot.issueId !== childId || source.status !== "succeeded") {
+      throw new Error("Idle child review bootstrap source is not successfully settled");
+    }
+    for (const row of ownRuns.filter(run => run.agentId === identity.reviewerAgentId)) {
+      const run = Run.parse(await api.get(`/heartbeat-runs/${encodeURIComponent(row.runId)}`));
+      if (run.id !== row.runId || run.companyId !== identity.companyId || run.agentId !== identity.reviewerAgentId ||
+          run.contextSnapshot.issueId !== childId || run.status !== "cancelled" || run.startedAt !== null) {
+        throw new Error("Pending child review has terminal execution evidence; only verified unstarted cancellations may resume");
+      }
+    }
+    const reviewer = z.object({ id: z.string(), companyId: z.string(), status: z.string() })
+      .parse(await api.get(`/agents/${encodeURIComponent(identity.reviewerAgentId)}`));
+    if (reviewer.id !== identity.reviewerAgentId || reviewer.companyId !== identity.companyId) throw new Error("Idle child reviewer identity changed");
+    if (["paused", "terminated", "pending_approval", "running"].includes(reviewer.status)) return { kind: "waiting", childId };
+    const updated = Issue.parse(await api.patch(childRoot, { status: "todo", assigneeAgentId: identity.reviewerAgentId,
+      blockParentUntilDone: false, executionPolicy: policy }));
+    if (updated.id !== childId || updated.status !== "todo" || updated.assigneeAgentId !== identity.reviewerAgentId) {
+      throw new Error("Idle child reviewer activation receipt mismatch");
+    }
+    return { kind: "waiting", childId };
+  }
   const verdict = Verdict.parse(card.result).items[0];
   const boardStamped = card.resolvedByAgentId == null;
   if (card.status !== "answered" || !verdict || !card.resolvedByRunId ||

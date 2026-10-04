@@ -81,7 +81,7 @@ export async function bootstrapChildPlanReview(input: {
   } else {
     const reviewer = Reviewer.parse(await api.get(`/agents/${encodeURIComponent(identity.reviewerAgentId)}`));
     if (reviewer.id !== identity.reviewerAgentId || reviewer.companyId !== identity.companyId) throw new Error("Child reviewer identity changed");
-    if (reviewer.status === "paused" || reviewer.status === "error") {
+    if (["paused", "terminated", "pending_approval"].includes(reviewer.status)) {
       const parked = Child.parse(await api.patch(root, { status: "backlog" }));
       if (parked.id !== childId || parked.status !== "backlog") throw new Error("Unable to park unavailable reviewer child");
       return { kind: "reviewer_unavailable", childId, reviewerId: reviewer.id };

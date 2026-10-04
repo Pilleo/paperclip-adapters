@@ -69,6 +69,18 @@ describe("child-scoped native card bootstrap", () => {
       .toEqual({ kind: "reviewer_unavailable", childId: "child", reviewerId: "luna" });
     expect(writes).toEqual([{ path: "/issues/child", body: { status: "backlog" } }]);
   });
+  it("creates a fresh scoped card despite an unrelated prior-run reviewer error", async () => {
+    const { api, writes } = fixture({ "/agents/luna": { id: "luna", companyId: "company", status: "error" } });
+    expect(await bootstrapChildPlanReview({ identity, childId: "child", agentId: "orchestrator", runId: "bootstrap-run", api }))
+      .toEqual({ childId: "child", cardId: "card" });
+    expect(writes[0]).toMatchObject({ path: "/issues/child/interactions" });
+  });
+  it.each(["terminated", "pending_approval"])("parks the child while reviewer admission is %s", async (status) => {
+    const { api, writes } = fixture({ "/agents/luna": { id: "luna", companyId: "company", status } });
+    expect(await bootstrapChildPlanReview({ identity, childId: "child", agentId: "orchestrator", runId: "bootstrap-run", api }))
+      .toEqual({ kind: "reviewer_unavailable", childId: "child", reviewerId: "luna" });
+    expect(writes).toEqual([{ path: "/issues/child", body: { status: "backlog" } }]);
+  });
   it("parks the child when the reviewer pauses after the readiness read but before card POST", async () => {
     const { api, writes } = fixture();
     api.post = async () => { throw new ReviewerUnavailableError("luna"); };

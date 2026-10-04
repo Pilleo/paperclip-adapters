@@ -252,7 +252,7 @@ export async function bootstrapPrReviewChild(input: {
     if (reviewer.id !== identity.reviewerAgentId || reviewer.companyId !== identity.companyId) {
       throw new Error("PR child reviewer identity changed");
     }
-    if (reviewer.status === "paused" || reviewer.status === "error") {
+    if (["paused", "terminated", "pending_approval"].includes(reviewer.status)) {
       const parked = Issue.parse(await input.api.patch(root, { status: "backlog" }));
       if (parked.id !== input.childId || parked.status !== "backlog" || parked.assigneeAgentId !== identity.bootstrapAgentId) {
         throw new Error("Unavailable PR reviewer child could not be parked");
@@ -314,7 +314,7 @@ export async function activatePrReviewChild(input: {
   if (reviewer.id !== identity.reviewerAgentId || reviewer.companyId !== identity.companyId) {
     throw new Error("PR child reviewer identity changed before activation");
   }
-  if (reviewer.status === "paused" || reviewer.status === "error") return "waiting";
+  if (["paused", "terminated", "pending_approval"].includes(reviewer.status)) return "waiting";
   const activated = Issue.parse(await input.api.patch(root, { status: "todo", assigneeAgentId: identity.reviewerAgentId }));
   if (activated.id !== input.childId || activated.assigneeAgentId !== identity.reviewerAgentId || activated.status !== "todo") {
     throw new Error("PR child reviewer activation receipt mismatched");

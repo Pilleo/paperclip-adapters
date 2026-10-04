@@ -27,6 +27,7 @@ if (process.argv.includes("--autonomous-conflict")) {
 
 const autonomousDependency = process.argv.includes("--autonomous-dependency");
 const questionRecovery = process.argv.includes("--autonomous-question-recovery");
+const reviewerError = process.argv.includes("--reviewer-error");
 const questionFlow = questionRecovery || process.argv.includes("--autonomous-question");
 const installation = resolveContractHost();
 const autonomousConflict = process.argv.includes("--autonomous-conflict");
@@ -309,11 +310,11 @@ try {
   const managedMetadata = (workerKey) => ({ managedBy: "paperclip-orchestrator", workerKey,
     structuredDecisionCapability: { version: 1, transports: ["mcp_tool"], decisionKinds: ["plan_review", "pull_request_review"] } });
   const reviewer = await post(`/companies/${company.id}/agents`, { name: "Paused plan reviewer", role: "qa",
-    adapterType: autonomousMerge ? "antigravity" : "process", adapterConfig: reviewerConfig, status: autonomous ? "idle" : "paused",
+    adapterType: autonomousMerge ? "antigravity" : "process", adapterConfig: reviewerConfig, status: autonomous ? reviewerError ? "error" : "idle" : "paused",
     ...(autonomousMerge ? { metadata: managedMetadata("luna_reviewer") } : {}),
     runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1 } } });
   const strong = await post(`/companies/${company.id}/agents`, { name: "Paused strong plan reviewer", role: "qa",
-    adapterType: autonomousMerge ? "antigravity" : "process", adapterConfig: reviewerConfig, status: autonomous ? "idle" : "paused",
+    adapterType: autonomousMerge ? "antigravity" : "process", adapterConfig: reviewerConfig, status: autonomous ? reviewerError ? "error" : "idle" : "paused",
     ...(autonomousMerge ? { metadata: managedMetadata("antigravity") } : {}),
     runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1 } } });
   reviewerIds.push(reviewer.id, strong.id);

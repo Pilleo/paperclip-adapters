@@ -98,7 +98,7 @@ describe("versioned issue-scoped PR review child identity", () => {
     expect(created).toBe(0);
   });
 
-  it("bootstraps the addressed PR card only on its own child-scoped orchestrator run and parks the child", async () => {
+  it.each(["idle", "error"])("bootstraps the addressed PR card with reviewer status %s on its own child-scoped run", async (status) => {
     const writes: Array<{ method: string; path: string; body: unknown }> = [];
     const api = { get: async (path: string) => {
       if (path === "/issues/parent") return { id: "parent", companyId: "company", status: "in_review", assigneeAgentId: null };
@@ -107,7 +107,7 @@ describe("versioned issue-scoped PR review child identity", () => {
       if (path === "/issues/child") return { id: "child", companyId: "company", parentId: "parent", status: "in_progress",
         assigneeAgentId: "orchestrator", createdByAgentId: "orchestrator", description: prReviewChildDescription(luna) };
       if (path === "/issues/child/interactions") return [];
-      if (path === "/agents/luna") return { id: "luna", companyId: "company", status: "idle" };
+      if (path === "/agents/luna") return { id: "luna", companyId: "company", status };
       if (path === "/heartbeat-runs/bootstrap-run") return { id: "bootstrap-run", agentId: "orchestrator",
         companyId: "company", status: "running", contextSnapshot: { issueId: "child" } };
       throw new Error(`unexpected GET ${path}`);
@@ -124,7 +124,7 @@ describe("versioned issue-scoped PR review child identity", () => {
     expect(writes[1]).toEqual({ method: "PATCH", path: "/issues/child", body: { status: "backlog" } });
   });
 
-  it("parks a child without spending its PR card when the addressed reviewer is paused", async () => {
+  it.each(["paused", "terminated", "pending_approval"])("parks a child without spending its PR card when reviewer admission is %s", async (status) => {
     const writes: Array<{ path: string; body: unknown }> = [];
     const api = { get: async (path: string) => {
       if (path === "/issues/parent") return { id: "parent", companyId: "company", status: "in_review", assigneeAgentId: null };
@@ -133,7 +133,7 @@ describe("versioned issue-scoped PR review child identity", () => {
       if (path === "/issues/child") return { id: "child", companyId: "company", parentId: "parent", status: "in_progress",
         assigneeAgentId: "orchestrator", createdByAgentId: "orchestrator", description: prReviewChildDescription(luna) };
       if (path === "/issues/child/interactions") return [];
-      if (path === "/agents/luna") return { id: "luna", companyId: "company", status: "paused" };
+      if (path === "/agents/luna") return { id: "luna", companyId: "company", status };
       if (path === "/heartbeat-runs/bootstrap-run") return { id: "bootstrap-run", companyId: "company",
         agentId: "orchestrator", status: "running", contextSnapshot: { issueId: "child" } };
       throw new Error(`unexpected GET ${path}`);
@@ -145,7 +145,7 @@ describe("versioned issue-scoped PR review child identity", () => {
     expect(writes).toEqual([{ path: "/issues/child", body: { status: "backlog" } }]);
   });
 
-  it("activates only a card whose child bootstrap source run has settled successfully", async () => {
+  it.each(["idle", "error"])("activates a settled scoped card when reviewer status is %s", async (status) => {
     const patches: unknown[] = [];
     const api = { get: async (path: string) => {
       if (path === "/issues/child") return { id: "child", companyId: "company", parentId: "parent", status: "backlog",
@@ -155,7 +155,7 @@ describe("versioned issue-scoped PR review child identity", () => {
       if (path === "/heartbeat-runs/bootstrap-run") return { id: "bootstrap-run", agentId: "orchestrator",
         companyId: "company", status: "succeeded", contextSnapshot: { issueId: "child" } };
       if (path === "/issues/child/runs") return [];
-      if (path === "/agents/luna") return { id: "luna", companyId: "company", status: "idle" };
+      if (path === "/agents/luna") return { id: "luna", companyId: "company", status };
       if (path === "/issues/parent") return { id: "parent", companyId: "company", status: "in_review", assigneeAgentId: null };
       if (path === "/issues/parent/work-products") return [{ url: luna.prUrl, type: "pull_request", isPrimary: true,
         status: "ready_for_review", metadata: { headSha: luna.headSha } }];

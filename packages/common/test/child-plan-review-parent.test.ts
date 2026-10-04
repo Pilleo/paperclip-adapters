@@ -67,6 +67,48 @@ describe("Jules-owned child review coordination", () => {
     expect(await reconcileChildPlanReview({ identity, childId: "child", api })).toEqual({ kind: "waiting", childId: "child" });
     expect(writes).toEqual([]);
   });
+  it("admits a deferred bootstrap after a reviewer's prior-run error", async () => {
+    const { api, writes } = fixture({ "/issues/child/interactions": [],
+      "/agents/luna": { id: "luna", companyId: "co", status: "error" } });
+    await reconcileChildPlanReview({ identity, childId: "child", api });
+    expect(writes).toMatchObject([{ path: "/issues/child", body: { status: "todo", assigneeAgentId: "orch" } }]);
+  });
+  it.each(["terminated", "pending_approval"])("preserves administrative %s admission holds", async (status) => {
+    const { api, writes } = fixture({ "/issues/child/interactions": [],
+      "/agents/luna": { id: "luna", companyId: "co", status } });
+    await reconcileChildPlanReview({ identity, childId: "child", api });
+    expect(writes).toEqual([]);
+  });
+  it("recovers the exact pending card after an unstarted reviewer queue row was cancelled", async () => {
+    const { api, writes } = fixture({ "/issues/child": { ...child, status: "blocked", assigneeAgentId: "luna" },
+      "/issues/child/runs": [{ runId: "cancelled-unstarted", status: "cancelled", agentId: "luna", contextIssueId: "child" }],
+      "/heartbeat-runs/cancelled-unstarted": { id: "cancelled-unstarted", companyId: "co", agentId: "luna",
+        status: "cancelled", startedAt: null, contextSnapshot: { issueId: "child" } } });
+    expect(await reconcileChildPlanReview({ identity, childId: "child", api })).toEqual({ kind: "waiting", childId: "child" });
+    expect(writes).toMatchObject([{ path: "/issues/child", body: { status: "todo", assigneeAgentId: "luna" } }]);
+  });
+  it("does not recover while an addressed reviewer run is scheduled for retry", async () => {
+    const { api, writes } = fixture({ "/issues/child": { ...child, status: "blocked", assigneeAgentId: "luna" },
+      "/issues/child/runs": [{ runId: "active", status: "scheduled_retry", agentId: "luna", contextIssueId: "child" }] });
+    await reconcileChildPlanReview({ identity, childId: "child", api });
+    expect(writes).toEqual([]);
+  });
+  it.each(["failed", "succeeded", "cancelled"])("does not replay a %s reviewer that started", async (status) => {
+    const { api, writes } = fixture({ "/issues/child": { ...child, status: "blocked", assigneeAgentId: "luna" },
+      "/issues/child/runs": [{ runId: "terminal", status, agentId: "luna", contextIssueId: "child" }],
+      "/heartbeat-runs/terminal": { id: "terminal", companyId: "co", agentId: "luna", status,
+        startedAt: "2026-10-04T00:00:00Z", contextSnapshot: { issueId: "child" } } });
+    await expect(reconcileChildPlanReview({ identity, childId: "child", api })).rejects.toThrow(/terminal|unstarted/);
+    expect(writes).toEqual([]);
+  });
+  it("requires a successfully settled source before idle pending-card recovery", async () => {
+    const { api, writes } = fixture({ "/issues/child": { ...child, status: "blocked", assigneeAgentId: "luna" },
+      "/issues/child/runs": [],
+      "/heartbeat-runs/bootstrap-run": { id: "bootstrap-run", companyId: "co", agentId: "orch",
+        status: "failed", contextSnapshot: { issueId: "child" } } });
+    await expect(reconcileChildPlanReview({ identity, childId: "child", api })).rejects.toThrow(/source|bootstrap/);
+    expect(writes).toEqual([]);
+  });
   it("accepts a board-stamped reject bound to the reviewer run after child cleanup fails", async () => {
     const receipt = JSON.stringify({ type: "item.completed", item: { type: "mcp_tool_call", server: "paperclip_review", tool: "submit_native_review_verdict", status: "failed", result: { structured_content: { code: "child_plan_cleanup_failed" } } } });
     const { api, writes } = fixture({

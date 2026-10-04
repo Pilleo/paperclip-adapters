@@ -254,11 +254,12 @@ boundary. Its two positive cases first failed without those requests
 (`run-2ee82c6ebfce`); both positives and the denied-before-MCP negative now pass
 (`run-62ead0b14241`).
 
-With actual permission requests enabled, the autonomous real PostgreSQL/daemon
-restart lane passes on baseline (`run-8e90ebc8e28d`, 179.797 s) and candidate
+The plain `--autonomous` real PostgreSQL/daemon restart lane, using authenticated
+process reviewers, passes on baseline (`run-8e90ebc8e28d`, 179.797 s) and candidate
 (`run-7226e9069a7f`, 184.540 s): one provider create/approval, two native typed
-plan cards, and zero driver mutations after start. These runs precede the final
-additional once-option guard. The external ACP read/write contract also passes
+plan cards, and zero driver mutations after start. These runs do not select the
+external ACP fixture and do not qualify its native-tool permission callback.
+They precede the final additional once-option guard. The external ACP read/write contract also passes
 after that guard (`run-47c4fca730b8`): reads allowed and writes denied for all
 restrictive aliases, with explicit `approve-all` retained.
 
