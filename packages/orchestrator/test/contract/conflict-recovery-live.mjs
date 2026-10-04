@@ -218,16 +218,24 @@ try {
     const reviewCards = cards.filter((card) => card.payload?.items?.[0]?.id === "pull_request");
     assert.equal(reviewCards.length, 2, "conflict repair must not create additional native review cards");
     assert.deepEqual(reviewCards.map((card) => card.id).sort(), originalCardIds);
+    const mergeGate = (await observer.get(`/companies/${companyId}/approvals`))
+      .find((card) => card.payload?.action === "task_merge" && card.payload.issueId === sourceId);
+    if (!mergeGate) return false;
+    // The coordinator can persist repair provenance before synchronizing the
+    // product head. Assert the final checkpoint only after its merge gate exists,
+    // then read the product so sequential API reads cannot observe an earlier tick.
     const products = await observer.get(`/issues/${sourceId}/work-products`);
     if (mode === "git_only" && shape === "disjoint" && products[0]?.metadata?.conflictRecovery?.phase === "resolved") {
       repaired = { url: pr.url, headSha: products[0].metadata.headSha, baseSha: products[0].metadata.conflictRecovery.baseSha };
       pr = { ...pr, ...repaired };
       repairPublishedAt ??= Date.now();
     }
-    if (!repaired || products[0]?.metadata?.conflictRecovery?.phase !== "resolved") return false;
+    assert.ok(repaired, "merge gate must follow a proved conflict repair");
+    assert.equal(products[0]?.metadata?.conflictRecovery?.phase, "resolved",
+      "merge gate must follow resolved repair provenance");
     assert.equal(products[0].metadata.headSha, repaired.headSha);
     assert.equal(products[0].metadata.conflictRecovery.reviewHeadSha, originalHead);
-    return (await observer.get(`/companies/${companyId}/approvals`)).find((card) => card.payload?.action === "task_merge" && card.payload.issueId === sourceId);
+    return mergeGate;
   });
   assert.equal(gate.status, "pending");
   const nativeRuns = await observer.get(`/companies/${companyId}/heartbeat-runs?limit=100`);

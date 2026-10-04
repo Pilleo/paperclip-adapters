@@ -303,3 +303,44 @@ observed action outcomes. No manual reviewer wake, terminal run replay, new
 native review card, operator verdict, or database repair was used to clear it.
 PR #21's final strong approval and the 20-task campaign are therefore not yet
 qualified as complete.
+
+The bounded transport fix `2bc3d24` was built/tested with all mandatory hooks
+(`run-eda32af77113`) and journal-reloaded under
+`/tmp/paperclip-bounded-review-reload-gzbESd` (`run-4a609168abfa`). Reconciliation
+`3853f4c5-e92f-415e-a94d-56ef132e68b3` succeeded. Post-reload evidence confirms
+MAZ-1737 is still blocked with the exact recovery action/run above, its original
+strong card pending, and no active addressed reviewer runs (`run-20c4dd41728b`).
+The strict campaign observation remains 11 done, 3 in review, 1 in progress,
+5 todo; PR #21 has Luna's exact-head native approval, while PRs #19 and #20
+await the user's merges (`run-750885fcedce`, `run-4fefa3d14d37`).
+
+## Conflict-lane observation checkpoint correction
+
+CI on `f267188` (`37183400805`) reached later conflict qualification stages but
+failed the baseline missing-required-PR lane and candidate manual-default lane
+at the fixture's product-head assertion. Both diagnostics show the product had
+already converged to the expected repaired head by the subsequent diagnostic
+GET (`run-f83140489147`). The polling callback asserted immediately after seeing
+resolved repair provenance, before a user merge gate existed; provenance and
+head synchronization can be separate coordinator writes.
+
+The observer now waits for the exact source's merge gate, then reads the current
+product and asserts resolved repair provenance, the exact repaired head, and the
+original reviewed SHA. It still verifies the same two native cards and no
+post-repair reviewer runs. If a gate exists without valid repair provenance or
+the correct product head, the test fails. No live adapter behavior or authority
+policy changes in this fixture correction.
+
+Both previously failing real-host contracts pass with actual ACP permission
+requests and zero observation-driver writes:
+
+- Baseline `--conflict-recovery-mode=agent --repair-agent-adapter=process --initial-no-pr`:
+  `run-38cc2f596246`, 253.549 s; one same-session recovery message, one repair,
+  original native cards/merge gate retained, standard merge and dependent release.
+- Candidate `--conflict-recovery-mode=default`: `run-5aa7d6aac8c2`, 280.969 s;
+  manual default across restart, external repair, zero agent repair operations,
+  original native cards/merge gate retained, standard merge and dependent release.
+
+Main CI on `2bc3d24` passed (`37205563187`); its full native workflow was still
+running (`37205563197`) before this fixture correction. Later revisions require
+their own exact-head CI result and are not qualified by an earlier green tree.
