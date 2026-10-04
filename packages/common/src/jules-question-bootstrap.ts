@@ -201,6 +201,9 @@ export async function observeQuestionChild(input: {
   const latestAttempt = ownRuns.find(r => r.agentId === (child.assigneeAgentId === identity.bootstrapAgentId ? identity.bootstrapAgentId : identity.reviewerAgentId));
   const failed = latestAttempt && ["failed", "timed_out", "cancelled"].includes(latestAttempt.status) ? latestAttempt : undefined;
   if (failed) return { kind: "failed", childId, runId: failed.runId, status: failed.status, ...(card ? { cardId: card.id } : {}) };
+  if (card?.status === "pending" && latestAttempt?.agentId === identity.reviewerAgentId && latestAttempt.status === "succeeded") {
+    return { kind: "failed", childId, runId: latestAttempt.runId, status: "missing_typed_decision", cardId: card.id };
+  }
   if (child.executionBlocker != null) throw new Error("Question child execution is held");
   if (child.assigneeAgentId === identity.bootstrapAgentId) {
     if (card) {

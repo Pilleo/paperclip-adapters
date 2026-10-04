@@ -133,6 +133,10 @@ describe("Orchestrator Managed Fleet Manager", () => {
     const adjudicator = createdCalls.find((call) => call.name === "[Orchestrated] Terra Jules Question Adjudicator");
     expect(adjudicator?.adapterConfig.model).toBe("gpt-5.6-terra");
     expect(adjudicator?.adapterConfig.permissionMode).toBe("read-only");
+    expect(adjudicator?.adapterConfig.extraArgs.join(" ")).toContain("mcp_servers.paperclip_review.command=");
+    expect(adjudicator?.adapterConfig.extraArgs.join(" ")).toContain("mcp_servers.paperclip_review.env_vars=");
+    expect(adjudicator?.adapterConfig.extraArgs.join(" ")).toContain("PAPERCLIP_RUN_ID");
+    expect(adjudicator?.adapterConfig.extraArgs.join(" ")).toContain("PAPERCLIP_API_KEY");
     expect(adjudicator?.instructionsBundle.files["AGENTS.md"]).toContain("Jules Question Adjudicator Role");
     const lunaReviewer = createdCalls.find((call) => call.name === "[Orchestrated] Luna Fast Reviewer");
     const reviewerInstructions = lunaReviewer?.instructionsBundle.files["AGENTS.md"] as string;

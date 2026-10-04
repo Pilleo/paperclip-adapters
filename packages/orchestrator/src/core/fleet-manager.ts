@@ -198,6 +198,16 @@ const NATIVE_REVIEW_CONTROL_PLANE_TRANSPORT = Object.freeze({
   extraArgs: [],
 });
 
+// The stock Codex launcher reseeds config.toml and writes its own gateways.
+// Keep the question tool in per-invocation CLI configuration, with credentials
+// inherited only from this run's environment rather than a shared home file.
+const QUESTION_MCP_EXTRA_ARGS = [
+  "-c", `mcp_servers.paperclip_review.command=${JSON.stringify(process.execPath)}`,
+  "-c", `mcp_servers.paperclip_review.args=[${JSON.stringify(fileURLToPath(new URL("../../dist/server/native-review-mcp-stdio.js", import.meta.url)))}]`,
+  "-c", "mcp_servers.paperclip_review.env={}",
+  "-c", 'mcp_servers.paperclip_review.env_vars=["PAPERCLIP_API_URL","PAPERCLIP_COMPANY_ID","PAPERCLIP_AGENT_ID","PAPERCLIP_RUN_ID","PAPERCLIP_API_KEY","PAPERCLIP_TASK_ID"]',
+];
+
 function nativeReviewMcpHomeFor(companyId: string, key: NativeReviewWorkerKey): string {
   return resolveNativeReviewMcpHome({ instanceRoot: paperclipInstanceRoot(), companyId, workerKey: key });
 }
@@ -406,6 +416,7 @@ export const MANAGED_FLEET_DEFINITIONS: readonly ManagedWorkerDefinition[] = Obj
       permissionMode: "read-only",
       model: "gpt-5.6-terra",
       ...NATIVE_REVIEW_CONTROL_PLANE_TRANSPORT,
+      extraArgs: QUESTION_MCP_EXTRA_ARGS,
       instructionsBundle: true,
     },
   },

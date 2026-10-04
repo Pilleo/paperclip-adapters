@@ -87,3 +87,23 @@ One independently stranded, unstarted Luna queue row was retired through its
 native cancel API before admission hold, after proving both start timestamps
 were null and retaining its undecided verdict card. No reviewer decision was
 invented by that maintenance operation.
+
+## Stock Codex question-tool transport
+
+After source-context repair, the live stock Codex adjudicator could start but
+had no `paperclip_review` tool: its managed home was reseeded with two stock
+gateways, which also reported stale runtime-token failures. Successful prose
+responses left the native question pending. Such prose is not a decision.
+
+The managed question adjudicator now receives per-invocation Codex `-c` overrides
+for the stdio question MCP and an explicit list of run-scoped environment names.
+No credential value is persisted in config or metadata. The managed-agent
+fingerprint/visible-field PATCH path applies this configuration normally. The
+real installed Codex CLI accepts the override as an enabled stdio server
+(`run-c6a9a6fc2379`). Fleet tests first failed on the missing transport, then all
+22 passed; managed PATCH regressions also pass (`run-b9d4dd6d246c`).
+
+A succeeded process whose exact pending question has no typed decision is now
+a bounded protocol-recovery outcome, rather than an indefinite healthy wait.
+The failing regression (`run-14aae84c4f73`) passes with this classification
+(`run-b94b977f20ba`). No comments or final-response prose are promoted to answers.

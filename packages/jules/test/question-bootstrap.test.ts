@@ -105,4 +105,16 @@ describe("native question bootstrap", () => {
       kind: "failed", cardId: "question-card", runId: "failed-reviewer", childId: "child",
     });
   });
+  it("does not treat a successful process with no typed decision as an indefinitely healthy review", async () => {
+    const f = fixture();
+    await bootstrapQuestionChild({ identity, childId: "child", runId: "bootstrap-run", agentId: "jules", api: f.api });
+    f.child.assigneeAgentId = "reviewer"; f.child.status = "todo";
+    const get = f.api.get;
+    f.api.get = async path => path === "/issues/child/runs"
+      ? [{ runId: "prose-only-run", agentId: "reviewer", status: "succeeded", contextIssueId: "child" }]
+      : get(path);
+    expect(await observeQuestionChild({ identity, childId: "child", api: f.api })).toMatchObject({
+      kind: "failed", cardId: "question-card", runId: "prose-only-run", status: "missing_typed_decision",
+    });
+  });
 });
