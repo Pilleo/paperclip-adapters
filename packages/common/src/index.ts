@@ -30,3 +30,5 @@ export * from "./child-plan-review.js";
 export * from "./child-plan-review-bootstrap.js";
 export * from "./child-plan-review-parent.js";
 export * from "./conflict-repair-task.js";
+export * from "./jules-question-bootstrap.js";
+export * from "./jules-question-workflow.js";

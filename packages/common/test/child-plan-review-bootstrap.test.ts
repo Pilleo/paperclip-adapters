@@ -25,6 +25,24 @@ function fixture(overrides: Record<string, unknown> = {}) {
 }
 
 describe("child-scoped native card bootstrap", () => {
+  it("keeps plan-card bootstrap valid while its exact parent session waits on a native Jules question", async () => {
+    const { api } = fixture({
+      "/issues/parent": { id: "parent", companyId: "company", assigneeAgentId: "jules", status: "blocked", executionBlocker: null },
+      "/issues/parent/interactions": [{ kind: "ask_user_questions", status: "pending", sourceRunId: "parent-run",
+        idempotencyKey: "jules:agent-adjudication:parent:session:question:presentation:v2" }],
+      "/heartbeat-runs/parent-run": { id: "parent-run", companyId: "company", agentId: "jules", status: "succeeded", contextSnapshot: { issueId: "parent" } },
+    });
+    expect(await bootstrapChildPlanReview({ identity, childId: "child", agentId: "orchestrator", runId: "bootstrap-run", api })).toMatchObject({ cardId: "card" });
+  });
+
+  it("does not reinterpret an execution failure as a question wait", async () => {
+    const { api, writes } = fixture({
+      "/issues/parent": { id: "parent", companyId: "company", assigneeAgentId: "jules", status: "blocked", executionBlocker: { kind: "legacy_execution_requires_reconciliation" } },
+      "/issues/parent/interactions": [],
+    });
+    await expect(bootstrapChildPlanReview({ identity, childId: "child", agentId: "orchestrator", runId: "bootstrap-run", api })).rejects.toThrow(/ownership|hold/);
+    expect(writes).toEqual([]);
+  });
   it("accepts the host's normalized null policy on a bootstrap-owned child", async () => {
     const { api } = fixture();
     const get = api.get;

@@ -13,6 +13,15 @@ test("pending native merge evidence is classified as a human wait", () => {
   assert.deepEqual(assertPendingMergeWait(snapshot(), expected), { kind: "awaiting_user_merge" });
 });
 
+test("retired question recovery cards remain immutable history without weakening native review verdicts", () => {
+  const state = snapshot();
+  state.cards.push({ id: "retired-question", kind: "ask_user_questions", status: "cancelled" });
+  const withQuestion = { ...expected, cardIds: [...expected.cardIds, "retired-question"], questionCardStates: { "retired-question": "cancelled" } };
+  assert.deepEqual(assertPendingMergeWait(state, withQuestion), { kind: "awaiting_user_merge" });
+  state.cards.at(-1).kind = "request_item_verdicts";
+  assert.throws(() => assertPendingMergeWait(state, withQuestion));
+});
+
 test("cancelled and replaced human gate cannot pass as restart persistence", () => {
   const state = snapshot();
   state.approvals[0].status = "cancelled";

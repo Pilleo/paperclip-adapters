@@ -26,11 +26,13 @@ if (process.argv.includes("--autonomous-conflict")) {
 }
 
 const autonomousDependency = process.argv.includes("--autonomous-dependency");
+const questionRecovery = process.argv.includes("--autonomous-question-recovery");
+const questionFlow = questionRecovery || process.argv.includes("--autonomous-question");
 const installation = resolveContractHost();
 const autonomousConflict = process.argv.includes("--autonomous-conflict");
 const restartLostApproval = process.argv.includes("--autonomous-lost-approval-restart");
 const lostApproval = restartLostApproval || process.argv.includes("--autonomous-lost-approval");
-const autonomousMerge = autonomousDependency || autonomousConflict || lostApproval || process.argv.includes("--autonomous-merge");
+const autonomousMerge = autonomousDependency || autonomousConflict || lostApproval || questionFlow || process.argv.includes("--autonomous-merge");
 const autonomous = autonomousMerge || process.argv.includes("--autonomous");
 
 const root = await mkdtemp(path.join(tmpdir(), "paperclip-jules-server-restart-"));
@@ -77,6 +79,10 @@ let localRepairs = 0;
 let repairPolls = 0;
 const oldHeadReviews = new Map();
 const feedbackMessages = [];
+const questionMessages = [];
+const questionCardIds = [];
+const questionCardStates = {};
+const questionText = "The revised plan has been published. I have paused to await approval before implementing the task.";
 let releaseBaseBarrier;
 const baseBarrier = new Promise((resolve) => { releaseBaseBarrier = resolve; });
 const sessionId = randomUUID();
@@ -174,6 +180,12 @@ const provider = createServer(async (request, response) => {
       return json(500, { error: error.message });
     }
   }
+  if (questionFlow && request.method === "POST" && url.pathname === `/v1alpha/sessions/${sessionId}:sendMessage`) {
+    let text = ""; for await (const chunk of request) text += chunk;
+    const body = JSON.parse(text); questionMessages.push({ prompt: body.prompt, at: new Date().toISOString() });
+    if (questionMessages.length !== 1) return json(409, {error:"duplicate question answer"});
+    return json(200, {});
+  }
   if (request.method === "GET" && url.pathname.startsWith("/v1alpha/sessions") && approvalResponseFault.observationsHeld) {
     return json(503, { error: "deterministic approval evidence outage" });
   }
@@ -212,7 +224,7 @@ const provider = createServer(async (request, response) => {
   if (request.method === "GET" && url.pathname === `/v1alpha/sessions/${sessionId}`) {
     return json(200, { name: `sessions/${sessionId}`,
       state: repairedPr ? repairPolls++ === 0 ? "IN_PROGRESS" : "COMPLETED"
-        : approvals ? releaseOutput ? "COMPLETED" : "IN_PROGRESS" : "AWAITING_PLAN_APPROVAL",
+        : approvals ? questionFlow && !questionMessages.length ? "COMPLETED" : releaseOutput ? "COMPLETED" : "IN_PROGRESS" : "AWAITING_PLAN_APPROVAL",
       outputs: releaseOutput ? [{ pullRequest: { url: pr.url } }] : [] });
   }
   if (request.method === "GET" && url.pathname === `/v1alpha/sessions/${sessionId}/activities`) {
@@ -220,6 +232,8 @@ const provider = createServer(async (request, response) => {
       planGenerated: { plan: { id: "restart-plan", steps: [{ index: 0, title: "Restart contract" }] } } },
       ...(approvedAt ? [{ id: "restart-plan-approved", createTime: approvedAt,
         planApproved: { planId: "restart-plan" } }] : []),
+      ...(questionFlow && approvedAt ? [{ id: "approved-plan-question", createTime: new Date(Date.parse(approvedAt)+1000).toISOString(), agentMessaged: {agentMessage:questionText} }] : []),
+      ...questionMessages.map((message,index) => ({id:`question-answer-${index}`,createTime:message.at,userMessaged:{userMessage:message.prompt}})),
       ...feedbackMessages.map((message, index) => ({ id: `conflict-feedback-${index}`, createTime: message.at,
         userMessaged: { userMessage: message.prompt } }))] });
   }
@@ -264,6 +278,7 @@ const waitUntil = async (label, probe, timeoutMs = 45_000) => {
 let companyId = null;
 let issueId = null;
 let orchestratorId = null;
+let contractSucceeded = false;
 const reviewerIds = [];
 try {
   await host.start();
@@ -285,7 +300,8 @@ try {
   const company = await post("/companies", { name: "Disposable Jules process restart" });
   companyId = company.id;
   const acp = autonomousMerge ? await createNativeAcpFixture(root, autonomousConflict
-    ? { reviewDecisionUrl: `${providerUrl}/fixture/review`, reviewDecisionToken: reviewControlToken, finishPrReview: true } : {}) : null;
+    ? { reviewDecisionUrl: `${providerUrl}/fixture/review`, reviewDecisionToken: reviewControlToken, finishPrReview: true }
+    : questionFlow ? { finishPrReview: true, questionResponse: "The current plan is already natively approved. Implement the original task, verify the tests and publish the existing task's single PR. Do not create another session or merge it.", failFirstQuestionReview: questionRecovery } : {}) : null;
   const reviewerConfig = autonomousMerge ? { serverPath: acp.serverPath, model: "gemini-3.8-flash-low",
     nativeReview: true, cwd: chainGitHub.repository, permissionMode: "read-only", timeoutSec: 90,
     reviewMcpArgs: [path.join(workspaceRoot, "packages/orchestrator/dist/server/native-review-mcp-stdio.js")] }
@@ -306,6 +322,7 @@ try {
     adapterType: "jules", adapterConfig: { apiUrl: host.url, repository: "paperclip-contract/fixture",
       source: "sources/github/paperclip-contract/fixture", baseBranch: "main", planApprovalPolicy: "required",
       planReviewerAgentId: reviewer.id, planStrongReviewerAgentId: strong.id,
+      ...(questionFlow ? { questionAdjudicatorAgentId: strong.id } : {}),
       planReviewBootstrapMode: "jules_v4", e2eProviderBaseUrl: providerUrl, pollCadenceSeconds: 30,
       continuationCadenceSeconds: 10,
       env: { JULES_API_KEY: "disposable-provider-fixture-token", PATH: `${root}:${process.env.PATH}` } },
@@ -424,6 +441,44 @@ try {
   // each observed by the daemon's real timer. This is only a test observation budget.
   }, autonomous ? 900_000 : 100_000);
   assert.equal(approvals, 1, "one addressed Luna and strong plan ladder must approve the original provider session before restart");
+  if (questionFlow) {
+    const questionCard = await waitUntil("native question child form", async () => {
+      const children = await observer.get(`/companies/${company.id}/issues?parentId=${issue.id}&limit=100`);
+      for (const child of children) {
+        const cards = await observer.get(`/issues/${child.id}/interactions`);
+        const card = cards.find(c=>c.kind==='ask_user_questions' && c.addresseeAgentId===strong.id);
+        if (card) return {child,card};
+      }
+      return false;
+    },180_000);
+    const sourceRun = await observer.get(`/heartbeat-runs/${questionCard.card.sourceRunId}`);
+    assert.equal(sourceRun.contextSnapshot.issueId, questionCard.child.id, "Question source must be child-scoped");
+    const parentCards = (await observer.get(`/issues/${issue.id}/interactions`)).filter(c=>c.kind==='ask_user_questions'&&c.status==='pending');
+    assert.equal(parentCards.length,1);
+    assert.deepEqual(parentCards[0].payload.questions.map(q=>q.id),['reply']);
+    assert.equal(parentCards[0].payload.questions[0].allowOther,false);
+    assert.equal((await observer.get(`/issues/${issue.id}`)).status,'blocked',"an unresolved provider question is blocked work");
+    if (questionRecovery) {
+      await waitUntil("terminal native question reviewer failure",async()=>{
+        const rows=await observer.get(`/companies/${company.id}/heartbeat-runs?limit=100`);
+        return rows.some(r=>r.agentId===strong.id&&r.status==='failed');
+      },90_000);
+      await waitUntil("idle before question-wait restart",async()=>!(await observer.get(`/companies/${company.id}/live-runs?minCount=0&limit=50`)).length,90_000);
+      await host.stop(); await host.start();
+      assert.equal((await observer.get(`/issues/${issue.id}`)).status,'blocked');
+    }
+    await waitUntil("adapter-owned typed question answer",()=>questionMessages.length===1,300_000);
+    const questionChildren = await observer.get(`/companies/${company.id}/issues?parentId=${issue.id}&limit=100`);
+    for (const child of questionChildren) {
+      const cards = await observer.get(`/issues/${child.id}/interactions`);
+      for (const card of cards.filter(c => c.kind === 'ask_user_questions')) {
+        assert.ok(['answered','cancelled','expired'].includes(card.status),'no unresolved question card may reach the merge gate');
+        questionCardIds.push(card.id); questionCardStates[card.id]=card.status;
+      }
+    }
+    assert.equal(creates,1); assert.equal(approvals,1);
+    console.log("AUTONOMOUS_QUESTION_RECOVERY_CONFIRMED",JSON.stringify({version:installation.version,sourceCardId:questionCard.card.id,originalSessionId:sessionId,providerAnswers:questionMessages.length,recoveredTerminalReviewer:questionRecovery}));
+  }
   if (lostApproval) {
     assert.equal(approvalResponseFault.responseLost, true);
     assert.equal(approvalResponseFault.observationsHeld, true);
@@ -603,7 +658,7 @@ try {
         newHeadSha: pr.headSha, oldCardIds: [...oldHeadReviews.keys()], freshCardIds: gate.reviews.map((review) => review.cardId) }));
     }
     const expectedWait = { issueId: issue.id, approvalId: gate.approvalId, prUrl: pr.url, headSha: pr.headSha,
-      productId: delivered.id, cardIds: [...originalPlanCardIds, ...oldHeadReviews.keys(), ...gate.reviews.map((review) => review.cardId)] };
+      productId: delivered.id, cardIds: [...originalPlanCardIds, ...questionCardIds, ...oldHeadReviews.keys(), ...gate.reviews.map((review) => review.cardId)], questionCardStates };
     const readWait = async () => {
       const children = await observer.get(`/companies/${company.id}/issues?parentId=${issue.id}&limit=20`);
       const snapshot = { issue: await observer.get(`/issues/${issue.id}`),
@@ -690,7 +745,21 @@ try {
   }
   console.log("JULES_SERVER_RESTART_CONFIRMED", JSON.stringify({ issueId: issue.id,
     sessionId, providerCreates: creates, providerApprovals: approvals, typedPlanCards: originalPlanCardIds.length }));
+  contractSucceeded = true;
 } catch (error) {
+  if (questionFlow && issueId) {
+    const { loadStoredSession } = await import("../../../jules/dist/server/session-store.js");
+    const state = await loadStoredSession(issueId, "sources/github/paperclip-contract/fixture", "main");
+    console.error("QUESTION_CHECKPOINT_DIAGNOSTIC", JSON.stringify({ root, phase: state?.phase, pending: state?.pendingInteraction, lastPolledAt: state?.lastPolledAt }));
+    const source = await fetch(`${host.url}/api/issues/${issueId}`).then(r=>r.json());
+    console.error("QUESTION_MONITOR_DIAGNOSTIC", JSON.stringify({status:source.status,policy:source.executionPolicy,state:source.executionState}));
+    const rows = await fetch(`${host.url}/api/issues/${issueId}/runs`).then(r=>r.json());
+    for(const row of rows.slice(0,2)){
+      const run = await fetch(`${host.url}/api/heartbeat-runs/${row.runId}`).then(r=>r.json());
+      await writeFile(path.join(root,`question-run-${row.runId}.json`),JSON.stringify(run),{mode:0o600});
+      console.error("QUESTION_RUN_DIAGNOSTIC",JSON.stringify({id:run.id,status:run.status,resultJson:run.resultJson,error:run.error,stdout:run.stdoutExcerpt,stderr:run.stderrExcerpt}));
+    }
+  }
   const runs = companyId ? await fetch(`${host.url}/api/companies/${companyId}/heartbeat-runs?limit=20`)
     .then((response) => response.ok ? response.json() : [], () => []) : [];
   const issue = issueId ? await fetch(`${host.url}/api/issues/${issueId}`)
@@ -732,7 +801,8 @@ try {
       contextKeys: Object.keys(run.contextSnapshot ?? {}).sort() })), providerRequests }));
   throw error;
 } finally {
-  await host.dispose();
+  if (contractSucceeded) await host.dispose();
+  else { await host.stop(); console.error(`Contract failure evidence retained at ${root}`); }
   if (previousStore === undefined) delete process.env.PAPERCLIP_JULES_SESSION_STORE_DIR;
   else process.env.PAPERCLIP_JULES_SESSION_STORE_DIR = previousStore;
   provider.closeAllConnections();

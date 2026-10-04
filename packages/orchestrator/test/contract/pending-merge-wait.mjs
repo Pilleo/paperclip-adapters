@@ -16,6 +16,11 @@ export function assertPendingMergeWait(snapshot, expected) {
   assert.equal(snapshot.products[0].metadata?.headSha, expected.headSha);
   assert.notEqual(snapshot.products[0].status, "merged");
   assert.deepEqual(snapshot.cards.map((card) => card.id).sort(), [...expected.cardIds].sort());
-  assert.ok(snapshot.cards.every((card) => card.status === "answered"));
+  assert.ok(snapshot.cards.every((card) => {
+    const questionState = expected.questionCardStates?.[card.id];
+    if (questionState !== undefined) return card.kind === "ask_user_questions" &&
+      ["answered", "cancelled", "expired"].includes(questionState) && card.status === questionState;
+    return card.status === "answered";
+  }));
   return { kind: "awaiting_user_merge" };
 }

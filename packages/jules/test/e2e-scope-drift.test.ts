@@ -3,6 +3,11 @@ import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { execute } from "../src/server/execute.js";
 import { JulesClient } from "../src/server/jules-client.js";
 import { sessionCodec } from "../src/server/session.js";
+import { observeQuestionChild } from "../src/server/question-bootstrap.js";
+vi.mock("../src/server/question-bootstrap.js", async (original) => ({
+  ...await original<typeof import("../src/server/question-bootstrap.js")>(),
+  observeQuestionChild: vi.fn().mockResolvedValue({ kind: "waiting", childId: "question-review-1" }),
+}));
 import { getPullRequestDetails, getPullRequestCiStatus, getPullRequestPatch, listPullRequestChangedFiles } from "../src/server/ci-status.js";
 import {
   createJulesAgentAdjudicationInteraction,
@@ -35,6 +40,8 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
   const mod = await importOriginal<typeof import("../src/server/paperclip-client.js")>();
   return {
     ...mod,
+    questionReviewApi: vi.fn(() => ({ get: vi.fn(), post: vi.fn(), patch: vi.fn() })),
+    getPaperclipIssue: vi.fn().mockResolvedValue({ id: "issue-141", companyId: "c-1", assigneeAgentId: "jules-1", status: "in_progress", executionBlocker: null }),
     createIssueComment: vi.fn().mockResolvedValue(undefined),
     createJulesAgentAdjudicationInteraction: vi.fn().mockResolvedValue({ id: "visible-question-1", status: "pending" }),
     createJulesQuestionReviewInteraction: vi.fn().mockResolvedValue({ id: "question-form-1", status: "pending" }),
@@ -302,7 +309,7 @@ describe("E2E host-plan scope conformity on Jules PRs", () => {
     expect(scheduleJulesSessionMonitor).toHaveBeenCalledTimes(1);
 
     const second = await execute(ctx(sessionCodec.decode(first.sessionParams)!));
-    expect(createJulesQuestionAdjudication).toHaveBeenCalled();
+    expect(observeQuestionChild).toHaveBeenCalled();
     expect(scheduleJulesSessionMonitor).toHaveBeenCalledTimes(2);
     expect(second.resultJson).toMatchObject({ pending: true });
   });
@@ -344,7 +351,7 @@ describe("E2E host-plan scope conformity on Jules PRs", () => {
     const result = await execute(ctx({ ...session, pendingInteraction: planReview }));
     const checkpoint = sessionCodec.decode(result.sessionParams!);
 
-    expect(createJulesQuestionAdjudication).toHaveBeenCalled();
+    expect(observeQuestionChild).toHaveBeenCalled();
     expect(createJulesAgentAdjudicationInteraction).toHaveBeenCalledWith(
       "issue-141",
       "session-141",

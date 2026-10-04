@@ -12,7 +12,7 @@ const Child = z.object({ id: z.string(), companyId: z.string(), parentId: z.stri
   executionPolicy: z.object({ stages: z.array(z.unknown()).length(0), monitor: z.null().optional() }).nullable(),
   executionBlocker: z.null().optional(),
 });
-const Parent = z.object({ id: z.string(), companyId: z.string(), assigneeAgentId: z.string(), status: z.string() });
+const Parent = z.object({ id: z.string(), companyId: z.string(), assigneeAgentId: z.string(), status: z.string(), executionBlocker: z.unknown().optional() });
 const Document = z.object({ id: z.string(), latestRevisionId: z.string(), latestRevisionNumber: z.number(), latestBody: z.string().optional(), body: z.string().optional() });
 const Run = z.object({ id: z.string(), companyId: z.string(), agentId: z.string(), status: z.string(), contextSnapshot: z.object({ issueId: z.string() }) });
 const Reviewer = z.object({ id: z.string(), companyId: z.string(), status: z.string() });
@@ -47,7 +47,19 @@ export async function bootstrapChildPlanReview(input: {
     throw new Error("Child bootstrap issue identity mismatch");
   }
   if (parent.id !== identity.parentIssueId || parent.companyId !== identity.companyId ||
-      parent.assigneeAgentId !== identity.julesAgentId || parent.status !== "in_progress") throw new Error("Parent ownership changed during child bootstrap");
+      parent.assigneeAgentId !== identity.julesAgentId || parent.executionBlocker != null) throw new Error("Parent ownership or execution hold changed during child bootstrap");
+  if (parent.status !== "in_progress") {
+    if (parent.status !== "blocked") throw new Error("Parent ownership changed during child bootstrap");
+    const questions = z.array(z.object({ kind: z.string(), status: z.string(), idempotencyKey: z.string().nullish(), sourceRunId: z.string().nullish() }))
+      .parse(await api.get(`/issues/${encodeURIComponent(identity.parentIssueId)}/interactions`));
+    const question = questions.find(q => q.kind === "ask_user_questions" && q.status === "pending" &&
+      q.idempotencyKey?.startsWith(`jules:agent-adjudication:${identity.parentIssueId}:${identity.sessionId}:`));
+    if (!question?.sourceRunId) throw new Error("Blocked parent has no verified native question wait");
+    const source = Run.parse(await api.get(`/heartbeat-runs/${encodeURIComponent(question.sourceRunId)}`));
+    if (source.companyId !== identity.companyId || source.agentId !== identity.julesAgentId || source.contextSnapshot.issueId !== identity.parentIssueId) {
+      throw new Error("Blocked parent question provenance changed");
+    }
+  }
   if (document.id !== identity.documentId || document.latestRevisionId !== identity.revisionId ||
       document.latestRevisionNumber !== identity.revisionNumber) throw new Error("Parent plan revision changed during child bootstrap");
   if (run.id !== input.runId || run.agentId !== input.agentId || run.companyId !== identity.companyId ||

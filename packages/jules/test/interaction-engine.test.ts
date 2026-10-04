@@ -27,6 +27,10 @@ const baseSession: JulesAdapterSessionV1 = {
 };
 
 describe("interaction-engine pure reducer", () => {
+  it("reports a feedback wait as blocked without inventing an execution-failure unblocker", () => {
+    expect(determinePaperclipIssueStatus("WAITING_FOR_FEEDBACK")).toEqual({ status: "blocked", unblockDescriptor: null });
+    expect(determinePaperclipIssueStatus("RUNNING").status).toBe("in_progress");
+  });
   it.each([
     [{ outcome: "resolved", complete: true, items: [{ id: "plan", verdict: "approve" }] }, { decision: "approve" }],
     [{ outcome: "resolved", complete: true, items: [{ id: "plan", verdict: "reject", reason: "Clarify rollback." }] }, { decision: "reject", reason: "Clarify rollback." }],
@@ -310,9 +314,9 @@ describe("interaction-engine pure reducer", () => {
   });
 
   describe("Paperclip issue status mapping invariants", () => {
-    it("never emits status: blocked or unblock descriptors during user feedback", () => {
+    it("blocks feedback waits without creating an execution-failure unblock descriptor", () => {
       const policy = determinePaperclipIssueStatus("WAITING_FOR_FEEDBACK");
-      expect(policy.status).toBe("in_progress");
+      expect(policy.status).toBe("blocked");
       expect(policy.unblockDescriptor).toBeNull();
     });
 

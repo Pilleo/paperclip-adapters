@@ -2,15 +2,19 @@ import { chmod, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 /** External ACP provider simulator; all verdict writes go through the real adapter-owned MCP bridge. */
-export async function createNativeAcpFixture(root, { reviewDecisionUrl, reviewDecisionToken, finishPrReview = false } = {}) {
+export async function createNativeAcpFixture(root, { reviewDecisionUrl, reviewDecisionToken, finishPrReview = false, questionResponse, failFirstQuestionReview = false } = {}) {
   const serverPath = path.join(root, "agy_acp_server.par");
   await writeFile(serverPath, `#!/usr/bin/env node
 const readline = require('node:readline');
 const { randomUUID } = require('node:crypto');
+const fs = require('node:fs');
 const sessions = new Map();
 const reviewDecisionUrl = ${JSON.stringify(reviewDecisionUrl ?? null)};
 const reviewDecisionToken = ${JSON.stringify(reviewDecisionToken ?? null)};
 const finishPrReview = ${JSON.stringify(finishPrReview)};
+const questionResponse = ${JSON.stringify(questionResponse ?? null)};
+const questionFailurePath = ${JSON.stringify(path.join(root, "question-failure-observed"))};
+const failFirstQuestionReview = ${JSON.stringify(failFirstQuestionReview)};
 const nativeApi = async (route, method = 'GET', body) => {
   const env = process.env;
   if (!env.PAPERCLIP_API_KEY || !env.PAPERCLIP_RUN_ID || !env.PAPERCLIP_API_URL) throw new Error('Missing native reviewer runtime credentials');
@@ -67,6 +71,25 @@ readline.createInterface({ input: process.stdin }).on('line', async (line) => {
         const server = sessions.get(message.params.sessionId);
         if (!server) throw new Error('Unknown ACP session');
         await mcp(server, 'initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'acp-fixture', version: '1.0.0' } });
+        if (questionResponse) {
+          const run = await nativeApi('/heartbeat-runs/' + process.env.PAPERCLIP_RUN_ID);
+          const issueId = run.contextSnapshot.issueId;
+          const cards = await nativeApi('/issues/' + issueId + '/interactions');
+          const question = cards.find(c => c.kind === 'ask_user_questions' && c.status === 'pending' && c.addresseeAgentId === process.env.PAPERCLIP_AGENT_ID);
+          if (question) {
+            const source = await nativeApi('/heartbeat-runs/' + question.sourceRunId);
+            if (source.contextSnapshot.issueId !== issueId) throw new Error('Question source must be child-scoped');
+            if (failFirstQuestionReview && !fs.existsSync(questionFailurePath)) {
+              fs.writeFileSync(questionFailurePath, process.env.PAPERCLIP_RUN_ID, {mode:0o600});
+              throw new Error('Controlled question reviewer failure before typed decision');
+            }
+            const receipt = await mcp(server, 'tools/call', { name: 'submit_jules_question_decision', arguments: {decision:'answer',response:questionResponse} });
+            await nativeApi('/issues/' + issueId, 'PATCH', {status:'done'});
+            await nativeApi('/issues/' + issueId + '/comments', 'POST', {body:'Completed the native question decision through its addressed form.'});
+            send({method:'session/update',params:{sessionId:message.params.sessionId,update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:JSON.stringify(receipt)}}}});
+            result = {stopReason:'end_turn'}; break;
+          }
+        }
         const assigned = await mcp(server, 'tools/call', { name: 'get_current_native_review_assignment', arguments: {} });
         const assignment = assigned.structuredContent;
         const controlled = reviewDecisionUrl && assignment?.kind === 'pull_request';

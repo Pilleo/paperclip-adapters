@@ -3,6 +3,10 @@ import { execute } from '../src/server/execute';
 import { AdapterExecutionContext } from '@paperclipai/adapter-utils';
 import { JulesClient } from '../src/server/jules-client';
 import { sessionCodec } from '../src/server/session';
+vi.mock('../src/server/question-bootstrap.js', async (original) => ({
+  ...await original<typeof import('../src/server/question-bootstrap.js')>(),
+  observeQuestionChild: vi.fn().mockResolvedValue({ kind: 'waiting', childId: 'adjudication-1' }),
+}));
 import { saveStoredSession } from '../src/server/session-store.js';
 import { createHash } from 'node:crypto';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
@@ -45,6 +49,7 @@ vi.mock('../src/server/paperclip-client', async (importOriginal) => {
   return {
     ...mod,
     listPaperclipInteractions: vi.fn().mockResolvedValue([]),
+    questionReviewApi: vi.fn(() => ({ get: vi.fn(), post: vi.fn(), patch: vi.fn() })),
     listIssueComments: vi.fn().mockResolvedValue([]),
     addJulesActivityComment: vi.fn().mockResolvedValue(undefined),
     createJulesAgentAdjudicationInteraction: vi.fn().mockResolvedValue({ id: "visible-question-1", status: "pending" }),
@@ -52,7 +57,10 @@ vi.mock('../src/server/paperclip-client', async (importOriginal) => {
     scheduleJulesSessionMonitor: vi.fn().mockResolvedValue(undefined),
     getPaperclipInteraction: vi.fn().mockResolvedValue({ id: "test-interaction", status: "pending" }),
     registerPullRequestWorkProduct: vi.fn().mockResolvedValue(undefined),
-    getPaperclipIssue: vi.fn().mockResolvedValue({ id: "plan-review-1", status: "blocked" }),
+    getPaperclipIssue: vi.fn().mockImplementation(async id => id === 'task-1'
+      ? { id, companyId: '1', assigneeAgentId: '1', status: 'in_progress', executionBlocker: null }
+      : { id: 'plan-review-1', status: 'blocked' }),
+    moveIssueToBlocked: vi.fn().mockResolvedValue(undefined),
     moveIssueToReview: vi.fn().mockResolvedValue(undefined),
     moveIssueToDone: vi.fn().mockResolvedValue(undefined),
     completeInternalReviewIssue: vi.fn().mockResolvedValue(undefined),

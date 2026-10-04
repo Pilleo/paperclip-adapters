@@ -195,6 +195,8 @@ jobs:
         run: node packages/orchestrator/test/contract/jules-server-restart.mjs
       - name: Verify autonomous native plan reviews and same-session PR delivery after daemon restart
         run: node packages/orchestrator/test/contract/jules-server-restart.mjs --autonomous
+      - name: Verify recovered native Jules questions keep a truthful blocked wait and resume the original session
+        run: node packages/orchestrator/test/contract/jules-server-restart.mjs --autonomous-question-recovery
       - name: Verify native human waits survive restart and user merge releases approved dependent work
         run: node packages/orchestrator/test/contract/jules-server-restart.mjs --autonomous-dependency
       - name: Verify remotely accepted plan approval recovers after its acknowledgement is lost

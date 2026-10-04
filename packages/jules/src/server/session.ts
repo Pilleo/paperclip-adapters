@@ -66,7 +66,7 @@ const NativeAgentAdjudicationSchema = z.object({
   question: z.string(),
   reviewerAgentId: z.string().min(1),
   nativeForm: z.literal(true),
-  transport: z.enum(["direct_parent_form", "child_form_bridge"]).optional(),
+  transport: z.enum(["direct_parent_form", "child_form_bridge", "child_scoped_bootstrap"]).optional(),
   reviewerChildIssueId: z.string().min(1).optional(),
   reviewerInteractionId: z.string().min(1).optional(),
   adjudicationGeneration: z.number().int().min(0).max(10).optional(),
@@ -256,6 +256,7 @@ export const JulesAdapterSessionV1Schema = z.object({
   /** One-time migration repair when an old native bridge lost its visible parent card. */
   missingParentBridgeRepairAttempt: z.number().int().min(0).max(1).optional(),
   deliveredFeedbackInteractionId: z.string().optional(),
+  questionAnswerIntent: z.object({ activityId: z.string().min(1), prompt: z.string().min(1) }).optional(),
   /** Jules activity ID whose reply was sent; prevents stale remote state reopening it. */
   deliveredFeedbackActivityId: z.string().optional(),
   /**
@@ -395,6 +396,7 @@ export interface JulesAdapterSessionV1 {
   adjudicationBridgeRepairAttempt?: number | undefined;
   missingParentBridgeRepairAttempt?: number | undefined;
   deliveredFeedbackInteractionId?: string | undefined;
+  questionAnswerIntent?: { activityId: string; prompt: string } | undefined;
   deliveredFeedbackActivityId?: string | undefined;
   terminalFeedbackActivityId?: string | undefined;
   terminalFeedbackInteractionId?: string | undefined;
@@ -439,7 +441,7 @@ export interface JulesAdapterSessionV1 {
         question: string;
         reviewerAgentId: string;
         nativeForm: true;
-        transport?: "direct_parent_form" | "child_form_bridge";
+        transport?: "direct_parent_form" | "child_form_bridge" | "child_scoped_bootstrap";
         reviewerChildIssueId?: string;
         reviewerInteractionId?: string;
         adjudicationGeneration?: number;

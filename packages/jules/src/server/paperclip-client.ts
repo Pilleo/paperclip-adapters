@@ -8,6 +8,7 @@ import {
   reconcileChildPlanReview,
   type ChildPlanReviewIdentity,
   type ChildPlanReviewObservation,
+  type ChildReviewApi,
   type PaperclipCommandResponse,
 } from "@pilleo/paperclip-adapter-common";
 import {
@@ -53,6 +54,7 @@ export interface PaperclipInteraction {
   sourceRunId?: string | null;
   /** Host creation timestamp required for dispatch-grace validation. */
   createdAt?: string;
+  resolvedAt?: string | null;
   /** Native MCP verdict executor when Paperclip records local-board as resolver. */
   resolvedByRunId?: string | null;
   /** Direct native reviewer identity when Paperclip exposes it. */
@@ -696,6 +698,7 @@ export async function createJulesFeedbackInteraction(
               helpText: customHelpText ? (customHelpText.slice(0, 930) + "\n\nType your answer or instructions for Jules below.") : "Type your answer or instructions for Jules below.",
               selectionMode: "single",
               required: true,
+              allowOther: false,
               options: [{ id: "response", label: "Write a response", freeText: true }],
             }],
           },
@@ -763,6 +766,7 @@ export async function createJulesHumanEscalationInteraction(
                 : "Type your decision or instructions for Jules below.",
               selectionMode: "single",
               required: true,
+              allowOther: false,
               options: [{ id: "response", label: "Write a response", freeText: true }],
             }],
           },
@@ -801,7 +805,7 @@ export async function createJulesAgentAdjudicationInteraction(
 ): Promise<PaperclipInteraction> {
   void reviewerAgentId;
   const idempotencyKey = `jules:agent-adjudication:${issueId}:${sessionId}:${activityId}` +
-    (generation > 0 ? `:generation:${generation}` : "");
+    (generation > 0 ? `:generation:${generation}` : "") + ":presentation:v2";
   const { prompt, helpText } = formatCardPromptAndHelpText(question);
   try {
     const response = await paperclipRequest(
@@ -810,33 +814,24 @@ export async function createJulesAgentAdjudicationInteraction(
         body: JSON.stringify({
           kind: "ask_user_questions",
           idempotencyKey,
-          title: "Jules question — strong review",
-          summary: "A strong reviewer must choose an answer or escalation for Jules.",
+          title: "Question from Jules",
+          summary: "An automated reviewer is handling this question. You can answer Jules directly here.",
           // The parent stays assigned to Jules. The reviewer wake target is
           // the Terra-owned child form created by the adapter below.
           continuationPolicy: "wake_assignee",
           resolverPolicy: "anyone",
           payload: {
             version: 1,
-            title: "Jules question — strong review",
-            submitLabel: "Submit reviewer decision",
+            title: "Question from Jules",
+            submitLabel: "Send to Jules",
             questions: [{
-              id: "resolution",
-              prompt: "Choose how to handle Jules' question.",
-              helpText: "Answer only when the task context makes the response clear. Escalate concrete ambiguity to a human.",
-              selectionMode: "single",
-              required: true,
-              options: [
-                { id: "answer", label: "Answer Jules" },
-                { id: "escalate", label: "Escalate to human" },
-              ],
-            }, {
-              id: "response",
+              id: "reply",
               prompt,
-              helpText: appendCardHelpText(helpText, JULES_REVIEWER_RESPONSE_HELP),
+              helpText: appendCardHelpText(helpText, "Type your answer or instructions for Jules below."),
               selectionMode: "single",
               required: true,
-              options: [{ id: "response", label: "Reviewer response", freeText: true }],
+              allowOther: false,
+              options: [{ id: "response", label: "Write a response", freeText: true }],
             }],
           },
         }),
@@ -901,6 +896,7 @@ export async function createJulesQuestionReviewInteraction(
               helpText: "Answer only when the task context makes the response clear. Escalate concrete ambiguity to a human.",
               selectionMode: "single",
               required: true,
+              allowOther: false,
               options: [
                 { id: "answer", label: "Answer Jules" },
                 { id: "escalate", label: "Escalate to human" },
@@ -911,6 +907,7 @@ export async function createJulesQuestionReviewInteraction(
               helpText: appendCardHelpText(helpText, JULES_REVIEWER_RESPONSE_HELP),
               selectionMode: "single",
               required: true,
+              allowOther: false,
               options: [{ id: "response", label: "Reviewer response", freeText: true }],
             }],
           },
@@ -1096,6 +1093,18 @@ export async function bootstrapJulesChildPlanReview(input: {
     agentId: input.agentId, runId: input.runId,
     api: { get: (path) => request(path, "GET"), post: (path, body) => request(path, "POST", body),
       patch: (path, body) => request(path, "PATCH", body) } });
+}
+
+/** Question protocol writes keep the caller's native run attribution and never borrow board credentials. */
+export function questionReviewApi(authToken: string | undefined, runId: string): ChildReviewApi {
+  if (!authToken || !runId) throw new Error("Question review requires authenticated native run credentials");
+  const request = async (path: string, method: string, body?: unknown): Promise<unknown> => {
+    const response = await paperclipRequest(`/api${path}`, authToken, { method,
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    }, runId);
+    return response.json();
+  };
+  return { get: path => request(path, "GET"), post: (path, body) => request(path, "POST", body), patch: (path, body) => request(path, "PATCH", body) };
 }
 
 export interface NativePlanReviewStage {
@@ -1488,6 +1497,9 @@ export interface IssueComment {
 
 export interface PaperclipIssue {
   id: string;
+  companyId?: string;
+  executionBlocker?: unknown;
+  description?: string | null;
   identifier?: string | null;
   status: string;
   assigneeAgentId?: string | null;

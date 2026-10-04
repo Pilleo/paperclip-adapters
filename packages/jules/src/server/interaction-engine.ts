@@ -299,12 +299,13 @@ export interface PaperclipIssueStatePolicy {
 }
 
 /**
- * Pure status mapper: guarantees that interactive user wait states NEVER emit status: "blocked"
- * or unblock descriptors, preventing supervisor/Chief-of-Staff intervention loops.
+ * Feedback waits are blocked work, not provider execution. Keep the absence of
+ * an execution-failure unblock descriptor so a question cannot spawn a generic repair loop.
  */
 export function determinePaperclipIssueStatus(phase: SessionPhase): PaperclipIssueStatePolicy {
   switch (phase) {
     case "WAITING_FOR_FEEDBACK":
+      return { status: "blocked", unblockDescriptor: null };
     case "WAITING_FOR_PLAN_APPROVAL":
     case "RUNNING":
     case "STARTING":

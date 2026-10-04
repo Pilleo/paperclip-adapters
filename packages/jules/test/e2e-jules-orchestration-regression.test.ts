@@ -3,6 +3,11 @@ import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { execute } from "../src/server/execute";
 import { JulesClient } from "../src/server/jules-client";
 import { sessionCodec } from "../src/server/session";
+import { observeQuestionChild } from "../src/server/question-bootstrap.js";
+vi.mock("../src/server/question-bootstrap.js", async (original) => ({
+  ...await original<typeof import("../src/server/question-bootstrap.js")>(),
+  observeQuestionChild: vi.fn().mockResolvedValue({ kind: "waiting", childId: "child-question-1" }),
+}));
 import {
   addJulesActivityComment,
   answerJulesAgentAdjudicationInteraction,
@@ -46,6 +51,7 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
   const mod = await importOriginal<typeof import("../src/server/paperclip-client")>();
   return {
     ...mod,
+    questionReviewApi: vi.fn(() => ({ get: vi.fn(), post: vi.fn(), patch: vi.fn() })),
     addJulesActivityComment: vi.fn(),
     answerJulesAgentAdjudicationInteraction: vi.fn(),
     completeInternalReviewIssue: vi.fn(),
@@ -55,7 +61,8 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
     createJulesQuestionAdjudication: vi.fn(),
     createNoPrCompletionInteraction: vi.fn(),
     findJulesQuestionAdjudication: vi.fn(),
-    getPaperclipIssue: vi.fn(),
+    getPaperclipIssue: vi.fn().mockImplementation(async id => id === "MAZ-834"
+      ? { id, companyId: "company-1", assigneeAgentId: "jules-agent", status: "in_progress", executionBlocker: null } : null),
     listIssueComments: vi.fn(),
     listPaperclipInteractions: vi.fn(),
     moveIssueToBlocked: vi.fn(),
@@ -63,7 +70,7 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
     upsertJulesSessionHandle: vi.fn().mockResolvedValue(undefined),
     readJulesSessionHandleState: vi.fn().mockResolvedValue(null),
     readJulesSessionHandle: vi.fn().mockResolvedValue(null),
-    getPaperclipInteraction: vi.fn().mockResolvedValue(null),
+    getPaperclipInteraction: vi.fn().mockImplementation(async (_issue, id) => ({ id, status: "pending", kind: "ask_user_questions" })),
     withdrawPaperclipInteraction: vi.fn(),
   };
 });
@@ -147,7 +154,8 @@ describe("E2E Jules orchestration regression", { timeout: 30_000 }, () => {
     vi.mocked(withdrawPaperclipInteraction).mockResolvedValue();
     vi.mocked(answerJulesAgentAdjudicationInteraction).mockResolvedValue();
     vi.mocked(completeInternalReviewIssue).mockResolvedValue();
-    vi.mocked(getPaperclipIssue).mockResolvedValue(null);
+    vi.mocked(getPaperclipIssue).mockImplementation(async id => id === "MAZ-834"
+      ? { id, companyId: "company-1", assigneeAgentId: "jules-agent", status: "in_progress", executionBlocker: null } : null as never);
     vi.mocked(findJulesQuestionAdjudication).mockResolvedValue(null);
     vi.mocked(listIssueComments).mockResolvedValue([]);
     vi.mocked(createJulesQuestionAdjudication).mockResolvedValue({ id: "question-review-1", status: "todo" });
@@ -203,18 +211,11 @@ describe("E2E Jules orchestration regression", { timeout: 30_000 }, () => {
     // The question belongs to the strong-agent lane.  Completion without a
     // PR is not actionable until all provider questions are resolved.
     expect(createNoPrCompletionInteraction).not.toHaveBeenCalled();
-    expect(moveIssueToBlocked).not.toHaveBeenCalled();
+    expect(moveIssueToBlocked).toHaveBeenCalledWith("MAZ-834", "paperclip-token", "run-834");
     expect(JulesClient.prototype.sendMessage).not.toHaveBeenCalled();
-    expect(createJulesQuestionAdjudication).toHaveBeenCalled();
-    // Recovery after the visible parent card was persisted must install the
-    // typed child form before activating Terra. Otherwise the reviewer can
-    // complete the child from prose before a form exists, which expires the
-    // only valid decision channel.
-    expect(
-      vi.mocked(createJulesQuestionReviewInteraction).mock.invocationCallOrder[0],
-    ).toBeLessThan(
-      vi.mocked(activateInternalReviewIssue).mock.invocationCallOrder[0]!,
-    );
+    expect(observeQuestionChild).toHaveBeenCalled();
+    expect(createJulesQuestionReviewInteraction).not.toHaveBeenCalled();
+    expect(activateInternalReviewIssue).not.toHaveBeenCalled();
     expect(result.resultJson).toMatchObject({ pending: true });
     expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
       type: "agent_adjudication",
@@ -249,18 +250,10 @@ describe("E2E Jules orchestration regression", { timeout: 30_000 }, () => {
     const result = await execute(baseContext);
 
     expect(createNoPrCompletionInteraction).not.toHaveBeenCalled();
-    expect(createJulesQuestionAdjudication).toHaveBeenCalledWith(
-      "MAZ-834",
-      "00000000-0000-4000-8000-000000000834",
-      expect.stringContaining("implementation is complete"),
-      "paperclip-token",
-      "run-834",
-      "company-1",
-      "activity-terminal-message",
-      "jules-834",
-      0,
-      true,
-    );
+    expect(observeQuestionChild).toHaveBeenCalledWith(expect.objectContaining({ identity: expect.objectContaining({
+      parentIssueId: "MAZ-834", reviewerAgentId: "00000000-0000-4000-8000-000000000834", bootstrapAgentId: "jules-agent",
+      question: expect.stringContaining("implementation is complete"), activityId: "activity-terminal-message", sessionId: "jules-834",
+    }) }));
     expect(result.resultJson).toMatchObject({ pending: true });
     expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
       type: "agent_adjudication",
@@ -438,7 +431,7 @@ describe("E2E Jules orchestration regression", { timeout: 30_000 }, () => {
       "run-834",
     );
     expect(createNoPrCompletionInteraction).not.toHaveBeenCalled();
-    expect(createJulesQuestionAdjudication).toHaveBeenCalled();
+    expect(observeQuestionChild).toHaveBeenCalled();
     expect(result.resultJson).toMatchObject({ pending: true });
   });
 
@@ -483,7 +476,7 @@ describe("E2E Jules orchestration regression", { timeout: 30_000 }, () => {
       "run-834",
     );
     expect(createNoPrCompletionInteraction).not.toHaveBeenCalled();
-    expect(createJulesQuestionAdjudication).toHaveBeenCalled();
+    expect(observeQuestionChild).toHaveBeenCalled();
     expect(result.resultJson).toMatchObject({ pending: true });
   });
 });

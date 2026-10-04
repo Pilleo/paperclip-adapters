@@ -6,6 +6,11 @@ import { join } from "node:path";
 import { execute } from "../src/server/execute";
 import { JulesClient } from "../src/server/jules-client";
 import { sessionCodec } from "../src/server/session";
+import { observeQuestionChild } from "../src/server/question-bootstrap.js";
+vi.mock("../src/server/question-bootstrap.js", async (original) => ({
+  ...await original<typeof import("../src/server/question-bootstrap.js")>(),
+  observeQuestionChild: vi.fn().mockResolvedValue({ kind: "waiting", childId: "child-question-1" }),
+}));
 import { loadStoredSession } from "../src/server/session-store";
 import { parsePlanReviewInteraction } from "../src/server/plan-review-protocol";
 import {
@@ -51,6 +56,7 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
   const mod = await importOriginal<typeof import("../src/server/paperclip-client")>();
   return {
     ...mod,
+    questionReviewApi: vi.fn(() => ({ get: vi.fn(), post: vi.fn(), patch: vi.fn() })),
     createJulesPlanApprovalInteraction: vi.fn(),
     createJulesPlanReviewInteraction: vi.fn(),
     createJulesPlanReviewChildInteraction: vi.fn(),
@@ -65,7 +71,8 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
     saveJulesPlanDocument: vi.fn(),
     listPaperclipInteractions: vi.fn().mockResolvedValue([]),
     getPaperclipInteraction: vi.fn(),
-    getPaperclipIssue: vi.fn(),
+    getPaperclipIssue: vi.fn().mockImplementation(async id => id === "issue-141"
+      ? { id, companyId: "company-1", assigneeAgentId: "agent-jules", status: "in_progress", executionBlocker: null } : null),
     getPaperclipJson: vi.fn(),
     readJulesSessionHandleState: vi.fn().mockResolvedValue(null),
     registerPullRequestWorkProduct: vi.fn(),
@@ -157,7 +164,9 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
     vi.mocked(clearJulesSessionMonitor).mockResolvedValue();
     vi.mocked(upsertJulesSessionHandle).mockResolvedValue();
     vi.mocked(saveJulesPlanDocument).mockResolvedValue({ documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1 });
-    vi.mocked(getPaperclipIssue).mockResolvedValue({ id: "question-child-1", status: "backlog" } as never);
+    vi.mocked(getPaperclipIssue).mockImplementation(async id => id === "issue-141"
+      ? { id, companyId: "company-1", assigneeAgentId: "agent-jules", status: "in_progress", executionBlocker: null }
+      : { id: "question-child-1", status: "backlog" } as never);
     vi.mocked(getPaperclipJson).mockResolvedValue([]);
     vi.mocked(readJulesSessionHandleState).mockResolvedValue(null);
     vi.mocked(createJulesPlanReviewInteraction).mockResolvedValue({ id: "native-plan-review-1", status: "pending", kind: "request_confirmation", planRevision: { documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1 } });

@@ -48,6 +48,7 @@ import { evaluateAuthoritativeDependencies } from "../core/dependency-gate.js";
 import { formatOrchestratorDashboardCard } from "../core/telemetry-card.js";
 import { identifyStalledIssues } from "../core/stalled-session-reaper.js";
 import { hasDelegatedReviewChild, hasDelegatedReviewHistory, isDelegatedReviewChild } from "../core/recovery-eligibility.js";
+import { coordinateJulesQuestionChild, hasPendingJulesQuestion } from "../core/jules-question-state.js";
 import { evaluateReviewPipelineProgress, hasStaleReviewerOwnership, isReviewDispatchDecision, operatorGateReconciliationPatch, reviewDispatchStage } from "../core/review-pipeline.js";
 import { buildReviewInteractionRequest, hasCompletedNativeApprovalLadderForHead, hasNativeRejectionForHead, isCanonicalReviewCardKey, isReviewInteractionForIssue, planReviewDialog, reviewInteractionIdempotencyKey, reviewInteractionIdempotencyKeys, selectReviewAttempt, selectReviewCardsToWithdrawAfterRejection, selectReviewRunDispatch, shouldDeferPrReviewDispatch, type PrReviewStage } from "../core/review-interaction-state.js";
 import { findReviewCardBinding } from "../core/review-session-state.js";
@@ -1814,6 +1815,37 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       }
       continue;
     }
+    if (issue.status === "blocked" && issue.assigneeAgentId && managedJulesIds.has(issue.assigneeAgentId)) {
+      try {
+        const cards = await pc.listInteractions<Record<string, unknown>[]>(issue.id);
+        if (!Array.isArray(cards)) throw new Error("Native question interaction list is incomplete");
+        if (hasPendingJulesQuestion(issue.id, cards)) {
+          for (const child of lifecycleIssues.filter(c => c.parentId === issue.id && typeof c.rawIssue["description"] === "string" &&
+              (c.rawIssue["description"] as string).startsWith("<!-- jules-question-bootstrap:v1\n"))) {
+            const send = async (path: string, method: "POST" | "PATCH", body: unknown): Promise<unknown> => {
+              const result = await pc.sendJson(`/api${path}`, method, body);
+              if (!result.ok) throw new Error(`Native question ${method} failed (${result.status})`);
+              return result.data;
+            };
+            const progress = await coordinateJulesQuestionChild({ childId: child.id, description: child.rawIssue["description"] as string,
+              api: { get: path => pc.getJson(`/api${path}`), post: (path, body) => send(path, "POST", body), patch: (path, body) => send(path, "PATCH", body) } });
+            if (progress.kind === "wake_owner") {
+              const key = `jules-question-owner:${progress.parentId}:${progress.proofId}`;
+              await lifecycleConvergenceGuard.runOnce(key, async () => {
+                const woke = await pc.wakeup(progress.ownerId, "Observe the exact settled native question review outcome", progress.parentId,
+                  { idempotencyKey: key, source: "automation", triggerDetail: "system" });
+                if (!woke.ok) throw new Error(`Native question owner wake failed (${woke.status})`);
+              });
+            }
+          }
+          await log(`[ORCHESTRATOR] Preserving blocked native question wait [${issue.identifier || issue.id}]; scoped child coordination owns its next step.`);
+          continue;
+        }
+      } catch (error) {
+        await log(`[ORCHESTRATOR] Native question coordination held [${issue.identifier || issue.id}]: ${String(error)}`);
+        continue;
+      }
+    }
     let planVerdictContinuation: ReturnType<typeof resolvedJulesPlanVerdict> = null;
     let planVerdictChild: typeof lifecycleIssues[number] | null = null;
     if (providerSessionId && currentPlanRevisionId &&
@@ -2156,6 +2188,16 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
           adapterType: agentAdapterTypes.get(issue.assigneeAgentId) || "",
         }
       : undefined;
+    if (issue.status === "blocked" && assignedWorker?.adapterType === "jules") {
+      try {
+        const cards = await pc.listInteractions(issue.id);
+        if (!Array.isArray(cards)) throw new Error("Native question response is not a complete interaction list");
+        if (hasPendingJulesQuestion(issue.id, cards)) continue;
+      } catch (error) {
+        await log(`[ORCHESTRATOR] Preserving blocked Jules question ownership for [${issue.identifier || issue.id}]: ${String(error)}`);
+        continue;
+      }
+    }
     const blockedWorkDecision = decideBlockedManagedWork(
       issue,
       assignedWorker?.adapterType || null,
@@ -2325,6 +2367,16 @@ const archiveResult = archiveResolvedBacklogFiles(workspacePath, parsedIssues);
           adapterType: agentAdapterTypes.get(issue.assigneeAgentId) || "",
         }
       : undefined;
+    if (assignedWorker?.adapterType === "jules") {
+      try {
+        const cards = await pc.listInteractions(issue.id);
+        if (!Array.isArray(cards)) throw new Error("Native question response is not a complete interaction list");
+        if (hasPendingJulesQuestion(issue.id, cards)) continue;
+      } catch (error) {
+        await log(`[ORCHESTRATOR] Preserving blocked Jules question ownership for [${issue.identifier || issue.id}]: ${String(error)}`);
+        continue;
+      }
+    }
     const blockedWorkDecision = decideBlockedManagedWork(
       issue,
       assignedWorker?.adapterType || null,

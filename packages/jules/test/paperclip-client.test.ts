@@ -522,8 +522,26 @@ describe("Paperclip issue completion", () => {
     expect(body.payload.questions).toEqual([expect.objectContaining({
       id: "reply",
       required: true,
+      allowOther: false,
       options: [expect.objectContaining({ id: "response", freeText: true })],
     })]);
+  });
+
+  it("shows humans a direct reply instead of the adjudicator's routing controls", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true, status: 201, json: async () => ({ id: "parent-question", status: "pending" }),
+    });
+    await createJulesAgentAdjudicationInteraction(
+      "issue-1", "session-1", "activity-1", "The plan is approved. Shall I proceed?", "reviewer-1", "jwt-token", "run-1",
+    );
+    const body = JSON.parse(String(vi.mocked(global.fetch).mock.calls[0]?.[1]?.body));
+    expect(body.payload.submitLabel).toBe("Send to Jules");
+    expect(body.payload.questions).toEqual([expect.objectContaining({
+      id: "reply", allowOther: false,
+      options: [{ id: "response", label: "Write a response", freeText: true }],
+    })]);
+    expect(JSON.stringify(body.payload)).not.toContain("Escalate to human");
+    expect(JSON.stringify(body.payload)).not.toContain("Submit reviewer decision");
   });
 
   it("recovers a duplicate human escalation only by its exact idempotency key", async () => {
@@ -629,12 +647,8 @@ describe("Paperclip issue completion", () => {
       continuationPolicy: "wake_assignee",
       kind: "ask_user_questions",
     });
-    expect(body.payload.questions).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: "resolution", options: expect.arrayContaining([
-        expect.objectContaining({ id: "answer" }), expect.objectContaining({ id: "escalate" }),
-      ]) }),
-      expect.objectContaining({ id: "response" }),
-    ]));
+    expect(body.addresseeAgentId).toBeUndefined();
+    expect(vi.mocked(global.fetch).mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
   });
 
   it("creates the reviewer form on the Terra-owned child, not the Jules parent", async () => {

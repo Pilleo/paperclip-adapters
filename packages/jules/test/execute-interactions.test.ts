@@ -3,6 +3,12 @@ import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { execute } from "../src/server/execute";
 import { JulesClient } from "../src/server/jules-client";
 import { sessionCodec } from "../src/server/session";
+import { failedLegacyQuestionRun, observeQuestionChild } from "../src/server/question-bootstrap.js";
+vi.mock("../src/server/question-bootstrap.js", async (original) => ({
+  ...await original<typeof import("../src/server/question-bootstrap.js")>(),
+  observeQuestionChild: vi.fn().mockResolvedValue({ kind: "waiting", childId: "child-question-1" }),
+  failedLegacyQuestionRun: vi.fn().mockResolvedValue(null),
+}));
 import {
   addJulesActivityComment,
   createJulesAgentAdjudicationInteraction,
@@ -58,6 +64,7 @@ vi.mock("../src/server/paperclip-client", async (importOriginal) => {
   return {
     ...mod,
     addJulesActivityComment: vi.fn(),
+    questionReviewApi: vi.fn(() => ({ get: vi.fn(), post: vi.fn(), patch: vi.fn() })),
     createJulesAgentAdjudicationInteraction: vi.fn(),
     createJulesQuestionReviewInteraction: vi.fn(),
     answerJulesAgentAdjudicationInteraction: vi.fn().mockResolvedValue(undefined),
@@ -128,6 +135,7 @@ describe("Jules activity interactions", { timeout: 30000 }, () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(failedLegacyQuestionRun).mockResolvedValue(null);
     vi.mocked(addJulesActivityComment).mockResolvedValue();
     vi.mocked(moveIssueToBlocked).mockResolvedValue();
     vi.mocked(createJulesQuestionAdjudication).mockResolvedValue({ id: "child-question-1", status: "todo" } as never);
@@ -142,10 +150,12 @@ describe("Jules activity interactions", { timeout: 30000 }, () => {
       planRevision: { documentId: "plan-doc-1", revisionId: "plan-revision-1", revisionNumber: 1 },
     } as never);
     vi.mocked(getPaperclipInteraction).mockResolvedValue(null);
-    vi.mocked(getPaperclipIssue).mockResolvedValue(null);
+    vi.mocked(getPaperclipIssue).mockImplementation(async id => id === "issue-1"
+      ? { id, companyId: "company-1", assigneeAgentId: "agent-1", status: "in_progress", executionBlocker: null }
+      : null as never);
   });
 
-  it("mirrors a Jules question into a visible parent card and Terra child form", async () => {
+  it("mirrors a question and checkpoints a child-scoped bootstrap without creating the child form on the parent run", async () => {
     vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_USER_FEEDBACK" } as never);
     vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({
       activities: [{
@@ -158,19 +168,44 @@ describe("Jules activity interactions", { timeout: 30000 }, () => {
 
     const result = await execute(baseContext);
 
-    expect(createJulesQuestionAdjudication).toHaveBeenCalled();
-    expect(createJulesQuestionReviewInteraction).toHaveBeenCalledWith(
-      "child-question-1", "issue-1", "session-1", "activity-question", "Which branch should I use?",
-      "00000000-0000-4000-8000-000000000123", "jwt-token", "run-1",
-    );
+    expect(observeQuestionChild).toHaveBeenCalledWith(expect.objectContaining({ identity: expect.objectContaining({
+      parentIssueId: "issue-1", sessionId: "session-1", activityId: "activity-question", bootstrapAgentId: "agent-1",
+    }) }));
+    expect(createJulesQuestionReviewInteraction).not.toHaveBeenCalled();
     expect(createJulesAgentAdjudicationInteraction).toHaveBeenCalledWith(
       "issue-1", "session-1", "activity-question", "Which branch should I use?",
       "00000000-0000-4000-8000-000000000123", "jwt-token", "run-1",
     );
     expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toMatchObject({
-      type: "agent_adjudication", nativeForm: true, transport: "child_form_bridge", paperclipInteractionId: "visible-question-1", reviewerChildIssueId: "child-question-1", reviewerInteractionId: "child-form-1", julesActivityId: "activity-question",
+      type: "agent_adjudication", nativeForm: true, transport: "child_scoped_bootstrap", paperclipInteractionId: "visible-question-1", reviewerChildIssueId: "child-question-1", julesActivityId: "activity-question",
     });
+    expect(result.resultJson?.issueStatus).toBe("blocked");
+    expect(moveIssueToBlocked).toHaveBeenCalledWith("issue-1", "jwt-token", "run-1");
     expect(sessionCodec.decode(result.sessionParams!)?.unresolvedProviderQuestionActivityId).toBe("activity-question");
+  });
+
+  it("automatically migrates a blocked legacy reviewer after inspecting its terminal run, without asking a human to route the question", async () => {
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "COMPLETED" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{ id: "legacy-question", createTime: "2026-10-03T12:50:00Z",
+      agentMessaged: { agentMessage: "The approved plan is ready. Shall I proceed?" } }] } as never);
+    vi.mocked(getPaperclipIssue).mockImplementation(async id => id === "issue-1"
+      ? { id, companyId: "company-1", assigneeAgentId: "agent-1", status: "in_progress", executionBlocker: null }
+      : { id: "legacy-child", status: "blocked" } as never);
+    vi.mocked(getPaperclipInteraction).mockImplementation(async (_issue, id) => ({ id, status: "pending", kind: "ask_user_questions" }));
+    vi.mocked(failedLegacyQuestionRun).mockResolvedValue("failed-reviewer-run");
+    vi.mocked(createJulesAgentAdjudicationInteraction).mockResolvedValue({ id: "direct-answer-view", status: "pending" });
+    const result = await execute({ ...baseContext, runtime: { ...baseContext.runtime, sessionParams: sessionCodec.encode({ ...session,
+      phase: "WAITING_FOR_FEEDBACK", pendingInteraction: { type: "agent_adjudication", nativeForm: true, transport: "child_form_bridge",
+        paperclipInteractionId: "legacy-routing-form", reviewerChildIssueId: "legacy-child", reviewerInteractionId: "legacy-child-form",
+        julesActivityId: "legacy-question", question: "The approved plan is ready. Shall I proceed?",
+        reviewerAgentId: "00000000-0000-4000-8000-000000000123", createdAt: "2026-10-03T13:00:00Z" } }) } });
+    const pending = sessionCodec.decode(result.sessionParams!)?.pendingInteraction;
+    expect(failedLegacyQuestionRun).toHaveBeenCalled();
+    expect(pending).toMatchObject({ transport: "child_scoped_bootstrap", paperclipInteractionId: "direct-answer-view", adjudicationGeneration: 1 });
+    expect(withdrawPaperclipInteraction).toHaveBeenCalledWith("legacy-child", "legacy-child-form", expect.stringContaining("failed-reviewer-run"), "jwt-token", "run-1");
+    expect(withdrawPaperclipInteraction).toHaveBeenCalledWith("issue-1", "legacy-routing-form", expect.stringContaining("human-facing"), "jwt-token", "run-1");
+    expect(JulesClient.prototype.sendMessage).not.toHaveBeenCalled();
+    expect(result.resultJson?.issueStatus).toBe("blocked");
   });
 
   it("mirrors a later operational question instead of suppressing it behind an old revised plan", async () => {
