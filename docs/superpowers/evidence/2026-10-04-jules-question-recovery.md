@@ -107,3 +107,13 @@ A succeeded process whose exact pending question has no typed decision is now
 a bounded protocol-recovery outcome, rather than an indefinite healthy wait.
 The failing regression (`run-14aae84c4f73`) passes with this classification
 (`run-b94b977f20ba`). No comments or final-response prose are promoted to answers.
+
+The live parent reached Paperclip's cumulative 25-helper child cap after the
+legacy malformed receipts. New generations use the standalone-helper alternative
+only for that exact 422 response. The strict descriptor supplies the logical
+parent; creator/company identity remain required, and a stable hashed title
+supports a bounded native registry lookup after uncertain creation. Other
+creation failures propagate. The helper retains the parent's project for normal
+coordination. A cancelled recovery card requests one proof-keyed owner turn to
+complete the already-started generation; it never authorizes a provider answer.
+The targeted quota/identity/outbox tests pass (`run-fabf71256d9a`).

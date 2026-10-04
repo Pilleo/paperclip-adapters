@@ -49,6 +49,7 @@ import { formatOrchestratorDashboardCard } from "../core/telemetry-card.js";
 import { identifyStalledIssues } from "../core/stalled-session-reaper.js";
 import { hasDelegatedReviewChild, hasDelegatedReviewHistory, isDelegatedReviewChild } from "../core/recovery-eligibility.js";
 import { coordinateJulesQuestionChild, hasPendingJulesQuestion } from "../core/jules-question-state.js";
+import { parseQuestionBootstrap } from "@pilleo/paperclip-adapter-common";
 import { evaluateReviewPipelineProgress, hasStaleReviewerOwnership, isReviewDispatchDecision, operatorGateReconciliationPatch, reviewDispatchStage } from "../core/review-pipeline.js";
 import { buildReviewInteractionRequest, hasCompletedNativeApprovalLadderForHead, hasNativeRejectionForHead, isCanonicalReviewCardKey, isReviewInteractionForIssue, planReviewDialog, reviewInteractionIdempotencyKey, reviewInteractionIdempotencyKeys, selectReviewAttempt, selectReviewCardsToWithdrawAfterRejection, selectReviewRunDispatch, shouldDeferPrReviewDispatch, type PrReviewStage } from "../core/review-interaction-state.js";
 import { findReviewCardBinding } from "../core/review-session-state.js";
@@ -1820,8 +1821,8 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
         const cards = await pc.listInteractions<Record<string, unknown>[]>(issue.id);
         if (!Array.isArray(cards)) throw new Error("Native question interaction list is incomplete");
         if (hasPendingJulesQuestion(issue.id, cards)) {
-          for (const child of lifecycleIssues.filter(c => c.parentId === issue.id && typeof c.rawIssue["description"] === "string" &&
-              (c.rawIssue["description"] as string).startsWith("<!-- jules-question-bootstrap:v1\n"))) {
+          for (const child of lifecycleIssues.filter(c => c.status !== "cancelled" && typeof c.rawIssue["description"] === "string" &&
+              parseQuestionBootstrap(c.rawIssue["description"] as string)?.parentIssueId === issue.id)) {
             const send = async (path: string, method: "POST" | "PATCH", body: unknown): Promise<unknown> => {
               const result = await pc.sendJson(`/api${path}`, method, body);
               if (!result.ok) throw new Error(`Native question ${method} failed (${result.status})`);

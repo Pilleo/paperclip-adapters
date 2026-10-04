@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { createHash } from "node:crypto";
 import type { ChildReviewApi } from "./child-plan-review-bootstrap.js";
 
 export const QUESTION_BOOTSTRAP_PREFIX = "<!-- jules-question-bootstrap:v1\n";
@@ -12,7 +13,7 @@ export const QuestionBootstrapIdentitySchema = z.object({
 export type QuestionBootstrapIdentity = z.infer<typeof QuestionBootstrapIdentitySchema>;
 const Issue = z.object({ id: z.string(), companyId: z.string(), parentId: z.string().nullish(),
   createdByAgentId: z.string().nullish(), assigneeAgentId: z.string().nullish(), status: z.string(),
-  description: z.string().nullish(), executionBlocker: z.unknown().optional() });
+  description: z.string().nullish(), projectId: z.string().nullish(), executionBlocker: z.unknown().optional() });
 const Run = z.object({ id: z.string(), companyId: z.string(), agentId: z.string(), status: z.string(),
   contextSnapshot: z.object({ issueId: z.string() }) });
 const Card = z.object({ id: z.string(), status: z.string(), kind: z.literal("ask_user_questions"),
@@ -70,7 +71,7 @@ function verifyParent(parent: z.infer<typeof Issue>, identity: QuestionBootstrap
 
 function verifyChild(child: z.infer<typeof Issue>, identity: QuestionBootstrapIdentity): void {
   const descriptor = parseQuestionBootstrap(child.description);
-  if (child.companyId !== identity.companyId || child.parentId !== identity.parentIssueId ||
+  if (child.companyId !== identity.companyId || (child.parentId != null && child.parentId !== identity.parentIssueId) ||
       child.createdByAgentId !== identity.bootstrapAgentId || !descriptor || key(descriptor) !== key(identity) ||
       descriptor.question !== identity.question || descriptor.reviewerAgentId !== identity.reviewerAgentId ||
       descriptor.bootstrapAgentId !== identity.bootstrapAgentId) throw new Error("Question child identity changed");
@@ -146,7 +147,7 @@ export async function observeQuestionChild(input: {
 }): Promise<QuestionChildObservation> {
   const { identity, api } = input;
   const parentRoot = `/issues/${encodeURIComponent(identity.parentIssueId)}`;
-  verifyParent(Issue.parse(await api.get(parentRoot)), identity);
+  const parent = Issue.parse(await api.get(parentRoot)); verifyParent(parent, identity);
   let childId = input.childId;
   if (!childId) {
     const children = z.array(Issue).parse(await api.get(`/companies/${encodeURIComponent(identity.companyId)}/issues?limit=1000&parentId=${encodeURIComponent(identity.parentIssueId)}`));
@@ -167,11 +168,27 @@ export async function observeQuestionChild(input: {
     }
     childId = matches[0]?.id;
     if (!childId) {
-      const child = Issue.parse(await api.post(`${parentRoot}/children`, { title: "Adjudicate Jules provider question",
-        description: questionBootstrapDescription(identity), status: "backlog", assigneeAgentId: identity.bootstrapAgentId,
-        blockParentUntilDone: false, executionPolicy: policy }));
-      verifyChild(child, identity);
-      return { kind: "waiting", childId: child.id };
+      const body = { title: "Adjudicate Jules provider question", description: questionBootstrapDescription(identity),
+        status: "backlog", assigneeAgentId: identity.bootstrapAgentId, blockParentUntilDone: false, executionPolicy: policy };
+      try {
+        const child = Issue.parse(await api.post(`${parentRoot}/children`, body));
+        verifyChild(child, identity); return { kind: "waiting", childId: child.id };
+      } catch (error) {
+        const failure = error as { status?: unknown; message?: unknown };
+        if (failure?.status !== 422 || typeof failure.message !== "string" || !/maximum\s+25\s+child\s+issues/i.test(failure.message)) throw error;
+        const title = `Adjudicate Jules question [${createHash("sha256").update(key(identity)).digest("hex").slice(0,16)}]`;
+        const registry = z.array(Issue).parse(await api.get(`/companies/${encodeURIComponent(identity.companyId)}/issues?limit=1000&q=${encodeURIComponent(title)}`));
+        if (registry.length >= 1000) throw new Error("Standalone question registry is incomplete");
+        const matches = registry.filter(c => { const d=parseQuestionBootstrap(c.description); return c.status !== "cancelled" && d && key(d)===key(identity); });
+        if (matches.length>1) throw new Error("Ambiguous standalone question helpers");
+        if (matches[0]) { verifyChild(matches[0],identity); childId=matches[0].id; }
+        else {
+          const child=Issue.parse(await api.post(`/companies/${encodeURIComponent(identity.companyId)}/issues`, {
+            ...body,title,...(parent.projectId?{projectId:parent.projectId}:{}),allowDuplicate:true,
+          }));
+          verifyChild(child,identity); return {kind:"waiting",childId:child.id};
+        }
+      }
     }
   }
   const root = `/issues/${encodeURIComponent(childId)}`;

@@ -92,6 +92,20 @@ describe("native question bootstrap", () => {
     expect(writes).toHaveLength(1);
     expect(writes[0]?.body).toMatchObject({ status: "backlog", assigneeAgentId: "jules", blockParentUntilDone: false });
   });
+  it("uses a correlated standalone helper only for the exact parent child-limit error", async () => {
+    const writes:Array<{path:string;body:any}>=[];
+    const api={
+      get:async(path:string)=>path==="/issues/parent"?{id:"parent",companyId:"company",assigneeAgentId:"jules",status:"blocked",projectId:"project",executionBlocker:null}:[],
+      post:async(path:string,body:any)=>{
+        if(path.endsWith("/children"))throw Object.assign(new Error("maximum 25 child issues"),{status:422});
+        writes.push({path,body});return {...body,id:"standalone",companyId:"company",parentId:null,createdByAgentId:"jules"};
+      },
+      patch:async()=>{throw Error("Activation follows the durable child checkpoint");},
+    };
+    expect(await observeQuestionChild({identity,api})).toMatchObject({kind:"waiting",childId:"standalone"});
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({path:"/companies/company/issues",body:{projectId:"project",assigneeAgentId:"jules",status:"backlog"}});
+  });
 
   it("returns the exact pending card with a failed reviewer so recovery can retire it before creating another", async () => {
     const f = fixture();

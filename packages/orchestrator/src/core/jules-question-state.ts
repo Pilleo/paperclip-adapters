@@ -35,6 +35,13 @@ export async function coordinateJulesQuestionChild(input: {
     });
     return { kind: "parent_answered", parentId: identity.parentIssueId };
   }
+  if (observed.kind === "waiting" && observed.cardId) {
+    const cards = await input.api.get(`/issues/${encodeURIComponent(observed.childId)}/interactions`);
+    if (!Array.isArray(cards)) throw new Error("Question child interaction listing is incomplete");
+    const retired = cards.find(c=>c.id===observed.cardId && c.status==="cancelled" && c.result?.outcome==="withdrawn" &&
+      typeof c.result.reason==="string" && c.result.reason.startsWith("Superseded failed question reviewer run"));
+    if (retired) return { kind: "wake_owner", parentId: identity.parentIssueId, ownerId: identity.bootstrapAgentId, proofId: retired.id };
+  }
   return { kind: "waiting", parentId: identity.parentIssueId };
 }
 import { observeQuestionChild, parseQuestionBootstrap, readQuestionReviewFormDecision, type ChildReviewApi } from "@pilleo/paperclip-adapter-common";
