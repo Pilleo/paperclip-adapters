@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { createHash } from "node:crypto";
 import { nativePrRejectionDeliveryId, parseWorkerFeedback } from "@pilleo/paperclip-adapter-common";
 import { getPaperclipJson } from "./paperclip-client.js";
 
@@ -12,7 +13,7 @@ const Identity = z.object({
 }).strict().refine((value) => value.reviewerAgentId !== value.bootstrapAgentId);
 const Child = z.object({ id: z.string(), companyId: z.string(), parentId: z.string().nullish(),
   createdByAgentId: z.string().nullish(), assigneeAgentId: z.string().nullish(),
-  description: z.string().nullish() });
+  title: z.string().nullish(), description: z.string().nullish() });
 const Card = z.object({ id: z.string(), kind: z.string(), status: z.string(), idempotencyKey: z.string().nullish(),
   addresseeAgentId: z.string().nullish(), sourceRunId: z.string().nullish(),
   resolvedByRunId: z.string().nullish(), resolvedByAgentId: z.string().nullish(), result: z.unknown() });
@@ -41,11 +42,20 @@ export async function recoverBoardPrChildRejection(input: {
     `/companies/${encodeURIComponent(input.companyId)}/issues?limit=1000&parentId=${encodeURIComponent(input.issueId)}`,
   ));
   if (children.length >= 1000) throw new Error("PR child feedback listing is incomplete");
+  if (children.length >= 25) {
+    const registry = z.array(Child).parse(await get(
+      `/companies/${encodeURIComponent(input.companyId)}/issues?limit=1000&q=${encodeURIComponent("Review pull request")}`));
+    if (registry.length >= 1000) throw new Error("Standalone PR feedback registry is incomplete");
+    const ids = new Set(children.map(child => child.id));
+    for (const child of registry) if (!ids.has(child.id)) { children.push(child); ids.add(child.id); }
+  }
   const matches = children.map((child) => ({ child, identity: identityFrom(child.description) }))
     .filter((match) => match.identity?.companyId === input.companyId &&
       match.identity.parentIssueId === input.issueId && match.identity.prUrl === input.prUrl &&
       match.identity.headSha === input.headSha && match.child.companyId === input.companyId &&
-      match.child.parentId === input.issueId && match.child.createdByAgentId === null);
+      (match.child.parentId === input.issueId || (match.child.parentId == null &&
+        match.child.title === `Review pull request (${match.identity.stage}) [pr-review:child:v2:${createHash("sha256").update(JSON.stringify(match.identity)).digest("hex")}]`)) &&
+      match.child.createdByAgentId === null);
   for (const { child, identity } of matches) {
     if (!identity) continue;
     const cards = z.array(Card).parse(await get(`/issues/${encodeURIComponent(child.id)}/interactions`));

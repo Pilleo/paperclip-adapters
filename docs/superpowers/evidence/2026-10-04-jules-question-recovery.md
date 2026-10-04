@@ -181,3 +181,34 @@ change (`run-86f30f1d1995`, 41.714 s). The unmodified local contract also passed
 before this change (`run-7517455c9a76`); it did not independently reproduce the
 timing-dependent CI wake coalescence. Full exact-head CI must qualify the new
 revision separately.
+
+## PR-review helper quota continuity
+
+After registering PR #21, MAZ-1638 correctly entered `in_review`. The ordinary
+coordinator then hit the same cumulative helper cap on the PR review child POST:
+`422: Parent issue already has the maximum 25 child issues for this helper`
+(`run-495b6e723399`). Reconciliation succeeded overall but held this native lane;
+an `in_review` status alone did not prove that reviews could progress.
+
+PR-review creation now uses a standalone reviewer helper only for that exact
+422 quota error. Its stable title hashes the full existing PR/head/stage/reviewer
+descriptor. The original source's company, project, immutable primary work
+product, parent-card authority and creator principal remain required. A bounded
+registry recovers an accepted creation after a lost receipt, and duplicate
+identities fail closed. Bootstrap, activation and observation retain their own
+child-scoped source/reviewer run requirements. This adds no replacement source
+task or provider session and does not manufacture a parent verdict.
+
+Standalone PR helpers are excluded from implementation scheduling. Jules's
+deferred native rejection reader and the strict GET-only campaign observer also
+discover their logical parent through the exact descriptor and hashed title;
+normal parent-linked review histories remain valid.
+
+The quota regressions first failed at the original rejection and missing
+standalone correlation (`run-d0c11cb94858`). All eight quota tests and eighteen
+existing child-protocol tests pass (`run-e2e1c4f7d84a`); the native orchestrator
+routing set passes 53 tests before the two additional receipt/duplicate cases
+(`run-98292fbfcf49`). Deferred rejection regressions first failed
+(`run-7acbf7e58572`) and now pass alongside answer/status guards, twelve tests
+total (`run-095c8ed240f5`). The full workspace build passes
+(`run-d007dfeb8e22`). Live PR approval evidence is a separate post-reload gate.

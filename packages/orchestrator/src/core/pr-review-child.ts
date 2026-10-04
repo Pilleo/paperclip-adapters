@@ -47,12 +47,12 @@ export function parsePrReviewChildDescription(description: unknown): PrReviewChi
 }
 
 export function isPrReviewChild(value: unknown): boolean {
-  const issue = z.object({ companyId: z.string(), parentId: z.string(), createdByAgentId: z.string().nullable(),
-    description: z.string() }).safeParse(value);
+  const issue = z.object({ companyId: z.string(), parentId: z.string().nullish(), createdByAgentId: z.string().nullable(),
+    title: z.string().nullish(), description: z.string() }).safeParse(value);
   if (!issue.success) return false;
   const identity = parsePrReviewChildDescription(issue.data.description);
   return !!identity && identity.companyId === issue.data.companyId &&
-    identity.parentIssueId === issue.data.parentId &&
+    matchesParent(identity, issue.data) &&
     (identity.version === 2 ? issue.data.createdByAgentId === null
       : identity.bootstrapAgentId === issue.data.createdByAgentId);
 }
@@ -83,7 +83,36 @@ function expectedCreator(identity: PrReviewChildIdentity): string | null {
 
 const Issue = z.object({ id: z.string(), companyId: z.string(), parentId: z.string().nullish(),
   status: z.string(), assigneeAgentId: z.string().nullish(), createdByAgentId: z.string().nullish(),
-  description: z.string().nullish() });
+  title: z.string().nullish(), projectId: z.string().nullish(), description: z.string().nullish() });
+
+function standaloneTitle(identity: PrReviewChildIdentity): string {
+  return `Review pull request (${identity.stage}) [${prReviewChildKey(identity)}]`;
+}
+
+function matchesParent(identity: PrReviewChildIdentity, child: { parentId?: string | null | undefined;
+  title?: string | null | undefined }): boolean {
+  return child.parentId === identity.parentIssueId ||
+    (child.parentId == null && child.title === standaloneTitle(identity));
+}
+
+/** Recover standalone quota helpers through their strict descriptor, never an inventory position. */
+export async function listPrReviewChildren(input: { readonly companyId: string; readonly parentIssueId: string;
+  readonly api: ChildReviewApi }): Promise<z.infer<typeof Issue>[]> {
+  const children = z.array(Issue).parse(await input.api.get(
+    `/companies/${encodeURIComponent(input.companyId)}/issues?limit=1000&parentId=${encodeURIComponent(input.parentIssueId)}`));
+  if (children.length >= 1000) throw new Error("PR child review history is incomplete");
+  if (children.length < 25) return children;
+  const registry = z.array(Issue).parse(await input.api.get(
+    `/companies/${encodeURIComponent(input.companyId)}/issues?limit=1000&q=${encodeURIComponent("Review pull request")}`));
+  if (registry.length >= 1000) throw new Error("Standalone PR review registry is incomplete");
+  const merged = new Map(children.map(child => [child.id, child]));
+  for (const child of registry) {
+    const identity = parsePrReviewChildDescription(child.description);
+    if (identity?.parentIssueId === input.parentIssueId && child.companyId === input.companyId &&
+        matchesParent(identity, child)) merged.set(child.id, child);
+  }
+  return [...merged.values()];
+}
 const WorkProduct = z.object({ url: z.string(), type: z.string(), isPrimary: z.boolean(), status: z.string(),
   metadata: z.record(z.unknown()).nullish() });
 
@@ -104,8 +133,7 @@ export async function ensurePrReviewChild(input: {
   const [parent, rawProducts, rawChildren, parentCards] = await Promise.all([
     input.api.get(root).then((item) => Issue.parse(item)),
     input.api.get(`${root}/work-products`).then((items) => z.array(WorkProduct).parse(items)),
-    input.api.get(`/companies/${encodeURIComponent(identity.companyId)}/issues?limit=1000&parentId=${encodeURIComponent(identity.parentIssueId)}`)
-      .then((items) => z.array(Issue).parse(items)),
+    listPrReviewChildren({ companyId: identity.companyId, parentIssueId: identity.parentIssueId, api: input.api }),
     input.api.get(`${root}/interactions`).then((items) => z.array(ParentCard).parse(items)),
   ]);
   if (parent.id !== identity.parentIssueId || parent.companyId !== identity.companyId ||
@@ -125,7 +153,7 @@ export async function ensurePrReviewChild(input: {
   const key = prReviewChildKey(identity);
   const matches = rawChildren.filter((child) => {
     const descriptor = parsePrReviewChildDescription(child.description);
-    return child.companyId === identity.companyId && child.parentId === identity.parentIssueId &&
+    return child.companyId === identity.companyId && matchesParent(identity, child) &&
       descriptor && prReviewChildKey(descriptor) === key;
   });
   if (matches.length > 1) throw new Error("Duplicate PR review children for one immutable review stage");
@@ -134,13 +162,24 @@ export async function ensurePrReviewChild(input: {
     if (prior.createdByAgentId !== expectedCreator(identity)) throw new Error("PR review child provenance changed");
     return prior.id;
   }
-  const created = Issue.parse(await input.api.post(`${root}/children`, {
+  const body = {
     title: `Review pull request (${identity.stage})`, description: prReviewChildDescription(identity),
     status: "backlog", assigneeAgentId: identity.bootstrapAgentId, blockParentUntilDone: false,
     executionPolicy: { mode: "normal", stages: [], commentRequired: false },
-  }));
+  };
+  let created: z.infer<typeof Issue>;
+  try {
+    created = Issue.parse(await input.api.post(`${root}/children`, body));
+  } catch (error) {
+    if (!(error instanceof Error) || !("status" in error) || error.status !== 422 ||
+        !/maximum\s+25\s+child\s+issues/i.test(error.message)) throw error;
+    created = Issue.parse(await input.api.post(`/companies/${encodeURIComponent(identity.companyId)}/issues`, {
+      ...body, title: standaloneTitle(identity), allowDuplicate: true,
+      ...(parent.projectId ? { projectId: parent.projectId } : {}),
+    }));
+  }
   const createdIdentity = parsePrReviewChildDescription(created.description);
-  if (created.companyId !== identity.companyId || created.parentId !== identity.parentIssueId ||
+  if (created.companyId !== identity.companyId || !matchesParent(identity, created) ||
       created.assigneeAgentId !== identity.bootstrapAgentId || created.createdByAgentId !== expectedCreator(identity) ||
       !createdIdentity || prReviewChildKey(createdIdentity) !== key) {
     throw new Error("PR review child creation receipt does not match its immutable parent, stage or author");
@@ -157,7 +196,7 @@ const Run = z.object({ id: z.string(), companyId: z.string(), agentId: z.string(
 function assertChildIdentity(identity: PrReviewChildIdentity, child: z.infer<typeof Issue>, childId: string): void {
   const descriptor = parsePrReviewChildDescription(child.description);
   if (!descriptor || prReviewChildKey(descriptor) !== prReviewChildKey(identity) ||
-      child.id !== childId || child.companyId !== identity.companyId || child.parentId !== identity.parentIssueId ||
+      child.id !== childId || child.companyId !== identity.companyId || !matchesParent(identity, child) ||
       child.createdByAgentId !== expectedCreator(identity)) throw new Error("PR review child identity or author changed");
 }
 
@@ -390,9 +429,7 @@ export async function inspectPrReviewChildren(input: {
   const base = input.protocolVersion === 2
     ? { ...fields, version: 2 as const, creatorPrincipal: "board" as const }
     : { ...fields, version: 1 as const };
-  const children = z.array(Issue).parse(await input.api.get(
-    `/companies/${encodeURIComponent(input.companyId)}/issues?limit=1000&parentId=${encodeURIComponent(input.parentIssueId)}`,
-  ));
+  const children = await listPrReviewChildren(input);
   if (children.length >= 1000) throw new Error("PR child review history is incomplete");
   if (input.protocolVersion === 2 && children.some((child) => {
     const descriptor = parsePrReviewChildDescription(child.description);
@@ -408,7 +445,7 @@ export async function inspectPrReviewChildren(input: {
     const key = prReviewChildKey(identity);
     const matches = children.filter((child) => {
       const descriptor = parsePrReviewChildDescription(child.description);
-      return child.companyId === input.companyId && child.parentId === input.parentIssueId &&
+      return child.companyId === input.companyId && matchesParent(identity, child) &&
         descriptor && prReviewChildKey(descriptor) === key;
     });
     if (matches.length > 1) throw new Error("Multiple native PR child reviews share one immutable stage");
@@ -454,7 +491,8 @@ export function prReviewChildApi(client: PaperclipHttp): ChildReviewApi {
   const mutate = async (path: string, method: "POST" | "PATCH", body: unknown): Promise<unknown> => {
     const receipt = await client.sendJson(`/api${path}`, method, body);
     if (!receipt.ok || receipt.data === undefined) {
-      throw new Error(`Authenticated PR child ${method} ${path} failed (${receipt.status}): ${receipt.text}`);
+      throw Object.assign(new Error(`Authenticated PR child ${method} ${path} failed (${receipt.status}): ${receipt.text}`),
+        { status: receipt.status });
     }
     return receipt.data;
   };

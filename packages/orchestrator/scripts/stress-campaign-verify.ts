@@ -7,7 +7,7 @@ import { parseChildPlanReviewDescription } from "@pilleo/paperclip-adapter-commo
 import { resolveGitHubCliExecutable } from "../src/core/github-sync.js";
 import { stressPilotTasks, stressTasks } from "../src/core/stress-campaign-manifest.js";
 import { evaluateStressProgress, type StressIssueEvidence, type StressReviewEvidence } from "../src/core/stress-campaign-progress.js";
-import { parsePrReviewChildDescription } from "../src/core/pr-review-child.js";
+import { parsePrReviewChildDescription, isPrReviewChild, listPrReviewChildren } from "../src/core/pr-review-child.js";
 import { parseJulesPrHandoffHandle } from "../src/core/pr-handoff-registration.js";
 import { evaluateRecoveredPilot, PilotRecoveryAuthorizationSchema, type PilotRecoveryAuthorization } from "../src/core/stress-pilot-recovery.js";
 import { decideObservationWindow } from "../src/core/stress-observation-budget.js";
@@ -77,7 +77,11 @@ async function resolvedReview(child: Row, identity: {
   readonly bootstrapAgentId: string; readonly sessionId?: string; readonly headSha?: string;
 }): Promise<StressReviewEvidence | null> {
   const childId = text(child["id"]);
-  if (!childId || child["parentId"] !== identity.parentIssueId) throw new Error("Native reviewer child has inconsistent parent identity");
+  const prIdentity = parsePrReviewChildDescription(child["description"]);
+  if (!childId || (child["parentId"] !== identity.parentIssueId &&
+      !(prIdentity?.parentIssueId === identity.parentIssueId && isPrReviewChild(child)))) {
+    throw new Error("Native reviewer child has inconsistent parent identity");
+  }
   const cards = array(await get(`/api/issues/${encodeURIComponent(childId)}/interactions`), "native reviewer cards")
     .filter((card) => card["kind"] === "request_item_verdicts" && card["status"] === "answered");
   if (cards.length === 0) return null;
@@ -149,7 +153,11 @@ async function collectIssue(key: string, issueId: string, expectedBlockers: read
     throw new Error(`Campaign task ${key} work-product session differs from the original session document`);
   }
   const providerSessionId = handle?.sessionId ?? recordedProductSessionId;
-  const children = array(await get(`/api/companies/${COMPANY}/issues?limit=1000&parentId=${encodeURIComponent(issueId)}`), "review children");
+  const children = await listPrReviewChildren({ companyId: COMPANY, parentIssueId: issueId, api: {
+    get: path => get(`/api${path}`),
+    post: async () => { throw new Error("Campaign observer is GET-only"); },
+    patch: async () => { throw new Error("Campaign observer is GET-only"); },
+  } });
   const planReviews: StressReviewEvidence[] = [];
   const prReviews: StressReviewEvidence[] = [];
   for (const child of children) {
