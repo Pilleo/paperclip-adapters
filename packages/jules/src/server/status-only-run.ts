@@ -23,6 +23,15 @@ export function classifyJulesStatusOnlyRun(input: {
   if (!snapshot || snapshot["issueId"] !== input.expected.issueId) {
     return { kind: "invalid", reason: "status-only run lost its exact task attribution" };
   }
+  // Coalesced monitor wakes can replace wakeReason while the host retains these
+  // mutation guards. The durable authority takes precedence over the wake label.
+  if (snapshot["recoveryIntent"] === "status_only") {
+    if (snapshot["allowDeliverableWork"] !== false || snapshot["allowDocumentUpdates"] !== false ||
+        snapshot["resumeRequiresNormalModel"] !== true) {
+      return { kind: "invalid", reason: "status-only run has incomplete host mutation guards" };
+    }
+    return { kind: "status_comment", issueId: input.expected.issueId };
+  }
   return snapshot["wakeReason"] === "missing_issue_comment"
     ? { kind: "status_comment", issueId: input.expected.issueId }
     : { kind: "normal" };

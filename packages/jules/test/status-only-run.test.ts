@@ -26,4 +26,22 @@ describe("Jules status-only host continuation", () => {
     expect(classifyJulesStatusOnlyRun({ run: { ...original,
       contextSnapshot: { ...original.contextSnapshot, issueId: "" } }, expected }).kind).toBe("invalid");
   });
+
+  it("retains host status-only authority after a monitor wake coalesces into the run", () => {
+    expect(classifyJulesStatusOnlyRun({ run: { ...original, contextSnapshot: {
+      issueId: "issue-1", wakeReason: "issue_monitor_due", recoveryIntent: "status_only",
+      allowDeliverableWork: false, allowDocumentUpdates: false, resumeRequiresNormalModel: true,
+    } }, expected })).toEqual({ kind: "status_comment", issueId: "issue-1" });
+  });
+
+  it.each(["allowDeliverableWork", "allowDocumentUpdates", "resumeRequiresNormalModel"])(
+    "fails closed when status-only context loses %s", (field) => {
+      const contextSnapshot: Record<string, unknown> = {
+        issueId: "issue-1", wakeReason: "issue_monitor_due", recoveryIntent: "status_only",
+        allowDeliverableWork: false, allowDocumentUpdates: false, resumeRequiresNormalModel: true,
+      };
+      delete contextSnapshot[field];
+      expect(classifyJulesStatusOnlyRun({ run: { ...original, contextSnapshot }, expected }).kind)
+        .toBe("invalid");
+    });
 });
