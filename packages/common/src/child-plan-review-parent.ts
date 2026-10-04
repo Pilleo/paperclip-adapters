@@ -108,10 +108,14 @@ export async function reconcileChildPlanReview(input: {
         source.agentId !== identity.bootstrapAgentId || source.contextSnapshot.issueId !== childId || source.status !== "succeeded") {
       throw new Error("Idle child review bootstrap source is not successfully settled");
     }
-    for (const row of ownRuns.filter(run => run.agentId === identity.reviewerAgentId)) {
+    // The issue-run API lists newest attempts first. Recover the latest queued
+    // attempt only; earlier completed attempts remain immutable audit history.
+    const reviewerAttempts = ownRuns.filter(run => run.agentId === identity.reviewerAgentId);
+    for (const [index, row] of reviewerAttempts.entries()) {
       const run = Run.parse(await api.get(`/heartbeat-runs/${encodeURIComponent(row.runId)}`));
       if (run.id !== row.runId || run.companyId !== identity.companyId || run.agentId !== identity.reviewerAgentId ||
-          run.contextSnapshot.issueId !== childId || run.status !== "cancelled" || run.startedAt !== null) {
+          run.contextSnapshot.issueId !== childId ||
+          !(run.status === "cancelled" && run.startedAt === null || index > 0 && run.status === "succeeded")) {
         throw new Error("Pending child review has terminal execution evidence; only verified unstarted cancellations may resume");
       }
     }

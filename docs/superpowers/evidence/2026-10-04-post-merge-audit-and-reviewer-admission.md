@@ -69,11 +69,12 @@ is changed.
 An already addressed blocked/backlog plan child may resume its **existing**
 pending card only after verifying the original parent/revision/descriptor,
 successfully settled child-scoped source, no active scoped run, and the addressed
-reviewer's identity/admission. Historical reviewer runs must all be verifiably
-cancelled before starting; any started, failed, succeeded or uncertain terminal
-execution requires its separate typed recovery path. Native execution holds are
-not cleared. One normal child transition admits a fresh run; no reviewer/card
-replacement or operator wake is used.
+reviewer's identity/admission. The latest reviewer attempt must be verifiably
+cancelled before starting. Older successfully completed attempts are inspected
+and retained as immutable history, not replayed; a latest started/succeeded,
+failed or uncertain attempt requires its separate typed recovery path. Native
+execution holds are not cleared. One normal child transition admits a fresh run;
+no reviewer/card replacement or operator wake is used.
 
 Eleven plan regressions first failed (`run-d576219097a2`), then all 32 tests pass
 (`run-b3b9d623f5ca`). Four PR admission regressions first failed
@@ -102,3 +103,32 @@ lanes use the external ACP/native MCP path.
 Live deployment and fresh paid-provider native decisions are separate subsequent
 receipts; controlled-host passes do not by themselves prove the remaining live
 cards have resolved.
+
+## Initial live deployment and mixed-history correction
+
+Commit `5d5e2c1` passed all mandatory workspace hooks (`run-15c7f4514e41`) and
+was journal-reloaded under `/tmp/paperclip-review-admission-reload-1YtA6m`
+(`run-976847ae78d3`). Reconciliation `59f0dd9a-492f-45d0-adb4-b0e8d5809bb3`
+succeeded. MAZ-1739 acquired its own scoped card
+`72c9d32c-a6d7-4c9a-9a31-7ca588a97287`, source run
+`45167b8d-30cd-489f-ac64-e2df266f2e33`. Actual Antigravity reviewer run
+`4b837222-9af0-4407-87e8-c0925179f515` retrieved the addressed assignment and
+submitted the native plan approval; the exact card is answered and the run
+succeeded (`run-85fab5a6be0c`). Safe runtime diagnostics confirm both real MCP
+calls had `kind=other, decision=allow_once`. This supplies paid-provider evidence
+for the permission callback and error-state admission, independently of fixtures.
+
+The Luna child correctly failed closed because its history also contains earlier
+completed attempts, not just the latest unstarted cancellation. The earlier run
+`1d91a0d8-e368-4d94-b5f3-c3fdafbb4662` was inspected: it succeeded with a blocked
+summary about `missing_runtime_context`, without resolving the native card.
+That prose is not a decision or proof of an external effect. The current latest
+attempt remains the exact cancelled-before-start queue row, with no active run
+or native execution hold.
+
+The regression reproducing this actual ordered history first failed
+(`run-7955c66da377`). Recovery now validates the latest never-started cancellation
+and inspects older successful runs as finished history; it does not retry those
+terminal runs. A latest started success/failure/cancellation or uncertain scope
+still fails closed. All 33 plan protocol tests pass (`run-b691185cb421`). Live
+recovery of the original Luna card remains a subsequent receipt.

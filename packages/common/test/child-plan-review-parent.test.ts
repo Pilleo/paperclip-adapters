@@ -93,6 +93,20 @@ describe("Jules-owned child review coordination", () => {
     await reconcileChildPlanReview({ identity, childId: "child", api });
     expect(writes).toEqual([]);
   });
+  it("recovers only the latest unstarted cancellation while preserving completed earlier attempts", async () => {
+    const { api, writes } = fixture({ "/issues/child": { ...child, status: "blocked", assigneeAgentId: "luna" },
+      "/issues/child/runs": [
+        { runId: "cancelled-unstarted", status: "cancelled", agentId: "luna", contextIssueId: "child" },
+        { runId: "completed-earlier", status: "succeeded", agentId: "luna", contextIssueId: "child" },
+      ],
+      "/heartbeat-runs/cancelled-unstarted": { id: "cancelled-unstarted", companyId: "co", agentId: "luna",
+        status: "cancelled", startedAt: null, contextSnapshot: { issueId: "child" } },
+      "/heartbeat-runs/completed-earlier": { id: "completed-earlier", companyId: "co", agentId: "luna",
+        status: "succeeded", startedAt: "2026-10-03T00:00:00Z", contextSnapshot: { issueId: "child" } },
+    });
+    expect(await reconcileChildPlanReview({ identity, childId: "child", api })).toEqual({ kind: "waiting", childId: "child" });
+    expect(writes).toMatchObject([{ path: "/issues/child", body: { status: "todo", assigneeAgentId: "luna" } }]);
+  });
   it.each(["failed", "succeeded", "cancelled"])("does not replay a %s reviewer that started", async (status) => {
     const { api, writes } = fixture({ "/issues/child": { ...child, status: "blocked", assigneeAgentId: "luna" },
       "/issues/child/runs": [{ runId: "terminal", status, agentId: "luna", contextIssueId: "child" }],
