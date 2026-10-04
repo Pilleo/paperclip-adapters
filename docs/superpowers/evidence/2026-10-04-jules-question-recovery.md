@@ -117,3 +117,9 @@ creation failures propagate. The helper retains the parent's project for normal
 coordination. A cancelled recovery card requests one proof-keyed owner turn to
 complete the already-started generation; it never authorizes a provider answer.
 The targeted quota/identity/outbox tests pass (`run-fabf71256d9a`).
+
+For a supplied standalone helper ID, coordination validates and advances that
+exact helper directly instead of rediscovering it through company-wide search.
+The regression rejects any company inventory read for this known-ID path
+(`run-73badf6c03ca`). Parent-linked legacy duplicate reconciliation remains on
+the generation registry path.

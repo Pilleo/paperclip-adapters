@@ -23,7 +23,8 @@ export async function coordinateJulesQuestionChild(input: {
   if (parent.status !== "pending") return { kind: "waiting", parentId: identity.parentIssueId };
   // Reconcile the generation's registry first: malformed legacy creation
   // receipts can leave provably unstarted identical children before an ID was checkpointed.
-  const observed = await observeQuestionChild({ identity, api: input.api });
+  const childRecord = await input.api.get(`/issues/${encodeURIComponent(input.childId)}`) as { parentId?: unknown };
+  const observed = await observeQuestionChild({ identity, ...(childRecord.parentId == null ? { childId: input.childId } : {}), api: input.api });
   if (observed.kind === "failed") return { kind: "wake_owner", parentId: identity.parentIssueId, ownerId: identity.bootstrapAgentId, proofId: observed.runId };
   if (observed.kind === "answered") {
     const decision = readQuestionReviewFormDecision(observed.result);
