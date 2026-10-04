@@ -21,7 +21,9 @@ export async function coordinateJulesQuestionChild(input: {
   const parent = parents[0];
   if (parent.status === "answered") return { kind: "parent_answered", parentId: identity.parentIssueId };
   if (parent.status !== "pending") return { kind: "waiting", parentId: identity.parentIssueId };
-  const observed = await observeQuestionChild({ identity, childId: input.childId, api: input.api });
+  // Reconcile the generation's registry first: malformed legacy creation
+  // receipts can leave provably unstarted identical children before an ID was checkpointed.
+  const observed = await observeQuestionChild({ identity, api: input.api });
   if (observed.kind === "failed") return { kind: "wake_owner", parentId: identity.parentIssueId, ownerId: identity.bootstrapAgentId, proofId: observed.runId };
   if (observed.kind === "answered") {
     const decision = readQuestionReviewFormDecision(observed.result);

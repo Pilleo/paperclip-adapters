@@ -82,7 +82,7 @@ const feedbackMessages = [];
 const questionMessages = [];
 const questionCardIds = [];
 const questionCardStates = {};
-const questionText = "The revised plan has been published. I have paused to await approval before implementing the task.";
+const questionText = "The revised plan has been published.\n\nI have paused to await approval before implementing the task.";
 let releaseBaseBarrier;
 const baseBarrier = new Promise((resolve) => { releaseBaseBarrier = resolve; });
 const sessionId = randomUUID();

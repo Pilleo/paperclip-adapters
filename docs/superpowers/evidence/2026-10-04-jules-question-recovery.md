@@ -63,3 +63,27 @@ status and human presentation have focused regressions.
 
 Live deployment/recovery is verified separately through the journaled drain.
 No operator answer or provider-message one-shot is used to repair MAZ-1638.
+
+## Live multiline transport correction
+
+The first journaled reload loaded the fix and migrated the old routing form to
+a direct human reply with `allowOther: false`. The live child creation exposed
+Paperclip's description formatter normalizing JSON-escaped newlines inside the
+provider question. Single-line fixtures had not exercised this shape. A failing
+round-trip test reproduced it (`run-a515bf05cb15`). New markers URI-encode the
+question; the reader repairs only legacy literal control characters within JSON
+strings and still validates the strict identity schema.
+
+A rejected receipt left identical deferred children before either ID could be
+checkpointed. Registry reconciliation retires duplicates only when every child
+matches the exact identity, is still bootstrap-owned/backlog, and has no own run
+or card history; any active or decided duplicate fails closed. These positive
+and negative checks pass (`run-6645e55a0afe`). The complete real-host recovered
+question lane now uses the multiline provider message and passes on the baseline
+(`run-d0e09b62e53d`, 455.143 s).
+
+The reload receipt is under `/tmp/paperclip-question-live-reload-4EL17A`.
+One independently stranded, unstarted Luna queue row was retired through its
+native cancel API before admission hold, after proving both start timestamps
+were null and retaining its undecided verdict card. No reviewer decision was
+invented by that maintenance operation.

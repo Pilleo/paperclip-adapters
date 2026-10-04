@@ -27,7 +27,10 @@ function key(identity: QuestionBootstrapIdentity): string {
 }
 
 export function questionBootstrapDescription(identity: QuestionBootstrapIdentity): string {
-  const serialized = JSON.stringify(QuestionBootstrapIdentitySchema.parse(identity)).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
+  const { question, ...fields } = QuestionBootstrapIdentitySchema.parse(identity);
+  // Paperclip normalizes escaped description newlines. URI encoding keeps
+  // quoted provider text opaque to that formatter and to marker boundaries.
+  const serialized = JSON.stringify({ ...fields, questionEncoded: encodeURIComponent(question) });
   const correlation = "<!-- jules-question-adjudication:bootstrap -->";
   return `${QUESTION_BOOTSTRAP_PREFIX}${serialized}\n-->\n${correlation}\n\nBootstrap the exact native Jules question card on this child's own run. Do not create a Jules provider session or modify a checkout.`;
 }
@@ -36,7 +39,25 @@ export function parseQuestionBootstrap(description: string | null | undefined): 
   if (!description?.startsWith(QUESTION_BOOTSTRAP_PREFIX)) return null;
   const end = description.indexOf("\n-->", QUESTION_BOOTSTRAP_PREFIX.length);
   if (end < 0) return null;
-  try { return QuestionBootstrapIdentitySchema.safeParse(JSON.parse(description.slice(QUESTION_BOOTSTRAP_PREFIX.length, end))).data ?? null; }
+  try {
+    const text = description.slice(QUESTION_BOOTSTRAP_PREFIX.length, end);
+    let repaired = "", quoted = false, escaped = false;
+    for (const char of text) {
+      if (quoted && char.charCodeAt(0) < 32) { repaired += JSON.stringify(char).slice(1, -1); continue; }
+      repaired += char;
+      if (escaped) { escaped = false; continue; }
+      if (quoted && char === "\\") { escaped = true; continue; }
+      if (char === '"') quoted = !quoted;
+    }
+    const wire = JSON.parse(repaired);
+    if (typeof wire.questionEncoded === "string") {
+      if (wire.question !== undefined) return null;
+      const { questionEncoded, ...fields } = wire;
+      return QuestionBootstrapIdentitySchema.safeParse({ ...fields, question: decodeURIComponent(questionEncoded) }).data ?? null;
+    }
+    // Read only the old normalized representation; new descriptions never emit it.
+    return QuestionBootstrapIdentitySchema.safeParse(wire).data ?? null;
+  }
   catch { return null; }
 }
 
@@ -130,8 +151,20 @@ export async function observeQuestionChild(input: {
   if (!childId) {
     const children = z.array(Issue).parse(await api.get(`/companies/${encodeURIComponent(identity.companyId)}/issues?limit=1000&parentId=${encodeURIComponent(identity.parentIssueId)}`));
     if (children.length >= 1000) throw new Error("Incomplete question child listing");
-    const matches = children.filter(c => { const x = parseQuestionBootstrap(c.description); return x && key(x) === key(identity); });
-    if (matches.length > 1) throw new Error("Duplicate question bootstrap children");
+    const matches = children.filter(c => { const x = parseQuestionBootstrap(c.description); return c.status !== "cancelled" && x && key(x) === key(identity); });
+    if (matches.length > 1) {
+      // A rejected legacy multiline creation receipt could leave identical,
+      // still-deferred children. Retire only provably unstarted duplicates.
+      for (const duplicate of matches) {
+        verifyChild(duplicate, identity);
+        if (duplicate.status !== "backlog" || duplicate.assigneeAgentId !== identity.bootstrapAgentId || duplicate.executionBlocker != null) throw new Error("Ambiguous active question bootstrap children");
+        const cards = await api.get(`/issues/${encodeURIComponent(duplicate.id)}/interactions`);
+        const runs = await api.get(`/issues/${encodeURIComponent(duplicate.id)}/runs`);
+        if (!Array.isArray(cards) || cards.length || !Array.isArray(runs) || runs.some(r => r.contextIssueId === duplicate.id)) throw new Error("Question duplicate has execution or decision history");
+      }
+      matches.sort((a,b)=>a.id.localeCompare(b.id));
+      for (const duplicate of matches.slice(1)) await api.patch(`/issues/${encodeURIComponent(duplicate.id)}`, { status: "cancelled" });
+    }
     childId = matches[0]?.id;
     if (!childId) {
       const child = Issue.parse(await api.post(`${parentRoot}/children`, { title: "Adjudicate Jules provider question",
@@ -143,6 +176,7 @@ export async function observeQuestionChild(input: {
   }
   const root = `/issues/${encodeURIComponent(childId)}`;
   const child = Issue.parse(await api.get(root)); verifyChild(child, identity);
+  if (child.status === "cancelled") throw new Error("Question bootstrap child was cancelled; explicit cancellation is not activation authority");
   const cards = z.array(Card).parse(await api.get(`${root}/interactions`));
   if (cards.length > 1) throw new Error("Duplicate question review cards");
   const card = cards[0];
