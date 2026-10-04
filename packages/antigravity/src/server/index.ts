@@ -7,6 +7,7 @@ import { diagnoseAcpSessionError } from "./acp-session-diagnostic.js";
 import { normalizeAcpMcpNames } from "./acp-mcp-names.js";
 import { reviewMcpEnv, withNativeReviewMcp } from "./review-mcp.js";
 import { nativeReviewPermission, NATIVE_REVIEW_TOOL_NAMES } from "./native-review-permission.js";
+import { boundNativeReviewWake } from "./native-review-context.js";
 import { AntigravityConfigSchema, antigravityAdapterConfigSchema, DEFAULT_AGY_SERVER_PATH, normalizeAntigravityPermissionMode } from "./config.js";
 import { testEnvironment } from "./test-environment.js";
 import { ANTIGRAVITY_MODELS } from "../ui/models.js";
@@ -130,10 +131,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const executionCtx = review?.ctx ?? ctx;
   const runtimeMcp = executionCtx.runtimeMcp;
   try {
+  const boundedContext = boundNativeReviewWake((ctx.context ?? {}) as Record<string, unknown>, review !== null);
+  if (boundedContext.compacted) {
+    await ctx.onLog?.("stdout", "[ANTIGRAVITY] Oversized prior review continuation retained in the host run audit; provider wake uses bounded issue scope and the addressed native MCP assignment.\n");
+  }
   return await createAntigravityExecutor(review !== null, ctx.onLog)({
     ...executionCtx,
     ...(runtimeMcp ? { runtimeMcp: { getServers: () => normalizeAcpMcpNames(runtimeMcp.getServers()) } } : {}),
-    context: withLocalAgentToolBudget((ctx.context || {}) as Record<string, unknown>),
+    context: withLocalAgentToolBudget(boundedContext.context),
     config: {
       ...acpConfig,
       promptTemplate:

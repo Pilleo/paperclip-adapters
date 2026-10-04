@@ -261,3 +261,45 @@ plan cards, and zero driver mutations after start. These runs precede the final
 additional once-option guard. The external ACP read/write contract also passes
 after that guard (`run-47c4fca730b8`): reads allowed and writes denied for all
 restrictive aliases, with explicit `approve-all` retained.
+
+## Oversized continuation transport and retained native hold
+
+The permission fix `f267188` was journal-reloaded successfully under
+`/tmp/paperclip-native-permissions-reload-oSEpij` (`run-d55f0dd3f0f1`). Its live
+strong card could not be exercised: before that reload, reviewer run
+`8c79ddb8-2e6b-4f56-b6d3-f49d84230eee` failed during `ensure_session` with
+`acpx_session_init_failed: spawn E2BIG`. The helper is now `blocked` by native
+execution recovery action `35321793-60a3-4619-bf37-bacba1974d07`
+(`run-34184a6067d6`). The exact strong card remains pending, and the terminal run
+is retained as failed. The host settled its automatic recovery; the read
+projection has no active questionnaire (`run-aa86feeaff29`).
+
+The actual failed run has a 127825-character execution continuation, duplicated
+inside its wake. SDK 2026.916 serializes that wake into the single
+`PAPERCLIP_WAKE_PAYLOAD_JSON` environment variable. Using that exact installed
+serializer and the failed run's retained context reproduces kernel `E2BIG` at
+132109 bytes (`run-2a0932a71c0b`). This is a process-start failure, not a native
+review verdict or a PR rejection.
+
+For a bound native reviewer only, oversized wakes now omit prior execution
+continuation history from the provider transport while retaining the original
+full host audit. Current issue identity, execution identity, host mutation
+restrictions and task markdown remain unchanged. The wake is explicitly marked
+truncated/fallback-fetch-needed; the reviewer must obtain its exact assignment
+from the authenticated native MCP. An inconsistent issue scope or still-large
+task payload fails closed rather than being silently truncated. Small reviewer
+wakes and ordinary workers retain their original context.
+
+Four regressions first failed, including actual kernel startup
+(`run-b7b405e99a26`). All 37 Antigravity tests pass (`run-0d8c7e0c4c12`), and
+the package builds (`run-fef45cc3a422`). The same failed live wake, serialized by
+the stock SDK after projection, is 5065 bytes and launches the real Node process
+successfully with exit zero (`run-2a0932a71c0b`). Scope is retained and the host
+run's original payload is not modified.
+
+The execution hold is a separate authority gate. Clearing it requires the
+supported typed execution-reconciliation path with the exact failed run and
+observed action outcomes. No manual reviewer wake, terminal run replay, new
+native review card, operator verdict, or database repair was used to clear it.
+PR #21's final strong approval and the 20-task campaign are therefore not yet
+qualified as complete.
