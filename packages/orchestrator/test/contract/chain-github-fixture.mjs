@@ -81,6 +81,7 @@ const mergeability = (pr) => {
 const view = (pr) => ({ number: pr.number, title: pr.title, state: pr.state,
   headRefName: pr.branch, headRefOid: observedHead(pr), baseRefName: 'main',
   baseRefOid: observedGit(['rev-parse', 'main']),
+  changedFiles: 1,
   mergedAt: pr.mergedAt || null, url: pr.url, files: [pr.file],
   ...mergeability(pr),
   mergeCommit: pr.mergeSha ? { oid: pr.mergeSha } : null });
@@ -105,8 +106,29 @@ if (args[0] === 'pr' && args[1] === 'view' && row && args[3] === '--json') {
 } else if (args[0] === 'pr' && args[1] === 'diff' && row && args.length === 4 && args[3] === '--name-only') {
   console.log(row.file);
 } else if (args[0] === 'pr' && args[1] === 'diff' && row && args.length === 3) {
-  process.stdout.write(execFileSync('git', ['diff', 'main...' + row.headSha, '--', row.file],
+  process.stdout.write(execFileSync('git', [...gitPrefix, 'diff', 'main...' + observedHead(row), '--', row.file],
     { cwd: state.repository, encoding: 'utf8' }));
+} else if (args[0] === 'api' && args.length === 4 && args[2] === '--method' && args[3] === 'GET' &&
+  args[1].startsWith('repos/paperclip-contract/fixture/contents/')) {
+  const [encoded, sha] = args[1].slice('repos/paperclip-contract/fixture/contents/'.length).split('?ref=');
+  if (!encoded || !/^[0-9a-f]{40}$/.test(sha || '')) fail();
+  const file = encoded.split('/').map(decodeURIComponent).join('/');
+  if (!state.prs.some(pr => pr.file === file && observedHead(pr) === sha)) fail();
+  const content = execFileSync('git', [...gitPrefix, 'show', sha + ':' + file], { cwd: state.repository, timeout: 10000 });
+  console.log(JSON.stringify({ type: 'file', encoding: 'base64', size: content.length, content: content.toString('base64') }));
+} else if (args[0] === 'api' && args.length === 6 && args[2] === '--method' && args[3] === 'GET' &&
+  args[1].startsWith('repos/paperclip-contract/fixture/compare/')) {
+  const [base, head] = args[1].slice('repos/paperclip-contract/fixture/compare/'.length).split('...');
+  const pr = state.prs.find(pr => observedHead(pr) === head);
+  if (!pr || !/^[0-9a-f]{40}$/.test(base || '') || !/^[0-9a-f]{40}$/.test(head || '')) fail();
+  if (args[4] === '--header' && args[5] === 'Accept: application/vnd.github.diff') {
+    process.stdout.write(execFileSync('git', [...gitPrefix, 'diff', base + '...' + head], { cwd: state.repository, encoding: 'utf8' }));
+  } else if (args[4] === '--jq' && args[5] === '{baseSha: .base_commit.sha, mergeBaseSha: .merge_base_commit.sha, files: [.files[] | {path: .filename, status}]}') {
+    const mergeBaseSha = observedGit(['merge-base', base, head]);
+    const status = spawnSync('git', [...gitPrefix, 'cat-file', '-e', mergeBaseSha + ':' + pr.file], { cwd: state.repository });
+    if (status.error || ![0, 1, 128].includes(status.status)) fail();
+    console.log(JSON.stringify({ baseSha: base, mergeBaseSha, files: [{ path: pr.file, status: status.status === 0 ? 'modified' : 'added' }] }));
+  } else fail();
 } else if (args[0] === 'api' && args[1]?.startsWith('repos/paperclip-contract/fixture/git/commits/') &&
   /^[0-9a-f]{40}$/.test(args[1].split('/').at(-1)) && args.length === 2) {
   const sha = args[1].split('/').at(-1);

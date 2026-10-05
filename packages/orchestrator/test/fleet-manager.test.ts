@@ -144,7 +144,7 @@ describe("Orchestrator Managed Fleet Manager", () => {
     expect(reviewerInstructions).toContain("For a plan assignment");
     expect(reviewerInstructions).toContain("paperclip_review.submit_native_review_verdict");
     expect(reviewerInstructions).toContain("immutable PR head");
-    expect(reviewerInstructions).toContain("gh pr view");
+    expect(reviewerInstructions).toContain("artifact.complete");
     expect(reviewerInstructions).toContain("connector 404");
     expect(reviewerInstructions).not.toContain("PAPERCLIP_API_KEY");
     expect(reviewerInstructions).not.toContain("DECISION=");

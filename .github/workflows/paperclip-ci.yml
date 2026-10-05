@@ -197,6 +197,8 @@ jobs:
         run: node packages/orchestrator/test/contract/jules-server-restart.mjs --autonomous
       - name: Verify prior-run reviewer errors do not become permanent administrative admission holds
         run: node packages/orchestrator/test/contract/jules-server-restart.mjs --autonomous-merge --reviewer-error
+      - name: Verify native PR prose cannot substitute for a structured verdict
+        run: node packages/orchestrator/test/contract/jules-server-restart.mjs --autonomous-native-pr-prose-only
       - name: Verify unapproved provider drift preserves native reviews and observation across restart
         run: node packages/orchestrator/test/contract/jules-server-restart.mjs --autonomous-plan-provider-drift
       - name: Verify adapter deployment automatically converges legacy provider-observation holds

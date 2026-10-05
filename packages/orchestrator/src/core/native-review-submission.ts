@@ -1,5 +1,6 @@
 import { nativeReviewFetch } from "./native-review-http.js";
 import { z } from "zod";
+import type { NativePullRequestArtifact } from "./native-review-artifact.js";
 
 /**
  * Adapter-side transport for native Paperclip review cards.
@@ -55,6 +56,7 @@ export type NativeReviewAssignment =
       readonly itemId: "pull_request";
       readonly prUrl: string;
       readonly headSha: string;
+      readonly artifact?: NativePullRequestArtifact;
     };
 
 export type NativeReviewAssignmentResult =
@@ -91,7 +93,10 @@ export type NativeReviewFailureCode =
   | "unowned_review_policy"
   | "unexpected_issue_state"
   | "handback_failed"
-  | "child_plan_cleanup_failed";
+  | "child_plan_cleanup_failed"
+  | "review_artifact_unavailable"
+  | "review_artifact_head_changed"
+  | "review_artifact_too_large";
 
 export type NativeReviewFailure = {
   readonly ok: false;

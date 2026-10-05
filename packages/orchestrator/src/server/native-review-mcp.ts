@@ -80,6 +80,7 @@ export interface NativeReviewMcpResponse {
 }
 
 const FATAL_NATIVE_REVIEW_CODES = new Set([
+  "review_artifact_unavailable", "review_artifact_head_changed", "review_artifact_too_large",
   "missing_runtime_context",
   "missing_runtime_auth",
   "runtime_transport_error",

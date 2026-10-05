@@ -15,6 +15,7 @@ import {
   type JulesQuestionToolArguments,
 } from "./native-review-mcp.js";
 import { isFatalNativeReviewMcpError } from "./native-review-mcp.js";
+import { NativeReviewArtifactError, readNativePullRequestArtifact } from "../core/native-review-artifact.js";
 
 const MCP_PROTOCOL_VERSION = "2024-11-05";
 
@@ -294,9 +295,15 @@ export async function runNativeReviewMcpStdio(env: NodeJS.ProcessEnv = process.e
     },
     readAssignment: async () => {
       const runtime = await resolveNativeReviewMcpRuntime(env);
-      return runtime === null
-        ? { ok: false, code: "missing_runtime_context" as const }
-        : readPlanReviewAssignmentAndReconcileHandback(runtime);
+      if (runtime === null) return { ok: false, code: "missing_runtime_context" as const };
+      const result = await readPlanReviewAssignmentAndReconcileHandback(runtime);
+      if (!result.ok || result.assignment.kind !== "pull_request") return result;
+      try {
+        const artifact = await readNativePullRequestArtifact(result.assignment, { env });
+        return { ok: true, assignment: { ...result.assignment, artifact } };
+      } catch (error) {
+        return { ok: false, code: error instanceof NativeReviewArtifactError ? error.code : "review_artifact_unavailable" };
+      }
     },
     submitJulesQuestion: async (arguments_: JulesQuestionToolArguments) => {
       const runtime = await resolveNativeReviewMcpRuntime(env);

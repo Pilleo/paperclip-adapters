@@ -120,8 +120,12 @@ export function reviewMcpEnv(ctx: AdapterExecutionContext): NodeJS.ProcessEnv {
   if (!ctx.authToken || !ctx.runId || !ctx.agent.id || !ctx.agent.companyId) throw new Error("Native review requires run-scoped credentials");
   const context = (ctx.context ?? {}) as Record<string, unknown>;
   const issueId = typeof context["issueId"] === "string" ? context["issueId"] : typeof context["taskId"] === "string" ? context["taskId"] : "";
+  const configured = ctx.config?.["env"] && typeof ctx.config["env"] === "object" ? ctx.config["env"] as Record<string, unknown> : {};
+  const githubEnv = Object.fromEntries(Object.entries(configured).filter(([key, value]) => typeof value === "string" &&
+    (["PAPERCLIP_GH_PATH", "GH_TOKEN", "GITHUB_TOKEN", "GH_HOST", "GH_CONFIG_DIR", "PATH"].includes(key) || key.startsWith("PAPERCLIP_GITHUB_"))));
   return {
     ...process.env,
+    ...githubEnv,
     PAPERCLIP_API_URL: process.env["PAPERCLIP_API_URL"] ?? "http://127.0.0.1:3100",
     PAPERCLIP_COMPANY_ID: ctx.agent.companyId,
     PAPERCLIP_AGENT_ID: ctx.agent.id,

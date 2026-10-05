@@ -28,6 +28,7 @@ if (process.argv.includes("--autonomous-conflict")) {
 const autonomousDependency = process.argv.includes("--autonomous-dependency");
 const questionRecovery = process.argv.includes("--autonomous-question-recovery");
 const reviewerError = process.argv.includes("--reviewer-error");
+const nativePrProseOnly = process.argv.includes("--autonomous-native-pr-prose-only");
 const legacyPlanProviderHold = process.argv.includes("--autonomous-legacy-plan-provider-hold");
 const planProviderDrift = legacyPlanProviderHold || process.argv.includes("--autonomous-plan-provider-drift");
 const questionFlow = questionRecovery || process.argv.includes("--autonomous-question");
@@ -35,7 +36,7 @@ const installation = resolveContractHost();
 const autonomousConflict = process.argv.includes("--autonomous-conflict");
 const restartLostApproval = process.argv.includes("--autonomous-lost-approval-restart");
 const lostApproval = restartLostApproval || process.argv.includes("--autonomous-lost-approval");
-const autonomousMerge = planProviderDrift || autonomousDependency || autonomousConflict || lostApproval || questionFlow || process.argv.includes("--autonomous-merge");
+const autonomousMerge = nativePrProseOnly || planProviderDrift || autonomousDependency || autonomousConflict || lostApproval || questionFlow || process.argv.includes("--autonomous-merge");
 const autonomous = autonomousMerge || process.argv.includes("--autonomous");
 
 const root = await mkdtemp(path.join(tmpdir(), "paperclip-jules-server-restart-"));
@@ -343,7 +344,7 @@ try {
   companyId = company.id;
   const acp = autonomousMerge ? await createNativeAcpFixture(root, autonomousConflict
     ? { reviewDecisionUrl: `${providerUrl}/fixture/review`, reviewDecisionToken: reviewControlToken, finishPrReview: true }
-    : questionFlow ? { finishPrReview: true, questionResponse: "The current plan is already natively approved. Implement the original task, verify the tests and publish the existing task's single PR. Do not create another session or merge it.", failFirstQuestionReview: questionRecovery } : {}) : null;
+    : questionFlow ? { finishPrReview: true, questionResponse: "The current plan is already natively approved. Implement the original task, verify the tests and publish the existing task's single PR. Do not create another session or merge it.", failFirstQuestionReview: questionRecovery } : { omitPrVerdict: nativePrProseOnly }) : null;
   const reviewerConfig = autonomousMerge ? { serverPath: acp.serverPath, model: "gemini-3.8-flash-low",
     nativeReview: true, cwd: chainGitHub.repository, permissionMode: "read-only", timeoutSec: 90,
     reviewMcpArgs: [path.join(workspaceRoot, "packages/orchestrator/dist/server/native-review-mcp-stdio.js")] }
@@ -726,7 +727,22 @@ try {
     "restart must retain the exact two addressed native plan cards without a second reviewer verdict");
   assert.equal(approvals, 1, "a restarted executor must never approve the already-confirmed plan again");
   assert.equal(creates, 1, "a restarted executor must retain the original provider session");
-  if (autonomousMerge) {
+  if (nativePrProseOnly) {
+    const failed = await waitUntil("prose-only native PR reviewer fails instead of becoming successful", async () => {
+      const runs = await observer.get(`/companies/${company.id}/heartbeat-runs?limit=100`);
+      return runs.find(run => run.errorCode === "native_review_result_missing" && run.status === "failed");
+    }, 180_000);
+    const cards = await observer.get(`/issues/${failed.contextSnapshot.issueId}/interactions`);
+    assert.equal(cards.length, 1);
+    assert.equal(cards[0].status, "pending");
+    assert.equal(cards[0].result, null);
+    const companyApprovals = await observer.get(`/companies/${company.id}/approvals`);
+    assert.equal(companyApprovals.filter(a => a.payload?.action === "task_merge" && a.payload.issueId === issue.id).length, 0);
+    assert.equal(observer.trace.filter(entry => entry.phase === "observing" && entry.method !== "GET").length, 0);
+    console.log("NATIVE_PR_PROSE_ONLY_REJECTED", JSON.stringify({ version: installation.version, runId: failed.id,
+      interactionId: cards[0].id, headSha: pr.headSha, providerCreates: creates, providerApprovals: approvals, nativeMergeGates: 0 }));
+  }
+  if (autonomousMerge && !nativePrProseOnly) {
     const { parsePrReviewChildDescription } = await import("../../dist/core/pr-review-child.js");
     const gate = await waitUntil("autonomous native PR reviews and pending human merge gate", async () => {
       if (autonomousConflict) for (const reviewerId of reviewerIds) {

@@ -8,17 +8,19 @@ import readline from "node:readline";
 import test from "node:test";
 import { createNativeAcpFixture } from "../../packages/orchestrator/test/contract/native-acp-fixture.mjs";
 
-for (const { controlled, permissionsAllowed } of [
+for (const { controlled, permissionsAllowed, artifactComplete = true } of [
   { controlled: false, permissionsAllowed: true }, { controlled: true, permissionsAllowed: true },
   { controlled: false, permissionsAllowed: false },
-]) test(`ACP provider native verdict (controlled=${controlled}, permissions=${permissionsAllowed})`, async () => {
+  { controlled: false, permissionsAllowed: true, artifactComplete: false },
+]) test(`ACP provider native verdict (controlled=${controlled}, permissions=${permissionsAllowed}, artifact=${artifactComplete})`, async () => {
   const root = await mkdtemp(path.join(tmpdir(), "native-acp-fixture-test-"));
   const calls = [];
   const phases = [];
   const dispositions = [];
   const permissions = [];
   let submitted;
-  const assignment = { kind: "pull_request", interactionId: "native-card", prUrl: "https://github.com/fixture/repo/pull/1", headSha: "a".repeat(40) };
+  const assignment = { kind: "pull_request", interactionId: "native-card", prUrl: "https://github.com/fixture/repo/pull/1", headSha: "a".repeat(40),
+    artifact: { complete: artifactComplete, headSha: "a".repeat(40), baseSha: "b".repeat(40), diff: "+fixture", files: [{ path: "fixture.txt", headContent: "fixture" }] } };
   const policy = createServer(async (request, response) => {
     let body = "";
     for await (const chunk of request) body += chunk;
@@ -91,12 +93,12 @@ for (const { controlled, permissionsAllowed } of [
       configId: "model", value: "gemini-3.8-flash-low" });
     assert.equal(configured.result?.configOptions?.[0]?.currentValue, "gemini-3.8-flash-low");
     const prompt = await request(3, "session/prompt", { sessionId: session.result.sessionId });
-    if (permissionsAllowed) assert.equal(prompt.result.stopReason, "end_turn");
-    else assert.match(prompt.error.message, /Native ACP permission denied/);
-    assert.deepEqual(calls, permissionsAllowed ? ["initialize", "get_current_native_review_assignment", "submit_native_review_verdict"] : ["initialize"]);
-    assert.deepEqual(permissions, permissionsAllowed ? ["paperclip_review_get_current_native_review_assignment",
+    if (permissionsAllowed && artifactComplete) assert.equal(prompt.result.stopReason, "end_turn");
+    else assert.match(prompt.error.message, permissionsAllowed ? /complete immutable artifact/ : /Native ACP permission denied/);
+    assert.deepEqual(calls, !permissionsAllowed ? ["initialize"] : artifactComplete ? ["initialize", "get_current_native_review_assignment", "submit_native_review_verdict"] : ["initialize", "get_current_native_review_assignment"]);
+    assert.deepEqual(permissions, permissionsAllowed && artifactComplete ? ["paperclip_review_get_current_native_review_assignment",
       "paperclip_review_submit_native_review_verdict"] : ["paperclip_review_get_current_native_review_assignment"]);
-    assert.deepEqual(submitted, !permissionsAllowed ? undefined : controlled ? { verdict: "reject", reason: "Real Git conflict" } : { verdict: "approve" });
+    assert.deepEqual(submitted, !permissionsAllowed || !artifactComplete ? undefined : controlled ? { verdict: "reject", reason: "Real Git conflict" } : { verdict: "approve" });
     assert.deepEqual(phases, controlled ? ["before", "after"] : []);
     assert.deepEqual(dispositions, controlled ? [{ status: "done" }] : []);
     assert.equal((await request(4, "unsupported/method")).error.code, -32601);

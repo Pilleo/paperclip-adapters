@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import path from "node:path";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { execute } from "../src/server/index.js";
@@ -29,6 +29,7 @@ vi.mock("@paperclipai/adapter-utils/acpx-engine/execute", () => {
 });
 
 describe("Antigravity local-agent tool budget", () => {
+  afterEach(() => vi.unstubAllGlobals());
   it("starts the current AGY CLI without unsupported legacy uid or debug flags", async () => {
     await execute({
       agent: { id: "agy-1", companyId: "c-1", name: "AGY", adapterType: "antigravity" },
@@ -73,6 +74,8 @@ describe("Antigravity local-agent tool budget", () => {
   });
 
   it("exposes the typed review tool to a Gemini Flash 3.8 reviewer session", async () => {
+    vi.stubGlobal("fetch", async input => new Response(JSON.stringify(String(input).includes('/heartbeat-runs/')
+      ? { id: "run-1", companyId: "c-1", agentId: "agy-1", status: "running", contextSnapshot: { issueId: "issue-1" } } : [])));
     const hostMcp = { name: "Paperclip projects", url: "http://127.0.0.1:3100/api/mcp/project-tools",
       token: "run-only-token", connectionId: "paperclip-project-tools" };
     await execute({
@@ -105,6 +108,23 @@ describe("Antigravity local-agent tool budget", () => {
       options: [{ kind: "allow_once", optionId: "once", name: "Allow once" }],
       toolCall: { title: "paperclip_review_get_current_native_review_assignment", kind: "other" },
     } }, { signal: new AbortController().signal })).toEqual({ outcome: "reject_once" });
+  });
+
+  it("does not report a native reviewer as successful when it ends with prose and the addressed card remains pending", async () => {
+    vi.stubGlobal("fetch", async input => new Response(JSON.stringify(String(input).includes('/heartbeat-runs/')
+      ? { id: "run-1", companyId: "c-1", agentId: "agy-1", status: "running", contextSnapshot: { issueId: "issue-1" } }
+      : String(input).endsWith('/interactions')
+      ? [{ id: "card-1", issueId: "issue-1", companyId: "c-1", addresseeAgentId: "agy-1", kind: "request_item_verdicts", status: "pending",
+        payload: { items: [{ id: "pull_request" }] } }]
+      : { id: "issue-1", companyId: "c-1", description: "" })));
+    const result = await execute({
+      runId: "run-1", authToken: "review-run-token", agent: { id: "agy-1", companyId: "c-1", name: "AGY", adapterType: "antigravity" },
+      context: { issueId: "issue-1" }, config: { serverPath: "/opt/antigravity/agy_acp_server.par", nativeReview: true, permissionMode: "read-only",
+        reviewMcpCommand: process.execPath, reviewMcpArgs: ["-e", "process.stdin.resume()"] },
+    } as unknown as AdapterExecutionContext);
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("native_review_result_missing");
+    expect(result.resultJson).toMatchObject({ nativeReview: { interactionId: "card-1", status: "decision_missing" } });
   });
 
   it("records only safe validation fields when the ACP server rejects session/new", async () => {

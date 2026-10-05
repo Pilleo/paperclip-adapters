@@ -41,4 +41,10 @@ describe("run-scoped Antigravity review MCP bridge", () => {
       PAPERCLIP_TASK_ID: "review-child", PAPERCLIP_API_KEY: "run-scoped-secret" });
     expect(() => reviewMcpEnv({ ...ctx, authToken: undefined } as AdapterExecutionContext)).toThrow(/credentials/);
   });
+  it("forwards resolved run-scoped GitHub read credentials without allowing native identity overrides", () => {
+    const env = reviewMcpEnv({ ...ctx, config: { env: { PAPERCLIP_GH_PATH: "/run/scoped/gh", GH_TOKEN: "github-run-token",
+      PAPERCLIP_API_KEY: "foreign-token", PAPERCLIP_AGENT_ID: "foreign-agent" } } } as AdapterExecutionContext);
+    expect(env).toMatchObject({ PAPERCLIP_GH_PATH: "/run/scoped/gh", GH_TOKEN: "github-run-token",
+      PAPERCLIP_API_KEY: "run-scoped-secret", PAPERCLIP_AGENT_ID: "gemini-reviewer" });
+  });
 });

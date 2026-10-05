@@ -2,7 +2,7 @@ import { chmod, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 /** External ACP provider simulator; all verdict writes go through the real adapter-owned MCP bridge. */
-export async function createNativeAcpFixture(root, { reviewDecisionUrl, reviewDecisionToken, finishPrReview = false, questionResponse, failFirstQuestionReview = false } = {}) {
+export async function createNativeAcpFixture(root, { reviewDecisionUrl, reviewDecisionToken, finishPrReview = false, questionResponse, failFirstQuestionReview = false, omitPrVerdict = false } = {}) {
   const serverPath = path.join(root, "agy_acp_server.par");
   await writeFile(serverPath, `#!/usr/bin/env node
 const readline = require('node:readline');
@@ -15,6 +15,7 @@ const finishPrReview = ${JSON.stringify(finishPrReview)};
 const questionResponse = ${JSON.stringify(questionResponse ?? null)};
 const questionFailurePath = ${JSON.stringify(path.join(root, "question-failure-observed"))};
 const failFirstQuestionReview = ${JSON.stringify(failFirstQuestionReview)};
+const omitPrVerdict = ${JSON.stringify(omitPrVerdict)};
 const nativeApi = async (route, method = 'GET', body) => {
   const env = process.env;
   if (!env.PAPERCLIP_API_KEY || !env.PAPERCLIP_RUN_ID || !env.PAPERCLIP_API_URL) throw new Error('Missing native reviewer runtime credentials');
@@ -110,6 +111,17 @@ readline.createInterface({ input: process.stdin }).on('line', async (line) => {
         }
         const assigned = await mcp(server, 'tools/call', { name: 'get_current_native_review_assignment', arguments: {} });
         const assignment = assigned.structuredContent;
+        if (assignment?.kind === 'pull_request') {
+          if (assignment.artifact?.complete !== true || assignment.artifact.headSha !== assignment.headSha ||
+              !Array.isArray(assignment.artifact.files) || typeof assignment.artifact.diff !== 'string') {
+            throw new Error('Native PR review requires the complete immutable artifact through MCP');
+          }
+          if (omitPrVerdict) {
+            send({ method: 'session/update', params: { sessionId: message.params.sessionId,
+              update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'I approve this PR. Review complete.' } } } });
+            result = { stopReason: 'end_turn' }; break;
+          }
+        }
         const controlled = reviewDecisionUrl && assignment?.kind === 'pull_request';
         const decision = controlled ? await reviewPolicy('before', assignment) : { verdict: 'approve' };
         const receipt = await mcp(server, 'tools/call', { name: 'submit_native_review_verdict', arguments: decision });
