@@ -106,6 +106,13 @@ export const TerminalActivityScanSchema = z.object({
 export type TerminalActivityEvidence = z.infer<typeof TerminalActivityEvidenceSchema>;
 export type TerminalActivityScan = z.infer<typeof TerminalActivityScanSchema>;
 
+const PlanProviderObservationSchema = z.object({
+  sessionId: z.string().min(1), activityId: z.string().min(1), revisionId: z.string().min(1),
+  reason: z.literal("unverified_progress"), providerState: z.literal("IN_PROGRESS"),
+  firstObservedAt: z.string().datetime(), lastObservedAt: z.string().datetime(),
+});
+export type PlanProviderObservation = z.infer<typeof PlanProviderObservationSchema>;
+
 export type NativeAgentAdjudication = z.infer<typeof NativeAgentAdjudicationSchema>;
 export type LegacyAgentAdjudication = z.infer<typeof LegacyAgentAdjudicationSchema>;
 
@@ -308,6 +315,7 @@ export const JulesAdapterSessionV1Schema = z.object({
   /** Durable remote-effect evidence used to classify process interruption. */
   lifecycleEffectJournal: LifecycleEffectJournalSchema.optional(),
   childPlanReview: z.object({ identity: ChildPlanReviewIdentitySchema, childId: z.string().min(1).optional() }).optional(),
+  planProviderObservation: PlanProviderObservationSchema.optional(),
   createdAt: z.string(),
   lastPolledAt: z.string().optional()
 }).superRefine((session, ctx) => {
@@ -522,6 +530,7 @@ export interface JulesAdapterSessionV1 {
   mutationCheckpoint?: MutationCheckpoint | undefined;
   lifecycleEffectJournal?: LifecycleEffectJournal | undefined;
   childPlanReview?: { identity: ChildPlanReviewIdentity; childId?: string } | undefined;
+  planProviderObservation?: PlanProviderObservation | undefined;
   createdAt: string;
   lastPolledAt?: string | undefined;
 }

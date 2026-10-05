@@ -197,6 +197,10 @@ jobs:
         run: node packages/orchestrator/test/contract/jules-server-restart.mjs --autonomous
       - name: Verify prior-run reviewer errors do not become permanent administrative admission holds
         run: node packages/orchestrator/test/contract/jules-server-restart.mjs --autonomous-merge --reviewer-error
+      - name: Verify unapproved provider drift preserves native reviews and observation across restart
+        run: node packages/orchestrator/test/contract/jules-server-restart.mjs --autonomous-plan-provider-drift
+      - name: Verify adapter deployment automatically converges legacy provider-observation holds
+        run: node packages/orchestrator/test/contract/jules-server-restart.mjs --autonomous-legacy-plan-provider-hold
       - name: Verify recovered native Jules questions keep a truthful blocked wait and resume the original session
         run: node packages/orchestrator/test/contract/jules-server-restart.mjs --autonomous-question-recovery
       - name: Verify native human waits survive restart and user merge releases approved dependent work

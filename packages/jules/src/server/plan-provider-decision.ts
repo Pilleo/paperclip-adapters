@@ -4,6 +4,7 @@ export type PlanProviderAction =
   | { readonly kind: "reconcile_started_effect"; readonly effectId: string }
   | { readonly kind: "request_revision_once"; readonly effectId: string }
   | { readonly kind: "reconcile_recorded_work" }
+  | { readonly kind: "observe_provider"; readonly reason: "unverified_progress" }
   | { readonly kind: "hold"; readonly reason: "terminal_without_approval" | "identity_conflict" |
       "incomplete_history" | "unverified_progress" };
 
@@ -38,6 +39,10 @@ export function decidePlanProviderAction(input: PlanProviderEvidence): PlanProvi
       return { kind: "hold", reason: "terminal_without_approval" };
     }
     if (input.verdict === "reject") return { kind: "hold", reason: "identity_conflict" };
+    if (input.providerState === "IN_PROGRESS" && !input.approvalActivityId) {
+      return input.outputCount > 0 ? { kind: "hold", reason: "unverified_progress" }
+        : { kind: "observe_provider", reason: "unverified_progress" };
+    }
     if (input.providerState === "COMPLETED" && input.outputCount > 0) {
       if (!input.approvalActivityId) return { kind: "hold", reason: "unverified_progress" };
       return input.verdict === "approve" ? { kind: "reconcile_started_effect", effectId: approval }
@@ -74,7 +79,10 @@ export function decidePlanProviderAction(input: PlanProviderEvidence): PlanProvi
     return { kind: "hold", reason: "terminal_without_approval" };
   }
   if (input.providerState === "IN_PROGRESS" && input.effect?.kind !== "confirmed") {
-    return { kind: "hold", reason: "unverified_progress" };
+    // A state poll is not a failed write, and generic progress is not approval.
+    // Keep observing the original session without authorizing remote mutations.
+    return input.outputCount > 0 ? { kind: "hold", reason: "unverified_progress" }
+      : { kind: "observe_provider", reason: "unverified_progress" };
   }
   if (input.effect?.kind === "confirmed") {
     return input.verdict === "reject" ? { kind: "hold", reason: "identity_conflict" }

@@ -941,7 +941,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const reattachDelayMs = config.pollCadenceSeconds * 1000;
   const continuationDelayMs = config.continuationCadenceSeconds * 1000;
 
-  const abortSignal = parsedHostCtx.abortSignal || new AbortController().signal;
+  const abortSignal = ctx.signal ?? parsedHostCtx.abortSignal ?? new AbortController().signal;
 
   const rawTaskId = parsedCtxContext.task.id;
   const taskId = asPaperclipId(rawTaskId);
@@ -973,7 +973,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       current.pendingInteraction?.type === "completion_confirmation";
     const nativePlanWait = current.pendingInteraction?.type === "plan_native_review" &&
       current.pendingInteraction.protocolVersion === 2;
-    if ((humanWait && !observeOwnedRecovery) || nativePlanWait || !current.julesSessionId) return { ok: true };
+    if ((humanWait && !observeOwnedRecovery) || !current.julesSessionId) return { ok: true };
+    if (nativePlanWait) {
+      if (!current.planProviderObservation) return { ok: true };
+      // A preserved uncertain effect still needs GET observations, but only
+      // once the native stage has returned ownership to this Jules assignee.
+      try {
+        const owner = await getPaperclipIssue(taskId, ctx.authToken, ctx.runId);
+        if (owner?.assigneeAgentId !== ctx.agent.id) return { ok: true };
+      } catch (error) {
+        return { ok: false, error };
+      }
+    }
     const delayMs = liveSessionPollDelayMs(current, initialActivityCheck, reattachDelayMs,
       config.requirePlanApproval, continuationDelayMs);
     const timeoutAt = new Date(
@@ -3654,8 +3665,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         if (identity.parentIssueId !== taskId || identity.sessionId !== session.julesSessionId || identity.julesAgentId !== ctx.agent.id) {
           throw new Error("Child plan-review checkpoint belongs to another parent or provider session");
         }
-        const fullHistory = await scanCompleteActivities(client, session.julesSessionId!);
-        const currentPlan = latestPlan(fullHistory.activities);
+        if (julesSession.id !== identity.sessionId) throw new Error("Provider poll returned another Jules session");
+        let fullHistory = await scanCompleteActivities(client, session.julesSessionId!);
+        let currentPlan = latestPlan(fullHistory.activities);
+        let planProviderState = state;
+        let planProviderSession = julesSession;
+        let planPrUrl = prUrl;
         if (!fullHistory.complete) {
           return { exitCode: 1, signal: null, timedOut: false, clearSession: false,
             errorCode: "native_child_plan_provider_state_conflict", errorFamily: null,
@@ -3664,12 +3679,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
         if (currentPlan && currentPlan.id !== identity.activityId) {
           session.childPlanReview = undefined;
+          session.planProviderObservation = undefined;
           await saveStoredSession(session);
           return await yieldHeartbeat(session);
         }
         const approvalEffect = session.lifecycleEffectJournal?.effects.find((effect) =>
           effect.effectId === `approve:${identity.sessionId}:${identity.revisionId}`);
-        const approvedPlanActivityId = approvalEffect?.attempt.kind === "started"
+        let approvedPlanActivityId = approvalEffect?.attempt.kind === "started"
           ? findApprovedPlanActivity({ activities: fullHistory.activities, planActivityId: identity.activityId,
             startedAt: approvalEffect.attempt.startedAt, historyComplete: fullHistory.complete })
           : null;
@@ -3692,28 +3708,73 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           case "approve_once":
           case "reconcile_started_effect":
           case "request_revision_once": break; // Card observation establishes the actual verdict.
+          case "observe_provider": break; // Review coordination cannot authorize a provider write.
           case "reconcile_recorded_work":
             throw new Error("Cannot reconcile provider work before reading the addressed typed verdict");
           default: return assertNever(providerDecision);
         }
+        const checkpointPlanObservation = (decision: ReturnType<typeof decidePlanProviderAction>) => {
+          session!.julesState = planProviderState;
+          if (decision.kind === "observe_provider") {
+            const now = new Date().toISOString();
+            const prior = session!.planProviderObservation;
+            session!.planProviderObservation = { sessionId: identity.sessionId, activityId: identity.activityId,
+              revisionId: identity.revisionId, reason: decision.reason, providerState: "IN_PROGRESS",
+              firstObservedAt: prior?.sessionId === identity.sessionId && prior.activityId === identity.activityId &&
+                prior.revisionId === identity.revisionId ? prior.firstObservedAt : now, lastObservedAt: now };
+          } else {
+            session!.planProviderObservation = undefined;
+          }
+        };
+        checkpointPlanObservation(providerDecision);
+        // Persist the actual observation before touching the child. A restart
+        // must not replace it with the previous AWAITING_PLAN_APPROVAL poll.
+        await saveStoredSession(session);
+        const yieldPlanObservation = () => yieldHeartbeat(session!, false, session!.planProviderObservation ? {
+          summary: `Jules session ${identity.sessionId} reports unapproved progress; native review continues while provider mutations remain gated.`,
+          resultJson: { pending: true, planProviderObservation: session!.planProviderObservation },
+        } : undefined);
         const observed = await observeJulesChildPlanReview(identity, checkpoint.childId, ctx.authToken, ctx.runId);
         checkpoint.childId = observed.childId;
         await saveStoredSession(session);
         switch (observed.kind) {
-          case "waiting": return await yieldHeartbeat(session);
+          case "waiting": return await yieldPlanObservation();
           case "answered": {
+            // Review observation may take time. Recheck the provider boundary
+            // immediately before a verdict can issue or reconcile a remote write.
+            if (identity.stage === "terra" || observed.verdict === "reject") {
+              fullHistory = await scanCompleteActivities(client, session.julesSessionId!);
+              // Session state/outputs must be observed after the potentially
+              // paginated history, rather than remaining stale during that scan.
+              planProviderSession = await client.getSession(session.julesSessionId!);
+              if (planProviderSession.id !== identity.sessionId) throw new Error("Final provider poll returned another Jules session");
+              planProviderState = normalizeJulesState(planProviderSession.state);
+              planPrUrl = extractPullRequestUrl(planProviderSession, config.repository);
+              currentPlan = latestPlan(fullHistory.activities);
+              if (fullHistory.complete && currentPlan && currentPlan.id !== identity.activityId) {
+                session.childPlanReview = undefined;
+                session.planProviderObservation = undefined;
+                await saveStoredSession(session);
+                return await yieldHeartbeat(session);
+              }
+              approvedPlanActivityId = approvalEffect?.attempt.kind === "started"
+                ? findApprovedPlanActivity({ activities: fullHistory.activities, planActivityId: identity.activityId,
+                  startedAt: approvalEffect.attempt.startedAt, historyComplete: fullHistory.complete }) : null;
+            }
             const verdictDecision = decidePlanProviderAction({
               sessionId: session.julesSessionId!, checkpointSessionId: identity.sessionId,
               planActivityId: identity.activityId, planRevisionId: identity.revisionId,
               latestActivityId: currentPlan?.id ?? null,
-              providerState: state, historyComplete: fullHistory.complete,
+              providerState: planProviderState, historyComplete: fullHistory.complete,
               approvalActivityId: approvedPlanActivityId,
-              outputCount: julesSession.rawOutputs?.length ?? 0, verdict: observed.verdict,
+              outputCount: planProviderSession.rawOutputs?.length ?? 0, verdict: observed.verdict,
               effect: approvalEffect ? { kind: approvalEffect.attempt.kind, effectId: approvalEffect.effectId } : null,
             });
+            checkpointPlanObservation(verdictDecision);
+            await saveStoredSession(session);
             if (verdictDecision.kind === "reconcile_recorded_work") {
               if (identity.stage !== "terra" || observed.verdict !== "approve" ||
-                  approvalEffect?.attempt.kind !== "confirmed" || !prUrl) {
+                    approvalEffect?.attempt.kind !== "confirmed" || !planPrUrl) {
                 throw new Error("Cannot reconcile provider PR without an exact confirmed strong-review approval");
               }
               session.childPlanReview = undefined;
@@ -3729,6 +3790,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 errorMessage: `Cannot apply the typed ${identity.stage} verdict to Jules state ${state} (${verdictDecision.reason}).`,
                 sessionParams: serializeSession(session) };
             }
+            // Luna's approval only advances the native review ladder. It never
+            // approves Jules, including while provider progress is unexplained.
+            if (identity.stage === "luna" && observed.verdict === "approve") {
+              if (!config.planStrongReviewerAgentId) throw new Error("Terra reviewer is required after the Luna child verdict");
+              session.childPlanReview = { identity: { ...identity, stage: "terra", reviewerAgentId: config.planStrongReviewerAgentId } };
+              await saveStoredSession(session);
+              const next = await observeJulesChildPlanReview(session.childPlanReview.identity, undefined, ctx.authToken, ctx.runId);
+              session.childPlanReview.childId = next.childId;
+              await saveStoredSession(session);
+              return await yieldPlanObservation();
+            }
+            if (verdictDecision.kind === "observe_provider") return await yieldPlanObservation();
+            if (abortSignal.aborted) return await yieldPlanObservation();
             if (observed.verdict === "reject") {
               if (verdictDecision.kind !== "request_revision_once") return await yieldHeartbeat(session);
               session.childPlanReview = undefined;
@@ -3739,30 +3813,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             }
             switch (identity.stage) {
               case "luna": {
-                if (!config.planStrongReviewerAgentId) throw new Error("Terra reviewer is required after the Luna child verdict");
-                session.childPlanReview = { identity: { ...identity, stage: "terra", reviewerAgentId: config.planStrongReviewerAgentId } };
-                await saveStoredSession(session);
-                const next = await observeJulesChildPlanReview(session.childPlanReview.identity, undefined, ctx.authToken, ctx.runId);
-                session.childPlanReview.childId = next.childId;
-                await saveStoredSession(session);
-                return await yieldHeartbeat(session);
+                throw new Error("Luna approval must advance only the native review ladder");
               }
               case "terra": {
                 const effectId = `approve:${identity.sessionId}:${identity.revisionId}`;
                 const entry = session.lifecycleEffectJournal?.effects.find((effect) => effect.effectId === effectId);
-                 if (state !== "AWAITING_PLAN_APPROVAL" &&
-                     !(state === "COMPLETED" && (julesSession.rawOutputs?.length ?? 0) === 0 &&
+                 if (planProviderState !== "AWAITING_PLAN_APPROVAL" &&
+                      !(planProviderState === "COMPLETED" && (planProviderSession.rawOutputs?.length ?? 0) === 0 &&
                        (!entry || entry.attempt.kind === "started" || entry.attempt.kind === "confirmed")) &&
-                     !(state === "COMPLETED" && approvedPlanActivityId && entry?.attempt.kind === "started" && prUrl) &&
-                     !(state === "IN_PROGRESS" && entry)) {
+                      !(planProviderState === "COMPLETED" && approvedPlanActivityId && entry?.attempt.kind === "started" && planPrUrl) &&
+                      !(planProviderState === "IN_PROGRESS" && entry)) {
                   return { exitCode: 1, signal: null, timedOut: false, clearSession: false,
                     errorCode: "native_child_plan_provider_state_conflict", errorFamily: null,
                     errorMessage: `Cannot approve reviewed plan while Jules reports ${state}.`, sessionParams: serializeSession(session) };
                 }
                 const lifecycle = await runJulesLifecycle({
                   state: {
-                     provider: state === "COMPLETED" && prUrl ? { kind: "completed", sessionId: identity.sessionId, pullRequestUrl: prUrl }
-                       : state === "IN_PROGRESS" ? { kind: "in_progress", sessionId: identity.sessionId }
+                      provider: planProviderState === "COMPLETED" && planPrUrl ? { kind: "completed", sessionId: identity.sessionId, pullRequestUrl: planPrUrl }
+                        : planProviderState === "IN_PROGRESS" ? { kind: "in_progress", sessionId: identity.sessionId }
                        : { kind: "awaiting_plan", sessionId: identity.sessionId, revisionId: identity.revisionId },
                     review: { kind: "resolved", cardId: observed.cardId, revisionId: identity.revisionId, reviewer: "terra", verdict: "approve", runId: observed.reviewerRunId },
                     effect: projectEffectAttempt(effectId, entry), monitor: { kind: "scheduled", monitorId: identity.sessionId },
@@ -3774,8 +3842,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                     approvePlan: async () => { await client.approvePlan(asJulesSessionId(identity.sessionId),
                       { effectId, planActivityId: identity.activityId }); return { receipt: `approved:${identity.revisionId}` }; },
                     reconcileNativePlanEffect: async ({ effect }) => reconcileNativePlanEffect(effect, {
-                       approval: (state === "IN_PROGRESS" || (state === "COMPLETED" && approvedPlanActivityId))
-                         ? { kind: "same_session_progressed", state } : { kind: "same_plan_pending" },
+                        approval: ((planProviderState === "IN_PROGRESS" || planProviderState === "COMPLETED") && approvedPlanActivityId)
+                          ? { kind: "same_session_progressed", state: planProviderState } : { kind: "same_plan_pending" },
                     }),
                   },
                 });
@@ -3802,50 +3870,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         const approvalJournalEntry = nativePlanSession.lifecycleEffectJournal?.effects.find(
           (entry) => entry.effectId === approvalEffectId,
         );
+        let nativeApprovedPlanActivityId: string | null = null;
         if (nativePlanReview.stage === "terra" && state === "IN_PROGRESS" &&
             approvalJournalEntry?.attempt.kind === "started") {
-          const lifecycle = await runJulesLifecycle({
-            state: {
-              provider: { kind: "in_progress", sessionId: nativePlanSession.julesSessionId! },
-              review: {
-                kind: "resolved",
-                cardId: nativePlanReview.paperclipInteractionId,
-                revisionId: nativePlanReview.planRevisionId,
-                reviewer: "terra",
-                verdict: "approve",
-                runId: nativePlanReview.paperclipInteractionId,
-              },
-              effect: projectEffectAttempt(approvalEffectId, approvalJournalEntry),
-              monitor: { kind: "scheduled", monitorId: nativePlanSession.julesSessionId! },
-            },
-            event: { kind: "run_interrupted" },
-            journal: nativePlanSession.lifecycleEffectJournal ?? { version: 1, effects: [] },
-            now: new Date().toISOString(),
-            dependencies: {
-              persistJournal: async (journal) => {
-                nativePlanSession.lifecycleEffectJournal = journal;
-                await saveStoredSession(nativePlanSession);
-              },
-              reconcileNativePlanEffect: async ({ effect, effectId }) => {
-                if (effect.kind !== "approve_plan" || effectId !== approvalEffectId ||
-                    effect.sessionId !== nativePlanSession.julesSessionId || effect.revisionId !== nativePlanReview.planRevisionId) {
-                  return { kind: "inconsistent", reason: "unexpected Terra approval lifecycle effect" };
-                }
-                return reconcileNativePlanEffect(effect, {
-                  approval: { kind: "same_session_progressed", state },
-                });
-              },
-            },
-          });
-          if (lifecycle.disposition !== "executed") {
-            throw new Error("Terra approval reconciliation deferred despite Jules reporting provider progress.");
+          const history = await scanCompleteActivities(client, nativePlanSession.julesSessionId!);
+          nativeApprovedPlanActivityId = findApprovedPlanActivity({ activities: history.activities,
+            planActivityId: nativePlanReview.julesActivityId, startedAt: approvalJournalEntry.attempt.startedAt,
+            historyComplete: history.complete });
+          if (!nativeApprovedPlanActivityId) {
+            const now = new Date().toISOString();
+            nativePlanSession.planProviderObservation = { sessionId: nativePlanSession.julesSessionId!,
+              activityId: nativePlanReview.julesActivityId, revisionId: nativePlanReview.planRevisionId,
+              reason: "unverified_progress", providerState: "IN_PROGRESS",
+              firstObservedAt: nativePlanSession.planProviderObservation?.firstObservedAt ?? now, lastObservedAt: now };
+            // The legacy checkpoint is evidence of an attempted write, not a
+            // typed verdict or a provider acknowledgement. Never synthesize either.
+            return await yieldHeartbeat(nativePlanSession, false, {
+              summary: "Awaiting an exact provider approval witness for the preserved native plan effect; no approval was replayed.",
+              resultJson: { pending: true, planProviderObservation: nativePlanSession.planProviderObservation },
+            });
           }
-          nativePlanSession.planApprovedAt = new Date().toISOString();
-          nativePlanSession.planApprovedActivityId = nativePlanReview.julesActivityId;
-          nativePlanSession.planReviewOutcome = "approved";
-          nativePlanSession.pendingInteraction = undefined;
-          await persistSessionBestEffort(nativePlanSession, ctx.onLog);
-          return await yieldHeartbeat(nativePlanSession);
         }
         if (nativePlanReview.legacyPlanReviewCleanup) {
           await withdrawPaperclipInteraction(
@@ -4688,7 +4732,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           );
           const lifecycle = await runJulesLifecycle({
             state: {
-              provider: { kind: "awaiting_plan", sessionId: terraPlanSession.julesSessionId!, revisionId: terraPlanReview.planRevisionId },
+              provider: nativeApprovedPlanActivityId ? { kind: "in_progress", sessionId: terraPlanSession.julesSessionId! }
+                : { kind: "awaiting_plan", sessionId: terraPlanSession.julesSessionId!, revisionId: terraPlanReview.planRevisionId },
               review: {
                 kind: "resolved",
                 cardId: interaction.id,
@@ -4700,7 +4745,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               effect: projectEffectAttempt(approvalEffectId, approvalJournalEntry),
               monitor: { kind: "scheduled", monitorId: terraPlanSession.julesSessionId! },
             },
-            event: { kind: "heartbeat" },
+            event: { kind: nativeApprovedPlanActivityId ? "run_interrupted" : "heartbeat" },
             journal: terraPlanSession.lifecycleEffectJournal ?? { version: 1, effects: [] },
             now: new Date().toISOString(),
             dependencies: {
@@ -4722,7 +4767,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                   return { kind: "inconsistent", reason: "unexpected Terra approval lifecycle effect" };
                 }
                 return reconcileNativePlanEffect(effect, {
-                  approval: { kind: "same_plan_pending" },
+                  approval: nativeApprovedPlanActivityId
+                    ? { kind: "same_session_progressed", state: "IN_PROGRESS" } : { kind: "same_plan_pending" },
                 });
               },
             },
@@ -4732,6 +4778,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           terraPlanSession.planApprovedActivityId = terraPlanReview.julesActivityId;
           terraPlanSession.planReviewOutcome = "approved";
           terraPlanSession.pendingInteraction = undefined;
+          terraPlanSession.planProviderObservation = undefined;
           await persistSessionBestEffort(terraPlanSession, ctx.onLog);
           return await yieldHeartbeat(terraPlanSession);
         }

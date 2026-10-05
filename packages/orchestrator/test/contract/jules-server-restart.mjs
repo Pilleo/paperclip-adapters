@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, writeFile, chmod } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, chmod, mkdir, cp, symlink } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createServer as createProbe } from "node:net";
 import { tmpdir } from "node:os";
@@ -28,12 +28,14 @@ if (process.argv.includes("--autonomous-conflict")) {
 const autonomousDependency = process.argv.includes("--autonomous-dependency");
 const questionRecovery = process.argv.includes("--autonomous-question-recovery");
 const reviewerError = process.argv.includes("--reviewer-error");
+const legacyPlanProviderHold = process.argv.includes("--autonomous-legacy-plan-provider-hold");
+const planProviderDrift = legacyPlanProviderHold || process.argv.includes("--autonomous-plan-provider-drift");
 const questionFlow = questionRecovery || process.argv.includes("--autonomous-question");
 const installation = resolveContractHost();
 const autonomousConflict = process.argv.includes("--autonomous-conflict");
 const restartLostApproval = process.argv.includes("--autonomous-lost-approval-restart");
 const lostApproval = restartLostApproval || process.argv.includes("--autonomous-lost-approval");
-const autonomousMerge = autonomousDependency || autonomousConflict || lostApproval || questionFlow || process.argv.includes("--autonomous-merge");
+const autonomousMerge = planProviderDrift || autonomousDependency || autonomousConflict || lostApproval || questionFlow || process.argv.includes("--autonomous-merge");
 const autonomous = autonomousMerge || process.argv.includes("--autonomous");
 
 const root = await mkdtemp(path.join(tmpdir(), "paperclip-jules-server-restart-"));
@@ -97,6 +99,8 @@ let releaseOutput = false;
 const providerRequests = [];
 const approvalResponseFault = createAcceptedResponseLoss(lostApproval);
 let successfulApprovalObservations = 0;
+let driftObservedAt = null;
+let driftFinished = false;
 const provider = createServer(async (request, response) => {
   const url = new URL(request.url, "http://127.0.0.1");
   providerRequests.push(`${request.method} ${url.pathname}`);
@@ -223,9 +227,20 @@ const provider = createServer(async (request, response) => {
     return json(200, { activities: [] });
   }
   if (request.method === "GET" && url.pathname === `/v1alpha/sessions/${sessionId}`) {
+    let unapprovedState = "AWAITING_PLAN_APPROVAL";
+    if (planProviderDrift && !approvals && issueId && conflictObserver) {
+      const children = await conflictObserver.get(`/companies/${companyId}/issues?parentId=${issueId}&limit=20`);
+      if (children.some(child => child.description?.includes('"stage":"terra"'))) {
+        if (!driftObservedAt) {
+          driftObservedAt = new Date().toISOString();
+          setTimeout(() => { driftFinished = true; }, 90_000).unref();
+        }
+        unapprovedState = driftFinished ? "COMPLETED" : "IN_PROGRESS";
+      }
+    }
     return json(200, { name: `sessions/${sessionId}`,
       state: repairedPr ? repairPolls++ === 0 ? "IN_PROGRESS" : "COMPLETED"
-        : approvals ? questionFlow && !questionMessages.length ? "COMPLETED" : releaseOutput ? "COMPLETED" : "IN_PROGRESS" : "AWAITING_PLAN_APPROVAL",
+        : approvals ? questionFlow && !questionMessages.length ? "COMPLETED" : releaseOutput ? "COMPLETED" : "IN_PROGRESS" : unapprovedState,
       outputs: releaseOutput ? [{ pullRequest: { url: pr.url } }] : [] });
   }
   if (request.method === "GET" && url.pathname === `/v1alpha/sessions/${sessionId}/activities`) {
@@ -239,6 +254,7 @@ const provider = createServer(async (request, response) => {
         userMessaged: { userMessage: message.prompt } }))] });
   }
   if (request.method === "POST" && url.pathname === `/v1alpha/sessions/${sessionId}:approvePlan`) {
+    assert.ok(!planProviderDrift || driftFinished, "unapproved provider progress cannot authorize a provider mutation");
     if (approvals++) return json(409, { error: "duplicate Jules plan approval across server restart" });
     return approvalResponseFault.respond(response, () => { approvedAt = new Date().toISOString(); });
   }
@@ -262,11 +278,36 @@ const previousStore = process.env.PAPERCLIP_JULES_SESSION_STORE_DIR;
 process.env.PAPERCLIP_JULES_SESSION_STORE_DIR = path.join(root, "sessions");
 const workspaceRoot = fileURLToPath(new URL("../../../..", import.meta.url));
 const packageOverride = process.argv.find((argument) => argument.startsWith("--orchestrator-package="))?.split("=").slice(1).join("=");
-const orchestratorPackagePath = packageOverride ?? path.join(workspaceRoot, "packages/orchestrator");
+let orchestratorPackagePath = packageOverride ?? path.join(workspaceRoot, "packages/orchestrator");
 assert.ok(path.isAbsolute(orchestratorPackagePath), "orchestrator package override must be an absolute local path");
 const julesPackageOverride = process.argv.find((argument) => argument.startsWith("--jules-package="))?.split("=").slice(1).join("=");
-const julesPackagePath = julesPackageOverride ?? path.join(workspaceRoot, "packages/jules");
+let julesPackagePath = julesPackageOverride ?? path.join(workspaceRoot, "packages/jules");
 assert.ok(path.isAbsolute(julesPackagePath), "Jules package override must be an absolute local path");
+const deploymentRestorations = [];
+if (legacyPlanProviderHold) {
+  const copyPackage = async (source, name) => {
+    const target = path.join(root, "upgrade", "packages", name);
+    await mkdir(target, { recursive: true });
+    await cp(path.join(source, "dist"), path.join(target, "dist"), { recursive: true });
+    await cp(path.join(source, "package.json"), path.join(target, "package.json"));
+    await symlink(path.join(source, "node_modules"), path.join(target, "node_modules"));
+    return target;
+  };
+  julesPackagePath = await copyPackage(julesPackagePath, "jules");
+  orchestratorPackagePath = await copyPackage(orchestratorPackagePath, "orchestrator");
+  for (const [file, mutate] of [
+    [path.join(julesPackagePath, "dist/server/plan-provider-decision.js"), text => text.replaceAll('kind: "observe_provider"', 'kind: "hold"')],
+    [path.join(orchestratorPackagePath, "dist/core/jules-execution-blocker-reconciliation.js"), text => text.replace(
+      'export function decideJulesExecutionBlockerRecovery(snapshot) {',
+      'export function decideJulesExecutionBlockerRecovery(snapshot) {\nif (snapshot.failedRun?.errorCode === "native_child_plan_provider_state_conflict") return { action: "preserve", reason: "legacy plan observation hold" };')],
+  ]) {
+    const original = await readFile(file, "utf8");
+    const mutation = mutate(original);
+    assert.notEqual(mutation, original, "legacy simulation must mutate the compiled behavior");
+    deploymentRestorations.push({ file, original });
+    await writeFile(file, mutation);
+  }
+}
 const waitUntil = async (label, probe, timeoutMs = 45_000) => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -410,13 +451,77 @@ try {
     reason: "contract_native_plan_capacity_restored", payload: { issueId: issue.id } });
   const monitorWakeKeys = new Set();
   let lostApprovalCardIds = null;
+  let legacyFailureId = null;
+  if (legacyPlanProviderHold) {
+    const held = await waitUntil("legacy observation failure and host-owned execution hold", async () => {
+      const current = await observer.get(`/issues/${issue.id}`);
+      if (!current.executionBlocker) return false;
+      const failed = await observer.get(`/heartbeat-runs/${current.executionBlocker.runId}`);
+      assert.equal(failed.errorCode, "native_child_plan_provider_state_conflict");
+      assert.equal(failed.status, "failed");
+      return { current, failed };
+    }, 240_000);
+    legacyFailureId = held.failed.id;
+    const checkpoint = await waitUntil("host persists the exact failed-run task checkpoint", async () => {
+      const checkpoints = await observer.get(`/agents/${jules.id}/task-sessions`);
+      return checkpoints.find(row => row.taskKey === issue.id && row.lastRunId === legacyFailureId);
+    });
+    assert.equal(checkpoint.sessionParamsJson.julesState, "IN_PROGRESS");
+    const originalChildId = checkpoint.sessionParamsJson.childPlanReview.childId;
+    assert.equal((await observer.get(`/issues/${originalChildId}/interactions`)).length, 0);
+    await waitUntil("legacy execution releases authority before adapter deployment", async () =>
+      !(await observer.get(`/companies/${company.id}/live-runs?limit=50&minCount=0`)).length, 90_000);
+    await host.stop();
+    for (const { file, original } of deploymentRestorations) await writeFile(file, original);
+    await host.start();
+    await waitUntil("normal orchestrator heartbeat reconciles the exact legacy observation hold", async () =>
+      !(await observer.get(`/issues/${issue.id}`)).executionBlocker, 120_000);
+    const receipt = await waitUntil("adapter validates the typed same-owner recovery receipt", async () => {
+      const runs = await observer.get(`/companies/${company.id}/heartbeat-runs?limit=100`);
+      for (const run of runs.filter(run => run.agentId === orchestratorId && Date.parse(run.startedAt) > Date.parse(held.failed.finishedAt))) {
+        const log = await observer.get(`/heartbeat-runs/${run.id}/log?offset=0&limitBytes=65536`);
+        for (const line of log.content.split("\n")) {
+          if (!line.trim()) continue;
+          const chunk = JSON.parse(line).chunk;
+          const start = chunk?.indexOf('{"event":"jules_plan_observation_reconciled"');
+          if (start >= 0) return JSON.parse(chunk.slice(start).trim());
+        }
+      }
+      return false;
+    });
+    assert.equal(receipt.actionId, held.current.executionBlocker.recoveryActionId);
+    assert.equal(receipt.actionOutcome, "mixed");
+    assert.equal(receipt.runId, legacyFailureId);
+    assert.equal(receipt.providerSessionId, sessionId);
+    assert.equal((await loadStoredSession(issue.id, "sources/github/paperclip-contract/fixture", "main")).childPlanReview.childId,
+      originalChildId);
+    console.log("AUTONOMOUS_LEGACY_PLAN_OBSERVATION_RECONCILED", JSON.stringify({ legacyFailureId,
+      recoveryActionId: receipt.actionId, originalSessionId: sessionId, originalChildId }));
+  } else if (planProviderDrift) {
+    const waiting = await waitUntil("durable provider observation wait without a terminal execution failure", async () => {
+      const runs = await observer.get(`/companies/${company.id}/heartbeat-runs?limit=100`);
+      const failed = runs.find(run => ["failed", "timed_out"].includes(run.status));
+      assert.equal(failed, undefined, `Provider observation became terminal: ${failed?.errorCode}`);
+      const checkpoint = await loadStoredSession(issue.id, "sources/github/paperclip-contract/fixture", "main");
+      return checkpoint?.planProviderObservation && checkpoint;
+    }, 240_000);
+    assert.equal(waiting.julesSessionId, sessionId);
+    assert.equal(waiting.childPlanReview.identity.stage, "terra");
+    assert.equal(approvals, 0);
+    assert.equal((await observer.get(`/issues/${issue.id}`)).executionBlocker, null);
+    await waitUntil("idle before provider observation restart", async () =>
+      !(await observer.get(`/companies/${company.id}/live-runs?limit=50&minCount=0`)).length, 90_000);
+    await host.stop(); await host.start();
+    assert.equal((await loadStoredSession(issue.id, "sources/github/paperclip-contract/fixture", "main")).childPlanReview.childId,
+      waiting.childPlanReview.childId, "restart must preserve the original strong-review child");
+  }
   await waitUntil("one confirmed provider plan approval from typed reviewer runs", async () => {
     assert.ok(approvals <= 1, "provider plan approval POST must never be replayed after uncertain acceptance");
     if (approvals === 1) return true;
     if (autonomous) {
       if (autonomousMerge) {
         const runs = await observer.get(`/companies/${company.id}/heartbeat-runs?limit=100`);
-        const failed = runs.find((run) => ["failed", "timed_out"].includes(run.status));
+        const failed = runs.find((run) => ["failed", "timed_out"].includes(run.status) && run.id !== legacyFailureId);
         assert.equal(failed, undefined, `Autonomous run failed: ${failed?.errorCode}: ${failed?.error}`);
       }
       return false;
@@ -556,6 +661,20 @@ try {
   const originalPlanCardIds = await readReviewEvidence();
   if (lostApprovalCardIds) assert.deepEqual(originalPlanCardIds, lostApprovalCardIds,
     "uncertain-effect recovery must retain the original addressed native plan cards");
+  if (planProviderDrift) {
+    assert.ok(driftObservedAt && driftFinished);
+    assert.equal((await observer.get(`/issues/${issue.id}`)).executionBlocker, null);
+    assert.equal(approvedCheckpoint.planProviderObservation, undefined);
+    assert.equal(creates, 1);
+    assert.equal(approvals, 1);
+    assert.equal(observer.trace.filter(entry => entry.phase === "observing" && entry.method !== "GET").length, 0);
+    const log = await readFile(path.join(root, "server.log"), "utf8");
+    assert.ok(log.split(`${julesPackagePath}/dist/index.js`).length >= 3);
+    assert.ok(log.split(`${orchestratorPackagePath}/dist/index.js`).length >= 3);
+    console.log("AUTONOMOUS_PLAN_PROVIDER_OBSERVATION_CONFIRMED", JSON.stringify({ version: installation.version,
+      issueId: issue.id, sessionId, legacyFailureId, nativePlanCards: originalPlanCardIds,
+      providerCreates: creates, providerApprovals: approvals, driverMutationsAfterStart: 0 }));
+  } else {
   const beforeProducts = await fetch(`${host.url}/api/issues/${issue.id}/work-products`)
     .then((response) => response.json());
   assert.equal(beforeProducts.length, 0, "restart must occur before Jules registers the PR");
@@ -746,6 +865,7 @@ try {
   }
   console.log("JULES_SERVER_RESTART_CONFIRMED", JSON.stringify({ issueId: issue.id,
     sessionId, providerCreates: creates, providerApprovals: approvals, typedPlanCards: originalPlanCardIds.length }));
+  }
   contractSucceeded = true;
 } catch (error) {
   if (questionFlow && issueId) {

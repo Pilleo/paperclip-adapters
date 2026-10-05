@@ -300,12 +300,87 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
     }
   });
 
+  it("keeps the original v4 strong child progressing across unapproved provider drift and outputless completion", async () => {
+    const identity = { version: 4 as const, companyId: "company-1", parentIssueId: "issue-141", sessionId: "session-141",
+      activityId: "act-plan-native", documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1,
+      stage: "terra" as const, reviewerAgentId: "00000000-0000-4000-8000-000000000002",
+      bootstrapAgentId: "agent-jules", julesAgentId: "agent-jules" };
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{ id: identity.activityId,
+      planGenerated: { plan: { id: "provider-plan-1", steps: [{ title: "Implement" }] } } }] } as never);
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ id: identity.sessionId, state: "IN_PROGRESS", rawOutputs: [] } as never);
+    vi.mocked(observeJulesChildPlanReview).mockResolvedValue({ kind: "answered", childId: "original-strong-child",
+      cardId: "strong-card", reviewerRunId: "strong-run", verdict: "approve" });
+    const first = await execute({ ...baseContext, runtime: { ...baseContext.runtime,
+      sessionParams: sessionCodec.encode({ ...session, phase: "WAITING_FOR_PLAN_APPROVAL",
+        childPlanReview: { identity, childId: "original-strong-child" } } as never),
+    } } as AdapterExecutionContext);
+    expect(first.exitCode).toBe(0);
+    expect(first.resultJson).toMatchObject({ pending: true, planProviderObservation: { reason: "unverified_progress" } });
+    const checkpoint = sessionCodec.decode(first.sessionParams!);
+    expect(checkpoint?.julesState).toBe("IN_PROGRESS");
+    expect(checkpoint?.childPlanReview?.childId).toBe("original-strong-child");
+    expect(checkpoint?.planProviderObservation).toMatchObject({ sessionId: identity.sessionId, revisionId: identity.revisionId });
+    expect(JulesClient.prototype.approvePlan).not.toHaveBeenCalled();
+    expect(JulesClient.prototype.sendMessage).not.toHaveBeenCalled();
+    expect(scheduleJulesSessionMonitor).toHaveBeenCalled();
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ id: identity.sessionId, state: "COMPLETED", rawOutputs: [] } as never);
+    const second = await execute({ ...baseContext, runtime: { ...baseContext.runtime, sessionParams: first.sessionParams } } as AdapterExecutionContext);
+    expect(second.exitCode).toBe(0);
+    expect(sessionCodec.decode(second.sessionParams!)?.planProviderObservation).toBeUndefined();
+    expect(sessionCodec.decode(second.sessionParams!)?.planApprovedActivityId).toBe(identity.activityId);
+    expect(JulesClient.prototype.approvePlan).toHaveBeenCalledTimes(1);
+  });
+
+  it("rechecks provider eligibility after a strong verdict before issuing approval", async () => {
+    const identity = { version: 4 as const, companyId: "company-1", parentIssueId: "issue-141", sessionId: "session-141",
+      activityId: "act-plan-native", documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1,
+      stage: "terra" as const, reviewerAgentId: "00000000-0000-4000-8000-000000000002",
+      bootstrapAgentId: "agent-jules", julesAgentId: "agent-jules" };
+    vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{ id: identity.activityId,
+      planGenerated: { plan: { id: "provider-plan-1", steps: [{ title: "Implement" }] } } }] } as never);
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValueOnce({ id: identity.sessionId, state: "AWAITING_PLAN_APPROVAL" } as never)
+      .mockResolvedValue({ id: identity.sessionId, state: "IN_PROGRESS", rawOutputs: [] } as never);
+    vi.mocked(observeJulesChildPlanReview).mockResolvedValue({ kind: "answered", childId: "strong-child",
+      cardId: "strong-card", reviewerRunId: "strong-run", verdict: "approve" });
+    const result = await execute({ ...baseContext, runtime: { ...baseContext.runtime,
+      sessionParams: sessionCodec.encode({ ...session, phase: "WAITING_FOR_PLAN_APPROVAL", childPlanReview: { identity, childId: "strong-child" } } as never),
+    } } as AdapterExecutionContext);
+    expect(result.exitCode).toBe(0);
+    expect(JulesClient.prototype.approvePlan).not.toHaveBeenCalled();
+    expect(sessionCodec.decode(result.sessionParams!)?.planProviderObservation?.providerState).toBe("IN_PROGRESS");
+  });
+
+  it.each(["provider drift", "cancellation"])("does not issue approval when %s occurs during the final activity scan", async cause => {
+    const identity = { version: 4 as const, companyId: "company-1", parentIssueId: "issue-141", sessionId: "session-141",
+      activityId: "act-plan-native", documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1,
+      stage: "terra" as const, reviewerAgentId: "00000000-0000-4000-8000-000000000002",
+      bootstrapAgentId: "agent-jules", julesAgentId: "agent-jules" };
+    const cancellation = new AbortController();
+    let scans = 0;
+    vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ id: identity.sessionId, state: "AWAITING_PLAN_APPROVAL" } as never);
+    vi.mocked(JulesClient.prototype.getActivities).mockImplementation(async () => {
+      if (++scans === 3) { // mirroring, initial complete boundary, final complete boundary
+        if (cause === "cancellation") cancellation.abort();
+        else vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ id: identity.sessionId, state: "IN_PROGRESS", rawOutputs: [] } as never);
+      }
+      return { activities: [{ id: identity.activityId, planGenerated: { plan: { id: "provider-plan-1", steps: [] } } }] } as never;
+    });
+    vi.mocked(observeJulesChildPlanReview).mockResolvedValue({ kind: "answered", childId: "strong-child",
+      cardId: "strong-card", reviewerRunId: "strong-run", verdict: "approve" });
+    const result = await execute({ ...baseContext, signal: cancellation.signal, runtime: { ...baseContext.runtime,
+      sessionParams: sessionCodec.encode({ ...session, phase: "WAITING_FOR_PLAN_APPROVAL", childPlanReview: { identity, childId: "strong-child" } } as never),
+    } } as AdapterExecutionContext);
+    expect(result.exitCode).toBe(0);
+    expect(JulesClient.prototype.approvePlan).not.toHaveBeenCalled();
+  });
+
   it.each(["IN_PROGRESS", "AWAITING_PLAN_APPROVAL"] as const)("reconciles a started v3 strong approval from %s without replaying approvePlan", async (providerState) => {
     vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: providerState, id: "session-141" } as never);
     vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [{
       id: "act-plan-native", createTime: "2026-08-30T00:01:00.000Z",
-      planGenerated: { plan: { steps: [{ title: "Implement", description: "Verify" }] } },
-    }] } as never);
+      planGenerated: { plan: { id: "provider-plan-1", steps: [{ title: "Implement", description: "Verify" }] } },
+    }, ...(providerState === "IN_PROGRESS" ? [{ id: "provider-plan-approved", createTime: "2026-09-20T00:00:02.000Z",
+      planApproved: { planId: "provider-plan-1" } }] : [])] } as never);
     const identity = { version: 3 as const, companyId: "company-1", parentIssueId: "issue-141", sessionId: "session-141",
       activityId: "act-plan-native", documentId: "doc-1", revisionId: "rev-1", revisionNumber: 1,
       stage: "terra" as const, reviewerAgentId: "00000000-0000-4000-8000-000000000002",
@@ -2569,7 +2644,7 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
     });
   });
 
-  it("reconciles a started Terra approval after the provider already progressed", async () => {
+  it("preserves a legacy started Terra approval when generic progress has no exact approval witness", async () => {
     vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "IN_PROGRESS", id: "session-141" } as never);
     vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [] } as never);
     vi.mocked(listPaperclipInteractions).mockResolvedValue([{
@@ -2602,7 +2677,9 @@ describe.sequential("E2E Jules Plan Presentation & Interactive Resume Loop", () 
 
     expect(result.errorCode).toBeUndefined();
     expect(JulesClient.prototype.approvePlan).not.toHaveBeenCalled();
-    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toBeUndefined();
+    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction?.paperclipInteractionId).toBe("native-plan-review-terra");
+    expect(sessionCodec.decode(result.sessionParams!)?.lifecycleEffectJournal?.effects[0]?.attempt.kind).toBe("started");
+    expect(scheduleJulesSessionMonitor).toHaveBeenCalled();
   });
 
   it("does not replay a started Terra approval without an attested native verdict", async () => {

@@ -18,7 +18,14 @@ describe("provider state versus typed plan verdict", () => {
   });
   it("does not treat unapproved IN_PROGRESS as proof of approval", () => {
     expect(decidePlanProviderAction({ ...base, providerState: "IN_PROGRESS", verdict: "approve" }))
+      .toEqual({ kind: "observe_provider", reason: "unverified_progress" });
+    expect(decidePlanProviderAction({ ...base, providerState: "IN_PROGRESS", outputCount: 1 }))
       .toEqual({ kind: "hold", reason: "unverified_progress" });
+  });
+  it("does not confirm a started approval from generic progress without a matching approval activity", () => {
+    expect(decidePlanProviderAction({ ...base, providerState: "IN_PROGRESS", verdict: "approve",
+      effect: { kind: "started", effectId: "approve:session-1:rev-1" } }))
+      .toEqual({ kind: "observe_provider", reason: "unverified_progress" });
   });
   it("allows a typed verdict only against the exact pending plan", () => {
     expect(decidePlanProviderAction({ ...base, verdict: "approve" })).toEqual({ kind: "approve_once", effectId: "approve:session-1:rev-1" });
@@ -28,6 +35,7 @@ describe("provider state versus typed plan verdict", () => {
     expect(decidePlanProviderAction({ ...base, verdict: null, effect: { kind: "started", effectId: "approve:session-1:rev-1" } }))
       .toEqual({ kind: "wait_for_verdict" });
     expect(decidePlanProviderAction({ ...base, providerState: "IN_PROGRESS", verdict: "approve",
+      approvalActivityId: "approved-plan-1",
       effect: { kind: "started", effectId: "approve:session-1:rev-1" } }))
       .toEqual({ kind: "reconcile_started_effect", effectId: "approve:session-1:rev-1" });
     expect(decidePlanProviderAction({ ...base, providerState: "COMPLETED", verdict: "approve",

@@ -74,7 +74,13 @@ describe("Jules restart lifecycle adapter boundary", () => {
   it("reconciles an interrupted Terra approval through the adapter boundary after restart", async () => {
     // Break protected by this test: `execute` previously reconstructed every
     // reducer state as `not_started`, so a restarted adapter could not turn
-    // durable provider progress into a cleared native-plan gate.
+    // an exact provider approval witness into a cleared native-plan gate.
+    const approvedHistory = [
+      { id: "activity-plan-1", createTime: "2026-09-20T00:00:00.000Z",
+        planGenerated: { plan: { id: "provider-plan-1", steps: [] } } },
+      { id: "activity-approved-1", createTime: "2026-09-20T00:01:01.000Z",
+        planApproved: { planId: "provider-plan-1" } },
+    ];
     server = await startScriptedJulesServer([
       {
         method: "GET",
@@ -91,7 +97,8 @@ describe("Jules restart lifecycle adapter boundary", () => {
         pathname: "/v1alpha/sessions/session-1",
         response: { status: 200, body: { name: "sessions/session-1", state: "IN_PROGRESS" } },
       },
-      { method: "GET", pathname: "/v1alpha/sessions/session-1/activities", response: { status: 200, body: { activities: [] } } },
+      { method: "GET", pathname: "/v1alpha/sessions/session-1/activities", response: { status: 200, body: { activities: approvedHistory } } },
+      { method: "GET", pathname: "/v1alpha/sessions/session-1/activities", response: { status: 200, body: { activities: approvedHistory } } },
     ]);
     const adapter = createServerAdapter();
     const context = {
@@ -135,6 +142,7 @@ describe("Jules restart lifecycle adapter boundary", () => {
       { method: "GET", pathname: "/v1alpha/sessions/session-1", body: undefined },
       { method: "GET", pathname: "/v1alpha/sessions/session-1/activities", body: undefined },
       { method: "GET", pathname: "/v1alpha/sessions/session-1", body: undefined },
+      { method: "GET", pathname: "/v1alpha/sessions/session-1/activities", body: undefined },
       { method: "GET", pathname: "/v1alpha/sessions/session-1/activities", body: undefined },
     ]);
     expect(server.remainingSteps()).toEqual([]);

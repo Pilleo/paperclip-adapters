@@ -1783,8 +1783,36 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
       }
       try {
         const failedRun = await pc.getHeartbeatRun<Record<string, unknown>>(blockerPointer.runId);
+        let planObservationEvidence: unknown;
+        if (failedRun["errorCode"] === "native_child_plan_provider_state_conflict") {
+          const rows = asArray<Record<string, unknown>>(await pc.getJson<unknown>(`/api/agents/${encodeURIComponent(blockerPointer.agentId)}/task-sessions`));
+          const matches = rows.filter(row => row["taskKey"] === issue.id);
+          if (matches.length !== 1) throw new Error("Plan observation recovery requires one exact host task-session checkpoint");
+          const params = matches[0]?.["sessionParamsJson"] as Record<string, unknown> | undefined;
+          const childReview = params?.["childPlanReview"] as Record<string, unknown> | undefined;
+          if (typeof childReview?.["childId"] !== "string") throw new Error("Plan observation recovery has no original child");
+          const [document, child] = await Promise.all([
+            pc.getJson<unknown>(`/api/issues/${encodeURIComponent(issue.id)}/documents/plan`),
+            pc.getJson<unknown>(`/api/issues/${encodeURIComponent(childReview["childId"])}`),
+          ]);
+          const childRoot = `/api/issues/${encodeURIComponent(childReview["childId"])}`;
+          const [cards, listedRuns] = await Promise.all([
+            pc.getJson<unknown>(`${childRoot}/interactions`), pc.getJson<unknown>(`${childRoot}/runs`),
+          ]);
+          if (!Array.isArray(cards) || !Array.isArray(listedRuns) || listedRuns.length >= 1000) throw new Error("Incomplete child observation evidence");
+          const ids = new Set(listedRuns.map(row => (row as Record<string, unknown>)["runId"]));
+          for (const card of cards as Record<string, unknown>[]) for (const key of ["sourceRunId", "resolvedByRunId"]) {
+            if (typeof card[key] === "string") ids.add(card[key]);
+          }
+          const runs = await Promise.all([...ids].map(id => {
+            if (typeof id !== "string") throw new Error("Child observation run reference is invalid");
+            return pc.getHeartbeatRun<unknown>(id);
+          }));
+          planObservationEvidence = { taskSession: matches[0], document, child, cards, runs };
+        }
         const blockerDecision = decideJulesExecutionBlockerRecovery({
           issueId: issue.id,
+          companyId,
           issueStatus: issue.status,
           assigneeAgentId: issue.assigneeAgentId,
           julesAgentId,
@@ -1792,6 +1820,7 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
           executionBlocker,
           failedRun,
           supersedingRuns: heartbeatRuns,
+          planObservationEvidence,
         });
         switch (blockerDecision.action) {
           case "preserve":
@@ -1805,6 +1834,21 @@ async function executeProject(context: AdapterExecutionContext): Promise<Adapter
             if (!resolved.ok) {
               await log(`[ORCHESTRATOR] Could not reconcile terminal Jules polling hold for [${issue.identifier || issue.id}] (${resolved.status}): ${resolved.text}`);
               break;
+            }
+            if (blockerDecision.recoveryBasis === "plan_observation") {
+              const receipt = resolved.data as { issue?: Record<string, unknown>; recoveryAction?: Record<string, unknown> } | undefined;
+              const action = receipt?.recoveryAction;
+              const evidence = action?.["evidence"] as Record<string, unknown> | undefined;
+              const reconciliation = evidence?.["executionReconciliation"] as Record<string, unknown> | undefined;
+              if (receipt?.issue?.["id"] !== issue.id || receipt.issue["companyId"] !== companyId ||
+                  receipt.issue["assigneeAgentId"] !== blockerPointer.agentId || receipt.issue["status"] !== "todo" ||
+                  action?.["id"] !== blockerDecision.actionId || action["sourceIssueId"] !== issue.id || action["status"] !== "resolved" ||
+                  reconciliation?.["runId"] !== blockerDecision.runId || reconciliation["actionOutcome"] !== "mixed") {
+                throw new Error("Plan observation recovery receipt did not preserve the exact owner, run and mixed outcomes");
+              }
+              await log(JSON.stringify({ event: "jules_plan_observation_reconciled", issueId: issue.id,
+                actionId: blockerDecision.actionId, runId: blockerDecision.runId,
+                providerSessionId: blockerDecision.providerSessionId, actionOutcome: "mixed" }));
             }
             statusOverrides.set(issue.id, "todo");
             await log(`[ORCHESTRATOR] Reconciled terminal Jules polling hold for [${issue.identifier || issue.id}] to todo; the persisted provider session remains authoritative.`);
