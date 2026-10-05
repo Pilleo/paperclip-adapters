@@ -40,8 +40,8 @@ importers:
         version: 3.25.76
     devDependencies:
       '@paperclipai/adapter-utils':
-        specifier: 2026.916.0
-        version: 2026.916.0
+        specifier: 2026.1001.0
+        version: 2026.1001.0
       '@types/node':
         specifier: 22.0.0
         version: 22.0.0
@@ -87,8 +87,8 @@ importers:
         version: 3.25.76
     devDependencies:
       '@paperclipai/adapter-utils':
-        specifier: 2026.916.0
-        version: 2026.916.0
+        specifier: 2026.1001.0
+        version: 2026.1001.0
       '@types/node':
         specifier: 22.0.0
         version: 22.0.0
@@ -112,8 +112,8 @@ importers:
         version: 3.25.76
     devDependencies:
       '@paperclipai/adapter-utils':
-        specifier: 2026.916.0
-        version: 2026.916.0
+        specifier: 2026.1001.0
+        version: 2026.1001.0
       '@types/node':
         specifier: ^22.0.0
         version: 22.0.0
@@ -127,8 +127,8 @@ importers:
   packages/telegram:
     dependencies:
       '@paperclipai/plugin-sdk':
-        specifier: 2026.916.0
-        version: 2026.916.0
+        specifier: 2026.1001.0
+        version: 2026.1001.0
       '@pilleo/paperclip-adapter-common':
         specifier: workspace:^
         version: link:../common
@@ -162,8 +162,8 @@ importers:
         version: 3.25.76
     devDependencies:
       '@paperclipai/adapter-utils':
-        specifier: 2026.916.0
-        version: 2026.916.0
+        specifier: 2026.1001.0
+        version: 2026.1001.0
       '@types/node':
         specifier: 22.0.0
         version: 22.0.0
@@ -400,14 +400,14 @@ packages:
     cpu: [x64]
     os: [linux]
 
-  '@paperclipai/adapter-utils@2026.916.0':
-    resolution: {integrity: sha512-5fjTEVja4M3FCgknYAb5zSzrpnhezC4gnQatilnedvukpsZCh/6ilnQynjvnRLzaz16xIFTj8OoCGwpV5pUnPA==}
+  '@paperclipai/adapter-utils@2026.1001.0':
+    resolution: {integrity: sha512-ELFdUqeEvkwOZmRqObQc2kRsQQmfOGcSu1GjqKKXMUd7tcyHLohh3ZaaiQbKlmARlpPqY5++c2KMz+7rIbdsnQ==}
     engines: {node: '>=24.11.0'}
     bundledDependencies:
       - acpx
 
-  '@paperclipai/plugin-sdk@2026.916.0':
-    resolution: {integrity: sha512-oxSRICnMJXAn7SOAO0v1NiKM4HaIYUcFUbk7CsnWm3yp4CZnmvESss6arGK9HLzpzp8Sc3M8o+IGzMvVRZW51Q==}
+  '@paperclipai/plugin-sdk@2026.1001.0':
+    resolution: {integrity: sha512-kGZsPBCrT2qo4P7QBKVM2a3rxX6/MraC9AlQ3/zjMT40ugYMZB/Zi/xxva+OfXDwlELHpEUGqSymnXjKFMtkdw==}
     engines: {node: '>=24.11.0'}
     hasBin: true
     peerDependencies:
@@ -416,8 +416,8 @@ packages:
       react:
         optional: true
 
-  '@paperclipai/shared@2026.916.0':
-    resolution: {integrity: sha512-MO85MsXvOAAmfz4t2mHPvpYkUVFAcFZiKuZ4Y3pgJ+xZJjYP0Maused/Ml/DV9gODvV4UvbN4R8VlBl82YDB1w==}
+  '@paperclipai/shared@2026.1001.0':
+    resolution: {integrity: sha512-9usoPyzOGEt/k4hyM7xoJeF3+8Susj7J2CbcibebJ9RC9/4UDMGANVtuXuZURaBWXzhB0bS/8z6pCzBclxlHjQ==}
     engines: {node: '>=24.11.0'}
 
   '@pkgjs/parseargs@0.11.0':
@@ -978,6 +978,9 @@ packages:
   text-decoder@1.2.7:
     resolution: {integrity: sha512-vlLytXkeP4xvEq2otHeJfSQIRyWxo/oZGEbXrtEEF9Hnmrdly59sUbzZ/QgyWuLYHctCHxFF4tRQZNQ9k60ExQ==}
 
+  three@0.185.1:
+    resolution: {integrity: sha512-5aojFCXKwnjBRZvUnt3WFfEcvUJgkN5LlijRFN95hMy8WVkG4I0QNcJE+OuWvuJ0bOdStrbfXn0pkd6/QyiAlg==}
+
   tinybench@2.9.0:
     resolution: {integrity: sha512-0+DUvqWMValLmha6lr4kD8iAMK1HzV0/aKnCtWb9v9641TnP/MFb7Pc2bxoxQjTXAErryXVgUOfv2YqNllqGeg==}
 
@@ -1259,18 +1262,19 @@ snapshots:
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
     optional: true
 
-  '@paperclipai/adapter-utils@2026.916.0':
+  '@paperclipai/adapter-utils@2026.1001.0':
     dependencies:
-      '@paperclipai/shared': 2026.916.0
+      '@paperclipai/shared': 2026.1001.0
       picocolors: 1.1.1
 
-  '@paperclipai/plugin-sdk@2026.916.0':
+  '@paperclipai/plugin-sdk@2026.1001.0':
     dependencies:
-      '@paperclipai/shared': 2026.916.0
+      '@paperclipai/shared': 2026.1001.0
       zod: 4.5.4
 
-  '@paperclipai/shared@2026.916.0':
+  '@paperclipai/shared@2026.1001.0':
     dependencies:
+      three: 0.185.1
       zod: 4.5.4
 
   '@pkgjs/parseargs@0.11.0':
@@ -1835,6 +1839,8 @@ snapshots:
       b4a: 1.9.0
     transitivePeerDependencies:
       - react-native-b4a
+
+  three@0.185.1: {}
 
   tinybench@2.9.0: {}
 
